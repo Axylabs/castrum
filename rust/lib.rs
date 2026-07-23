@@ -10,7 +10,6 @@ mod json_patch_ops;
 mod mime_lookup;
 mod query_parser;
 mod random_token;
-mod routing;
 mod url_codec;
 mod validation;
 mod websocket;

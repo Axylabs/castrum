@@ -7,7 +7,7 @@ export function createCookieApi(runtime: FfiRuntime) {
     cookieParse(bytes: Uint8Array): Uint8Array {
       return callOut(
         symbols.rust_cookie_parse_v2,
-        64 * 1024,
+        Math.max(256, bytes.byteLength * 6 + 256),
         ptr(bytes),
         bytes.byteLength,
       );

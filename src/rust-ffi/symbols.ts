@@ -107,31 +107,9 @@ export const rustSymbols = {
     returns: FFIType.i64,
     args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
   },
-  rust_router_create: {
-    returns: FFIType.u64,
-    args: [FFIType.ptr, FFIType.u64],
-  },
 
-  rust_router_match_id: {
-    returns: FFIType.i64,
-    args: [FFIType.u64, FFIType.ptr, FFIType.u64],
-  },
 
-  rust_router_match: {
-    returns: FFIType.i64,
-    args: [
-      FFIType.u64,
-      FFIType.ptr,
-      FFIType.u64,
-      FFIType.ptr,
-      FFIType.u64,
-    ],
-  },
 
-  rust_router_destroy: {
-    returns: FFIType.i32,
-    args: [FFIType.u64],
-  },
   rust_url_encode_v2: {
     returns: FFIType.i64,
     args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],

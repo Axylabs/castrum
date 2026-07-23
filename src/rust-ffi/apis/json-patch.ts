@@ -7,7 +7,7 @@ export function createJsonPatchApi(runtime: FfiRuntime) {
     jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array {
       return callOut(
         symbols.rust_json_patch_v2,
-        doc.byteLength + patch.byteLength + 4096,
+        Math.max(1024, doc.byteLength + patch.byteLength + 1024),
         ptr(doc),
         doc.byteLength,
         ptr(patch),

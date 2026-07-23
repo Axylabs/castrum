@@ -7,7 +7,7 @@ export function createQueryApi(runtime: FfiRuntime) {
     queryParse(bytes: Uint8Array): Uint8Array {
       return callOut(
         symbols.rust_query_parse_v2,
-        64 * 1024,
+        Math.max(256, bytes.byteLength * 6 + 256),
         ptr(bytes),
         bytes.byteLength,
       );

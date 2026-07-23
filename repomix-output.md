@@ -46,7 +46,6 @@ rust/
   mime_lookup.rs
   query_parser.rs
   random_token.rs
-  routing.rs
   url_codec.rs
   validation.rs
   websocket.rs
@@ -77,7 +76,6 @@ src/
       json.ts
       mime.ts
       query.ts
-      routing.ts
       token.ts
       url.ts
       validation.ts
@@ -91,7 +89,6 @@ src/
     measure.ts
     now.ts
     report.ts
-    router-http.bench.ts
     run.ts
     types.ts
   data/
@@ -106,7 +103,6 @@ src/
       json.ts
       mime.ts
       query.ts
-      routing.ts
       token.ts
       url.ts
       validation.ts
@@ -116,6 +112,7 @@ src/
     index.ts
     loader.ts
     pointer.ts
+    raw.ts
     runtime.ts
     symbols.ts
   shared/
@@ -136,6 +133,50 @@ tsconfig.json
 ````
 
 # Files
+
+## File: src/rust-ffi/raw.ts
+````typescript
+import { createCookieApi } from "./apis/cookie";
+import { createHashingApi } from "./apis/hashing";
+import { createHmacApi } from "./apis/hmac";
+import { createHttpApi } from "./apis/http";
+import { createJsonApi } from "./apis/json";
+import { createJsonPatchApi } from "./apis/json-patch";
+import { createMimeApi } from "./apis/mime";
+import { createQueryApi } from "./apis/query";
+import { createTokenApi } from "./apis/token";
+import { createUrlApi } from "./apis/url";
+import { createValidationApi } from "./apis/validation";
+import { createWebSocketApi } from "./apis/websocket";
+import { createFfiRuntime, type FfiRuntime } from "./runtime";
+
+/**
+ * Raw Rust FFI client.
+ *
+ * This client is used by benchmarks so Rust implementations can continue to be
+ * measured even if the public optimized client overrides some methods with
+ * native implementations.
+ */
+export function createRawRustClient(runtime: FfiRuntime = createFfiRuntime()) {
+  return {
+    ...createJsonApi(runtime),
+    ...createHttpApi(runtime),
+    ...createQueryApi(runtime),
+    ...createCookieApi(runtime),
+    ...createTokenApi(runtime),
+    ...createWebSocketApi(runtime),
+    ...createJsonPatchApi(runtime),
+    ...createHmacApi(runtime),
+    ...createValidationApi(runtime),
+    ...createHashingApi(runtime),
+    ...createMimeApi(runtime),
+    ...createUrlApi(runtime),
+  };
+}
+
+export type RawRustClient = ReturnType<typeof createRawRustClient>;
+export const rust = createRawRustClient();
+````
 
 ## File: rust/cookie_parser.rs
 ````rust
@@ -458,7 +499,6 @@ mod json_patch_ops;
 mod mime_lookup;
 mod query_parser;
 mod random_token;
-mod routing;
 mod url_codec;
 mod validation;
 mod websocket;
@@ -547,266 +587,6 @@ pub extern "C" fn rust_random_token_v2(byte_len: u32, out_ptr: *mut u8, out_cap:
 
         let hex = hex::encode(token);
         write_response(out, hex.as_bytes())
-    })
-}
-````
-
-## File: rust/routing.rs
-````rust
-use crate::ffi::{catch_or, input_bytes, output_bytes};
-use matchit::Router;
-
-/// Precompiled matchit router.
-///
-/// Route value is the route index.
-/// The JS framework maps this route index to a handler.
-struct RouterHandle {
-    router: Router<u32>,
-    param_names: Vec<Vec<String>>,
-}
-
-/// Extract param names from native matchit patterns.
-///
-/// Examples:
-/// "/users/{id}" -> ["id"]
-/// "/users/{id}/posts/{postId}" -> ["id", "postId"]
-/// "/files/{*wildcard}" -> ["wildcard"]
-fn extract_param_names(pattern: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut chars = pattern.chars();
-
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            let mut name = String::new();
-            let mut is_first = true;
-
-            for ch in chars.by_ref() {
-                if ch == '}' {
-                    break;
-                }
-
-                // {*name} -> name
-                if is_first && ch == '*' {
-                    is_first = false;
-                    continue;
-                }
-
-                is_first = false;
-                name.push(ch);
-            }
-
-            if !name.is_empty() {
-                names.push(name);
-            }
-        }
-    }
-
-    names
-}
-
-/// Create a precompiled matchit router from a JSON array of native matchit patterns.
-///
-/// Input example:
-///
-/// [
-///   "/ping",
-///   "/users/{id}",
-///   "/users/{id}/posts/{postId}",
-///   "/files/{*wildcard}"
-/// ]
-///
-/// The route ID is the pattern index.
-///
-/// Returns:
-/// - non-zero router handle on success
-/// - 0 on failure
-#[no_mangle]
-pub extern "C" fn rust_router_create(patterns_ptr: *const u8, patterns_len: usize) -> u64 {
-    catch_or(0, || {
-        let input = input_bytes(patterns_ptr, patterns_len);
-
-        let patterns: Vec<String> = match serde_json::from_slice(input) {
-            Ok(v) => v,
-            Err(_) => return 0,
-        };
-
-        if patterns.len() > u32::MAX as usize {
-            return 0;
-        }
-
-        let mut router: Router<u32> = Router::new();
-        let mut param_names: Vec<Vec<String>> = Vec::with_capacity(patterns.len());
-
-        for (i, pattern) in patterns.into_iter().enumerate() {
-            let names = extract_param_names(&pattern);
-
-            // matchit requires 'static route strings.
-            // Routes are compiled once at framework startup, so leaking is acceptable.
-            let route: &'static str = Box::leak(pattern.into_boxed_str());
-
-            if router.insert(route, i as u32).is_err() {
-                return 0;
-            }
-
-            param_names.push(names);
-        }
-
-        let handle = Box::new(RouterHandle {
-            router,
-            param_names,
-        });
-
-        Box::into_raw(handle) as usize as u64
-    })
-}
-
-/// Fastest matcher.
-///
-/// Returns only the route ID.
-/// Does not extract params.
-///
-/// Returns:
-/// - route_id + 1 on match
-/// - 0 on no match
-/// - negative on error
-#[no_mangle]
-pub extern "C" fn rust_router_match_id(
-    router_id: u64,
-    path_ptr: *const u8,
-    path_len: usize,
-) -> i64 {
-    catch_or(-1, || {
-        if router_id == 0 {
-            return -1;
-        }
-
-        let path_bytes = input_bytes(path_ptr, path_len);
-
-        let path = match std::str::from_utf8(path_bytes) {
-            Ok(path) => path,
-            Err(_) => return -1,
-        };
-
-        let handle = unsafe { &*(router_id as usize as *const RouterHandle) };
-
-        match handle.router.at(path) {
-            Ok(matched) => (*matched.value as i64) + 1,
-            Err(_) => 0,
-        }
-    })
-}
-
-/// Match route and return compact binary param spans.
-///
-/// Output format:
-///
-/// bytes 0..4:
-///   route_id u32 little-endian
-///
-/// byte 4:
-///   param_count u8
-///
-/// then for each param:
-///   param_index u8
-///   value_start u32 little-endian
-///   value_end   u32 little-endian
-///
-/// value_start/value_end are byte offsets into the input path.
-///
-/// Returns:
-/// - positive length: match result written
-/// - 0: no match
-/// - -1: error
-/// - -2: output buffer too small
-#[no_mangle]
-pub extern "C" fn rust_router_match(
-    router_id: u64,
-    path_ptr: *const u8,
-    path_len: usize,
-    out_ptr: *mut u8,
-    out_cap: usize,
-) -> i64 {
-    catch_or(-1, || {
-        if router_id == 0 {
-            return -1;
-        }
-
-        let path_bytes = input_bytes(path_ptr, path_len);
-
-        let path = match std::str::from_utf8(path_bytes) {
-            Ok(path) => path,
-            Err(_) => return -1,
-        };
-
-        let out = output_bytes(out_ptr, out_cap);
-
-        let handle = unsafe { &*(router_id as usize as *const RouterHandle) };
-
-        match handle.router.at(path) {
-            Ok(matched) => {
-                let route_id = *matched.value;
-                let param_count = matched.params.len();
-
-                if param_count > u8::MAX as usize {
-                    return -1;
-                }
-
-                // 4 bytes route_id + 1 byte param_count + 9 bytes per param.
-                let required = 5 + param_count * 9;
-
-                if out.len() < required {
-                    return -2;
-                }
-
-                out[0..4].copy_from_slice(&route_id.to_le_bytes());
-                out[4] = param_count as u8;
-
-                let mut pos = 5usize;
-
-                let names = handle.param_names.get(route_id as usize);
-                let path_base = path.as_ptr() as usize;
-
-                for (key, value) in matched.params.iter() {
-                    let idx = match names.and_then(|names| {
-                        names.iter().position(|n| n.as_str() == key)
-                    }) {
-                        Some(i) => i as u8,
-                        None => 255,
-                    };
-
-                    let value_start = (value.as_ptr() as usize - path_base) as u32;
-                    let value_end = value_start + value.len() as u32;
-
-                    out[pos] = idx;
-                    pos += 1;
-
-                    out[pos..pos + 4].copy_from_slice(&value_start.to_le_bytes());
-                    pos += 4;
-
-                    out[pos..pos + 4].copy_from_slice(&value_end.to_le_bytes());
-                    pos += 4;
-                }
-
-                required as i64
-            }
-            Err(_) => 0,
-        }
-    })
-}
-
-/// Destroy a precompiled router handle.
-#[no_mangle]
-pub extern "C" fn rust_router_destroy(router_id: u64) -> i32 {
-    catch_or(0, || {
-        if router_id == 0 {
-            return 0;
-        }
-
-        unsafe {
-            drop(Box::from_raw(router_id as usize as *mut RouterHandle));
-        }
-
-        1
     })
 }
 ````
@@ -1260,7 +1040,7 @@ export * from "./tasks/url";
 ## File: src/bench/tasks/cookie.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1285,7 +1065,7 @@ export function cookieTasks(f: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/hashing.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1322,7 +1102,7 @@ export function hashingTasks(f: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/hmac.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1362,7 +1142,7 @@ export function hmacTasks(f: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/http.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1396,7 +1176,6 @@ import { jsonTasks } from "./json";
 import { jsonPatchTasks } from "./json-patch";
 import { mimeTasks } from "./mime";
 import { queryTasks } from "./query";
-import { routingTasks } from "./routing";
 import { tokenTasks } from "./token";
 import { urlTasks } from "./url";
 import { validationTasks } from "./validation";
@@ -1412,7 +1191,6 @@ export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
     ...websocketTasks(fixtures),
     ...jsonPatchTasks(fixtures),
     ...hmacTasks(fixtures),
-    ...routingTasks(),
     ...validationTasks(fixtures),
     ...hashingTasks(fixtures),
     ...mimeTasks(fixtures),
@@ -1424,7 +1202,7 @@ export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/json-patch.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1449,7 +1227,7 @@ export function jsonPatchTasks(f: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/json.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1486,7 +1264,7 @@ export function jsonTasks(f: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/mime.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1511,7 +1289,7 @@ export function mimeTasks(f: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/query.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1533,63 +1311,10 @@ export function queryTasks(f: BenchFixtures): BenchTask[] {
 }
 ````
 
-## File: src/bench/tasks/routing.ts
-````typescript
-import { rust } from "../../rust-ffi";
-import type { BenchTask } from "../types";
-
-export function routingTasks(): BenchTask[] {
-  const router = rust.createRouter([
-    "/ping",
-    "/api/v1/health",
-    "/users/{id}",
-    "/users/{id}/posts/{postId}",
-    "/files/{*wildcard}",
-  ]);
-
-  const staticPath = "/api/v1/health";
-  const paramPath = "/users/42/posts/7";
-  const wildcardPath = "/files/docs/2026/readme.md";
-
-  return [
-    {
-      name: "rust:router_match_id_static",
-      run: () => router.matchId(staticPath) ?? -1,
-      iterations: 10_000,
-      warmup: 1_000,
-    },
-    {
-      name: "rust:router_match_id_param",
-      run: () => router.matchId(paramPath) ?? -1,
-      iterations: 10_000,
-      warmup: 1_000,
-    },
-    {
-      name: "rust:router_match_id_wildcard",
-      run: () => router.matchId(wildcardPath) ?? -1,
-      iterations: 10_000,
-      warmup: 1_000,
-    },
-    {
-      name: "rust:router_match_params",
-      run: () => router.match(paramPath)?.routeId ?? -1,
-      iterations: 10_000,
-      warmup: 1_000,
-    },
-    {
-      name: "rust:router_match_wildcard_params",
-      run: () => router.match(wildcardPath)?.routeId ?? -1,
-      iterations: 10_000,
-      warmup: 1_000,
-    },
-  ];
-}
-````
-
 ## File: src/bench/tasks/token.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchTask } from "../types";
 
 export function tokenTasks(): BenchTask[] {
@@ -1613,7 +1338,7 @@ export function tokenTasks(): BenchTask[] {
 ## File: src/bench/tasks/url.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1651,7 +1376,7 @@ export function urlTasks(f: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/validation.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1712,7 +1437,7 @@ export function validationTasks(f: BenchFixtures): BenchTask[] {
 ## File: src/bench/tasks/websocket.ts
 ````typescript
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
+import { rust } from "../../rust-ffi/raw";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -1778,7 +1503,7 @@ export function assertDeepEqual(
 ## File: src/bench/checks.ts
 ````typescript
 import * as native from "../baseline";
-import { rust } from "../rust-ffi";
+import { rust } from "../rust-ffi/raw";
 import { decoder } from "../shared/bytes";
 import { assertDeepEqual, assertEqual, parseJsonBytes } from "./assert";
 import type { BenchFixtures } from "./fixtures";
@@ -2164,527 +1889,6 @@ export function printSummary(
 }
 ````
 
-## File: src/bench/router-http.bench.ts
-````typescript
-import { rust } from "../rust-ffi";
-import { sortKeys } from "../shared/json";
-
-type MatchitRouter = ReturnType<typeof rust.createRouter>;
-
-type ResponseMode = "params" | "status";
-
-interface RouterCase {
-  name: string;
-  bunPatterns: string[];
-  matchitPatterns: string[];
-  requestPath: string;
-  method?: string;
-  expectedStatus?: number;
-  responseMode?: ResponseMode;
-}
-
-interface HttpProfile {
-  name: string;
-  requests: number;
-  concurrency: number;
-  warmup: number;
-}
-
-interface HttpMetrics {
-  totalMs: number;
-  rps: number;
-  avgMs: number;
-  p50Ms: number;
-  p95Ms: number;
-}
-
-interface HttpResultRow extends HttpMetrics {
-  case: string;
-  profile: string;
-  router: "bun-native" | "matchit";
-}
-
-type SimpleServer = {
-  port: number;
-  stop: (closeActiveConnections?: boolean) => void;
-};
-
-const REQUESTS = Math.max(100, Number(process.env.HTTP_REQUESTS ?? 2000));
-const WARMUP = Math.max(10, Number(process.env.HTTP_WARMUP ?? 200));
-
-const STATIC_MATCHED_JSON = JSON.stringify({ matched: true });
-const NOT_FOUND_BODY = "Not Found";
-
-const profiles: HttpProfile[] = [
-  {
-    name: "sequential",
-    requests: REQUESTS,
-    concurrency: 1,
-    warmup: WARMUP,
-  },
-  {
-    name: "concurrency-10",
-    requests: REQUESTS,
-    concurrency: 10,
-    warmup: WARMUP,
-  },
-  {
-    name: "concurrency-50",
-    requests: REQUESTS,
-    concurrency: 50,
-    warmup: WARMUP,
-  },
-];
-
-function manyRoutesCase(count: number): RouterCase {
-  const bunPatterns: string[] = [];
-  const matchitPatterns: string[] = [];
-
-  for (let i = 0; i < count; i++) {
-    bunPatterns.push(`/api/${i}/items/:id`);
-    matchitPatterns.push(`/api/${i}/items/{id}`);
-  }
-
-  bunPatterns.push(`/api/${count}/items/:id`);
-  matchitPatterns.push(`/api/${count}/items/{id}`);
-
-  return {
-    name: `many-routes-${count + 1}`,
-    bunPatterns,
-    matchitPatterns,
-    requestPath: `/api/${count}/items/42`,
-    expectedStatus: 200,
-    responseMode: "params",
-  };
-}
-
-const cases: RouterCase[] = [
-  {
-    name: "static",
-    bunPatterns: ["/ping"],
-    matchitPatterns: ["/ping"],
-    requestPath: "/ping",
-    expectedStatus: 200,
-    responseMode: "params",
-  },
-  {
-    name: "static-deep",
-    bunPatterns: ["/api/v1/health"],
-    matchitPatterns: ["/api/v1/health"],
-    requestPath: "/api/v1/health",
-    expectedStatus: 200,
-    responseMode: "params",
-  },
-  {
-    name: "param",
-    bunPatterns: ["/users/:id"],
-    matchitPatterns: ["/users/{id}"],
-    requestPath: "/users/42",
-    expectedStatus: 200,
-    responseMode: "params",
-  },
-  {
-    name: "param-with-query",
-    bunPatterns: ["/users/:id"],
-    matchitPatterns: ["/users/{id}"],
-    requestPath: "/users/42?expand=posts&limit=20",
-    expectedStatus: 200,
-    responseMode: "params",
-  },
-  {
-    name: "two-params",
-    bunPatterns: ["/users/:id/posts/:postId"],
-    matchitPatterns: ["/users/{id}/posts/{postId}"],
-    requestPath: "/users/42/posts/7",
-    expectedStatus: 200,
-    responseMode: "params",
-  },
-
-  // Bun currently does not reliably expose wildcard params via req.params.
-  // So wildcard cases are benchmarked as match/no-match status cases.
-  {
-    name: "wildcard-status",
-    bunPatterns: ["/files/*"],
-    matchitPatterns: ["/files/{*wildcard}"],
-    requestPath: "/files/docs/2026/readme.md",
-    expectedStatus: 200,
-    responseMode: "status",
-  },
-  {
-    name: "mixed-param-wildcard-status",
-    bunPatterns: ["/orgs/:orgId/files/*"],
-    matchitPatterns: ["/orgs/{orgId}/files/{*wildcard}"],
-    requestPath: "/orgs/9/files/a/b/c.txt",
-    expectedStatus: 200,
-    responseMode: "status",
-  },
-  {
-    name: "no-match",
-    bunPatterns: ["/users/:id"],
-    matchitPatterns: ["/users/{id}"],
-    requestPath: "/posts/42",
-    expectedStatus: 404,
-    responseMode: "status",
-  },
-
-  manyRoutesCase(100),
-  manyRoutesCase(1000),
-];
-
-function jsonResponse(value: unknown): Response {
-  return new Response(JSON.stringify(value), {
-    headers: {
-      "content-type": "application/json",
-    },
-  });
-}
-
-function staticMatchedResponse(): Response {
-  return new Response(STATIC_MATCHED_JSON, {
-    headers: {
-      "content-type": "application/json",
-    },
-  });
-}
-
-function notFoundResponse(): Response {
-  return new Response(NOT_FOUND_BODY, {
-    status: 404,
-    headers: {
-      "content-type": "text/plain",
-    },
-  });
-}
-
-function normalizeBunParams(
-  params: Record<string, string | undefined>,
-): Record<string, string> {
-  const out: Record<string, string> = {};
-
-  for (const [key, value] of Object.entries(params)) {
-    if (typeof value !== "string") continue;
-
-    // Bun may expose wildcard as "*" in some versions.
-    // matchit pattern uses {*wildcard}, so normalize Bun output to match.
-    const normalizedKey = key === "*" ? "wildcard" : key;
-    out[normalizedKey] = value;
-  }
-
-  return sortKeys(out) as Record<string, string>;
-}
-
-function pathnameFromRequestUrl(url: string): string {
-  if (url.startsWith("/")) {
-    const q = url.indexOf("?");
-    return q === -1 ? url : url.slice(0, q);
-  }
-
-  const schemeEnd = url.indexOf("//");
-  const pathStart =
-    schemeEnd === -1 ? url.indexOf("/") : url.indexOf("/", schemeEnd + 2);
-
-  if (pathStart === -1) {
-    return "/";
-  }
-
-  const q = url.indexOf("?", pathStart);
-  return q === -1 ? url.slice(pathStart) : url.slice(pathStart, q);
-}
-
-function startBunNativeServer(c: RouterCase): SimpleServer {
-  const responseMode: ResponseMode = c.responseMode ?? "params";
-
-  const handler =
-    responseMode === "status"
-      ? () => staticMatchedResponse()
-      : (req: any) => jsonResponse(normalizeBunParams(req.params ?? {}));
-
-  const routes: Record<string, any> = {};
-
-  for (const pattern of c.bunPatterns) {
-    routes[pattern] = handler;
-  }
-
-  return Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    routes,
-    fetch() {
-      return notFoundResponse();
-    },
-  } as any) as unknown as SimpleServer;
-}
-
-function startMatchitServer(c: RouterCase): {
-  server: SimpleServer;
-  router: MatchitRouter;
-} {
-  const router = rust.createRouter(c.matchitPatterns);
-  const responseMode: ResponseMode = c.responseMode ?? "params";
-
-  const server =
-    responseMode === "status"
-      ? Bun.serve({
-          hostname: "127.0.0.1",
-          port: 0,
-          fetch(req) {
-            const path = pathnameFromRequestUrl(req.url);
-            const routeId = router.matchId(path);
-
-            if (routeId === null) {
-              return notFoundResponse();
-            }
-
-            return staticMatchedResponse();
-          },
-        })
-      : Bun.serve({
-          hostname: "127.0.0.1",
-          port: 0,
-          fetch(req) {
-            const path = pathnameFromRequestUrl(req.url);
-            const match = router.match(path);
-
-            if (!match) {
-              return notFoundResponse();
-            }
-
-            return jsonResponse(match.params ?? {});
-          },
-        });
-
-  return {
-    server: server as unknown as SimpleServer,
-    router,
-  };
-}
-
-function makeUrl(server: SimpleServer, path: string): string {
-  return `http://127.0.0.1:${server.port}${path}`;
-}
-
-function sortedJsonString(value: unknown): string {
-  return JSON.stringify(sortKeys(value));
-}
-
-async function assertSameResponse(
-  urlA: string,
-  urlB: string,
-  method: string,
-  expectedStatus: number,
-): Promise<void> {
-  const [a, b] = await Promise.all([
-    fetch(urlA, { method }),
-    fetch(urlB, { method }),
-  ]);
-
-  const [textA, textB] = await Promise.all([a.text(), b.text()]);
-
-  if (a.status !== expectedStatus) {
-    throw new Error(
-      `Expected status ${expectedStatus} from Bun native server, got ${a.status}`,
-    );
-  }
-
-  if (b.status !== expectedStatus) {
-    throw new Error(
-      `Expected status ${expectedStatus} from matchit server, got ${b.status}`,
-    );
-  }
-
-  if (a.status !== b.status) {
-    throw new Error(
-      `Status mismatch: ${a.status} vs ${b.status}\nA: ${textA}\nB: ${textB}`,
-    );
-  }
-
-  if (expectedStatus === 200) {
-    const jsonA = sortedJsonString(JSON.parse(textA || "null"));
-    const jsonB = sortedJsonString(JSON.parse(textB || "null"));
-
-    if (jsonA !== jsonB) {
-      throw new Error(`JSON mismatch:\nA: ${jsonA}\nB: ${jsonB}`);
-    }
-  } else if (textA !== textB) {
-    throw new Error(`Body mismatch:\nA: ${textA}\nB: ${textB}`);
-  }
-}
-
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p));
-  return sorted[idx] ?? 0;
-}
-
-async function benchHttp(
-  url: string,
-  profile: HttpProfile,
-  expectedStatus: number,
-  method: string,
-): Promise<HttpMetrics> {
-  const requests = Math.max(1, profile.requests);
-  const concurrency = Math.max(1, profile.concurrency);
-  const warmup = Math.max(0, profile.warmup);
-
-  for (let i = 0; i < warmup; i++) {
-    const res = await fetch(url, { method });
-    await res.text();
-
-    if (res.status !== expectedStatus) {
-      throw new Error(
-        `Warmup failed: expected ${expectedStatus}, got ${res.status}`,
-      );
-    }
-  }
-
-  const latencies = new Float64Array(requests);
-  let next = 0;
-
-  const start = performance.now();
-
-  async function worker(): Promise<void> {
-    while (true) {
-      const i = next++;
-      if (i >= requests) break;
-
-      const reqStart = performance.now();
-
-      const res = await fetch(url, { method });
-      await res.text();
-
-      if (res.status !== expectedStatus) {
-        throw new Error(
-          `Benchmark request failed: expected ${expectedStatus}, got ${res.status}`,
-        );
-      }
-
-      latencies[i] = performance.now() - reqStart;
-    }
-  }
-
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
-
-  const totalMs = performance.now() - start;
-
-  const sorted = Array.from(latencies).sort((a, b) => a - b);
-  const avgMs = sorted.reduce((a, b) => a + b, 0) / requests;
-
-  return {
-    totalMs,
-    rps: requests / (totalMs / 1000),
-    avgMs,
-    p50Ms: percentile(sorted, 0.5),
-    p95Ms: percentile(sorted, 0.95),
-  };
-}
-
-async function runCaseProfile(
-  c: RouterCase,
-  profile: HttpProfile,
-): Promise<HttpResultRow[]> {
-  const method = c.method ?? "GET";
-  const expectedStatus = c.expectedStatus ?? 200;
-
-  const nativeServer = startBunNativeServer(c);
-  const matchit = startMatchitServer(c);
-
-  try {
-    const nativeUrl = makeUrl(nativeServer, c.requestPath);
-    const matchitUrl = makeUrl(matchit.server, c.requestPath);
-
-    await assertSameResponse(nativeUrl, matchitUrl, method, expectedStatus);
-
-    const nativeMetrics = await benchHttp(
-      nativeUrl,
-      profile,
-      expectedStatus,
-      method,
-    );
-
-    const matchitMetrics = await benchHttp(
-      matchitUrl,
-      profile,
-      expectedStatus,
-      method,
-    );
-
-    return [
-      {
-        case: c.name,
-        profile: profile.name,
-        router: "bun-native",
-        ...nativeMetrics,
-      },
-      {
-        case: c.name,
-        profile: profile.name,
-        router: "matchit",
-        ...matchitMetrics,
-      },
-    ];
-  } finally {
-    nativeServer.stop(true);
-    matchit.server.stop(true);
-    matchit.router.destroy();
-  }
-}
-
-async function main(): Promise<void> {
-  const rows: HttpResultRow[] = [];
-
-  console.log("Bun native router vs Rust matchit over HTTP");
-  console.log("============================================");
-  console.log(`Requests per profile: ${REQUESTS}`);
-  console.log(`Warmup per profile:   ${WARMUP}`);
-  console.log("");
-
-  for (const c of cases) {
-    for (const profile of profiles) {
-      const results = await runCaseProfile(c, profile);
-
-      rows.push(...results);
-
-      const native = results.find((x) => x.router === "bun-native");
-      const matchit = results.find((x) => x.router === "matchit");
-
-      if (!native || !matchit) {
-        throw new Error("Missing benchmark result pair");
-      }
-
-      const rpsRatio = matchit.rps / Math.max(native.rps, 1e-9);
-      const latencyRatio = native.avgMs / Math.max(matchit.avgMs, 1e-9);
-
-      console.log(
-        `${c.name} / ${profile.name}: ` +
-          `bun-native ${native.rps.toFixed(1)} req/s, ` +
-          `matchit ${matchit.rps.toFixed(1)} req/s, ` +
-          `matchit ${rpsRatio.toFixed(2)}x throughput, ` +
-          `latency ${latencyRatio.toFixed(2)}x`,
-      );
-    }
-  }
-
-  console.log("");
-  console.table(
-    rows.map((row) => ({
-      case: row.case,
-      profile: row.profile,
-      router: row.router,
-      "req/s": row.rps.toFixed(1),
-      "avg ms": row.avgMs.toFixed(4),
-      "p50 ms": row.p50Ms.toFixed(4),
-      "p95 ms": row.p95Ms.toFixed(4),
-      "total ms": row.totalMs.toFixed(1),
-    })),
-  );
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-````
-
 ## File: src/bench/run.ts
 ````typescript
 import { runCorrectnessChecks } from "./checks";
@@ -2785,7 +1989,7 @@ export function createCookieApi(runtime: FfiRuntime) {
     cookieParse(bytes: Uint8Array): Uint8Array {
       return callOut(
         symbols.rust_cookie_parse_v2,
-        64 * 1024,
+        Math.max(256, bytes.byteLength * 6 + 256),
         ptr(bytes),
         bytes.byteLength,
       );
@@ -2867,7 +2071,7 @@ export function createHttpApi(runtime: FfiRuntime) {
     httpParseRequest(bytes: Uint8Array): Uint8Array {
       return callOut(
         symbols.rust_http_parse_request_v2,
-        64 * 1024,
+        Math.max(1024, bytes.byteLength * 4 + 1024),
         ptr(bytes),
         bytes.byteLength,
       );
@@ -2889,7 +2093,7 @@ export function createJsonPatchApi(runtime: FfiRuntime) {
     jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array {
       return callOut(
         symbols.rust_json_patch_v2,
-        doc.byteLength + patch.byteLength + 4096,
+        Math.max(1024, doc.byteLength + patch.byteLength + 1024),
         ptr(doc),
         doc.byteLength,
         ptr(patch),
@@ -2959,7 +2163,7 @@ export function createQueryApi(runtime: FfiRuntime) {
     queryParse(bytes: Uint8Array): Uint8Array {
       return callOut(
         symbols.rust_query_parse_v2,
-        64 * 1024,
+        Math.max(256, bytes.byteLength * 6 + 256),
         ptr(bytes),
         bytes.byteLength,
       );
@@ -2968,320 +2172,6 @@ export function createQueryApi(runtime: FfiRuntime) {
 }
 
 export type QueryApi = ReturnType<typeof createQueryApi>;
-````
-
-## File: src/rust-ffi/apis/routing.ts
-````typescript
-import type { FfiRuntime } from "../runtime";
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-export interface RouteMatch {
-  routeId: number;
-  params: Record<string, string> | null;
-}
-
-export type MethodRoutes = Record<string, string[]>;
-
-function toNumber(value: bigint | number): number {
-  return typeof value === "bigint" ? Number(value) : value;
-}
-
-function extractParamNames(pattern: string): string[] {
-  const names: string[] = [];
-  const re = /\{([^}]+)\}/g;
-
-  let match: RegExpExecArray | null;
-
-  while ((match = re.exec(pattern)) !== null) {
-    let name = match[1] ?? "";
-
-    if (name.startsWith("*")) {
-      name = name.slice(1);
-    }
-
-    if (name.length > 0) {
-      names.push(name);
-    }
-  }
-
-  return names;
-}
-
-interface RawMatchResult {
-  out: Uint8Array;
-  written: number;
-}
-
-/**
- * Single precompiled matchit router.
- *
- * Use one router per HTTP method for framework routing.
- */
-export class MatchitRouter {
-  private runtime: FfiRuntime;
-  private handle: bigint;
-  private paramNames: string[][];
-  private destroyed = false;
-
-  private pathBuffer: Uint8Array;
-  private outBuffer: Uint8Array;
-
-  constructor(runtime: FfiRuntime, patterns: string[]) {
-    this.runtime = runtime;
-
-    const bytes = encoder.encode(JSON.stringify(patterns));
-
-    const handle = runtime.symbols.rust_router_create(
-      runtime.ptr(bytes),
-      bytes.byteLength,
-    ) as bigint;
-
-    if (handle === 0n) {
-      throw new Error("Failed to create Rust matchit router");
-    }
-
-    this.handle = handle;
-    this.paramNames = patterns.map((pattern) => extractParamNames(pattern));
-
-    this.pathBuffer = new Uint8Array(8192);
-    this.outBuffer = new Uint8Array(4096);
-  }
-
-  /**
-   * Fastest match.
-   *
-   * Returns only route ID.
-   * Does not extract params.
-   */
-  matchId(path: string): number | null {
-    if (this.destroyed) {
-      return null;
-    }
-
-    const encoded = encoder.encodeInto(path, this.pathBuffer);
-
-    if (encoded.read === path.length) {
-      return this.callMatchId(this.pathBuffer, encoded.written);
-    }
-
-    const bytes = encoder.encode(path);
-    return this.callMatchId(bytes, bytes.byteLength);
-  }
-
-  /**
-   * Match route and extract params.
-   */
-  match(path: string): RouteMatch | null {
-    if (this.destroyed) {
-      return null;
-    }
-
-    const encoded = encoder.encodeInto(path, this.pathBuffer);
-
-    if (encoded.read === path.length) {
-      const asciiFastPath = encoded.written === path.length;
-
-      const raw = this.runMatch(this.pathBuffer, encoded.written);
-
-      if (!raw) {
-        return null;
-      }
-
-      return this.parse(
-        raw.out,
-        raw.written,
-        path,
-        this.pathBuffer,
-        asciiFastPath,
-      );
-    }
-
-    const bytes = encoder.encode(path);
-    const asciiFastPath = bytes.byteLength === path.length;
-
-    const raw = this.runMatch(bytes, bytes.byteLength);
-
-    if (!raw) {
-      return null;
-    }
-
-    return this.parse(raw.out, raw.written, path, bytes, asciiFastPath);
-  }
-
-  destroy(): void {
-    if (this.destroyed) {
-      return;
-    }
-
-    this.runtime.symbols.rust_router_destroy(this.handle);
-    this.destroyed = true;
-  }
-
-  private callMatchId(pathBytes: Uint8Array, pathLen: number): number | null {
-    const result = toNumber(
-      this.runtime.symbols.rust_router_match_id(
-        this.handle,
-        this.runtime.ptr(pathBytes),
-        pathLen,
-      ),
-    );
-
-    if (result === 0) {
-      return null;
-    }
-
-    if (result < 0) {
-      throw new Error(`Rust rust_router_match_id failed: ${result}`);
-    }
-
-    return result - 1;
-  }
-
-  private runMatch(
-    pathBytes: Uint8Array,
-    pathLen: number,
-  ): RawMatchResult | null {
-    let out = this.outBuffer;
-
-    // Normally runs once.
-    // Only retries if the output buffer is too small.
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const written = toNumber(
-        this.runtime.symbols.rust_router_match(
-          this.handle,
-          this.runtime.ptr(pathBytes),
-          pathLen,
-          this.runtime.ptr(out),
-          out.byteLength,
-        ),
-      );
-
-      if (written === 0) {
-        return null;
-      }
-
-      if (written === -2) {
-        out = new Uint8Array(out.byteLength * 2);
-        continue;
-      }
-
-      if (written < 0) {
-        throw new Error(`Rust rust_router_match failed: ${written}`);
-      }
-
-      if (out !== this.outBuffer) {
-        this.outBuffer = out;
-      }
-
-      return { out, written };
-    }
-
-    throw new Error("Rust rust_router_match output buffer grew too large");
-  }
-
-  private parse(
-    out: Uint8Array,
-    written: number,
-    path: string,
-    pathBytes: Uint8Array,
-    asciiFastPath: boolean,
-  ): RouteMatch {
-    const view = new DataView(out.buffer, out.byteOffset, written);
-
-    const routeId = view.getUint32(0, true);
-    const paramCount = view.getUint8(4);
-
-    if (paramCount === 0) {
-      return {
-        routeId,
-        params: null,
-      };
-    }
-
-    const names = this.paramNames[routeId] ?? [];
-    const params: Record<string, string> = {};
-
-    let pos = 5;
-
-    for (let i = 0; i < paramCount; i++) {
-      const paramIndex = view.getUint8(pos);
-      pos += 1;
-
-      const start = view.getUint32(pos, true);
-      pos += 4;
-
-      const end = view.getUint32(pos, true);
-      pos += 4;
-
-      const key = names[paramIndex] ?? `param${paramIndex}`;
-
-      // Fast path for ASCII/percent-encoded URL paths.
-      // UTF-8 byte offsets match JS string indices.
-      const value = asciiFastPath
-        ? path.substring(start, end)
-        : decoder.decode(pathBytes.subarray(start, end));
-
-      params[key] = value;
-    }
-
-    return {
-      routeId,
-      params,
-    };
-  }
-}
-
-/**
- * Convenience router for frameworks.
- *
- * Creates one precompiled matchit router per HTTP method.
- */
-export class MethodRouter {
-  private routers = new Map<string, MatchitRouter>();
-
-  constructor(runtime: FfiRuntime, routes: MethodRoutes) {
-    for (const [method, patterns] of Object.entries(routes)) {
-      this.routers.set(
-        method.toUpperCase(),
-        new MatchitRouter(runtime, patterns),
-      );
-    }
-  }
-
-  matchId(method: string, path: string): number | null {
-    const router = this.routers.get(method.toUpperCase());
-    return router ? router.matchId(path) : null;
-  }
-
-  match(method: string, path: string): RouteMatch | null {
-    const router = this.routers.get(method.toUpperCase());
-    return router ? router.match(path) : null;
-  }
-
-  destroy(): void {
-    for (const router of this.routers.values()) {
-      router.destroy();
-    }
-
-    this.routers.clear();
-  }
-}
-
-export function createRoutingApi(runtime: FfiRuntime) {
-  return {
-    createRouter(patterns: string[]): MatchitRouter {
-      return new MatchitRouter(runtime, patterns);
-    },
-
-    createMethodRouter(routes: MethodRoutes): MethodRouter {
-      return new MethodRouter(runtime, routes);
-    },
-  };
-}
-
-export type RoutingApi = ReturnType<typeof createRoutingApi>;
 ````
 
 ## File: src/rust-ffi/apis/token.ts
@@ -3441,41 +2331,34 @@ return out.subarray(0, Number(w));
 
 ## File: src/rust-ffi/client.ts
 ````typescript
-import { createCookieApi } from "./apis/cookie";
-import { createHashingApi } from "./apis/hashing";
-import { createHmacApi } from "./apis/hmac";
-import { createHttpApi } from "./apis/http";
-import { createJsonApi } from "./apis/json";
-import { createJsonPatchApi } from "./apis/json-patch";
-import { createMimeApi } from "./apis/mime";
-import { createQueryApi } from "./apis/query";
-import { createRoutingApi } from "./apis/routing";
-import { createTokenApi } from "./apis/token";
-import { createUrlApi } from "./apis/url";
-import { createValidationApi } from "./apis/validation";
-import { createWebSocketApi } from "./apis/websocket";
+import * as native from "../baseline";
+import { decoder, encoder } from "../shared/bytes";
+import { createRawRustClient } from "./raw";
 import { createFfiRuntime, type FfiRuntime } from "./runtime";
 
+/**
+ * Optimized public client.
+ *
+ * This starts from the raw Rust FFI client, then overrides individual methods
+ * with native Bun/JavaScript implementations when benchmarks prove native is
+ * faster for the practical workload.
+ */
 export function createRustClient(runtime: FfiRuntime = createFfiRuntime()) {
-  return {
-    ...createJsonApi(runtime),
-    ...createHttpApi(runtime),
-    ...createQueryApi(runtime),
-    ...createCookieApi(runtime),
-    ...createTokenApi(runtime),
-    ...createWebSocketApi(runtime),
-    ...createJsonPatchApi(runtime),
-    ...createHmacApi(runtime),
-    ...createRoutingApi(runtime),
-    ...createValidationApi(runtime),
-    ...createHashingApi(runtime),
-    ...createMimeApi(runtime),
-    ...createUrlApi(runtime),
-  };
+  const client = createRawRustClient(runtime);
+
+  // AUTO-GENERATED by scripts/optimize.py.
+  // Fastest implementation selected by benchmark measurement.
+  client.randomToken = (byteLen: number): Uint8Array => native.nativeRandomToken(byteLen);
+  client.jsonPatch = (doc: Uint8Array, patch: Uint8Array): Uint8Array => native.nativeJsonPatch(doc, patch);
+  client.hmacSha256 = (key: Uint8Array, data: Uint8Array): Uint8Array => native.nativeHmacSha256(key, data);
+  client.mimeFromExtension = (ext: Uint8Array): Uint8Array => encoder.encode(native.nativeMimeFromExtension(decoder.decode(ext)));
+  client.urlEncode = (bytes: Uint8Array): Uint8Array => encoder.encode(native.nativeUrlEncode(bytes));
+  client.urlDecode = (bytes: Uint8Array): Uint8Array => encoder.encode(native.nativeUrlDecode(bytes));
+
+  return client;
 }
 
 export type RustClient = ReturnType<typeof createRustClient>;
-
 export const rust = createRustClient();
 ````
 
@@ -3486,6 +2369,9 @@ export type { RustClient } from "./client";
 
 export { createFfiRuntime } from "./runtime";
 export type { FfiRuntime } from "./runtime";
+
+export { createRawRustClient, rust as rustRaw } from "./raw";
+export type { RawRustClient } from "./raw";
 ````
 
 ## File: src/rust-ffi/loader.ts
@@ -3683,31 +2569,9 @@ export const rustSymbols = {
     returns: FFIType.i64,
     args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
   },
-  rust_router_create: {
-    returns: FFIType.u64,
-    args: [FFIType.ptr, FFIType.u64],
-  },
 
-  rust_router_match_id: {
-    returns: FFIType.i64,
-    args: [FFIType.u64, FFIType.ptr, FFIType.u64],
-  },
 
-  rust_router_match: {
-    returns: FFIType.i64,
-    args: [
-      FFIType.u64,
-      FFIType.ptr,
-      FFIType.u64,
-      FFIType.ptr,
-      FFIType.u64,
-    ],
-  },
 
-  rust_router_destroy: {
-    returns: FFIType.i32,
-    args: [FFIType.u64],
-  },
   rust_url_encode_v2: {
     returns: FFIType.i64,
     args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
@@ -3820,6 +2684,44 @@ export function sortKeys(value: unknown): unknown {
 }
 ````
 
+## File: README.md
+````markdown
+# bun-rust-practical
+
+Practical Bun + Rust FFI benchmark package.
+
+This package keeps only the practical Rust-accelerated functions and their native Bun/JavaScript benchmark equivalents.
+
+## Build
+
+```bash
+bun install
+cargo build --release
+```
+
+## Benchmark
+
+```bash
+bun bench.ts
+```
+
+Or:
+
+```bash
+bun run bench
+```
+
+## Exported API
+
+```ts
+import { rust, native } from "bun-rust-practical";
+```
+
+`rust` contains Rust FFI implementations.
+
+`native` contains JavaScript/Bun baseline implementations used for benchmarking.
+````
+
 ## File: tsconfig.json
 ````json
 {
@@ -3899,7 +2801,6 @@ percent-encoding = "2"
 form_urlencoded = "1"
 httparse = "1"
 cookie = "0.18"
-matchit = "0.9.2"
 email_address = "0.2"
 uuid = { version = "1", features = ["v4"] }
 json-patch = "4"
@@ -3940,87 +2841,48 @@ export type { RustClient } from "./src/rust-ffi";
 ## File: package.json
 ````json
 {
-  "name": "bun-rust-practical",
-  "version": "0.5.0",
-  "private": false,
-  "type": "module",
-  "main": "index.ts",
-  "module": "index.ts",
-  "types": "index.ts",
-  "exports": {
-    ".": "./index.ts"
-  },
-  "files": [
-    "index.ts",
-    "bench.ts",
-    "native.ts",
-    "shared-practical.ts",
-    "data.ts",
-    "src",
-    "rust",
-    "Cargo.toml",
-    "README.md"
-  ],
-  "scripts": {
-    "build": "cargo build --release",
-    "bench": "bun run build && bun bench.ts",
-    "check": "bun bench.ts",
-    "bench:router-http": "bun run build && bun src/bench/router-http.bench.ts"
-  },
-  "dependencies": {
-    "cookie-es": "^3.1.1",
-    "crc-32": "^1.2.2",
-    "fast-json-patch": "^3.1.1",
-    "mime-types": "^3.0.2",
-    "validator": "^13.15.35"
-  },
-  "devDependencies": {
-    "@types/bun": "^1.3.14",
-    "@types/mime-types": "^3.0.1",
-    "@types/validator": "^13.15.10"
-  },
-  "engines": {
-    "bun": ">=1.1.0"
-  }
+   "name": "bun-rust-practical",
+   "version": "0.5.0",
+   "private": false,
+   "type": "module",
+   "main": "index.ts",
+   "module": "index.ts",
+   "types": "index.ts",
+   "exports": {
+      ".": "./index.ts"
+   },
+   "files": [
+      "index.ts",
+      "bench.ts",
+      "native.ts",
+      "shared-practical.ts",
+      "data.ts",
+      "src",
+      "rust",
+      "Cargo.toml",
+      "README.md"
+   ],
+   "scripts": {
+      "build": "cargo build --release",
+      "bench": "bun run build && bun bench.ts",
+      "check": "bun bench.ts"
+   },
+   "dependencies": {
+      "cookie-es": "^3.1.1",
+      "crc-32": "^1.2.2",
+      "fast-json-patch": "^3.1.1",
+      "mime-types": "^3.0.2",
+      "validator": "^13.15.35"
+   },
+   "devDependencies": {
+      "@types/bun": "^1.3.14",
+      "@types/mime-types": "^3.0.1",
+      "@types/validator": "^13.15.10"
+   },
+   "engines": {
+      "bun": ">=1.1.0"
+   }
 }
-````
-
-## File: README.md
-````markdown
-# bun-rust-practical
-
-Practical Bun + Rust FFI benchmark package.
-
-This package keeps only the practical Rust-accelerated functions and their native Bun/JavaScript benchmark equivalents.
-
-## Build
-
-```bash
-bun install
-cargo build --release
-```
-
-## Benchmark
-
-```bash
-bun bench.ts
-```
-
-Or:
-
-```bash
-bun run bench
-```
-
-## Exported API
-
-```ts
-import { rust, native } from "bun-rust-practical";
-```
-
-`rust` contains Rust FFI implementations.
-
-`native` contains JavaScript/Bun baseline implementations used for benchmarking.
 ````
 
 ## File: shared-practical.ts

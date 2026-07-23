@@ -8,7 +8,6 @@ import { jsonTasks } from "./json";
 import { jsonPatchTasks } from "./json-patch";
 import { mimeTasks } from "./mime";
 import { queryTasks } from "./query";
-import { routingTasks } from "./routing";
 import { tokenTasks } from "./token";
 import { urlTasks } from "./url";
 import { validationTasks } from "./validation";
@@ -24,7 +23,6 @@ export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
     ...websocketTasks(fixtures),
     ...jsonPatchTasks(fixtures),
     ...hmacTasks(fixtures),
-    ...routingTasks(),
     ...validationTasks(fixtures),
     ...hashingTasks(fixtures),
     ...mimeTasks(fixtures),
