@@ -1,6 +1,3 @@
-// shared-practical.ts
-import { decoder, encoder } from "./shared";
-
 import { parse as parseCookie } from "cookie-es";
 import { applyPatch } from "fast-json-patch";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -10,17 +7,16 @@ import validator from "validator";
 import createRouter from "find-my-way";
 import * as CRC32 from "crc-32";
 
+export const encoder = new TextEncoder();
+export const decoder = new TextDecoder();
+
 function toPlainBuffer(bytes: Uint8Array): Uint8Array {
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return copy;
 }
 
-// ---------------------------------------------------------------------------
-// JSON
-// ---------------------------------------------------------------------------
-
-export function nativeJsonValidV2(bytes: Uint8Array): boolean {
+export function nativeJsonValid(bytes: Uint8Array): boolean {
   try {
     JSON.parse(decoder.decode(bytes));
     return true;
@@ -29,8 +25,8 @@ export function nativeJsonValidV2(bytes: Uint8Array): boolean {
   }
 }
 
-export function nativeJsonSumV2(bytes: Uint8Array): bigint {
-  const rows = JSON.parse(decoder.decode(bytes)) as Array<{ id: number }>;
+export function nativeJsonSum(bytes: Uint8Array): bigint {
+  const rows = JSON.parse(decoder.decode(bytes)) as Array<{ id?: unknown }>;
   let sum = 0n;
 
   for (const row of rows) {
@@ -42,11 +38,7 @@ export function nativeJsonSumV2(bytes: Uint8Array): bigint {
   return sum;
 }
 
-// ---------------------------------------------------------------------------
-// HTTP parsing
-// ---------------------------------------------------------------------------
-
-export function nativeHttpParseRequestV2(bytes: Uint8Array): Uint8Array {
+export function nativeHttpParseRequest(bytes: Uint8Array): Uint8Array {
   const text = decoder.decode(bytes);
   const headerEnd = text.indexOf("\r\n\r\n");
   const head = headerEnd >= 0 ? text.slice(0, headerEnd) : text;
@@ -85,7 +77,7 @@ export function nativeHttpParseRequestV2(bytes: Uint8Array): Uint8Array {
   );
 }
 
-export function nativeQueryParseV2(bytes: Uint8Array): Uint8Array {
+export function nativeQueryParse(bytes: Uint8Array): Uint8Array {
   const query = decoder.decode(bytes);
   const sp = new URLSearchParams(query);
 
@@ -99,25 +91,22 @@ export function nativeQueryParseV2(bytes: Uint8Array): Uint8Array {
   return encoder.encode(JSON.stringify(obj));
 }
 
-export function nativeCookieParseV2(bytes: Uint8Array): Uint8Array {
+export function nativeCookieParse(bytes: Uint8Array): Uint8Array {
   const text = decoder.decode(bytes);
   const cookies = parseCookie(text);
   return encoder.encode(JSON.stringify(cookies));
 }
 
-// ---------------------------------------------------------------------------
-// Crypto
-// ---------------------------------------------------------------------------
-
-export function nativeRandomTokenV2(byteLen: number): Uint8Array {
+export function nativeRandomToken(byteLen: number): Uint8Array {
   const bytes = new Uint8Array(byteLen);
   crypto.getRandomValues(bytes);
   return encoder.encode(Buffer.from(bytes).toString("hex"));
 }
 
-export function nativeWsAcceptKeyV2(key: string): Uint8Array {
+export function nativeWsAcceptKey(key: string | Uint8Array): Uint8Array {
+  const keyText = typeof key === "string" ? key : decoder.decode(key);
   const magic = "258EAFA5-E914-47DA-95CA-5AB5DC11BE85";
-  const combined = encoder.encode(key + magic);
+  const combined = encoder.encode(keyText + magic);
 
   const hash = new Bun.CryptoHasher("sha1")
     .update(toPlainBuffer(combined))
@@ -126,10 +115,7 @@ export function nativeWsAcceptKeyV2(key: string): Uint8Array {
   return encoder.encode(Buffer.from(hash).toString("base64"));
 }
 
-export function nativeHmacSha256V2(
-  key: Uint8Array,
-  data: Uint8Array,
-): Uint8Array {
+export function nativeHmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
   const hex = createHmac("sha256", Buffer.from(key))
     .update(Buffer.from(data))
     .digest("hex");
@@ -137,7 +123,7 @@ export function nativeHmacSha256V2(
   return encoder.encode(hex);
 }
 
-export function nativeHmacSha256VerifyV2(
+export function nativeHmacSha256Verify(
   key: Uint8Array,
   data: Uint8Array,
   sig: Uint8Array,
@@ -161,30 +147,14 @@ export function nativeHmacSha256VerifyV2(
   return timingSafeEqual(expected, provided);
 }
 
-// ---------------------------------------------------------------------------
-// JSON Patch
-// ---------------------------------------------------------------------------
-
-export function nativeJsonPatchV2(
-  docBytes: Uint8Array,
-  patchBytes: Uint8Array,
-): Uint8Array {
+export function nativeJsonPatch(docBytes: Uint8Array, patchBytes: Uint8Array): Uint8Array {
   const doc = JSON.parse(decoder.decode(docBytes));
   const patch = JSON.parse(decoder.decode(patchBytes));
-
   const result = applyPatch(doc, patch, true, false).newDocument;
-
   return encoder.encode(JSON.stringify(result));
 }
 
-// ---------------------------------------------------------------------------
-// Routing
-// ---------------------------------------------------------------------------
-
-export function nativeRouteMatchV2(
-  pattern: string,
-  path: string,
-): Uint8Array | null {
+export function nativeRouteMatch(pattern: string, path: string): Uint8Array | null {
   try {
     const router = createRouter({
       ignoreTrailingSlash: false,
@@ -205,39 +175,27 @@ export function nativeRouteMatchV2(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-export function nativeValidateEmailV2(bytes: Uint8Array): boolean {
+export function nativeValidateEmail(bytes: Uint8Array): boolean {
   return validator.isEmail(decoder.decode(bytes));
 }
 
-export function nativeValidateUuidV2(bytes: Uint8Array): boolean {
+export function nativeValidateUuid(bytes: Uint8Array): boolean {
   return validator.isUUID(decoder.decode(bytes), 4);
 }
 
-export function nativeValidateIpv4V2(bytes: Uint8Array): boolean {
+export function nativeValidateIpv4(bytes: Uint8Array): boolean {
   return validator.isIP(decoder.decode(bytes), 4);
 }
 
-export function nativeValidateIpv6V2(bytes: Uint8Array): boolean {
+export function nativeValidateIpv6(bytes: Uint8Array): boolean {
   return isIP(decoder.decode(bytes)) === 6;
 }
 
-export function nativeValidateLuhnV2(bytes: Uint8Array): boolean {
-  return validator.isCreditCard(decoder.decode(bytes));
-}
-
-// ---------------------------------------------------------------------------
-// Hashing
-// ---------------------------------------------------------------------------
-
-export function nativeCrc32V2(bytes: Uint8Array): number {
+export function nativeCrc32(bytes: Uint8Array): number {
   return CRC32.buf(bytes) >>> 0;
 }
 
-export function nativeFnv1a64V2(bytes: Uint8Array): bigint {
+export function nativeFnv1a64(bytes: Uint8Array): bigint {
   let hash = 0xcbf29ce484222325n;
   const prime = 0x100000001b3n;
   const mask = 0xffffffffffffffffn;
@@ -250,20 +208,16 @@ export function nativeFnv1a64V2(bytes: Uint8Array): bigint {
   return hash;
 }
 
-// ---------------------------------------------------------------------------
-// MIME / URL
-// ---------------------------------------------------------------------------
-
-export function nativeMimeFromExtensionV2(ext: string): string {
+export function nativeMimeFromExtension(ext: string): string {
   return mime.lookup(ext) || "application/octet-stream";
 }
 
-export function nativeUrlEncodeV2(input: string | Uint8Array): string {
+export function nativeUrlEncode(input: string | Uint8Array): string {
   const text = typeof input === "string" ? input : decoder.decode(input);
   return encodeURIComponent(text);
 }
 
-export function nativeUrlDecodeV2(input: string | Uint8Array): string {
+export function nativeUrlDecode(input: string | Uint8Array): string {
   const text = typeof input === "string" ? input : decoder.decode(input);
   return decodeURIComponent(text);
 }

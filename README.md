@@ -1,15 +1,34 @@
-# bun-rust-runtime-bench
+# bun-rust-practical
 
-To install dependencies:
+Practical Bun + Rust FFI benchmark package.
+
+This package keeps only the practical Rust-accelerated functions and their native Bun/JavaScript benchmark equivalents.
+
+## Build
 
 ```bash
 bun install
+cargo build --release
 ```
 
-To run:
+## Benchmark
 
 ```bash
-bun run index.ts
+bun bench.ts
 ```
 
-This project was created using `bun init` in bun v1.4.0. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+Or:
+
+```bash
+bun run bench
+```
+
+## Exported API
+
+```ts
+import { rust, native } from "bun-rust-practical";
+```
+
+`rust` contains Rust FFI implementations.
+
+`native` contains JavaScript/Bun baseline implementations used for benchmarking.
