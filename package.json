@@ -1,6 +1,6 @@
 {
   "name": "bun-rust-practical",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": false,
   "type": "module",
   "main": "index.ts",
@@ -11,24 +11,25 @@
   },
   "files": [
     "index.ts",
+    "bench.ts",
     "native.ts",
     "shared-practical.ts",
     "data.ts",
-    "bench.ts",
     "src",
+    "rust",
     "Cargo.toml",
     "README.md"
   ],
   "scripts": {
     "build": "cargo build --release",
     "bench": "bun run build && bun bench.ts",
-    "cleanup": "bash cleanup.sh"
+    "check": "bun bench.ts",
+    "bench:router-http": "bun run build && bun src/bench/router-http.bench.ts"
   },
   "dependencies": {
     "cookie-es": "^3.1.1",
     "crc-32": "^1.2.2",
     "fast-json-patch": "^3.1.1",
-    "find-my-way": "^9.7.0",
     "mime-types": "^3.0.2",
     "validator": "^13.15.35"
   },
