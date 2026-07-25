@@ -1,34 +1,11 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use aws_lc_rs::hmac;
+use crate::util::{hex_val, trim_ascii_whitespace};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
-#[inline]
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
 
-#[inline]
-fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
-    let mut start = 0;
-    let mut end = bytes.len();
-
-    while start < end && bytes[start].is_ascii_whitespace() {
-        start += 1;
-    }
-
-    while end > start && bytes[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
-
-    &bytes[start..end]
-}
 
 #[napi]
 pub fn hmac_sha256(key: Uint8Array, data: Buffer) -> Buffer {

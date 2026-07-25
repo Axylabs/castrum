@@ -34,36 +34,6 @@ impl SchemaValidator {
         })
     }
 
-    /// Deprecated: materializes the whole batch array.
-    ///
-    /// Use `validate_batch_packed_count` or `validate_batch_streaming` instead.
-    #[napi]
-    pub fn validate_batch(&self, batch_bytes: Uint8Array) -> Result<u32> {
-        let batch_str = std::str::from_utf8(&batch_bytes)
-            .map_err(|_| Error::new(Status::InvalidArg, "Invalid UTF-8 in batch"))?;
-
-        let batch_array: Vec<Value> = sonic_rs::from_str(batch_str)
-            .map_err(|e| Error::new(Status::InvalidArg, format!("Batch JSON error: {}", e)))?;
-
-        let mut valid_count = 0;
-
-        if batch_array.len() > 500 {
-            use rayon::prelude::*;
-
-            valid_count = batch_array
-                .par_iter()
-                .filter(|val| self.schema.is_valid(val))
-                .count() as u32;
-        } else {
-            for val in &batch_array {
-                if self.schema.is_valid(val) {
-                    valid_count += 1;
-                }
-            }
-        }
-
-        Ok(valid_count)
-    }
 
     #[inline]
     fn validate_doc(&self, bytes: &[u8]) -> bool {

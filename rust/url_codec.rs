@@ -1,7 +1,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use memchr::memchr;
-use crate::util::{ensure_capacity, write_bytes};
+use crate::util::{ensure_capacity, hex_val, write_bytes};
 
 
 const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
@@ -25,15 +25,6 @@ fn is_unreserved(b: u8) -> bool {
     )
 }
 
-#[inline(always)]
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
 
 #[napi]
 pub fn url_encode(input: Uint8Array) -> Buffer {

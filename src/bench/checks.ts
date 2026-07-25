@@ -6,11 +6,7 @@ import { assertDeepEqual, assertEqual, parseJsonBytes } from "./assert";
 import type { BenchFixtures, ComplexFixtures } from "./fixtures";
 
 export function runCorrectnessChecks(f: BenchFixtures): void {
-  assertEqual(
-    native.nativeJsonValid(f.jsonPayload),
-    rust.jsonValid(f.jsonPayload) === 1,
-    "json valid",
-  );
+
     assertDeepEqual(
     readHttpPacked(native.nativeHttpParseRequestPacked(f.httpRaw)),
     readHttpPacked(rust.httpParseRequestPacked(f.httpRaw)),
@@ -35,23 +31,6 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     "json sum",
   );
 
-  assertDeepEqual(
-    parseJsonBytes(native.nativeHttpParseRequest(f.httpRaw)),
-    parseJsonBytes(rust.httpParseRequest(f.httpRaw)),
-    "http parse",
-  );
-
-  assertDeepEqual(
-    parseJsonBytes(native.nativeQueryParse(f.queryStr)),
-    parseJsonBytes(rust.queryParse(f.queryStr)),
-    "query parse",
-  );
-
-  assertDeepEqual(
-    parseJsonBytes(native.nativeCookieParse(f.cookieStr)),
-    parseJsonBytes(rust.cookieParse(f.cookieStr)),
-    "cookie parse",
-  );
 
   assertEqual(
     decoder.decode(native.nativeWsAcceptKey(f.wsKey)),
@@ -119,29 +98,6 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     "json valid",
   );
 
-  assertEqual(
-    native.nativeJsonSum(f.jsonPayload),
-    rust.jsonSumIds(f.jsonPayload),
-    "json sum",
-  );
-
-  assertDeepEqual(
-    parseJsonBytes(native.nativeHttpParseRequest(f.httpRaw)),
-    readHttpPacked(rust.httpParseRequestPacked(f.httpRaw)),
-    "http parse packed",
-  );
-
-  assertDeepEqual(
-    parseJsonBytes(native.nativeQueryParse(f.queryStr)),
-    pairsToObject(readPairsPacked(rust.queryParsePacked(f.queryStr))),
-    "query parse packed",
-  );
-
-  assertDeepEqual(
-    parseJsonBytes(native.nativeCookieParse(f.cookieStr)),
-    pairsToObject(readPairsPacked(rust.cookieParsePacked(f.cookieStr))),
-    "cookie parse packed",
-  );
 
   assertEqual(
     native.nativeMimeFromExtension("json"),
@@ -212,33 +168,7 @@ export function runComplexCorrectnessChecks(
   );
   assertEqual(nativeIps, rustIps, "batch ipv4 valid");
 
-  // Large cookie parse
-  assertDeepEqual(
-    parseJsonBytes(native.nativeCookieParse(c.cookieLarge)),
-    parseJsonBytes(rust.cookieParse(c.cookieLarge)),
-    "large cookie parse",
-  );
 
-  // Complex query parse
-  assertDeepEqual(
-    parseJsonBytes(native.nativeQueryParse(c.queryComplex)),
-    parseJsonBytes(rust.queryParse(c.queryComplex)),
-    "complex query parse",
-  );
-
-  // Huge HTTP parse
-  assertDeepEqual(
-    parseJsonBytes(native.nativeHttpParseRequest(c.httpHuge)),
-    parseJsonBytes(rust.httpParseRequest(c.httpHuge)),
-    "huge http parse",
-  );
-
-  // Complex HTTP parse
-  assertDeepEqual(
-    parseJsonBytes(native.nativeHttpParseRequest(c.httpComplex)),
-    parseJsonBytes(rust.httpParseRequest(c.httpComplex)),
-    "complex http parse",
-  );
 
   // Large JSON validation
   assertEqual(

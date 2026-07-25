@@ -28,17 +28,14 @@ export function createRawRustClient() {
     createRouter(routes: string[]) {
       return rustNative.createRouter(routes);
     },
-    cookieParse: rustNative.cookieParse,
     crc32: rustNative.crc32,
     fnv1A64: rustNative.fnv1a64,
     hmacSha256: rustNative.hmacSha256,
     hmacSha256Verify: rustNative.hmacSha256Verify,
-    httpParseRequest: rustNative.httpParseRequest,
     jsonValid: rustNative.jsonValid,
     jsonSumIds: rustNative.jsonSumIds,
     jsonPatch: rustNative.jsonPatch,
     mimeFromExtension: rustNative.mimeFromExtension,
-    queryParse: rustNative.queryParse,
     randomToken: rustNative.randomToken,
     urlEncode: rustNative.urlEncode,
     urlDecode: rustNative.urlDecode,

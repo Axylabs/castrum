@@ -1,12 +1,5 @@
-import { parse as parseCookie } from "cookie-es";
-import { decoder, encoder } from "../../shared/bytes";
+import { decoder } from "../../shared/bytes";
 import { packPairs } from "../../shared/packed";
-
-export function nativeCookieParse(bytes: Uint8Array): Uint8Array {
-  const text = decoder.decode(bytes);
-  const cookies = parseCookie(text);
-  return encoder.encode(JSON.stringify(cookies));
-}
 
 export function nativeCookieParsePacked(bytes: Uint8Array): Uint8Array {
   const text = decoder.decode(bytes);

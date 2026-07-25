@@ -45,12 +45,6 @@ export declare class HttpRouter {
 export declare class SchemaValidator {
   constructor(schemaBytes: Uint8Array)
   /**
-   * Deprecated: materializes the whole batch array.
-   *
-   * Use `validate_batch_packed_count` or `validate_batch_streaming` instead.
-   */
-  validateBatch(batchBytes: Uint8Array): number
-  /**
    * Validate a packed batch of individual JSON documents.
    *
    * Input format:
@@ -81,10 +75,6 @@ export declare class SchemaValidator {
    */
   validateBatchStreaming(batchBytes: Uint8Array): number
 }
-
-export declare function cookieParse(input: Uint8Array): Buffer
-
-export declare function cookieParseAsync(input: Uint8Array): Promise<Buffer>
 
 export declare function cookieParseBatchPacked(input: Uint8Array): Buffer
 
@@ -117,10 +107,6 @@ export declare function fnv1a64(input: Uint8Array): bigint
 export declare function hmacSha256(key: Uint8Array, data: Buffer): Buffer
 
 export declare function hmacSha256Verify(key: Uint8Array, data: Buffer, sig: Buffer): boolean
-
-export declare function httpParseRequest(input: Uint8Array): Buffer
-
-export declare function httpParseRequestAsync(input: Uint8Array): Promise<Buffer>
 
 export declare function httpParseRequestBatchPacked(input: Uint8Array): Buffer
 
@@ -166,10 +152,6 @@ export declare function jsonValidBatchPacked(input: Uint8Array): Buffer
 export declare function jsonValidBatchPackedAsync(input: Uint8Array): Promise<Buffer>
 
 export declare function mimeFromExtension(ext: Uint8Array): Buffer
-
-export declare function queryParse(input: Uint8Array): Buffer
-
-export declare function queryParseAsync(input: Uint8Array): Promise<Buffer>
 
 export declare function queryParseBatchPacked(input: Uint8Array): Buffer
 

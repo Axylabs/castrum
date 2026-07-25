@@ -1,11 +1,3 @@
-export function parseJson<T = unknown>(text: string): T {
-  return JSON.parse(text) as T;
-}
-
-export function stringifyJson(value: unknown): string {
-  return JSON.stringify(value);
-}
-
 export function sortKeys(value: unknown): unknown {
   if (value === null || typeof value !== "object") {
     return value;

@@ -1,42 +1,8 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use crate::util::{ensure_capacity, hex_val, write_bytes, write_u32_le};
-/// Legacy JSON parser.
-///
-/// Deprecated for hot paths.
-pub fn query_parse_vec(input: &[u8]) -> Result<Vec<u8>> {
-    use serde_json::{Map, Value};
 
-    let mut params = Map::new();
 
-    for (key, value) in form_urlencoded::parse(input) {
-        let key = key.into_owned();
-        let value = Value::String(value.into_owned());
-
-        match params.get_mut(&key) {
-            Some(Value::Array(arr)) => arr.push(value),
-            Some(existing) => {
-                let first = existing.clone();
-                *existing = Value::Array(vec![first, value]);
-            }
-            None => {
-                params.insert(key, value);
-            }
-        }
-    }
-
-    let mut out = Vec::with_capacity(input.len().saturating_mul(2).saturating_add(2));
-
-    sonic_rs::to_writer(&mut out, &Value::Object(params))
-        .map_err(|e| Error::from_reason(e.to_string()))?;
-
-    Ok(out)
-}
-
-#[napi]
-pub fn query_parse(input: Uint8Array) -> Result<Buffer> {
-    Ok(Buffer::from(query_parse_vec(input.as_ref())?))
-}
 
 fn write_decoded_form_component(src: &[u8], out: &mut [u8], pos: &mut usize) -> Result<()> {
     let len_pos = *pos;

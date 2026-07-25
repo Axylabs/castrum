@@ -1,12 +1,9 @@
 import { decoder, encoder } from "./bytes";
 
-// Add this import at the top of src/shared/packed.ts
 import type { SchemaValidatorInstance } from "../native";
 
-// Add this type alias near the top with other exports
 export type SchemaValidator = SchemaValidatorInstance;
 
-// ... (keep all your existing functions: packBatch, unpackBitset, etc.) ...
 export function unpackU32Array(bytes: Uint8Array): Uint32Array {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const count = dv.getUint32(0, true);
@@ -18,7 +15,7 @@ export function unpackU32Array(bytes: Uint8Array): Uint32Array {
 
   return out;
 }
-// Add these two new functions at the bottom of the file
+
 export function schemaValidateBatch(validator: SchemaValidator, items: Uint8Array[]): Uint8Array {
   return unpackBitset(validator.validateBatchPackedBitset(packBatch(items)));
 }
@@ -64,18 +61,6 @@ export function unpackBitset(bytes: Uint8Array): Uint8Array {
   return out;
 }
 
-export function unpackI32Array(bytes: Uint8Array): Int32Array {
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const count = dv.getUint32(0, true);
-
-  const out = new Int32Array(count);
-
-  for (let i = 0; i < count; i++) {
-    out[i] = dv.getInt32(4 + i * 4, true);
-  }
-
-  return out;
-}
 
 export function unpackI64ArrayAsBigInt(bytes: Uint8Array): BigInt64Array {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

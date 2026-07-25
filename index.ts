@@ -1,9 +1,4 @@
-export {
-  rust,
-  createRustClient,
-} from "./src/rust-ffi";
-
-export type { RustClient } from "./src/rust-ffi";
+export * from "./src/rust-ffi/raw";
 
 export * as native from "./src/baseline";
 
@@ -13,7 +8,6 @@ export {
   packBatch,
   unpackBitset,
   unpackByteResults,
-  unpackI32Array,
   unpackI64ArrayAsBigInt,
 } from "./src/shared/packed";
 

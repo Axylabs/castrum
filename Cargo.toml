@@ -55,7 +55,6 @@ phf = { version = "0.14", features = ["macros"] }
 getrandom = "0.4"
 memchr = "2"
 simdutf8 = "0.1"
-form_urlencoded = "1"
 
 # Email validation fallback.
 email_address = "0.2"

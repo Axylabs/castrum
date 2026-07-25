@@ -15,9 +15,7 @@ export const rustNative = {
   fnv1a64(bytes: Uint8Array): bigint {
     return BigInt(addon.fnv1a64(bytes));
   },
-  cookieParse(bytes: Uint8Array): Uint8Array {
-    return addon.cookieParse(bytes);
-  },
+  
 
   crc32(bytes: Uint8Array): number {
     return addon.crc32(bytes);
@@ -26,19 +24,12 @@ export const rustNative = {
 
 
 
-  httpParseRequest(bytes: Uint8Array): Uint8Array {
-    return addon.httpParseRequest(bytes);
-  },
-
 
 
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array {
     return addon.jsonPatch(doc, patch);
   },
 
-  queryParse(bytes: Uint8Array): Uint8Array {
-    return addon.queryParse(bytes);
-  },
 
   randomToken(byteLen: number): Uint8Array {
     return addon.randomToken(byteLen);

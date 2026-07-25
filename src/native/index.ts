@@ -64,18 +64,15 @@ function resolveAddonPath(): string {
 }
 
 interface NativeAddon {
-  cookieParse(input: Uint8Array): Uint8Array;
   HmacSigner: new (key: Uint8Array) => HmacSignerInstance;
   crc32(input: Uint8Array): number;
   fnv1a64(input: Uint8Array): bigint;
   hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array;
   hmacSha256Verify(key: Uint8Array, data: Uint8Array, sig: Uint8Array): boolean;
-  httpParseRequest(input: Uint8Array): Uint8Array;
   jsonValid(input: Uint8Array): boolean;
   jsonSumIds(input: Uint8Array): bigint;
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array;
   mimeFromExtension(ext: Uint8Array): Uint8Array;
-  queryParse(input: Uint8Array): Uint8Array;
   randomToken(byteLen: number): Uint8Array;
   urlEncode(input: Uint8Array): Uint8Array;
   urlDecode(input: Uint8Array): Uint8Array;
@@ -92,10 +89,7 @@ interface NativeAddon {
 
   jsonValidAsync(input: Uint8Array): Promise<number>;
   jsonSumIdsAsync(input: Uint8Array): Promise<bigint>;
-  httpParseRequestAsync(input: Uint8Array): Promise<Uint8Array>;
-  queryParseAsync(input: Uint8Array): Promise<Uint8Array>;
-  cookieParseAsync(input: Uint8Array): Promise<Uint8Array>;
-
+  
   jsonValidBatchPacked(input: Uint8Array): Uint8Array;
   validateEmailBatchPacked(input: Uint8Array): Uint8Array;
   validateUuidBatchPacked(input: Uint8Array): Uint8Array;
@@ -132,7 +126,6 @@ if (process.env.RUST_BENCH_DEBUG) {
   console.log("Exported keys:", Object.keys(addon).sort());
 }
 interface SchemaValidatorInstance {
-  validateBatch(batchBytes: Uint8Array): number;
   validateBatchPackedCount(packed: Uint8Array): number;
   validateBatchPackedBitset(packed: Uint8Array): Uint8Array;
   validateBatchStreaming(batchBytes: Uint8Array): number;

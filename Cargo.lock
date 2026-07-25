@@ -1551,7 +1551,6 @@ dependencies = [
  "crc32fast",
  "email_address",
  "fast_chemail",
- "form_urlencoded",
  "getrandom 0.4.3",
  "httparse",
  "json-patch",
