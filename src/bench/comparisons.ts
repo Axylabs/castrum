@@ -1,6 +1,7 @@
 import type { ComparisonReport } from "./types";
 
 export const comparisonReports: ComparisonReport[] = [
+  // ── Original sequential benchmarks ──
   { label: "JSON valid", nativeName: "native:json_valid", rustName: "rust:json_valid" },
   { label: "JSON sum", nativeName: "native:json_sum", rustName: "rust:json_sum" },
   { label: "HTTP parse", nativeName: "native:http_parse", rustName: "rust:http_parse" },
@@ -20,4 +21,50 @@ export const comparisonReports: ComparisonReport[] = [
   { label: "MIME lookup", nativeName: "native:mime", rustName: "rust:mime" },
   { label: "URL encode", nativeName: "native:url_encode", rustName: "rust:url_encode" },
   { label: "URL decode", nativeName: "native:url_decode", rustName: "rust:url_decode" },
+
+  // ── Complex payload benchmarks ──
+  { label: "JSON valid (50k rows)", nativeName: "native:json_valid_large", rustName: "rust:json_valid_large" },
+  { label: "JSON valid (100k rows)", nativeName: "native:json_valid_huge", rustName: "rust:json_valid_huge" },
+  { label: "JSON valid (deep nested)", nativeName: "native:json_valid_deep", rustName: "rust:json_valid_deep" },
+  { label: "JSON sum (50k rows)", nativeName: "native:json_sum_large", rustName: "rust:json_sum_large" },
+  { label: "HTTP parse (complex)", nativeName: "native:http_parse_complex", rustName: "rust:http_parse_complex" },
+  { label: "HTTP parse (huge)", nativeName: "native:http_parse_huge", rustName: "rust:http_parse_huge" },
+  { label: "Cookie parse (large)", nativeName: "native:cookie_parse_large", rustName: "rust:cookie_parse_large" },
+  { label: "Query parse (complex)", nativeName: "native:query_parse_complex", rustName: "rust:query_parse_complex" },
+  { label: "URL encode (large)", nativeName: "native:url_encode_large", rustName: "rust:url_encode_large" },
+  { label: "URL decode (large)", nativeName: "native:url_decode_large", rustName: "rust:url_decode_large" },
+  { label: "JSON valid (batch 100)", nativeName: "native:json_valid_batch", rustName: "rust:json_valid_batch" },
+  { label: "Email validate (batch 100)", nativeName: "native:validate_email_batch", rustName: "rust:validate_email_batch" },
+  { label: "UUID validate (batch 100)", nativeName: "native:validate_uuid_batch", rustName: "rust:validate_uuid_batch" },
+  { label: "IPv4 validate (batch 100)", nativeName: "native:validate_ipv4_batch", rustName: "rust:validate_ipv4_batch" },
+  { label: "Query parse (batch 100)", nativeName: "native:query_parse_batch", rustName: "rust:query_parse_batch" },
+
+  // ── Concurrent burst benchmarks ──
+  { label: "JSON valid concurrent (10x50)", nativeName: "native:json_valid_concurrent_10", rustName: "rust:json_valid_concurrent_10" },
+  { label: "JSON valid concurrent (50x20)", nativeName: "native:json_valid_concurrent_50", rustName: "rust:json_valid_concurrent_50" },
+  { label: "HTTP parse concurrent (20x50)", nativeName: "native:http_parse_concurrent_20", rustName: "rust:http_parse_concurrent_20" },
+  { label: "HMAC concurrent (20x30)", nativeName: "native:hmac_sha256_concurrent_20", rustName: "rust:hmac_sha256_concurrent_20" },
+  { label: "Email validate concurrent (50x40)", nativeName: "native:validate_email_concurrent_50", rustName: "rust:validate_email_concurrent_50" },
+  { label: "UUID validate concurrent (50x40)", nativeName: "native:validate_uuid_concurrent_50", rustName: "rust:validate_uuid_concurrent_50" },
+  { label: "Query parse concurrent (20x50)", nativeName: "native:query_parse_concurrent_20", rustName: "rust:query_parse_concurrent_20" },
+  { label: "Cookie parse concurrent (20x50)", nativeName: "native:cookie_parse_concurrent_20", rustName: "rust:cookie_parse_concurrent_20" },
+  { label: "CRC32 concurrent (20x100)", nativeName: "native:crc32_concurrent_20", rustName: "rust:crc32_concurrent_20" },
+  { label: "JSON sum concurrent (20x20)", nativeName: "native:json_sum_concurrent_20", rustName: "rust:json_sum_concurrent_20" },
+
+  // ── Stress benchmarks (2s) ──
+  { label: "JSON valid stress (2s)", nativeName: "native:json_valid_stress", rustName: "rust:json_valid_stress" },
+  { label: "HTTP parse stress (2s)", nativeName: "native:http_parse_stress", rustName: "rust:http_parse_stress" },
+  { label: "HMAC stress (2s)", nativeName: "native:hmac_sha256_stress", rustName: "rust:hmac_sha256_stress" },
+  { label: "CRC32 stress (2s)", nativeName: "native:crc32_stress", rustName: "rust:crc32_stress" },
+  { label: "Query parse stress (2s)", nativeName: "native:query_parse_stress", rustName: "rust:query_parse_stress" },
+  { label: "JSON sum stress (2s)", nativeName: "native:json_sum_stress", rustName: "rust:json_sum_stress" },
+  { label: "Email validate stress (2s)", nativeName: "native:validate_email_stress", rustName: "rust:validate_email_stress" },
+  { label: "Cookie parse stress (2s)", nativeName: "native:cookie_parse_stress", rustName: "rust:cookie_parse_stress" },
+  { label: "UUID validate stress (2s)", nativeName: "native:validate_uuid_stress", rustName: "rust:validate_uuid_stress" },
+  { label: "WebSocket accept stress (2s)", nativeName: "native:ws_accept_key_stress", rustName: "rust:ws_accept_key_stress" },
+
+
+    { label: "HTTP parse pipeline", nativeName: "native:http_parse_pipeline", rustName: "rust:http_parse_pipeline" },
+  { label: "Query parse pipeline", nativeName: "native:query_parse_pipeline", rustName: "rust:query_parse_pipeline" },
+  { label: "Cookie parse pipeline", nativeName: "native:cookie_parse_pipeline", rustName: "rust:cookie_parse_pipeline" },
 ];

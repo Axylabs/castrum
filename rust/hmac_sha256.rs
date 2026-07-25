@@ -1,57 +1,80 @@
-use crate::ffi::{catch_or, input_bytes, output_bytes, write_response};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
+use ring::hmac;
 
-#[no_mangle]
-pub extern "C" fn rust_hmac_sha256_v2(
-    key_ptr: *const u8,
-    key_len: usize,
-    data_ptr: *const u8,
-    data_len: usize,
-    out_ptr: *mut u8,
-    out_cap: usize,
-) -> i64 {
-    catch_or(-1, || {
-        let key = input_bytes(key_ptr, key_len);
-        let data = input_bytes(data_ptr, data_len);
-        let out = output_bytes(out_ptr, out_cap);
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-        mac.update(data);
-
-        let result = mac.finalize().into_bytes();
-        let hex = hex::encode(result);
-
-        write_response(out, hex.as_bytes())
-    })
+#[inline]
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_hmac_sha256_verify_v2(
-    key_ptr: *const u8,
-    key_len: usize,
-    data_ptr: *const u8,
-    data_len: usize,
-    sig_ptr: *const u8,
-    sig_len: usize,
-) -> i32 {
-    catch_or(0, || {
-        let key = input_bytes(key_ptr, key_len);
-        let data = input_bytes(data_ptr, data_len);
-        let sig = input_bytes(sig_ptr, sig_len);
+fn hex_encode_lower(bytes: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; bytes.len() * 2];
 
-        let sig_bytes = match hex::decode(sig) {
-            Ok(v) => v,
-            Err(_) => return 0,
+    for (i, b) in bytes.iter().enumerate() {
+        out[2 * i] = HEX_LOWER[(b >> 4) as usize];
+        out[2 * i + 1] = HEX_LOWER[(b & 0x0f) as usize];
+    }
+
+    out
+}
+
+#[inline]
+fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    &bytes[start..end]
+}
+
+#[napi]
+pub fn hmac_sha256(key: Uint8Array, data: Buffer) -> Buffer {
+    let key = hmac::Key::new(hmac::HMAC_SHA256, key.as_ref());
+    let tag = hmac::sign(&key, data.as_ref());
+
+    Buffer::from(hex_encode_lower(tag.as_ref()))
+}
+
+#[napi]
+pub fn hmac_sha256_verify(key: Uint8Array, data: Buffer, sig: Buffer) -> bool {
+    let sig = trim_ascii_whitespace(sig.as_ref());
+
+    if sig.len() != 64 {
+        return false;
+    }
+
+    let mut sig_bytes = [0u8; 32];
+
+    let mut i = 0;
+    while i < 32 {
+        let hi = match hex_val(sig[2 * i]) {
+            Some(v) => v,
+            None => return false,
         };
 
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-        mac.update(data);
+        let lo = match hex_val(sig[2 * i + 1]) {
+            Some(v) => v,
+            None => return false,
+        };
 
-        if mac.verify_slice(&sig_bytes).is_ok() {
-            1
-        } else {
-            0
-        }
-    })
+        sig_bytes[i] = (hi << 4) | lo;
+        i += 1;
+    }
+
+    let key = hmac::Key::new(hmac::HMAC_SHA256, key.as_ref());
+    hmac::verify(&key, data.as_ref(), &sig_bytes).is_ok()
 }

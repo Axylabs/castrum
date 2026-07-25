@@ -1,64 +1,93 @@
-use crate::ffi::{catch_or, input_bytes, output_bytes, write_response};
-use percent_encoding::{percent_decode, utf8_percent_encode, AsciiSet, CONTROLS};
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
+use memchr::memchr;
 
-const ENCODE_URI_COMPONENT_SET: &AsciiSet = &CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'#')
-    .add(b'$')
-    .add(b'%')
-    .add(b'&')
-    .add(b'+')
-    .add(b',')
-    .add(b'/')
-    .add(b':')
-    .add(b';')
-    .add(b'<')
-    .add(b'=')
-    .add(b'>')
-    .add(b'?')
-    .add(b'@')
-    .add(b'[')
-    .add(b'\\')
-    .add(b']')
-    .add(b'^')
-    .add(b'`')
-    .add(b'{')
-    .add(b'|')
-    .add(b'}');
+const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
-#[no_mangle]
-pub extern "C" fn rust_url_encode_v2(
-    ptr: *const u8,
-    len: usize,
-    out_ptr: *mut u8,
-    out_cap: usize,
-) -> i64 {
-    catch_or(-1, || {
-        let input = input_bytes(ptr, len);
-        let out = output_bytes(out_ptr, out_cap);
-
-        let text = String::from_utf8_lossy(input);
-        let encoded = utf8_percent_encode(&text, ENCODE_URI_COMPONENT_SET).to_string();
-
-        write_response(out, encoded.as_bytes())
-    })
+#[inline(always)]
+fn is_unreserved(b: u8) -> bool {
+    matches!(
+        b,
+        b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | 0x27
+            | b'('
+            | b')'
+    )
 }
 
-#[no_mangle]
-pub extern "C" fn rust_url_decode_v2(
-    ptr: *const u8,
-    len: usize,
-    out_ptr: *mut u8,
-    out_cap: usize,
-) -> i64 {
-    catch_or(-1, || {
-        let input = input_bytes(ptr, len);
-        let out = output_bytes(out_ptr, out_cap);
+#[inline(always)]
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
 
-        match percent_decode(input).decode_utf8() {
-            Ok(decoded) => write_response(out, decoded.as_bytes()),
-            Err(_) => -1,
+#[napi]
+pub fn url_encode(input: Uint8Array) -> Buffer {
+    let input = input.as_ref();
+
+    let mut out = Vec::with_capacity(input.len() + input.len() / 4 + 8);
+    let mut start = 0usize;
+
+    for (i, &b) in input.iter().enumerate() {
+        if !is_unreserved(b) {
+            out.extend_from_slice(&input[start..i]);
+            out.push(b'%');
+            out.push(HEX_UPPER[(b >> 4) as usize]);
+            out.push(HEX_UPPER[(b & 0x0f) as usize]);
+            start = i + 1;
         }
-    })
+    }
+
+    out.extend_from_slice(&input[start..]);
+    Buffer::from(out)
+}
+
+#[napi]
+pub fn url_decode(input: Uint8Array) -> Result<Buffer> {
+    let input = input.as_ref();
+
+    let mut out = Vec::with_capacity(input.len());
+    let mut pos = 0usize;
+
+    while let Some(rel) = memchr(b'%', &input[pos..]) {
+        let i = pos + rel;
+
+        out.extend_from_slice(&input[pos..i]);
+
+        if i + 2 >= input.len() {
+            return Err(Error::from_reason(
+                "Invalid percent-encoded sequence: missing bytes",
+            ));
+        }
+
+        let hi = hex_val(input[i + 1]).ok_or_else(|| {
+            Error::from_reason("Invalid percent-encoded sequence: bad high nibble")
+        })?;
+
+        let lo = hex_val(input[i + 2]).ok_or_else(|| {
+            Error::from_reason("Invalid percent-encoded sequence: bad low nibble")
+        })?;
+
+        out.push((hi << 4) | lo);
+        pos = i + 3;
+    }
+
+    out.extend_from_slice(&input[pos..]);
+
+    simdutf8::basic::from_utf8(&out)
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+
+    Ok(Buffer::from(out))
 }

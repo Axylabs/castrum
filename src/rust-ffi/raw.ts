@@ -1,40 +1,111 @@
-import { createCookieApi } from "./apis/cookie";
-import { createHashingApi } from "./apis/hashing";
-import { createHmacApi } from "./apis/hmac";
-import { createHttpApi } from "./apis/http";
-import { createJsonApi } from "./apis/json";
-import { createJsonPatchApi } from "./apis/json-patch";
-import { createMimeApi } from "./apis/mime";
-import { createQueryApi } from "./apis/query";
-import { createTokenApi } from "./apis/token";
-import { createUrlApi } from "./apis/url";
-import { createValidationApi } from "./apis/validation";
-import { createWebSocketApi } from "./apis/websocket";
-import { createFfiRuntime, type FfiRuntime } from "./runtime";
-
 /**
- * Raw Rust FFI client.
+ * Raw Rust client - now backed by N-API addon instead of dlopen FFI.
  *
- * This client is used by benchmarks so Rust implementations can continue to be
- * measured even if the public optimized client overrides some methods with
- * native implementations.
+ * The interface is identical to the old FFI client so all bench tasks
+ * and correctness checks work without modification.
  */
-export function createRawRustClient(runtime: FfiRuntime = createFfiRuntime()) {
+
+import { rustNative } from "../native/wrapper";
+
+
+rustNative.initThreadPool(
+  Math.min(8, navigator.hardwareConcurrency || 4),
+);
+
+export function createRawRustClient() {
   return {
-    ...createJsonApi(runtime),
-    ...createHttpApi(runtime),
-    ...createQueryApi(runtime),
-    ...createCookieApi(runtime),
-    ...createTokenApi(runtime),
-    ...createWebSocketApi(runtime),
-    ...createJsonPatchApi(runtime),
-    ...createHmacApi(runtime),
-    ...createValidationApi(runtime),
-    ...createHashingApi(runtime),
-    ...createMimeApi(runtime),
-    ...createUrlApi(runtime),
+    createRouter(routes: string[]) {
+      return rustNative.createRouter(routes);
+    },
+    cookieParse: rustNative.cookieParse,
+    crc32: rustNative.crc32,
+    fnv1A64: rustNative.fnv1a64,
+    hmacSha256: rustNative.hmacSha256,
+    hmacSha256Verify: rustNative.hmacSha256Verify,
+    httpParseRequest: rustNative.httpParseRequest,
+    jsonValid: rustNative.jsonValid,
+    jsonSumIds: rustNative.jsonSumIds,
+    jsonPatch: rustNative.jsonPatch,
+    mimeFromExtension: rustNative.mimeFromExtension,
+    queryParse: rustNative.queryParse,
+    randomToken: rustNative.randomToken,
+    urlEncode: rustNative.urlEncode,
+    urlDecode: rustNative.urlDecode,
+    validateEmail: rustNative.validateEmail,
+    validateUuid: rustNative.validateUuid,
+    validateIpv4: rustNative.validateIpv4,
+    validateIpv6: rustNative.validateIpv6,
+    wsAcceptKey: rustNative.wsAcceptKey,
+    createSchemaValidator: rustNative.createSchemaValidator,
+     httpParseRequestPacked: rustNative.httpParseRequestPacked,
+    httpParseRequestPackedInto: rustNative.httpParseRequestPackedInto,
+
+    queryParsePacked: rustNative.queryParsePacked,
+    queryParsePackedInto: rustNative.queryParsePackedInto,
+
+    cookieParsePacked: rustNative.cookieParsePacked,
+    cookieParsePackedInto: rustNative.cookieParsePackedInto,
   };
 }
+
+import addon from "../native";
+import {
+  packBatch,
+
+  schemaValidateBatch,
+
+  schemaValidateBatchCount,
+
+  unpackBitset,
+  unpackByteResults,
+  unpackI64ArrayAsBigInt,
+  type SchemaValidator,
+} from "../shared/packed";
+
+export const rustBatch = {
+  jsonValid(items: Uint8Array[]): Uint8Array {
+    return unpackBitset(addon.jsonValidBatchPacked(packBatch(items)));
+  },
+
+  validateEmail(items: Uint8Array[]): Uint8Array {
+    return unpackBitset(addon.validateEmailBatchPacked(packBatch(items)));
+  },
+
+  validateUuid(items: Uint8Array[]): Uint8Array {
+    return unpackBitset(addon.validateUuidBatchPacked(packBatch(items)));
+  },
+
+  validateIpv4(items: Uint8Array[]): Uint8Array {
+    return unpackBitset(addon.validateIpv4BatchPacked(packBatch(items)));
+  },
+
+  validateIpv6(items: Uint8Array[]): Uint8Array {
+    return unpackBitset(addon.validateIpv6BatchPacked(packBatch(items)));
+  },
+
+  jsonSumIds(items: Uint8Array[]): BigInt64Array {
+    return unpackI64ArrayAsBigInt(addon.jsonSumBatchPacked(packBatch(items)));
+  },
+
+  queryParse(items: Uint8Array[]): Uint8Array[] {
+    return unpackByteResults(addon.queryParseBatchPacked(packBatch(items)));
+  },
+
+  cookieParse(items: Uint8Array[]): Uint8Array[] {
+    return unpackByteResults(addon.cookieParseBatchPacked(packBatch(items)));
+  },
+
+  httpParseRequest(items: Uint8Array[]): Uint8Array[] {
+    return unpackByteResults(addon.httpParseRequestBatchPacked(packBatch(items)));
+  },
+
+  schemaValidate(validator: SchemaValidator, items: Uint8Array[]): Uint8Array {
+    return schemaValidateBatch(validator, items);
+  },
+  schemaValidateCount(validator: SchemaValidator, items: Uint8Array[]): number {
+    return schemaValidateBatchCount(validator, items);
+  },
+};
 
 export type RawRustClient = ReturnType<typeof createRawRustClient>;
 export const rust = createRawRustClient();

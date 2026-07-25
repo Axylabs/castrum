@@ -1,7 +1,12 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+mod util;
+mod json_schema;
 mod cookie_parser;
-mod ffi;
 mod hashing;
 mod hmac_sha256;
 mod http_parser;
@@ -13,3 +18,6 @@ mod random_token;
 mod url_codec;
 mod validation;
 mod websocket;
+mod router;
+mod async_tasks;
+mod batch;

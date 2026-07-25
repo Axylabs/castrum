@@ -1,26 +1,20 @@
-use crate::ffi::{catch_or, input_bytes};
-use crc32fast::Hasher as Crc32Hasher;
-use fnv::FnvHasher;
-use std::hash::Hasher as _;
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
 
-#[no_mangle]
-pub extern "C" fn rust_crc32_v2(ptr: *const u8, len: usize) -> u32 {
-    catch_or(0, || {
-        let input = input_bytes(ptr, len);
-
-        let mut hasher = Crc32Hasher::new();
-        hasher.update(input);
-        hasher.finalize()
-    })
+#[napi]
+pub fn crc32(input: Uint8Array) -> u32 {
+    crc32fast::hash(input.as_ref())
 }
 
-#[no_mangle]
-pub extern "C" fn rust_fnv1a64_v2(ptr: *const u8, len: usize) -> u64 {
-    catch_or(0, || {
-        let input = input_bytes(ptr, len);
+#[napi(js_name = "fnv1a64")]
+pub fn fnv1a64(input: Uint8Array) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
 
-        let mut hasher = FnvHasher::default();
-        hasher.write(input);
-        hasher.finish()
-    })
+    input
+        .as_ref()
+        .iter()
+        .fold(OFFSET_BASIS, |hash, &b| {
+            (hash ^ u64::from(b)).wrapping_mul(PRIME)
+        })
 }

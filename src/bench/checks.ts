@@ -1,14 +1,32 @@
 import * as native from "../baseline";
-import { rust } from "../rust-ffi/raw";
+import { rust, rustBatch } from "../rust-ffi/raw";
 import { decoder } from "../shared/bytes";
+import { pairsToObject, readHttpPacked, readPairsPacked } from "../shared/packed";
 import { assertDeepEqual, assertEqual, parseJsonBytes } from "./assert";
-import type { BenchFixtures } from "./fixtures";
+import type { BenchFixtures, ComplexFixtures } from "./fixtures";
 
 export function runCorrectnessChecks(f: BenchFixtures): void {
   assertEqual(
     native.nativeJsonValid(f.jsonPayload),
     rust.jsonValid(f.jsonPayload) === 1,
     "json valid",
+  );
+    assertDeepEqual(
+    readHttpPacked(native.nativeHttpParseRequestPacked(f.httpRaw)),
+    readHttpPacked(rust.httpParseRequestPacked(f.httpRaw)),
+    "http parse packed native writer",
+  );
+
+  assertDeepEqual(
+    pairsToObject(readPairsPacked(native.nativeQueryParsePacked(f.queryStr))),
+    pairsToObject(readPairsPacked(rust.queryParsePacked(f.queryStr))),
+    "query parse packed native writer",
+  );
+
+  assertDeepEqual(
+    pairsToObject(readPairsPacked(native.nativeCookieParsePacked(f.cookieStr))),
+    pairsToObject(readPairsPacked(rust.cookieParsePacked(f.cookieStr))),
+    "cookie parse packed native writer",
   );
 
   assertEqual(
@@ -91,8 +109,38 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
 
   assertEqual(
     native.nativeFnv1a64(f.crcInput),
-    rust.fnv1a64(f.crcInput),
-    "fnv1a64",
+    rust.fnv1A64(f.crcInput),
+    "fnv1A64",
+  );
+
+   assertEqual(
+    native.nativeJsonValid(f.jsonPayload),
+    rust.jsonValid(f.jsonPayload) === 1,
+    "json valid",
+  );
+
+  assertEqual(
+    native.nativeJsonSum(f.jsonPayload),
+    rust.jsonSumIds(f.jsonPayload),
+    "json sum",
+  );
+
+  assertDeepEqual(
+    parseJsonBytes(native.nativeHttpParseRequest(f.httpRaw)),
+    readHttpPacked(rust.httpParseRequestPacked(f.httpRaw)),
+    "http parse packed",
+  );
+
+  assertDeepEqual(
+    parseJsonBytes(native.nativeQueryParse(f.queryStr)),
+    pairsToObject(readPairsPacked(rust.queryParsePacked(f.queryStr))),
+    "query parse packed",
+  );
+
+  assertDeepEqual(
+    parseJsonBytes(native.nativeCookieParse(f.cookieStr)),
+    pairsToObject(readPairsPacked(rust.cookieParsePacked(f.cookieStr))),
+    "cookie parse packed",
   );
 
   assertEqual(
@@ -114,4 +162,136 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
   );
 
   console.log("Practical correctness checks passed. ✓");
+}
+
+export function runComplexCorrectnessChecks(
+  _f: BenchFixtures,
+  c: ComplexFixtures,
+): void {
+  // Batch JSON validation
+  const nativeBatch = c.batchJsonDocs.reduce(
+    (acc, doc) => acc + (native.nativeJsonValid(doc) ? 1 : 0),
+    0,
+  );
+  const rustBatchTest = c.batchJsonDocs.reduce(
+    (acc, doc) => acc + rust.jsonValid(doc),
+    0,
+  );
+  assertEqual(nativeBatch, rustBatchTest, "batch json valid");
+
+  // Batch email validation
+  const nativeEmails = c.batchEmails.reduce(
+    (acc, e) => acc + (native.nativeValidateEmail(e) ? 1 : 0),
+    0,
+  );
+  const rustEmails = c.batchEmails.reduce(
+    (acc, e) => acc + rust.validateEmail(e),
+    0,
+  );
+  assertEqual(nativeEmails, rustEmails, "batch email valid");
+
+  // Batch UUID validation
+  const nativeUuids = c.batchUuids.reduce(
+    (acc, u) => acc + (native.nativeValidateUuid(u) ? 1 : 0),
+    0,
+  );
+  const rustUuids = c.batchUuids.reduce(
+    (acc, u) => acc + rust.validateUuid(u),
+    0,
+  );
+  assertEqual(nativeUuids, rustUuids, "batch uuid valid");
+
+  // Batch IPv4 validation
+  const nativeIps = c.batchIpv4s.reduce(
+    (acc, ip) => acc + (native.nativeValidateIpv4(ip) ? 1 : 0),
+    0,
+  );
+  const rustIps = c.batchIpv4s.reduce(
+    (acc, ip) => acc + rust.validateIpv4(ip),
+    0,
+  );
+  assertEqual(nativeIps, rustIps, "batch ipv4 valid");
+
+  // Large cookie parse
+  assertDeepEqual(
+    parseJsonBytes(native.nativeCookieParse(c.cookieLarge)),
+    parseJsonBytes(rust.cookieParse(c.cookieLarge)),
+    "large cookie parse",
+  );
+
+  // Complex query parse
+  assertDeepEqual(
+    parseJsonBytes(native.nativeQueryParse(c.queryComplex)),
+    parseJsonBytes(rust.queryParse(c.queryComplex)),
+    "complex query parse",
+  );
+
+  // Huge HTTP parse
+  assertDeepEqual(
+    parseJsonBytes(native.nativeHttpParseRequest(c.httpHuge)),
+    parseJsonBytes(rust.httpParseRequest(c.httpHuge)),
+    "huge http parse",
+  );
+
+  // Complex HTTP parse
+  assertDeepEqual(
+    parseJsonBytes(native.nativeHttpParseRequest(c.httpComplex)),
+    parseJsonBytes(rust.httpParseRequest(c.httpComplex)),
+    "complex http parse",
+  );
+
+  // Large JSON validation
+  assertEqual(
+    native.nativeJsonValid(c.jsonLarge),
+    rust.jsonValid(c.jsonLarge) === 1,
+    "large json valid",
+  );
+
+  // Huge JSON validation
+  assertEqual(
+    native.nativeJsonValid(c.jsonHuge),
+    rust.jsonValid(c.jsonHuge) === 1,
+    "huge json valid",
+  );
+
+  // Deep nested JSON validation
+  assertEqual(
+    native.nativeJsonValid(c.jsonNestedDeep),
+    rust.jsonValid(c.jsonNestedDeep) === 1,
+    "deep json valid",
+  );
+
+
+    const rustBatchJson = rustBatch
+    .jsonValid(c.batchJsonDocs)
+    .reduce((acc, b) => acc + b, 0);
+  assertEqual(nativeBatch, rustBatchJson, "batch json valid packed");
+
+  const rustBatchEmails = rustBatch
+    .validateEmail(c.batchEmails)
+    .reduce((acc, b) => acc + b, 0);
+  assertEqual(nativeEmails, rustBatchEmails, "batch email valid packed");
+
+  const rustBatchUuids = rustBatch
+    .validateUuid(c.batchUuids)
+    .reduce((acc, b) => acc + b, 0);
+  assertEqual(nativeUuids, rustBatchUuids, "batch uuid valid packed");
+
+  const rustBatchIpv4s = rustBatch
+    .validateIpv4(c.batchIpv4s)
+    .reduce((acc, b) => acc + b, 0);
+  assertEqual(nativeIps, rustBatchIpv4s, "batch ipv4 valid packed");
+
+  const nativeQueryCount = c.batchQueries.reduce(
+    (acc, q) => acc + readPairsPacked(native.nativeQueryParsePacked(q)).length,
+    0,
+  );
+
+  const rustQueryCount = rustBatch
+    .queryParse(c.batchQueries)
+    .reduce((acc, bytes) => acc + readPairsPacked(bytes).length, 0);
+
+  assertEqual(nativeQueryCount, rustQueryCount, "batch query packed count");
+
+  console.log("Complex correctness checks passed. ✓");
 }

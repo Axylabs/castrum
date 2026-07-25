@@ -1,43 +1,57 @@
 {
-   "name": "bun-rust-practical",
-   "version": "0.5.0",
-   "private": false,
-   "type": "module",
-   "main": "index.ts",
-   "module": "index.ts",
-   "types": "index.ts",
-   "exports": {
-      ".": "./index.ts"
-   },
-   "files": [
-      "index.ts",
-      "bench.ts",
-      "native.ts",
-      "shared-practical.ts",
-      "data.ts",
-      "src",
-      "rust",
-      "Cargo.toml",
-      "README.md"
-   ],
-   "scripts": {
-      "build": "cargo build --release",
-      "bench": "bun run build && bun bench.ts",
-      "check": "bun bench.ts"
-   },
-   "dependencies": {
-      "cookie-es": "^3.1.1",
-      "crc-32": "^1.2.2",
-      "fast-json-patch": "^3.1.1",
-      "mime-types": "^3.0.2",
-      "validator": "^13.15.35"
-   },
-   "devDependencies": {
-      "@types/bun": "^1.3.14",
-      "@types/mime-types": "^3.0.1",
-      "@types/validator": "^13.15.10"
-   },
-   "engines": {
-      "bun": ">=1.1.0"
-   }
+    "name": "bun-rust-practical",
+    "version": "0.5.0",
+    "private": false,
+    "type": "module",
+    "main": "index.ts",
+    "module": "index.ts",
+    "types": "index.ts",
+    "exports": {
+        ".": "./index.ts"
+    },
+    "files": [
+        "index.ts",
+        "bench.ts",
+        "native.ts",
+        "shared-practical.ts",
+        "data.ts",
+        "src",
+        "rust",
+        "Cargo.toml",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "napi build --release --platform",
+        "bench": "bun run build && bun bench.ts",
+        "check": "bun bench.ts",
+        "build:debug": "napi build --platform",
+        "artifacts": "napi artifacts",
+        "prepublishOnly": "napi prepublish -t npm"
+    },
+    "dependencies": {
+        "cookie-es": "^3.1.1",
+        "crc-32": "^1.2.2",
+        "fast-json-patch": "^3.1.1",
+        "mime-types": "^3.0.2",
+        "validator": "^13.15.35"
+    },
+    "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "@types/mime-types": "^3.0.1",
+        "@types/validator": "^13.15.10",
+        "@napi-rs/cli": "^3.1.0"
+    },
+    "engines": {
+        "bun": ">=1.1.0"
+    },
+    "napi": {
+        "binaryName": "rust_bench",
+        "targets": [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu"
+        ]
+    }
 }

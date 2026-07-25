@@ -1,35 +1,25 @@
-use crate::ffi::{catch_or, input_bytes, output_bytes, write_response};
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
 use serde_json::Value;
 
-#[no_mangle]
-pub extern "C" fn rust_json_patch_v2(
-    doc_ptr: *const u8,
-    doc_len: usize,
-    patch_ptr: *const u8,
-    patch_len: usize,
-    out_ptr: *mut u8,
-    out_cap: usize,
-) -> i64 {
-    catch_or(-1, || {
-        let doc_input = input_bytes(doc_ptr, doc_len);
-        let patch_input = input_bytes(patch_ptr, patch_len);
-        let out = output_bytes(out_ptr, out_cap);
+#[napi]
+pub fn json_patch(doc: Uint8Array, patch: Uint8Array) -> Result<Buffer> {
+    let mut doc_val: Value =
+        sonic_rs::from_slice(doc.as_ref()).map_err(|e| Error::from_reason(e.to_string()))?;
 
-        let mut doc: Value = match serde_json::from_slice(doc_input) {
-            Ok(v) => v,
-            Err(_) => return -1,
-        };
+    let patch_val: json_patch::Patch =
+        sonic_rs::from_slice(patch.as_ref()).map_err(|e| Error::from_reason(e.to_string()))?;
 
-        let patch: json_patch::Patch = match serde_json::from_slice(patch_input) {
-            Ok(p) => p,
-            Err(_) => return -1,
-        };
+    json_patch::patch(&mut doc_val, &patch_val).map_err(|e| Error::from_reason(e.to_string()))?;
 
-        if json_patch::patch(&mut doc, &patch).is_err() {
-            return -1;
-        }
+    let mut out = Vec::with_capacity(
+        doc.as_ref()
+            .len()
+            .saturating_add(patch.as_ref().len())
+            .saturating_add(32),
+    );
 
-        let result = serde_json::to_vec(&doc).unwrap_or_default();
-        write_response(out, &result)
-    })
+    sonic_rs::to_writer(&mut out, &doc_val).map_err(|e| Error::from_reason(e.to_string()))?;
+
+    Ok(Buffer::from(out))
 }
