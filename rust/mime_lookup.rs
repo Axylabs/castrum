@@ -1,40 +1,42 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use phf::{phf_map, Map};
 
 const OCTET_STREAM: &str = "application/octet-stream";
 
-fn common_mime(ext: &str) -> Option<&'static str> {
-    match ext {
-        "json" => Some("application/json"),
-        "js" | "mjs" | "cjs" => Some("text/javascript"),
-        "html" | "htm" => Some("text/html"),
-        "css" => Some("text/css"),
-        "csv" => Some("text/csv"),
-        "xml" => Some("application/xml"),
-        "txt" => Some("text/plain"),
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "avif" => Some("image/avif"),
-        "svg" => Some("image/svg+xml"),
-        "ico" => Some("image/x-icon"),
-        "pdf" => Some("application/pdf"),
-        "zip" => Some("application/zip"),
-        "gz" => Some("application/gzip"),
-        "wasm" => Some("application/wasm"),
-        "map" => Some("application/json"),
-        "woff" => Some("font/woff"),
-        "woff2" => Some("font/woff2"),
-        "ttf" => Some("font/ttf"),
-        "otf" => Some("font/otf"),
-        "mp4" => Some("video/mp4"),
-        "webm" => Some("video/webm"),
-        "mp3" => Some("audio/mpeg"),
-        "ogg" => Some("audio/ogg"),
-        _ => None,
-    }
-}
+static MIME_TABLE: Map<&'static str, &'static str> = phf_map! {
+    "json" => "application/json",
+    "js" => "text/javascript",
+    "mjs" => "text/javascript",
+    "cjs" => "text/javascript",
+    "html" => "text/html",
+    "htm" => "text/html",
+    "css" => "text/css",
+    "csv" => "text/csv",
+    "xml" => "application/xml",
+    "txt" => "text/plain",
+    "png" => "image/png",
+    "jpg" => "image/jpeg",
+    "jpeg" => "image/jpeg",
+    "gif" => "image/gif",
+    "webp" => "image/webp",
+    "avif" => "image/avif",
+    "svg" => "image/svg+xml",
+    "ico" => "image/x-icon",
+    "pdf" => "application/pdf",
+    "zip" => "application/zip",
+    "gz" => "application/gzip",
+    "wasm" => "application/wasm",
+    "map" => "application/json",
+    "woff" => "font/woff",
+    "woff2" => "font/woff2",
+    "ttf" => "font/ttf",
+    "otf" => "font/otf",
+    "mp4" => "video/mp4",
+    "webm" => "video/webm",
+    "mp3" => "audio/mpeg",
+    "ogg" => "audio/ogg",
+};
 
 #[napi]
 pub fn mime_from_extension(ext: Uint8Array) -> Buffer {
@@ -47,7 +49,8 @@ pub fn mime_from_extension(ext: Uint8Array) -> Buffer {
 
     let text = text.trim_start_matches('.');
 
-    let mut stack = [0u8; 32];
+    let mut stack = [0u8; 64];
+
     let lower_owned: String;
 
     let lower: &str = if text.len() <= stack.len() {
@@ -64,7 +67,7 @@ pub fn mime_from_extension(ext: Uint8Array) -> Buffer {
         &lower_owned
     };
 
-    if let Some(mime) = common_mime(lower) {
+    if let Some(mime) = MIME_TABLE.get(lower) {
         return Buffer::from(mime.as_bytes().to_vec());
     }
 

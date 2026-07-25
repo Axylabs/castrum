@@ -1,7 +1,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use crate::util::{ensure_capacity, hex_val, write_u32_le};
-
+use crate::util::{ensure_capacity, hex_val, write_bytes, write_u32_le};
 /// Legacy JSON parser.
 ///
 /// Deprecated for hot paths.
@@ -46,53 +45,57 @@ fn write_decoded_form_component(src: &[u8], out: &mut [u8], pos: &mut usize) -> 
     write_u32_le(out, pos, 0)?;
 
     let start = *pos;
-    let mut i = 0usize;
 
-    while i < src.len() {
-        match src[i] {
-            b'+' => {
-                ensure_capacity(out, *pos, 1)?;
-                out[*pos] = b' ';
-                *pos += 1;
-                i += 1;
-            }
-            b'%' => {
-                if i + 2 >= src.len() {
-                    return Err(Error::from_reason(
-                        "invalid percent-encoded sequence: missing bytes",
-                    ));
+    // Fast path: no '+' and no '%'.
+    if memchr::memchr2(b'+', b'%', src).is_none() {
+        write_bytes(out, pos, src)?;
+    } else {
+        let mut i = 0usize;
+
+        while i < src.len() {
+            match src[i] {
+                b'+' => {
+                    ensure_capacity(out, *pos, 1)?;
+                    out[*pos] = b' ';
+                    *pos += 1;
+                    i += 1;
                 }
+                b'%' => {
+                    if i + 2 >= src.len() {
+                        return Err(Error::from_reason(
+                            "invalid percent-encoded sequence: missing bytes",
+                        ));
+                    }
 
-                let hi = hex_val(src[i + 1]).ok_or_else(|| {
-                    Error::from_reason("invalid percent-encoded sequence: bad high nibble")
-                })?;
+                    let hi = hex_val(src[i + 1]).ok_or_else(|| {
+                        Error::from_reason("invalid percent-encoded sequence: bad high nibble")
+                    })?;
 
-                let lo = hex_val(src[i + 2]).ok_or_else(|| {
-                    Error::from_reason("invalid percent-encoded sequence: bad low nibble")
-                })?;
+                    let lo = hex_val(src[i + 2]).ok_or_else(|| {
+                        Error::from_reason("invalid percent-encoded sequence: bad low nibble")
+                    })?;
 
-                ensure_capacity(out, *pos, 1)?;
-                out[*pos] = (hi << 4) | lo;
-                *pos += 1;
+                    ensure_capacity(out, *pos, 1)?;
+                    out[*pos] = (hi << 4) | lo;
+                    *pos += 1;
 
-                i += 3;
-            }
-            b => {
-                ensure_capacity(out, *pos, 1)?;
-                out[*pos] = b;
-                *pos += 1;
-                i += 1;
+                    i += 3;
+                }
+                b => {
+                    ensure_capacity(out, *pos, 1)?;
+                    out[*pos] = b;
+                    *pos += 1;
+                    i += 1;
+                }
             }
         }
     }
 
     let decoded_len = (*pos - start) as u32;
-
     out[len_pos..len_pos + 4].copy_from_slice(&decoded_len.to_le_bytes());
 
     Ok(())
 }
-
 /// Parse application/x-www-form-urlencoded bytes into packed pairs.
 ///
 /// Output format:
@@ -136,12 +139,17 @@ pub fn query_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<usi
 pub fn query_parse_packed(input: Uint8Array) -> Result<Buffer> {
     let input = input.as_ref();
 
-    // Worst-case overhead is bounded by length prefixes per pair.
-    // Use a conservative allocation.
-    let mut out = vec![0u8; input.len().saturating_mul(5).saturating_add(4)];
+    let pair_count = memchr::memchr_iter(b'&', input).count() + 1;
 
+    // Decoded bytes are never larger than input bytes.
+    // Each pair adds two u32 length prefixes = 8 bytes.
+    let upper_bound = input
+        .len()
+        .saturating_add(pair_count.saturating_mul(8))
+        .saturating_add(4);
+
+    let mut out = vec![0u8; upper_bound];
     let written = query_parse_packed_into_slice(input, &mut out)?;
-
     out.truncate(written);
 
     Ok(Buffer::from(out))
@@ -149,6 +157,5 @@ pub fn query_parse_packed(input: Uint8Array) -> Result<Buffer> {
 
 #[napi]
 pub fn query_parse_packed_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
-    let written = query_parse_packed_into_slice(input.as_ref(), output.as_mut())?;
-    Ok(written as u32)
+    crate::util::run_packed_into(&input, &mut output, query_parse_packed_into_slice)
 }

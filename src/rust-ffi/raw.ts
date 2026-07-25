@@ -5,6 +5,17 @@
  * and correctness checks work without modification.
  */
 
+import addon from "../native";
+import {
+  packBatch,
+  schemaValidateBatch,
+  schemaValidateBatchCount,
+  unpackBitset,
+  unpackByteResults,
+  unpackI64ArrayAsBigInt,
+  unpackU32Array,
+  type SchemaValidator,
+} from "../shared/packed";
 import { rustNative } from "../native/wrapper";
 
 
@@ -37,7 +48,7 @@ export function createRawRustClient() {
     validateIpv6: rustNative.validateIpv6,
     wsAcceptKey: rustNative.wsAcceptKey,
     createSchemaValidator: rustNative.createSchemaValidator,
-     httpParseRequestPacked: rustNative.httpParseRequestPacked,
+    httpParseRequestPacked: rustNative.httpParseRequestPacked,
     httpParseRequestPackedInto: rustNative.httpParseRequestPackedInto,
 
     queryParsePacked: rustNative.queryParsePacked,
@@ -48,23 +59,12 @@ export function createRawRustClient() {
   };
 }
 
-import addon from "../native";
-import {
-  packBatch,
-
-  schemaValidateBatch,
-
-  schemaValidateBatchCount,
-
-  unpackBitset,
-  unpackByteResults,
-  unpackI64ArrayAsBigInt,
-  type SchemaValidator,
-} from "../shared/packed";
-
 export const rustBatch = {
   jsonValid(items: Uint8Array[]): Uint8Array {
     return unpackBitset(addon.jsonValidBatchPacked(packBatch(items)));
+  },
+  crc32(items: Uint8Array[]): Uint32Array {
+    return unpackU32Array(addon.crc32BatchPacked(packBatch(items)));
   },
 
   validateEmail(items: Uint8Array[]): Uint8Array {

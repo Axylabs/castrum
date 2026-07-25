@@ -103,10 +103,15 @@ pub fn cookie_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<us
 pub fn cookie_parse_packed(input: Uint8Array) -> Result<Buffer> {
     let input = input.as_ref();
 
-    let mut out = vec![0u8; input.len().saturating_mul(5).saturating_add(4)];
+    let pair_count = memchr::memchr_iter(b';', input).count() + 1;
 
+    let upper_bound = input
+        .len()
+        .saturating_add(pair_count.saturating_mul(8))
+        .saturating_add(4);
+
+    let mut out = vec![0u8; upper_bound];
     let written = cookie_parse_packed_into_slice(input, &mut out)?;
-
     out.truncate(written);
 
     Ok(Buffer::from(out))
@@ -114,6 +119,5 @@ pub fn cookie_parse_packed(input: Uint8Array) -> Result<Buffer> {
 
 #[napi]
 pub fn cookie_parse_packed_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
-    let written = cookie_parse_packed_into_slice(input.as_ref(), output.as_mut())?;
-    Ok(written as u32)
+    crate::util::run_packed_into(&input, &mut output, cookie_parse_packed_into_slice)
 }

@@ -36,10 +36,10 @@
         "validator": "^13.15.35"
     },
     "devDependencies": {
+        "@napi-rs/cli": "^3.7.4",
         "@types/bun": "^1.3.14",
         "@types/mime-types": "^3.0.1",
-        "@types/validator": "^13.15.10",
-        "@napi-rs/cli": "^3.1.0"
+        "@types/validator": "^13.15.10"
     },
     "engines": {
         "bun": ">=1.1.0"

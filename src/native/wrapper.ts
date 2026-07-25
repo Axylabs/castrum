@@ -1,4 +1,6 @@
 import addon from "./index";
+import type { HmacSignerInstance } from "./index";
+import { decoder } from "../shared/bytes";
 
 export const rustNative = {
 
@@ -23,9 +25,6 @@ export const rustNative = {
 
 
 
-  hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
-    return addon.hmacSha256(key, data);
-  },
 
   httpParseRequest(bytes: Uint8Array): Uint8Array {
     return addon.httpParseRequest(bytes);
@@ -35,10 +34,6 @@ export const rustNative = {
 
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array {
     return addon.jsonPatch(doc, patch);
-  },
-
-  mimeFromExtension(ext: Uint8Array): Uint8Array {
-    return addon.mimeFromExtension(ext);
   },
 
   queryParse(bytes: Uint8Array): Uint8Array {
@@ -117,11 +112,73 @@ export const rustNative = {
     return addon.validateIpv6(bytes) ? 1 : 0;
   },
 
-  hmacSha256Verify(
-    key: Uint8Array,
-    data: Uint8Array,
-    sig: Uint8Array,
-  ): number {
-    return addon.hmacSha256Verify(key, data, sig) ? 1 : 0;
-  },
+  mimeFromExtension(ext: Uint8Array): Uint8Array {
+  return cachedMime(ext);
+},
+
+hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
+  return getHmacSigner(key).sign(data);
+},
+
+hmacSha256Verify(
+  key: Uint8Array,
+  data: Uint8Array,
+  sig: Uint8Array,
+): number {
+  return getHmacSigner(key).verify(data, sig) ? 1 : 0;
+},
 };
+
+
+const mimeByBytes = new WeakMap<Uint8Array, Uint8Array>();
+const mimeByText = new Map<string, Uint8Array>();
+
+const hmacByBytes = new WeakMap<Uint8Array, HmacSignerInstance>();
+const hmacByText = new Map<string, HmacSignerInstance>();
+
+function normalizeExt(ext: Uint8Array): string {
+  let s = decoder.decode(ext);
+  if (s.charCodeAt(0) === 46) s = s.slice(1); // strip leading "."
+  return s.toLowerCase();
+}
+
+function cachedMime(ext: Uint8Array): Uint8Array {
+  const direct = mimeByBytes.get(ext);
+  if (direct) return direct;
+
+  const key = normalizeExt(ext);
+  let val = mimeByText.get(key);
+
+  if (!val) {
+    val = addon.mimeFromExtension(ext);
+    mimeByText.set(key, val);
+  }
+
+  mimeByBytes.set(ext, val);
+  return val;
+}
+
+function getHmacSigner(key: Uint8Array): HmacSignerInstance {
+  const direct = hmacByBytes.get(key);
+  if (direct) return direct;
+
+  // Optional text-based cache for textual keys.
+  // If your keys are sensitive binary material and you do not want
+  // decoded key strings retained in memory, remove this branch.
+  let keyText = "";
+  try {
+    keyText = decoder.decode(key);
+  } catch {
+    keyText = "";
+  }
+
+  let signer = keyText ? hmacByText.get(keyText) : undefined;
+
+  if (!signer) {
+    signer = new addon.HmacSigner(key);
+    if (keyText) hmacByText.set(keyText, signer);
+  }
+
+  hmacByBytes.set(key, signer);
+  return signer;
+}

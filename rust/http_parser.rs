@@ -1,6 +1,6 @@
+use crate::util::{write_bytes, write_u32_le};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use crate::util::{write_bytes, write_u32_le};
 
 /// Internal legacy JSON parser.
 ///
@@ -115,16 +115,10 @@ pub fn http_parse_request_packed_into_slice(input: &[u8], out: &mut [u8]) -> Res
         let value = header.value;
 
         write_u32_le(out, &mut pos, name.len() as u32)?;
-
-        crate::util::ensure_capacity(out, pos, name.len())?;
-
-        for b in name {
-            out[pos] = b.to_ascii_lowercase();
-            pos += 1;
-        }
+        crate::util::write_bytes_lowercase(out, &mut pos, name)?;
 
         write_u32_le(out, &mut pos, value.len() as u32)?;
-        write_bytes(out, &mut pos, value)?;
+        crate::util::write_bytes(out, &mut pos, value)?;
     }
 
     Ok(pos)
@@ -138,12 +132,17 @@ pub fn http_parse_request_packed_into_slice(input: &[u8], out: &mut [u8]) -> Res
 pub fn http_parse_request_packed(input: Uint8Array) -> Result<Buffer> {
     let input = input.as_ref();
 
-    // 64 headers max, each adds 8 bytes of length metadata.
-    // Add generous headroom for request-line/version metadata.
-    let mut out = vec![0u8; input.len().saturating_add(1024)];
-
+    // Max 64 headers.
+    // Metadata overhead:
+    //   4 bytes method len
+    //   4 bytes path len
+    //   4 bytes version len
+    //   4 bytes header count
+    //   8 bytes per header name/value length prefix
+    //
+    // 16 + 64 * 8 = 528
+    let mut out = vec![0u8; input.len().saturating_add(528)];
     let written = http_parse_request_packed_into_slice(input, &mut out)?;
-
     out.truncate(written);
 
     Ok(Buffer::from(out))
@@ -157,6 +156,5 @@ pub fn http_parse_request_packed(input: Uint8Array) -> Result<Buffer> {
 /// avoids an extra Rust-to-JS copy of the final result.
 #[napi]
 pub fn http_parse_request_packed_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
-    let written = http_parse_request_packed_into_slice(input.as_ref(), output.as_mut())?;
-    Ok(written as u32)
+    crate::util::run_packed_into(&input, &mut output, http_parse_request_packed_into_slice)
 }

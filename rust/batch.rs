@@ -1,4 +1,4 @@
-use napi::{bindgen_prelude::*, Task};
+use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::cookie_parser::cookie_parse_packed_into_slice;
@@ -58,21 +58,37 @@ fn parse_batch(items: &[&[u8]], f: impl Fn(&[u8]) -> Result<Vec<u8>> + Sync) -> 
 
 
 fn query_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
-    let mut out = vec![0u8; input.len().saturating_mul(5).saturating_add(4)];
+    let pair_count = memchr::memchr_iter(b'&', input).count() + 1;
+
+    let upper_bound = input
+        .len()
+        .saturating_add(pair_count.saturating_mul(8))
+        .saturating_add(4);
+
+    let mut out = vec![0u8; upper_bound];
     let written = query_parse_packed_into_slice(input, &mut out)?;
     out.truncate(written);
+
     Ok(out)
 }
 
 fn cookie_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
-    let mut out = vec![0u8; input.len().saturating_mul(5).saturating_add(4)];
+    let pair_count = memchr::memchr_iter(b';', input).count() + 1;
+
+    let upper_bound = input
+        .len()
+        .saturating_add(pair_count.saturating_mul(8))
+        .saturating_add(4);
+
+    let mut out = vec![0u8; upper_bound];
     let written = cookie_parse_packed_into_slice(input, &mut out)?;
     out.truncate(written);
+
     Ok(out)
 }
 
 fn http_parse_request_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
-    let mut out = vec![0u8; input.len().saturating_add(1024)];
+    let mut out = vec![0u8; input.len().saturating_add(528)];
     let written = http_parse_request_packed_into_slice(input, &mut out)?;
     out.truncate(written);
     Ok(out)
@@ -189,98 +205,27 @@ pub fn http_parse_request_batch_packed(input: Uint8Array) -> Result<Buffer> {
 // Async packed batch APIs
 // ------------------------------------------------------------------
 
-macro_rules! packed_task {
-    ($name:ident, $func:path) => {
-        pub struct $name {
-            packed: Vec<u8>,
-        }
+macro_rules! packed_async_fn {
+    ($fn_name:ident, $func:path) => {
+        #[napi]
+        pub async fn $fn_name(input: Uint8Array) -> Result<Buffer> {
+            let packed = input.as_ref().to_vec();
 
-        impl Task for $name {
-            type Output = Vec<u8>;
-            type JsValue = Buffer;
+            let output = tokio::task::spawn_blocking(move || $func(&packed))
+                .await
+                .map_err(crate::util::tokio_join_error)?;
 
-            fn compute(&mut self) -> Result<Self::Output> {
-                $func(&self.packed)
-            }
-
-            fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-                Ok(Buffer::from(output))
-            }
+            Ok(Buffer::from(output?))
         }
     };
 }
 
-packed_task!(JsonValidBatchTask, json_valid_batch_bytes);
-packed_task!(ValidateEmailBatchTask, validate_email_batch_bytes);
-packed_task!(ValidateUuidBatchTask, validate_uuid_batch_bytes);
-packed_task!(ValidateIpv4BatchTask, validate_ipv4_batch_bytes);
-packed_task!(ValidateIpv6BatchTask, validate_ipv6_batch_bytes);
-packed_task!(JsonSumBatchTask, json_sum_batch_bytes);
-packed_task!(QueryParseBatchTask, query_parse_batch_bytes);
-packed_task!(CookieParseBatchTask, cookie_parse_batch_bytes);
-packed_task!(HttpParseRequestBatchTask, http_parse_request_batch_bytes);
-
-#[napi]
-pub fn json_valid_batch_packed_async(input: Buffer) -> AsyncTask<JsonValidBatchTask> {
-    AsyncTask::new(JsonValidBatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
-
-#[napi]
-pub fn validate_email_batch_packed_async(input: Buffer) -> AsyncTask<ValidateEmailBatchTask> {
-    AsyncTask::new(ValidateEmailBatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
-
-#[napi]
-pub fn validate_uuid_batch_packed_async(input: Buffer) -> AsyncTask<ValidateUuidBatchTask> {
-    AsyncTask::new(ValidateUuidBatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
-
-#[napi]
-pub fn validate_ipv4_batch_packed_async(input: Buffer) -> AsyncTask<ValidateIpv4BatchTask> {
-    AsyncTask::new(ValidateIpv4BatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
-
-#[napi]
-pub fn validate_ipv6_batch_packed_async(input: Uint8Array) -> AsyncTask<ValidateIpv6BatchTask> {
-    AsyncTask::new(ValidateIpv6BatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
-
-#[napi]
-pub fn json_sum_batch_packed_async(input: Uint8Array) -> AsyncTask<JsonSumBatchTask> {
-    AsyncTask::new(JsonSumBatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
-
-#[napi]
-pub fn query_parse_batch_packed_async(input: Uint8Array) -> AsyncTask<QueryParseBatchTask> {
-    AsyncTask::new(QueryParseBatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
-
-#[napi]
-pub fn cookie_parse_batch_packed_async(input: Uint8Array) -> AsyncTask<CookieParseBatchTask> {
-    AsyncTask::new(CookieParseBatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
-
-#[napi]
-pub fn http_parse_request_batch_packed_async(
-    input: Uint8Array,
-) -> AsyncTask<HttpParseRequestBatchTask> {
-    AsyncTask::new(HttpParseRequestBatchTask {
-        packed: input.as_ref().to_vec(),
-    })
-}
+packed_async_fn!(json_valid_batch_packed_async, json_valid_batch_bytes);
+packed_async_fn!(validate_email_batch_packed_async, validate_email_batch_bytes);
+packed_async_fn!(validate_uuid_batch_packed_async, validate_uuid_batch_bytes);
+packed_async_fn!(validate_ipv4_batch_packed_async, validate_ipv4_batch_bytes);
+packed_async_fn!(validate_ipv6_batch_packed_async, validate_ipv6_batch_bytes);
+packed_async_fn!(json_sum_batch_packed_async, json_sum_batch_bytes);
+packed_async_fn!(query_parse_batch_packed_async, query_parse_batch_bytes);
+packed_async_fn!(cookie_parse_batch_packed_async, cookie_parse_batch_bytes);
+packed_async_fn!(http_parse_request_batch_packed_async, http_parse_request_batch_bytes);

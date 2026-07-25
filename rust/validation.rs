@@ -1,14 +1,29 @@
+// rust/validation.rs
+
+#[cfg(not(feature = "fast-email"))]
 use email_address::EmailAddress;
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::net::Ipv6Addr;
 
+#[cfg(feature = "fast-email")]
+#[inline]
+fn email_is_valid(s: &str) -> bool {
+    fast_chemail::is_valid_email(s)
+}
+
+#[cfg(not(feature = "fast-email"))]
+#[inline]
+fn email_is_valid(s: &str) -> bool {
+    EmailAddress::is_valid(s)
+}
+
 #[inline]
 pub fn validate_email_bytes(input: &[u8]) -> bool {
-    match std::str::from_utf8(input) {
-        Ok(s) => EmailAddress::is_valid(s),
-        Err(_) => false,
-    }
+    std::str::from_utf8(input)
+        .map(email_is_valid)
+        .unwrap_or(false)
 }
 
 #[inline]
@@ -46,6 +61,7 @@ pub fn validate_uuid_bytes(input: &[u8]) -> bool {
 
     true
 }
+
 #[inline]
 fn is_valid_ipv4(b: &[u8]) -> bool {
     if b.is_empty() || b.len() > 15 {
@@ -108,7 +124,7 @@ pub fn validate_uuid(input: Uint8Array) -> bool {
 }
 
 #[napi]
-pub fn validate_ipv4(input: Buffer) -> bool {
+pub fn validate_ipv4(input: Uint8Array) -> bool {
     validate_ipv4_bytes(input.as_ref())
 }
 

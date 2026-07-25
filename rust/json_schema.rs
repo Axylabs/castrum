@@ -22,8 +22,12 @@ impl SchemaValidator {
         let schema_value: Value = sonic_rs::from_str(schema_str)
             .map_err(|e| Error::new(Status::InvalidArg, format!("Schema JSON error: {}", e)))?;
 
-        let compiled = jsonschema::validator_for(&schema_value)
-            .map_err(|e| Error::new(Status::InvalidArg, format!("Schema compilation error: {}", e)))?;
+        let compiled = jsonschema::validator_for(&schema_value).map_err(|e| {
+            Error::new(
+                Status::InvalidArg,
+                format!("Schema compilation error: {}", e),
+            )
+        })?;
 
         Ok(Self {
             schema: Arc::new(compiled),
@@ -91,10 +95,7 @@ impl SchemaValidator {
                 .filter(|item| self.validate_doc(item))
                 .count() as u32
         } else {
-            items
-                .iter()
-                .filter(|item| self.validate_doc(item))
-                .count() as u32
+            items.iter().filter(|item| self.validate_doc(item)).count() as u32
         };
 
         Ok(count)
@@ -122,8 +123,7 @@ impl SchemaValidator {
     /// materializing the entire array at once.
     #[napi]
     pub fn validate_batch_streaming(&self, batch_bytes: Uint8Array) -> Result<u32> {
-        let mut de = serde_json::Deserializer::from_slice(batch_bytes.as_ref());
-
+        let mut de = sonic_rs::Deserializer::from_slice(batch_bytes.as_ref());
         let seed = BatchSeed {
             validator: &self.schema,
         };

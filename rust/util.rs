@@ -1,6 +1,7 @@
 use napi::{Error, Result};
 use napi_derive::napi;
 use std::sync::OnceLock;
+use napi::bindgen_prelude::Uint8Array;
 
 static RAYON_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
@@ -85,7 +86,11 @@ pub fn unpack<'a>(data: &'a [u8]) -> Result<Vec<&'a [u8]>> {
     let count = read_u32_le(data, 0)? as usize;
     let mut offset = 4usize;
 
-    let reserve = count.min(data.len() / 5 + 1).min(1_000_000);
+    // Minimum valid item is 4 bytes: [u32 len]
+    let reserve = count
+        .min(data.len() / 4 + 1)
+        .min(4_000_000);
+
     let mut items = Vec::with_capacity(reserve);
 
     for _ in 0..count {
@@ -106,7 +111,6 @@ pub fn unpack<'a>(data: &'a [u8]) -> Result<Vec<&'a [u8]>> {
 
     Ok(items)
 }
-
 /// Packed batch output format for variable-length byte results.
 pub fn pack_byte_results(results: &[Vec<u8>]) -> Vec<u8> {
     let total: usize = results
@@ -147,14 +151,6 @@ pub fn total_bytes(items: &[&[u8]]) -> usize {
     items.iter().map(|x| x.len()).sum()
 }
 
-#[inline]
-pub fn should_parallelize(items: usize, bytes: usize) -> bool {
-    // Be more conservative than before.
-    //
-    // Rayon is useful for large batches, but for small payloads the
-    // thread-pool dispatch cost dominates.
-    items >= 2048 || bytes >= 256 * 1024
-}
 
 /// Produce a packed bitset for boolean validation results.
 ///
@@ -172,13 +168,20 @@ pub fn validation_bitset(items: &[&[u8]], f: impl Fn(&[u8]) -> bool + Sync) -> V
     if should_parallelize(count, total_bytes(items)) {
         use rayon::prelude::*;
 
-        let results: Vec<bool> = items.par_iter().map(|item| f(item)).collect();
+        bits.par_iter_mut().enumerate().for_each(|(byte_idx, slot)| {
+            let start = byte_idx * 8;
+            let end = (start + 8).min(count);
 
-        for (i, &valid) in results.iter().enumerate() {
-            if valid {
-                bits[i >> 3] |= 1 << (i & 7);
+            let mut byte = 0u8;
+
+            for (bit, item) in items[start..end].iter().enumerate() {
+                if f(item) {
+                    byte |= 1 << bit;
+                }
             }
-        }
+
+            *slot = byte;
+        });
     } else {
         for (i, item) in items.iter().enumerate() {
             if f(item) {
@@ -190,10 +193,8 @@ pub fn validation_bitset(items: &[&[u8]], f: impl Fn(&[u8]) -> bool + Sync) -> V
     let mut out = Vec::with_capacity(4 + bitset_len);
     out.extend_from_slice(&(count as u32).to_le_bytes());
     out.extend_from_slice(&bits);
-
     out
 }
-
 #[inline]
 pub fn hex_val(b: u8) -> Option<u8> {
     match b {
@@ -231,4 +232,98 @@ pub fn write_bytes(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> Result<()> 
     out[*pos..*pos + bytes.len()].copy_from_slice(bytes);
     *pos += bytes.len();
     Ok(())
+}
+
+
+#[inline]
+pub fn should_parallelize(items: usize, bytes: usize) -> bool {
+    let threads = rayon::current_num_threads().max(1);
+
+    // Be conservative under high concurrent load.
+    //
+    // For small payloads, FFI + Rayon dispatch cost dominates.
+    // For large batches, Rayon helps.
+    items >= threads.saturating_mul(256) || bytes >= threads.saturating_mul(256 * 1024)
+}
+
+
+#[inline]
+pub fn write_bytes_lowercase(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> Result<()> {
+    ensure_capacity(out, *pos, bytes.len())?;
+
+    let start = *pos;
+    let end = start + bytes.len();
+
+    out[start..end].copy_from_slice(bytes);
+    out[start..end].make_ascii_lowercase();
+
+    *pos = end;
+    Ok(())
+}
+
+
+#[inline]
+pub fn tokio_join_error(e: tokio::task::JoinError) -> Error {
+    Error::from_reason(format!("tokio blocking task failed: {e}"))
+}
+
+#[inline]
+fn ranges_overlap(a: &[u8], b: &[u8]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+
+    let a_start = a.as_ptr() as usize;
+    let b_start = b.as_ptr() as usize;
+
+    let a_end = a_start.saturating_add(a.len());
+    let b_end = b_start.saturating_add(b.len());
+
+    a_start < b_end && b_start < a_end
+}
+
+/// Helper for `*_packed_into` functions.
+///
+/// napi v3 marks `Uint8Array::as_mut()` as unsafe because it exposes mutable
+/// JavaScript-owned memory to Rust.
+///
+/// This helper:
+/// - uses unsafe mutable access for the output buffer,
+/// - copies the input if the input/output memory ranges overlap,
+/// - otherwise avoids the extra input copy.
+#[inline]
+pub fn run_packed_into<F>(
+    input: &Uint8Array,
+    output: &mut Uint8Array,
+    f: F,
+) -> Result<u32>
+where
+    F: FnOnce(&[u8], &mut [u8]) -> Result<usize>,
+{
+    let input_bytes = input.as_ref();
+
+    let overlaps = {
+        let output_bytes = output.as_ref();
+        ranges_overlap(input_bytes, output_bytes)
+    };
+
+    let written = if overlaps {
+        // If JS passed overlapping views, copy the input so the parser is not
+        // reading from memory that Rust may also be writing.
+        let owned_input = input_bytes.to_vec();
+
+        // SAFETY:
+        // - This is a synchronous NAPI call.
+        // - The output buffer is exclusively borrowed here.
+        // - The input has been copied if input/output ranges overlap.
+        unsafe { f(&owned_input, output.as_mut())? }
+    } else {
+        // SAFETY:
+        // - This is a synchronous NAPI call.
+        // - The output buffer is exclusively borrowed here.
+        // - Input/output ranges do not overlap.
+        unsafe { f(input_bytes, output.as_mut())? }
+    };
+
+    Ok(written as u32)
 }

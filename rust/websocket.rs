@@ -2,7 +2,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use ring::digest;
+use aws_lc_rs::digest;
 
 const WS_MAGIC: &[u8] = b"258EAFA5-E914-47DA-95CA-5AB5DC11BE85";
 

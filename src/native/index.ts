@@ -65,6 +65,7 @@ function resolveAddonPath(): string {
 
 interface NativeAddon {
   cookieParse(input: Uint8Array): Uint8Array;
+  HmacSigner: new (key: Uint8Array) => HmacSignerInstance;
   crc32(input: Uint8Array): number;
   fnv1a64(input: Uint8Array): bigint;
   hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array;
@@ -112,7 +113,7 @@ interface NativeAddon {
 
   cookieParsePacked(input: Uint8Array): Uint8Array;
   cookieParsePackedInto(input: Uint8Array, output: Uint8Array): number;
-  
+  crc32BatchPacked(input: Uint8Array): Uint8Array;
   jsonValidBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   validateEmailBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   validateUuidBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
@@ -140,3 +141,9 @@ export default addon;
 export { addonPath };
 
 export type { HttpRouterInstance, SchemaValidatorInstance };
+
+
+export interface HmacSignerInstance {
+  sign(data: Uint8Array): Uint8Array;
+  verify(data: Uint8Array, sig: Uint8Array): boolean;
+}
