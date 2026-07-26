@@ -4,12 +4,14 @@ import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-
-
-interface HttpRouterInstance {
-  matchRoute(path: Buffer | string): number;
-  matchRouteBatchPacked(packed: Buffer): Buffer;
+interface IngressInstance {
+  handlePacked(
+    meta: Uint8Array,
+    body: Uint8Array | null,
+  ): Buffer;
 }
+
+
 
 function resolveAddonPath(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -65,6 +67,7 @@ function resolveAddonPath(): string {
 
 interface NativeAddon {
   HmacSigner: new (key: Uint8Array) => HmacSignerInstance;
+  Ingress: new (options: any) => IngressInstance;
   crc32(input: Uint8Array): number;
   fnv1a64(input: Uint8Array): bigint;
   hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array;
@@ -82,14 +85,13 @@ interface NativeAddon {
   validateIpv6(input: Uint8Array): boolean;
   wsAcceptKey(key: Uint8Array): Uint8Array;
   SchemaValidator: new (schema: Uint8Array) => SchemaValidatorInstance;
-  HttpRouter: new (routes: string[]) => HttpRouterInstance;
 
   initThreadPool(rayonThreads?: number): void;
   rayonNumThreads(): number;
 
   jsonValidAsync(input: Uint8Array): Promise<number>;
   jsonSumIdsAsync(input: Uint8Array): Promise<bigint>;
-  
+
   jsonValidBatchPacked(input: Uint8Array): Uint8Array;
   validateEmailBatchPacked(input: Uint8Array): Uint8Array;
   validateUuidBatchPacked(input: Uint8Array): Uint8Array;
@@ -133,7 +135,7 @@ interface SchemaValidatorInstance {
 export default addon;
 export { addonPath };
 
-export type { HttpRouterInstance, SchemaValidatorInstance };
+export type {  SchemaValidatorInstance };
 
 
 export interface HmacSignerInstance {

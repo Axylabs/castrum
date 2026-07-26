@@ -47,9 +47,6 @@ export const rustNative = {
     return addon.wsAcceptKey(key);
   },
 
-  createRouter(routes: string[]) {
-    return new addon.HttpRouter(routes);
-  },
 
   initThreadPool(rayonThreads?: number) {
     return addon.initThreadPool(rayonThreads);

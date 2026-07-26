@@ -25,9 +25,7 @@ rustNative.initThreadPool(
 
 export function createRawRustClient() {
   return {
-    createRouter(routes: string[]) {
-      return rustNative.createRouter(routes);
-    },
+
     crc32: rustNative.crc32,
     fnv1A64: rustNative.fnv1a64,
     hmacSha256: rustNative.hmacSha256,

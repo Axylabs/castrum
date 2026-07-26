@@ -1,10 +1,13 @@
-import { decoder, encoder } from "./bytes";
+// src/shared/packed.ts
 
+import { decoder, encoder } from "./bytes";
 import type { SchemaValidatorInstance } from "../native";
 
 export type SchemaValidator = SchemaValidatorInstance;
 
 export function unpackU32Array(bytes: Uint8Array): Uint32Array {
+  if (bytes.byteLength < 4) return new Uint32Array(0);
+
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const count = dv.getUint32(0, true);
   const out = new Uint32Array(count);
@@ -16,13 +19,20 @@ export function unpackU32Array(bytes: Uint8Array): Uint32Array {
   return out;
 }
 
-export function schemaValidateBatch(validator: SchemaValidator, items: Uint8Array[]): Uint8Array {
+export function schemaValidateBatch(
+  validator: SchemaValidator,
+  items: Uint8Array[],
+): Uint8Array {
   return unpackBitset(validator.validateBatchPackedBitset(packBatch(items)));
 }
 
-export function schemaValidateBatchCount(validator: SchemaValidator, items: Uint8Array[]): number {
+export function schemaValidateBatchCount(
+  validator: SchemaValidator,
+  items: Uint8Array[],
+): number {
   return validator.validateBatchPackedCount(packBatch(items));
 }
+
 export function packBatch(items: Uint8Array[]): Uint8Array {
   let total = 4;
 
@@ -40,6 +50,7 @@ export function packBatch(items: Uint8Array[]): Uint8Array {
   for (const item of items) {
     dv.setUint32(offset, item.byteLength, true);
     offset += 4;
+
     out.set(item, offset);
     offset += item.byteLength;
   }
@@ -48,10 +59,11 @@ export function packBatch(items: Uint8Array[]): Uint8Array {
 }
 
 export function unpackBitset(bytes: Uint8Array): Uint8Array {
+  if (bytes.byteLength < 4) return new Uint8Array(0);
+
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const count = dv.getUint32(0, true);
   const bits = bytes.subarray(4);
-
   const out = new Uint8Array(count);
 
   for (let i = 0; i < count; i++) {
@@ -61,11 +73,11 @@ export function unpackBitset(bytes: Uint8Array): Uint8Array {
   return out;
 }
 
-
 export function unpackI64ArrayAsBigInt(bytes: Uint8Array): BigInt64Array {
+  if (bytes.byteLength < 4) return new BigInt64Array(0);
+
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const count = dv.getUint32(0, true);
-
   const out = new BigInt64Array(count);
 
   for (let i = 0; i < count; i++) {
@@ -76,9 +88,10 @@ export function unpackI64ArrayAsBigInt(bytes: Uint8Array): BigInt64Array {
 }
 
 export function unpackByteResults(bytes: Uint8Array): Uint8Array[] {
+  if (bytes.byteLength < 4) return [];
+
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const count = dv.getUint32(0, true);
-
   const out: Uint8Array[] = [];
 
   let offset = 4;
@@ -88,7 +101,6 @@ export function unpackByteResults(bytes: Uint8Array): Uint8Array[] {
     offset += 4;
 
     out.push(bytes.subarray(offset, offset + len));
-
     offset += len;
   }
 
@@ -98,12 +110,16 @@ export function unpackByteResults(bytes: Uint8Array): Uint8Array[] {
 export type Pair = [string, string];
 
 export function readPairsPacked(bytes: Uint8Array): Pair[] {
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // Empty packed pairs are valid.
+  // Rust early-exit paths may emit zero-length regions.
+  if (bytes.byteLength < 4) return [];
 
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const count = dv.getUint32(0, true);
 
-  const out: Pair[] = [];
+  if (count === 0) return [];
 
+  const out: Pair[] = [];
   let offset = 4;
 
   for (let i = 0; i < count; i++) {
@@ -125,7 +141,9 @@ export function readPairsPacked(bytes: Uint8Array): Pair[] {
   return out;
 }
 
-export function pairsToObject(pairs: Pair[]): Record<string, string | string[]> {
+export function pairsToObject(
+  pairs: Pair[],
+): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {};
 
   for (const [key, value] of pairs) {
@@ -202,13 +220,13 @@ export function readHttpPacked(bytes: Uint8Array): ParsedHttpRequestPacked {
   };
 }
 
-
 export function packPairs(pairs: Array<[string, string]>): Uint8Array {
   const encoded = pairs.map(
     ([key, value]) => [encoder.encode(key), encoder.encode(value)] as const,
   );
 
   let total = 4;
+
   for (const [key, value] of encoded) {
     total += 8 + key.byteLength + value.byteLength;
   }
@@ -217,16 +235,19 @@ export function packPairs(pairs: Array<[string, string]>): Uint8Array {
   const dv = new DataView(out.buffer);
 
   dv.setUint32(0, encoded.length, true);
+
   let offset = 4;
 
   for (const [key, value] of encoded) {
     dv.setUint32(offset, key.byteLength, true);
     offset += 4;
+
     out.set(key, offset);
     offset += key.byteLength;
 
     dv.setUint32(offset, value.byteLength, true);
     offset += 4;
+
     out.set(value, offset);
     offset += value.byteLength;
   }

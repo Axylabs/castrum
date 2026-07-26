@@ -6,40 +6,40 @@ export declare class HmacSigner {
   verify(data: Buffer, sig: Buffer): boolean
 }
 
-/**
- * Byte-oriented HTTP router.
- *
- * Unlike `matchit`, this router matches raw bytes and does not require
- * UTF-8 validation on the lookup hot path.
- */
-export declare class HttpRouter {
-  constructor(routes: Array<string>)
+export declare class Ingress {
+  constructor(options: IngressOptions)
   /**
-   * Accepts either a JS string or raw bytes.
+   * Optimized entrypoint for Bun 1.4.
    *
-   * In Bun HTTP handlers, prefer passing the pathname string directly:
+   * Meta format (unchanged):
+   *   [u16 method_len][method]
+   *   [u32 url_len][url]
+   *   [u16 socket_ip_len][socket_ip]
+   *   [u32 packed_headers_len][packed_headers]
    *
-   *   const path = new URL(req.url).pathname
-   *   const idx = router.matchRoute(path)
+   * Output format v3 (BREAKING — smaller, no redundant data):
+   *   [u8 version=3]
+   *   [u8 verdict]
+   *   [u16 status]
+   *   [u32 flags]
+   *   [u64 cache_key]
+   *   [u32 request_id_len][request_id]
+   *   [u32 trace_id_len][trace_id]
+   *   [u32 span_id_len][span_id]
+   *   [u32 rate_remaining]
+   *   [u64 rate_reset_ms]
+   *   [u32 response_headers_count]
+   *   repeated: [u32 name_len][name][u32 value_len][value]
+   *   [u32 cookies_len][cookies_packed]
+   *   [u32 query_len][query_packed]
+   *   [u32 error_body_len][error_body]
    *
-   * This avoids `Buffer.from(path)`.
+   * REMOVED from output (JS already has these):
+   *   - path (JS has req.url)
+   *   - raw_query (JS has req.url)
+   *   - body (JS owns it, never echoed)
    */
-  matchRoute(path: string | Uint8Array): number
-  /**
-   * Packed batch route matching.
-   *
-   * Input format:
-   *   [u32 count]
-   *   repeated:
-   *     [u32 path_len]
-   *     [path bytes]
-   *
-   * Output format:
-   *   [u32 count]
-   *   repeated:
-   *     [i32 route_index_or_-1]
-   */
-  matchRouteBatchPacked(packed: Uint8Array): Buffer
+  handlePacked(meta: Uint8Array, body: Uint8Array | null): Buffer
 }
 
 export declare class SchemaValidator {
@@ -83,6 +83,15 @@ export declare function cookieParseBatchPackedAsync(input: Uint8Array): Promise<
 export declare function cookieParsePacked(input: Uint8Array): Buffer
 
 export declare function cookieParsePackedInto(input: Uint8Array, output: Uint8Array): number
+
+export interface CorsOptions {
+  allowOrigin?: Array<string>
+  allowMethods?: Array<string>
+  allowHeaders?: Array<string>
+  exposeHeaders?: Array<string>
+  allowCredentials?: boolean
+  maxAge?: number
+}
 
 export declare function crc32(input: Uint8Array): number
 
@@ -130,6 +139,24 @@ export declare function httpParseRequestPacked(input: Uint8Array): Buffer
  */
 export declare function httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number
 
+export interface IngressOptions {
+  trustProxy?: boolean
+  parseCookies?: boolean
+  parseQuery?: boolean
+  requireJsonBody?: boolean
+  schema?: Uint8Array
+  cors?: CorsOptions
+  rateLimit?: RateLimitOptions
+  security?: SecurityHeadersOptions
+  https?: boolean
+  maxBodyBytes?: number
+  enableSecurityHeaders?: boolean
+  enableRequestIds?: boolean
+  enableCacheKey?: boolean
+  enablePathQuery?: boolean
+  enableBodySizeGuard?: boolean
+}
+
 /** Call once at application startup if you want a custom Rayon thread count. */
 export declare function initThreadPool(rayonThreads?: number | undefined | null): void
 
@@ -163,7 +190,27 @@ export declare function queryParsePackedInto(input: Uint8Array, output: Uint8Arr
 
 export declare function randomToken(byteLen: number): Buffer
 
+export interface RateLimitOptions {
+  limit?: number
+  windowMs?: number
+}
+
 export declare function rayonNumThreads(): number
+
+export interface SecurityHeadersOptions {
+  contentSecurityPolicy?: string
+  hsts?: boolean
+  hstsMaxAge?: number
+  hstsIncludeSubdomains?: boolean
+  hstsPreload?: boolean
+  frameOptions?: string
+  nosniff?: boolean
+  referrerPolicy?: string
+  coep?: string
+  coop?: string
+  corp?: string
+  xssProtection?: string
+}
 
 export declare function urlDecode(input: Uint8Array): Buffer
 

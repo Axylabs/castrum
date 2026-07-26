@@ -3,3 +3,9 @@
 # *.log
 # tmp/
 index.js
+index.d.ts
+node_modules
+target/
+Cargo.lock
+bun.lock
+

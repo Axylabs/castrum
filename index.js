@@ -588,7 +588,7 @@ if (!nativeBinding) {
 
 module.exports = nativeBinding
 module.exports.HmacSigner = nativeBinding.HmacSigner
-module.exports.HttpRouter = nativeBinding.HttpRouter
+module.exports.Ingress = nativeBinding.Ingress
 module.exports.SchemaValidator = nativeBinding.SchemaValidator
 module.exports.cookieParseBatchPacked = nativeBinding.cookieParseBatchPacked
 module.exports.cookieParseBatchPackedAsync = nativeBinding.cookieParseBatchPackedAsync

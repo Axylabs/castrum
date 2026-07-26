@@ -2,7 +2,7 @@
     "name": "bun-rust-practical",
     "version": "0.5.0",
     "private": false,
-    "type": "module",
+    "type": "commonjs",
     "main": "index.ts",
     "module": "index.ts",
     "types": "index.ts",
@@ -26,9 +26,15 @@
         "check": "bun bench.ts",
         "build:debug": "napi build --platform",
         "artifacts": "napi artifacts",
-        "prepublishOnly": "napi prepublish -t npm"
+        "prepublishOnly": "napi prepublish -t npm",
+        "bench:http": "bun run bench/run-bench.ts",
+        "bench:http:smoke": "bun run bench/run-bench.ts smoke",
+        "bench:http:stress": "bun run bench/run-bench.ts stress",
+        "bench:http:elysia": "bun run bench/run-bench.ts '' elysia",
+        "bench:http:ingress": "bun run bench/run-bench.ts '' ingress"
     },
     "dependencies": {
+        "@elysia/cors": "^1.4.2",
         "cookie-es": "^3.1.1",
         "crc-32": "^1.2.2",
         "fast-json-patch": "^3.1.1",
