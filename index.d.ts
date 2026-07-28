@@ -8,38 +8,8 @@ export declare class HmacSigner {
 
 export declare class Ingress {
   constructor(options: IngressOptions)
-  /**
-   * Optimized entrypoint for Bun 1.4.
-   *
-   * Meta format (unchanged):
-   *   [u16 method_len][method]
-   *   [u32 url_len][url]
-   *   [u16 socket_ip_len][socket_ip]
-   *   [u32 packed_headers_len][packed_headers]
-   *
-   * Output format v3 (BREAKING — smaller, no redundant data):
-   *   [u8 version=3]
-   *   [u8 verdict]
-   *   [u16 status]
-   *   [u32 flags]
-   *   [u64 cache_key]
-   *   [u32 request_id_len][request_id]
-   *   [u32 trace_id_len][trace_id]
-   *   [u32 span_id_len][span_id]
-   *   [u32 rate_remaining]
-   *   [u64 rate_reset_ms]
-   *   [u32 response_headers_count]
-   *   repeated: [u32 name_len][name][u32 value_len][value]
-   *   [u32 cookies_len][cookies_packed]
-   *   [u32 query_len][query_packed]
-   *   [u32 error_body_len][error_body]
-   *
-   * REMOVED from output (JS already has these):
-   *   - path (JS has req.url)
-   *   - raw_query (JS has req.url)
-   *   - body (JS owns it, never echoed)
-   */
-  handlePacked(meta: Uint8Array, body: Uint8Array | null): Buffer
+  handleRequest(method: string, url: string, ip: string, request_id: string, headers: Uint8Array, body: Uint8Array | null, output: Uint8Array): number
+  handleRequestV6(method_kind: number, url: Uint8Array, ip: Uint8Array, request_id: Uint8Array, headers: Uint8Array, body: Uint8Array | null, output: Uint8Array): number
 }
 
 export declare class SchemaValidator {
@@ -79,6 +49,8 @@ export declare class SchemaValidator {
 export declare function cookieParseBatchPacked(input: Uint8Array): Buffer
 
 export declare function cookieParseBatchPackedAsync(input: Uint8Array): Promise<Buffer>
+
+export declare function cookieParseBatchTotalLenPacked(input: Uint8Array): number
 
 export declare function cookieParsePacked(input: Uint8Array): Buffer
 
@@ -121,22 +93,10 @@ export declare function httpParseRequestBatchPacked(input: Uint8Array): Buffer
 
 export declare function httpParseRequestBatchPackedAsync(input: Uint8Array): Promise<Buffer>
 
-/**
- * Allocating packed parser.
- *
- * This still allocates the output buffer, but it does not allocate
- * a HashMap, header Strings, or JSON DOM nodes.
- */
+export declare function httpParseRequestBatchTotalLenPacked(input: Uint8Array): number
+
 export declare function httpParseRequestPacked(input: Uint8Array): Buffer
 
-/**
- * Zero-output-allocation packed parser.
- *
- * JS provides the output buffer. Rust writes directly into it.
- *
- * In Bun/Node, the typed array is a view over shared memory, so this
- * avoids an extra Rust-to-JS copy of the final result.
- */
 export declare function httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number
 
 export interface IngressOptions {
@@ -155,9 +115,9 @@ export interface IngressOptions {
   enableCacheKey?: boolean
   enablePathQuery?: boolean
   enableBodySizeGuard?: boolean
+  readBody?: boolean
 }
 
-/** Call once at application startup if you want a custom Rayon thread count. */
 export declare function initThreadPool(rayonThreads?: number | undefined | null): void
 
 export declare function jsonPatch(doc: Uint8Array, patch: Uint8Array): Buffer
@@ -166,6 +126,8 @@ export declare function jsonSumBatchPacked(input: Uint8Array): Buffer
 
 export declare function jsonSumBatchPackedAsync(input: Uint8Array): Promise<Buffer>
 
+export declare function jsonSumBatchTotalPacked(input: Uint8Array): number
+
 export declare function jsonSumIds(input: Uint8Array): number
 
 export declare function jsonSumIdsAsync(input: Uint8Array): Promise<number>
@@ -173,6 +135,8 @@ export declare function jsonSumIdsAsync(input: Uint8Array): Promise<number>
 export declare function jsonValid(input: Uint8Array): boolean
 
 export declare function jsonValidAsync(input: Uint8Array): Promise<number>
+
+export declare function jsonValidBatchCountPacked(input: Uint8Array): number
 
 export declare function jsonValidBatchPacked(input: Uint8Array): Buffer
 
@@ -184,11 +148,15 @@ export declare function queryParseBatchPacked(input: Uint8Array): Buffer
 
 export declare function queryParseBatchPackedAsync(input: Uint8Array): Promise<Buffer>
 
+export declare function queryParseBatchTotalLenPacked(input: Uint8Array): number
+
 export declare function queryParsePacked(input: Uint8Array): Buffer
 
 export declare function queryParsePackedInto(input: Uint8Array, output: Uint8Array): number
 
 export declare function randomToken(byteLen: number): Buffer
+
+export declare function rateFailOpenCount(): number
 
 export interface RateLimitOptions {
   limit?: number
@@ -224,11 +192,15 @@ export declare function urlEncodeInto(input: Uint8Array, output: Uint8Array): nu
 
 export declare function validateEmail(input: Uint8Array): boolean
 
+export declare function validateEmailBatchCountPacked(input: Uint8Array): number
+
 export declare function validateEmailBatchPacked(input: Uint8Array): Buffer
 
 export declare function validateEmailBatchPackedAsync(input: Uint8Array): Promise<Buffer>
 
 export declare function validateIpv4(input: Uint8Array): boolean
+
+export declare function validateIpv4BatchCountPacked(input: Uint8Array): number
 
 export declare function validateIpv4BatchPacked(input: Uint8Array): Buffer
 
@@ -236,11 +208,15 @@ export declare function validateIpv4BatchPackedAsync(input: Uint8Array): Promise
 
 export declare function validateIpv6(input: Uint8Array): boolean
 
+export declare function validateIpv6BatchCountPacked(input: Uint8Array): number
+
 export declare function validateIpv6BatchPacked(input: Uint8Array): Buffer
 
 export declare function validateIpv6BatchPackedAsync(input: Uint8Array): Promise<Buffer>
 
 export declare function validateUuid(input: Uint8Array): boolean
+
+export declare function validateUuidBatchCountPacked(input: Uint8Array): number
 
 export declare function validateUuidBatchPacked(input: Uint8Array): Buffer
 

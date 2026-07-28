@@ -4,6 +4,7 @@ use mimalloc::MiMalloc;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
 mod util;
 mod json_schema;
 mod cookie_parser;

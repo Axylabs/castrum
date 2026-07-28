@@ -92,6 +92,552 @@ interface ErrorGroup {
   samples: RequestTrace[];
 }
 
+
+
+// bench/load.ts — ADD THESE SCENARIOS to the HTTP_SCENARIOS object
+
+// ── Heavy JSON Validation Scenarios ──
+
+// Helper: generate a complex nested user payload
+function complexUserPayload(depth: number = 3): unknown {
+  const nested = (level: number): unknown => {
+    if (level <= 0) return { value: randomString(16), timestamp: Date.now() };
+    return {
+      id: randomInt(1, 999999),
+      name: `nested_${randomString(8)}`,
+      metadata: {
+        created: new Date().toISOString(),
+        version: randomInt(1, 100),
+        tags: Array.from({ length: 5 }, () => randomString(6)),
+      },
+      children: Array.from({ length: 3 }, () => nested(level - 1)),
+    };
+  };
+  return {
+    id: randomInt(1, 999999),
+    name: `user_${randomString(12)}`,
+    email: `${randomString(8)}@${randomString(6)}.example.com`,
+    active: Math.random() > 0.3,
+    tags: Array.from({ length: 10 }, () => randomString(8)),
+    profile: {
+      bio: randomString(200),
+      avatar: `https://cdn.example.com/${randomString(32)}.png`,
+      preferences: {
+        theme: Math.random() > 0.5 ? "dark" : "light",
+        locale: "en-US",
+        notifications: { email: true, push: false, sms: true },
+      },
+      addresses: Array.from({ length: 3 }, (_, i) => ({
+        type: i === 0 ? "home" : "work",
+        street: `${randomInt(1, 9999)} ${randomString(10)} St`,
+        city: randomString(12),
+        state: randomString(2).toUpperCase(),
+        zip: String(randomInt(10000, 99999)),
+        country: "US",
+        geo: { lat: Math.random() * 180 - 90, lng: Math.random() * 360 - 180 },
+      })),
+    },
+    orders: Array.from({ length: 5 }, (_, i) => ({
+      orderId: `ORD-${randomString(12).toUpperCase()}`,
+      total: Math.random() * 500 + 10,
+      currency: "USD",
+      items: Array.from({ length: randomInt(1, 8) }, () => ({
+        sku: `SKU-${randomString(8).toUpperCase()}`,
+        name: randomString(20),
+        qty: randomInt(1, 5),
+        price: Math.random() * 100,
+      })),
+      shipping: nested(depth),
+    })),
+    nested,
+  };
+}
+
+// Helper: generate a large batch payload
+function batchPayload(count: number): unknown {
+  return {
+    batch: Array.from({ length: count }, (_, i) => ({
+      id: i,
+      action: ["create", "update", "delete"][randomInt(0, 2)],
+      data: {
+        name: `item_${randomString(10)}`,
+        value: Math.random() * 1000,
+        tags: Array.from({ length: 3 }, () => randomString(5)),
+      },
+    })),
+    metadata: {
+      requestId: crypto.randomUUID(),
+      timestamp: Date.now(),
+      source: "load-test",
+    },
+  };
+}
+
+// Helper: generate a wide flat payload (many fields)
+function widePayload(fieldCount: number): unknown {
+  const obj: Record<string, unknown> = {
+    id: randomInt(1, 999999),
+    name: `wide_${randomString(8)}`,
+  };
+  for (let i = 0; i < fieldCount; i++) {
+    obj[`field_${i}`] = {
+      value: randomString(20),
+      index: i,
+      active: Math.random() > 0.5,
+      score: Math.random() * 100,
+    };
+  }
+  return obj;
+}
+
+export const HEAVY_JSON_SCENARIOS: Record<string, LoadScenarioDef> = {
+  // ── 13: Heavy nested JSON validation ──
+  "13-heavy-json-nested": {
+    name: "13-heavy-json-nested",
+    maxConcurrent: 500,
+    phases: [
+      { durationSec: 15, rate: 50, name: "Warm up" },
+      { durationSec: 30, rate: 200, name: "Sustained nested" },
+      { durationSec: 15, rate: 50, name: "Cool down" },
+    ],
+    flows: [
+      {
+        weight: 70,
+        fn: async (ctx) => {
+          await postUser(ctx, complexUserPayload(3), [200]);
+        },
+      },
+      {
+        weight: 20,
+        fn: async (ctx) => {
+          await postUser(ctx, complexUserPayload(5), [200]);
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          // Invalid deep payload — should get 422
+          const bad = complexUserPayload(2) as any;
+          bad.id = "not-a-number";
+          bad.name = "";
+          await postUser(ctx, bad, [422]);
+        },
+      },
+    ],
+  },
+
+  // ── 14: Large array JSON validation ──
+  "14-heavy-json-arrays": {
+    name: "14-heavy-json-arrays",
+    maxConcurrent: 300,
+    phases: [
+      { durationSec: 10, rate: 30, name: "Warm up" },
+      { durationSec: 30, rate: 100, name: "Sustained arrays" },
+      { durationSec: 10, rate: 30, name: "Cool down" },
+    ],
+    flows: [
+      {
+        weight: 50,
+        fn: async (ctx) => {
+          // Large tags array (max 20 per schema)
+          await postUser(
+            ctx,
+            {
+              id: randomInt(1, 999999),
+              name: `array_${randomString(10)}`,
+              tags: Array.from({ length: 20 }, () => randomString(32)),
+            },
+            [200],
+          );
+        },
+      },
+      {
+        weight: 30,
+        fn: async (ctx) => {
+          // Echo large JSON array
+          await echoRaw(
+            ctx,
+            JSON.stringify(
+              Array.from({ length: 1000 }, (_, i) => ({
+                id: i,
+                name: `row_${i}`,
+                data: randomString(64),
+                nested: { a: 1, b: [1, 2, 3], c: { d: true } },
+              })),
+            ),
+            "application/json",
+          );
+        },
+      },
+      {
+        weight: 20,
+        fn: async (ctx) => {
+          // Exceed maxItems — should get 422
+          await postUser(
+            ctx,
+            {
+              id: randomInt(1, 999999),
+              name: "too_many_tags",
+              tags: Array.from({ length: 25 }, () => randomString(10)),
+            },
+            [422],
+          );
+        },
+      },
+    ],
+  },
+
+  // ── 15: Wide payload validation (many fields) ──
+  "15-heavy-json-wide": {
+    name: "15-heavy-json-wide",
+    maxConcurrent: 400,
+    phases: [
+      { durationSec: 10, rate: 40, name: "Warm up" },
+      { durationSec: 30, rate: 150, name: "Sustained wide" },
+      { durationSec: 10, rate: 40, name: "Cool down" },
+    ],
+    flows: [
+      {
+        weight: 60,
+        fn: async (ctx) => {
+          // Valid wide payload (but schema rejects unknown fields → 422)
+          // This tests how fast each framework rejects
+          await postUser(ctx, widePayload(50), [422]);
+        },
+      },
+      {
+        weight: 30,
+        fn: async (ctx) => {
+          // Valid minimal payload as control
+          await postUser(
+            ctx,
+            { id: randomInt(1, 999999), name: `control_${randomString(8)}` },
+            [200],
+          );
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          // Echo wide payload (no validation)
+          await echoRaw(
+            ctx,
+            JSON.stringify(widePayload(100)),
+            "application/json",
+          );
+        },
+      },
+    ],
+  },
+
+  // ── 16: Mixed CRUD with validation (real-world pattern) ──
+  "16-crud-validation-mix": {
+    name: "16-crud-validation-mix",
+    maxConcurrent: 2000,
+    phases: [
+      { durationSec: 20, rate: 100, name: "Ramp 1" },
+      { durationSec: 40, rate: 300, name: "Sustained CRUD" },
+      { durationSec: 20, rate: 500, name: "Peak" },
+      { durationSec: 20, rate: 100, name: "Cool down" },
+    ],
+    flows: [
+      {
+        weight: 40,
+        fn: async (ctx) => {
+          // Read with query + cookies
+          await getUsers(
+            ctx,
+            [200],
+            `?page=${randomInt(1, 50)}&limit=20&sort=created_at&filter=${randomString(10)}`,
+            { Cookie: `sid=${randomString(32)}; prefs=${randomString(16)}` },
+          );
+        },
+      },
+      {
+        weight: 25,
+        fn: async (ctx) => {
+          // Create with full valid payload
+          await postUser(
+            ctx,
+            {
+              id: randomInt(1, 999999),
+              name: `crud_${randomString(10)}`,
+              email: `${randomString(6)}@example.com`,
+              active: true,
+              tags: ["alpha", "beta"],
+            },
+            [200],
+          );
+        },
+      },
+      {
+        weight: 15,
+        fn: async (ctx) => {
+          // Update (PUT) with complex payload
+          await send(ctx, "PUT", "/api/users", {
+            json: {
+              id: randomInt(1, 999999),
+              name: `updated_${randomString(8)}`,
+              email: `${randomString(8)}@corp.io`,
+              active: false,
+              tags: ["updated"],
+            },
+            expected: [200],
+          });
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          // Patch with partial payload
+          await send(ctx, "PATCH", "/api/users", {
+            json: {
+              id: randomInt(1, 999999),
+              name: `patched_${randomString(6)}`,
+            },
+            expected: [200],
+          });
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          // Invalid create — schema violation
+          await postUser(
+            ctx,
+            { name: "missing_id_field" },
+            [422],
+          );
+        },
+      },
+    ],
+  },
+
+  // ── 17: JSON validation under spike load ──
+  "17-json-validation-spike": {
+    name: "17-json-validation-spike",
+    maxConcurrent: 5000,
+    phases: [
+      { durationSec: 15, rate: 50, name: "Baseline" },
+      { durationSec: 5, rate: 2000, name: "SPIKE" },
+      { durationSec: 20, rate: 50, name: "Recovery" },
+      { durationSec: 5, rate: 3000, name: "SPIKE 2" },
+      { durationSec: 20, rate: 50, name: "Recovery 2" },
+    ],
+    flows: [
+      {
+        weight: 50,
+        fn: async (ctx) => {
+          await postUser(
+            ctx,
+            {
+              id: randomInt(1, 999999),
+              name: `spike_${randomString(10)}`,
+              email: `${randomString(5)}@test.dev`,
+              active: Math.random() > 0.5,
+              tags: Array.from({ length: 5 }, () => randomString(4)),
+            },
+            [200],
+          );
+        },
+      },
+      {
+        weight: 30,
+        fn: async (ctx) => {
+          await getUsers(ctx, [200], `?q=${randomString(20)}`);
+        },
+      },
+      {
+        weight: 20,
+        fn: async (ctx) => {
+          await health(ctx);
+        },
+      },
+    ],
+  },
+
+  // ── 18: Sustained heavy validation soak ──
+  "18-json-validation-soak": {
+    name: "18-json-validation-soak",
+    maxConcurrent: 800,
+    phases: [
+      { durationSec: 300, rate: 150, name: "5 minute validation soak" },
+    ],
+    flows: [
+      {
+        weight: 40,
+        fn: async (ctx) => {
+          await postUser(
+            ctx,
+            {
+              id: randomInt(1, 999999),
+              name: `soak_${randomString(12)}`,
+              email: `${randomString(8)}@soak.example.com`,
+              active: true,
+              tags: ["soak", "test"],
+            },
+            [200],
+          );
+          await sleep(0.5);
+        },
+      },
+      {
+        weight: 30,
+        fn: async (ctx) => {
+          await getUsers(
+            ctx,
+            [200],
+            `?page=${randomInt(1, 100)}&limit=50`,
+            { Cookie: `session=${randomString(24)}` },
+          );
+          await sleep(0.3);
+        },
+      },
+      {
+        weight: 20,
+        fn: async (ctx) => {
+          await cookiesRoute(ctx, [200], manyCookies(15));
+          await sleep(0.2);
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          // Periodic invalid payload to test error path under load
+          await postUser(
+            ctx,
+            { id: "invalid", name: 12345 },
+            [422],
+          );
+          await sleep(1);
+        },
+      },
+    ],
+  },
+
+  // ── 19: Large body echo + validation boundary ──
+  "19-large-body-boundary": {
+    name: "19-large-body-boundary",
+    maxConcurrent: 200,
+    phases: [
+      { durationSec: 30, rate: 20, name: "Boundary test" },
+    ],
+    flows: [
+      {
+        weight: 30,
+        fn: async (ctx) => {
+          // 64KB JSON payload via echo
+          const payload = JSON.stringify({
+            id: randomInt(1, 999999),
+            data: "x".repeat(64 * 1024),
+          });
+          await echoRaw(ctx, payload, "application/json");
+        },
+      },
+      {
+        weight: 30,
+        fn: async (ctx) => {
+          // 256KB JSON payload via echo
+          const payload = JSON.stringify({
+            id: randomInt(1, 999999),
+            rows: Array.from({ length: 2000 }, (_, i) => ({
+              id: i,
+              value: randomString(100),
+            })),
+          });
+          await echoRaw(ctx, payload, "application/json");
+        },
+      },
+      {
+        weight: 20,
+        fn: async (ctx) => {
+          // 1MB payload via echo
+          await echoRaw(ctx, largePayloadBytes(1024 * 1024), "application/octet-stream");
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          // Valid small JSON POST (control)
+          await postUser(
+            ctx,
+            { id: randomInt(1, 999999), name: `boundary_${randomString(6)}` },
+            [200],
+          );
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          // Near-max valid payload
+          const bigName = "a".repeat(256); // max allowed
+          await postUser(
+            ctx,
+            { id: randomInt(1, 999999), name: bigName },
+            [200],
+          );
+        },
+      },
+    ],
+  },
+
+  // ── 20: Concurrent validation storm (all methods) ──
+  "20-validation-storm": {
+    name: "20-validation-storm",
+    maxConcurrent: 6000,
+    phases: [
+      { durationSec: 10, rate: 200, name: "Ramp" },
+      { durationSec: 30, rate: 800, name: "Storm" },
+      { durationSec: 10, rate: 100, name: "Recovery" },
+    ],
+    flows: [
+      {
+        weight: 25,
+        fn: async (ctx) => {
+          await postUser(ctx, { id: randomInt(1, 999999), name: `storm_${randomString(8)}` }, [200]);
+        },
+      },
+      {
+        weight: 20,
+        fn: async (ctx) => {
+          await send(ctx, "PUT", "/api/users", {
+            json: { id: randomInt(1, 999999), name: `put_${randomString(8)}`, active: true },
+            expected: [200],
+          });
+        },
+      },
+      {
+        weight: 20,
+        fn: async (ctx) => {
+          await send(ctx, "PATCH", "/api/users", {
+            json: { id: randomInt(1, 999999), name: `patch_${randomString(6)}` },
+            expected: [200],
+          });
+        },
+      },
+      {
+        weight: 15,
+        fn: async (ctx) => {
+          await getUsers(ctx, [200], `?storm=${randomString(10)}`);
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          await postUser(ctx, { invalid: true }, [422]);
+        },
+      },
+      {
+        weight: 10,
+        fn: async (ctx) => {
+          await preflight(ctx, "https://app.example.com", [204]);
+        },
+      },
+    ],
+  },
+};
+
+// Merge into HTTP_SCENARIOS
 function safeJson(text: string): any {
   if (!text) return null;
   try {
@@ -1608,5 +2154,8 @@ export const HTTP_SCENARIOS: Record<string, LoadScenarioDef> = {
     ],
   },
 };
+
+Object.assign(HTTP_SCENARIOS, HEAVY_JSON_SCENARIOS);
+
 
 export const HTTP_SCENARIO_NAMES = Object.keys(HTTP_SCENARIOS);

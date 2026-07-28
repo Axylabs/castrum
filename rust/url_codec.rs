@@ -1,44 +1,35 @@
+// rust/url_codec.rs — v2: batch 3-byte %XX writes
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use memchr::memchr;
 use crate::util::{ensure_capacity, hex_val, write_bytes};
 
-
 const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
 #[inline(always)]
 fn is_unreserved(b: u8) -> bool {
-    matches!(
-        b,
-        b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | 0x27
-            | b'('
-            | b')'
+    matches!(b,
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+        | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | 0x27 | b'(' | b')'
     )
 }
-
 
 #[napi]
 pub fn url_encode(input: Uint8Array) -> Buffer {
     let input = input.as_ref();
 
+    // Worst case: every byte is encoded → 3x. Use len + len/4 + 8 for typical.
     let mut out = Vec::with_capacity(input.len() + input.len() / 4 + 8);
     let mut start = 0usize;
 
     for (i, &b) in input.iter().enumerate() {
         if !is_unreserved(b) {
             out.extend_from_slice(&input[start..i]);
-            out.push(b'%');
-            out.push(HEX_UPPER[(b >> 4) as usize]);
-            out.push(HEX_UPPER[(b & 0x0f) as usize]);
+            // ⭐ Batch the 3-byte %XX write — one extend instead of 3 pushes.
+            let mut encoded = [b'%', 0, 0];
+            encoded[1] = HEX_UPPER[(b >> 4) as usize];
+            encoded[2] = HEX_UPPER[(b & 0x0f) as usize];
+            out.extend_from_slice(&encoded);
             start = i + 1;
         }
     }
@@ -55,7 +46,6 @@ pub fn url_decode(input: Uint8Array) -> Result<Buffer> {
     Ok(Buffer::from(out))
 }
 
-/// Encode into a caller-provided output buffer.
 pub fn url_encode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
     let mut pos = 0usize;
     let mut start = 0usize;
@@ -63,13 +53,11 @@ pub fn url_encode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
     for (i, &b) in input.iter().enumerate() {
         if !is_unreserved(b) {
             write_bytes(out, &mut pos, &input[start..i])?;
-
             ensure_capacity(out, pos, 3)?;
             out[pos] = b'%';
             out[pos + 1] = HEX_UPPER[(b >> 4) as usize];
             out[pos + 2] = HEX_UPPER[(b & 0x0f) as usize];
             pos += 3;
-
             start = i + 1;
         }
     }
@@ -83,7 +71,7 @@ pub fn url_encode_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32>
     crate::util::run_packed_into(&input, &mut output, url_encode_into_slice)
 }
 
-/// Decode without UTF-8 validation. Useful for binary-safe URLs / query parts.
+#[inline]
 fn url_decode_bytes_vec(input: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len());
     let mut pos = 0usize;
@@ -93,17 +81,12 @@ fn url_decode_bytes_vec(input: &[u8]) -> Result<Vec<u8>> {
         out.extend_from_slice(&input[pos..i]);
 
         if i + 2 >= input.len() {
-            return Err(Error::from_reason(
-                "Invalid percent-encoded sequence: missing bytes",
-            ));
+            return Err(Error::from_reason("invalid %-encoding: missing bytes"));
         }
-
-        let hi = hex_val(input[i + 1]).ok_or_else(|| {
-            Error::from_reason("Invalid percent-encoded sequence: bad high nibble")
-        })?;
-        let lo = hex_val(input[i + 2]).ok_or_else(|| {
-            Error::from_reason("Invalid percent-encoded sequence: bad low nibble")
-        })?;
+        let hi = hex_val(input[i + 1])
+            .ok_or_else(|| Error::from_reason("invalid %-encoding: bad hi nibble"))?;
+        let lo = hex_val(input[i + 2])
+            .ok_or_else(|| Error::from_reason("invalid %-encoding: bad lo nibble"))?;
 
         out.push((hi << 4) | lo);
         pos = i + 3;
@@ -118,33 +101,25 @@ pub fn url_decode_bytes(input: Uint8Array) -> Result<Buffer> {
     Ok(Buffer::from(url_decode_bytes_vec(input.as_ref())?))
 }
 
-/// Decode into a caller-provided output buffer.
 pub fn url_decode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
     let mut pos = 0usize;
     let mut src_pos = 0usize;
 
     while let Some(rel) = memchr(b'%', &input[src_pos..]) {
         let i = src_pos + rel;
-
         write_bytes(out, &mut pos, &input[src_pos..i])?;
 
         if i + 2 >= input.len() {
-            return Err(Error::from_reason(
-                "Invalid percent-encoded sequence: missing bytes",
-            ));
+            return Err(Error::from_reason("invalid %-encoding: missing bytes"));
         }
-
-        let hi = hex_val(input[i + 1]).ok_or_else(|| {
-            Error::from_reason("Invalid percent-encoded sequence: bad high nibble")
-        })?;
-        let lo = hex_val(input[i + 2]).ok_or_else(|| {
-            Error::from_reason("Invalid percent-encoded sequence: bad low nibble")
-        })?;
+        let hi = hex_val(input[i + 1])
+            .ok_or_else(|| Error::from_reason("invalid %-encoding: bad hi nibble"))?;
+        let lo = hex_val(input[i + 2])
+            .ok_or_else(|| Error::from_reason("invalid %-encoding: bad lo nibble"))?;
 
         ensure_capacity(out, pos, 1)?;
         out[pos] = (hi << 4) | lo;
         pos += 1;
-
         src_pos = i + 3;
     }
 

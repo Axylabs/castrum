@@ -1,55 +1,38 @@
-// bench/servers/elysia-server.ts
-
+// bench/servers/elysia-server.ts — Using Elysia primitives
 import { Elysia, t } from "elysia";
+import { cors } from "@elysia/cors";
 import {
     PORTS,
     SECURITY_HEADERS,
     CORS_CONFIG,
     RATE_LIMIT_CONFIG,
     MAX_BODY_BYTES,
-    parseCookies,
-    parseQuery,
-    nextRequestId,
     type ApiOk,
 } from "./shared";
 
 // ── Same rate limiter ──
 const rateBuckets = new Map<string, { prev: number; curr: number; windowStart: number }>();
-
 function rateLimitCheck(ip: string, now: number) {
     const limit = RATE_LIMIT_CONFIG.limit;
     const window = RATE_LIMIT_CONFIG.windowMs;
     let bucket = rateBuckets.get(ip);
-    if (!bucket) {
-        bucket = { prev: 0, curr: 0, windowStart: now };
-        rateBuckets.set(ip, bucket);
-    }
+    if (!bucket) { bucket = { prev: 0, curr: 0, windowStart: now }; rateBuckets.set(ip, bucket); }
     let elapsed = now - bucket.windowStart;
-    if (elapsed >= window * 2) {
-        bucket.prev = 0; bucket.curr = 0; bucket.windowStart = now; elapsed = 0;
-    } else if (elapsed >= window) {
-        bucket.prev = bucket.curr; bucket.curr = 0; bucket.windowStart += window; elapsed -= window;
-    }
+    if (elapsed >= window * 2) { bucket.prev = 0; bucket.curr = 0; bucket.windowStart = now; elapsed = 0; }
+    else if (elapsed >= window) { bucket.prev = bucket.curr; bucket.curr = 0; bucket.windowStart += window; elapsed -= window; }
     const overlap = window - elapsed;
     const weighted = (bucket.prev * overlap) / window + bucket.curr;
     const reset = bucket.windowStart + window;
-    if (weighted < limit) {
-        bucket.curr++;
-        return { allowed: true, remaining: Math.max(0, limit - Math.floor(weighted) - 1), resetMs: reset };
-    }
+    if (weighted < limit) { bucket.curr++; return { allowed: true, remaining: Math.max(0, limit - Math.floor(weighted) - 1), resetMs: reset }; }
     return { allowed: false, remaining: 0, resetMs: reset };
 }
-import { cors } from '@elysia/cors'
 
-
-const app = new Elysia({ serve: { port: PORTS.elysia }, })
-    // ── Security headers on every response ──
+const app = new Elysia({ serve: { port: PORTS.elysia } })
+    // ── Security headers ──
     .onAfterHandle(({ set }) => {
-        for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
-            set.headers[k] = v;
-        }
+        for (const [k, v] of Object.entries(SECURITY_HEADERS)) set.headers[k] = v;
     })
-    // ── CORS ──
+    // ── CORS via plugin ──
     .use(cors({
         origin: [...CORS_CONFIG.allowOrigin],
         methods: [...CORS_CONFIG.allowMethods],
@@ -59,8 +42,9 @@ const app = new Elysia({ serve: { port: PORTS.elysia }, })
         maxAge: CORS_CONFIG.maxAge,
     }))
     // ── Request ID + Rate limit guard ──
-    .onBeforeHandle(({ request, set, cookie }) => {
-        const requestId = nextRequestId();
+    .onBeforeHandle(({ request, set }) => {
+        // ★ Bun primitive: crypto.randomUUID()
+        const requestId = crypto.randomUUID();
         set.headers["X-Request-Id"] = requestId;
 
         const ip =
@@ -72,114 +56,96 @@ const app = new Elysia({ serve: { port: PORTS.elysia }, })
         set.headers["RateLimit-Limit"] = String(RATE_LIMIT_CONFIG.limit);
         set.headers["RateLimit-Remaining"] = String(rl.remaining);
         set.headers["RateLimit-Reset"] = String(Math.ceil(rl.resetMs / 1000));
-
         if (!rl.allowed) {
             const retrySecs = Math.ceil((rl.resetMs - now) / 1000);
             set.headers["Retry-After"] = String(retrySecs);
             set.status = 429;
-            return {
-                ok: false,
-                error: { code: "rate_limited", message: "Too Many Requests", retry_after_ms: rl.resetMs - now },
-            };
+            return { ok: false, error: { code: "rate_limited", message: "Too Many Requests", retry_after_ms: rl.resetMs - now } };
         }
     })
     // ── GET /health ──
-    .get("/health", ({ request, set }) => {
-        const url = new URL(request.url);
+    .get("/health", ({ set }) => {
+        // ★ No new URL(request.url) needed — path is known
         const body: ApiOk = {
             ok: true,
             requestId: set.headers["X-Request-Id"] as string,
-            path: url.pathname,
+            path: "/health",
             query: {},
             cookies: {},
         };
         return body;
     })
     // ── GET /api/users ──
-    .get("/api/users", ({ request, set }) => {
-        const url = new URL(request.url);
+    .get("/api/users", ({ set, query, cookie }) => {
+        // ★ Elysia primitives: `query` and `cookie` from context
+        // No manual parseQuery(url) or parseCookies(header)
+        const cookies: Record<string, string> = {};
+        for (const [key, val] of Object.entries(cookie)) {
+            // Elysia's cookie proxy: each entry has .value at runtime
+            cookies[key] = (val as any)?.value ?? String(val ?? "");
+        }
         const body: ApiOk = {
             ok: true,
             requestId: set.headers["X-Request-Id"] as string,
-            path: url.pathname,
-            query: parseQuery(url),
-            cookies: parseCookies(request.headers.get("cookie")),
+            path: "/api/users",
+            query: query as Record<string, string | string[]>,
+            cookies,
         };
         return body;
     })
-    // ── POST /api/users ──
+    // ── POST /api/users — ★ Elysia TypeBox schema validation ──
     .post(
         "/api/users",
-        async ({ request, set, body }) => {
-            const url = new URL(request.url);
-            const contentType = request.headers.get("content-type") ?? "";
-            if (!contentType.includes("application/json")) {
-                set.status = 415;
-                return { ok: false, error: { code: "unsupported_media_type", message: "Content-Type must be application/json" } };
-            }
-            const raw = await request.arrayBuffer();
-            if (raw.byteLength > MAX_BODY_BYTES) {
-                set.status = 413;
-                return { ok: false, error: { code: "body_too_large", message: "Request body is too large" } };
-            }
-            let parsed: unknown;
-            try {
-                parsed = JSON.parse(new TextDecoder().decode(raw));
-            } catch {
-                set.status = 400;
-                return { ok: false, error: { code: "invalid_json", message: "Invalid JSON body" } };
-            }
-            // Inline validation (same rules as shared.validateUserBody)
-            if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-                set.status = 422;
-                return { ok: false, error: { code: "schema_validation_failed", message: "Body must be a JSON object" } };
-            }
-            const obj = parsed as Record<string, unknown>;
-            if (typeof obj.id !== "number" || !Number.isFinite(obj.id)) {
-                set.status = 422;
-                return { ok: false, error: { code: "schema_validation_failed", message: "Field 'id' must be a finite number" } };
-            }
-            if (typeof obj.name !== "string" || obj.name.length === 0 || obj.name.length > 256) {
-                set.status = 422;
-                return { ok: false, error: { code: "schema_validation_failed", message: "Field 'name' must be a string between 1 and 256 characters" } };
-            }
-            const allowed = new Set(["id", "name", "email", "active", "tags"]);
-            for (const key of Object.keys(obj)) {
-                if (!allowed.has(key)) {
-                    set.status = 422;
-                    return { ok: false, error: { code: "schema_validation_failed", message: `Unknown field '${key}'` } };
-                }
+        ({ set, body, query, cookie }) => {
+            // ★ Elysia already parsed + validated the body via `body` schema below.
+            // No manual arrayBuffer + TextDecoder + JSON.parse + validateUserBody.
+            const cookies: Record<string, string> = {};
+            for (const [key, val] of Object.entries(cookie)) {
+                // Elysia's cookie proxy: each entry has .value at runtime
+                cookies[key] = (val as any)?.value ?? String(val ?? "");
             }
             const result: ApiOk = {
                 ok: true,
                 requestId: set.headers["X-Request-Id"] as string,
-                path: url.pathname,
-                query: parseQuery(url),
-                cookies: parseCookies(request.headers.get("cookie")),
-                body: parsed,
+                path: "/api/users",
+                query: query as Record<string, string | string[]>,
+                cookies,
+                body,
             };
             return result;
+        },
+        {
+            // ★ TypeBox schema — Elysia validates automatically, returns 422 on failure
+            body: t.Object({
+                id: t.Number(),
+                name: t.String({ minLength: 1, maxLength: 256 }),
+                email: t.Optional(t.String()),
+                active: t.Optional(t.Boolean()),
+                tags: t.Optional(t.Array(t.String(), { maxItems: 20 })),
+            }, { additionalProperties: false }),
         },
     )
     // ── POST /api/echo ──
     .post("/api/echo", async ({ request, set }) => {
-        const raw = await request.arrayBuffer();
-        if (raw.byteLength > MAX_BODY_BYTES) {
-            set.status = 413;
-            return { ok: false, error: { code: "body_too_large", message: "Request body is too large" } };
-        }
-        set.headers["Content-Type"] = request.headers.get("content-type") ?? "application/octet-stream";
-        return raw;
+        // ★ Stream body directly for echo — no buffering
+        const requestedContentType = request.headers.get("content-type") ?? "application/octet-stream";
+        set.headers["Content-Type"] = requestedContentType;
+        return request.body;
     })
     // ── GET /api/cookies ──
-    .get("/api/cookies", ({ request, set }) => {
-        const url = new URL(request.url);
+    .get("/api/cookies", ({ set, cookie }) => {
+        // ★ Elysia's built-in cookie parsing
+        const cookies: Record<string, string> = {};
+        for (const [key, val] of Object.entries(cookie)) {
+            // Elysia's cookie proxy: each entry has .value at runtime
+            cookies[key] = (val as any)?.value ?? String(val ?? "");
+        }
         const body: ApiOk = {
             ok: true,
             requestId: set.headers["X-Request-Id"] as string,
-            path: url.pathname,
+            path: "/api/cookies",
             query: {},
-            cookies: parseCookies(request.headers.get("cookie")),
+            cookies,
         };
         return body;
     })
@@ -188,6 +154,10 @@ const app = new Elysia({ serve: { port: PORTS.elysia }, })
         if (code === "NOT_FOUND") {
             set.status = 404;
             return { ok: false, error: { code: "not_found", message: "Route not found" } };
+        }
+        if (code === "VALIDATION") {
+            set.status = 422;
+            return { ok: false, error: { code: "schema_validation_failed", message: "Request body failed schema validation" } };
         }
         set.status = 500;
         return { ok: false, error: { code: "internal_error", message: "Internal server error" } };

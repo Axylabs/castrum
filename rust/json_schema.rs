@@ -34,7 +34,6 @@ impl SchemaValidator {
         })
     }
 
-
     #[inline]
     fn validate_doc(&self, bytes: &[u8]) -> bool {
         match sonic_rs::from_slice::<Value>(bytes) {
@@ -57,13 +56,13 @@ impl SchemaValidator {
     pub fn validate_batch_packed_count(&self, packed: Uint8Array) -> Result<u32> {
         let items = unpack(packed.as_ref())?;
 
-        let count = if should_parallelize(items.len(), total_bytes(&items)) {
+        let count: u32 = if should_parallelize(items.len(), total_bytes(&items)) {
             use rayon::prelude::*;
 
             items
-                .par_iter()
-                .filter(|item| self.validate_doc(item))
-                .count() as u32
+                .par_chunks(256)
+                .map(|chunk| chunk.iter().filter(|item| self.validate_doc(item)).count() as u32)
+                .sum()
         } else {
             items.iter().filter(|item| self.validate_doc(item)).count() as u32
         };
@@ -81,9 +80,11 @@ impl SchemaValidator {
     pub fn validate_batch_packed_bitset(&self, packed: Uint8Array) -> Result<Buffer> {
         let items = unpack(packed.as_ref())?;
 
-        Ok(Buffer::from(validation_bitset(&items, |item| {
-            self.validate_doc(item)
-        })))
+        Ok(Buffer::from(crate::util::validation_bitset_chunked(
+            &items,
+            |item| self.validate_doc(item),
+            256,
+        )))
     }
 
     /// Stream-validate a JSON array payload.
