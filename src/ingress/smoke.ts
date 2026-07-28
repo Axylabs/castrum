@@ -20,7 +20,6 @@ const ingress = createIngress({
   parseQuery: true,
   requireJsonBody: true,
   schema,
-
   cors: {
     allowOrigin: ["https://app.example.com"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -28,12 +27,10 @@ const ingress = createIngress({
     allowCredentials: true,
     maxAge: 86400,
   },
-
   rateLimit: {
     limit: 5,
     windowMs: 1000,
   },
-
   security: {
     hstsMaxAge: 31536000,
     hstsIncludeSubdomains: true,
@@ -53,19 +50,22 @@ async function main() {
     body: JSON.stringify({ id: 42, name: "alice" }),
   });
 
-  try {
-    const result = await ingress(req, "127.0.0.1");
-    console.log("continue result:", result);
-  } catch (err) {
-    if (err instanceof Response) {
-      console.log("Response thrown:", err.status);
-      console.log(await err.text());
-    } else {
-      throw err;
-    }
+  const ctx = await ingress(req, "127.0.0.1");
+
+  console.log("ingress result:", {
+    status: ctx.status,
+    terminal: ctx.terminal,
+    ok: ctx.ok,
+    verdict: ctx.verdict,
+    errorCode: ctx.errorCode,
+    requestId: ctx.requestId,
+  });
+
+  if (ctx.response) {
+    console.log("terminal response:", ctx.response.status);
+    console.log(await ctx.response.text());
   }
 
-  // Preflight example
   const preflight = new Request("https://api.example.com/users", {
     method: "OPTIONS",
     headers: {
@@ -75,15 +75,18 @@ async function main() {
     },
   });
 
-  try {
-    await ingress(preflight, "127.0.0.1");
-  } catch (err) {
-    if (err instanceof Response) {
-      console.log("Preflight response:", err.status);
-      console.log([...err.headers.entries()]);
-    } else {
-      throw err;
-    }
+  const preflightCtx = await ingress(preflight, "127.0.0.1");
+
+  console.log("preflight result:", {
+    status: preflightCtx.status,
+    terminal: preflightCtx.terminal,
+    corsAllowed: preflightCtx.corsAllowed,
+    isPreflight: preflightCtx.isPreflight,
+  });
+
+  if (preflightCtx.response) {
+    console.log("preflight response:", preflightCtx.response.status);
+    console.log([...preflightCtx.response.headers.entries()]);
   }
 }
 

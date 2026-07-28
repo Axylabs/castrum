@@ -8,8 +8,7 @@ export declare class HmacSigner {
 
 export declare class Ingress {
   constructor(options: IngressOptions)
-  handleRequest(method: string, url: string, ip: string, request_id: string, headers: Uint8Array, body: Uint8Array | null, output: Uint8Array): number
-  handleRequestV6(method_kind: number, url: Uint8Array, ip: Uint8Array, request_id: Uint8Array, headers: Uint8Array, body: Uint8Array | null, output: Uint8Array): number
+  handleRequest(method_kind: number, url: Uint8Array, ip: Uint8Array, request_id: Uint8Array, headers: Uint8Array, body: Uint8Array | null, output: Uint8Array): number
 }
 
 export declare class SchemaValidator {
@@ -107,15 +106,9 @@ export interface IngressOptions {
   schema?: Uint8Array
   cors?: CorsOptions
   rateLimit?: RateLimitOptions
-  security?: SecurityHeadersOptions
   https?: boolean
   maxBodyBytes?: number
-  enableSecurityHeaders?: boolean
-  enableRequestIds?: boolean
-  enableCacheKey?: boolean
-  enablePathQuery?: boolean
   enableBodySizeGuard?: boolean
-  readBody?: boolean
 }
 
 export declare function initThreadPool(rayonThreads?: number | undefined | null): void
@@ -156,29 +149,12 @@ export declare function queryParsePackedInto(input: Uint8Array, output: Uint8Arr
 
 export declare function randomToken(byteLen: number): Buffer
 
-export declare function rateFailOpenCount(): number
-
 export interface RateLimitOptions {
   limit?: number
   windowMs?: number
 }
 
 export declare function rayonNumThreads(): number
-
-export interface SecurityHeadersOptions {
-  contentSecurityPolicy?: string
-  hsts?: boolean
-  hstsMaxAge?: number
-  hstsIncludeSubdomains?: boolean
-  hstsPreload?: boolean
-  frameOptions?: string
-  nosniff?: boolean
-  referrerPolicy?: string
-  coep?: string
-  coop?: string
-  corp?: string
-  xssProtection?: string
-}
 
 export declare function urlDecode(input: Uint8Array): Buffer
 

@@ -1,6 +1,4 @@
 [build]
-# x86-64-v3 covers AVX2/BMI2/FMA — every CPU since ~2015.
-# For deploy box == build box, override with RUSTFLAGS='-C target-cpu=native'.
 rustflags = [
   "-C", "target-cpu=x86-64-v3",
   "-C", "target-feature=+avx2,+bmi2,+fma,+sse4.2",
@@ -20,4 +18,10 @@ rustflags = [
   "-C", "link-arg=-Wl,--gc-sections",
   "-C", "link-arg=-Wl,-z,norelro",
   "-C", "link-arg=-Wl,--build-id=none",
+]
+
+[target.x86_64-apple-darwin]
+rustflags = [
+  "-C", "target-cpu=x86-64-v3",
+  "-C", "target-feature=+avx2,+bmi2,+fma,+sse4.2",
 ]

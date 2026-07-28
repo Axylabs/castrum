@@ -365,7 +365,7 @@ function createOptimizedIngress(options: any): OptimizedIngressHandler {
   const NativeIngress = (addon as any).Ingress;
   if (typeof NativeIngress !== "function") throw new Error("Native Ingress class missing");
   const handler = new NativeIngress(options);
-  if (typeof handler.handleRequestV6 !== "function") throw new Error("Native Ingress.handleRequestV6 missing. Rebuild the Rust addon.");
+  if (typeof handler.handleRequest !== "function") throw new Error("Native Ingress.handleRequest missing. Rebuild the Rust addon.");
 
   const trust = options.trustProxy === true;
   const limit = options.rateLimit?.limit;
@@ -410,7 +410,7 @@ function createOptimizedIngress(options: any): OptimizedIngressHandler {
       };
 
       const headers = packHeaders(req, isOptions);
-      handler.handleRequestV6(methodKind, urlBytes, ipBytes, ridBytes, headers, body, outputBuf);
+      handler.handleRequest(methodKind, urlBytes, ipBytes, ridBytes, headers, body, outputBuf);
       result.refresh(outputBuf, body ?? EMPTY_BODY, outputView);
       try {
         return fn(result, ctx);

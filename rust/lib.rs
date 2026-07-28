@@ -22,4 +22,3 @@ mod websocket;
 mod async_tasks;
 mod batch;
 mod ingress;
-mod cors;

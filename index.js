@@ -624,7 +624,6 @@ module.exports.queryParseBatchTotalLenPacked = nativeBinding.queryParseBatchTota
 module.exports.queryParsePacked = nativeBinding.queryParsePacked
 module.exports.queryParsePackedInto = nativeBinding.queryParsePackedInto
 module.exports.randomToken = nativeBinding.randomToken
-module.exports.rateFailOpenCount = nativeBinding.rateFailOpenCount
 module.exports.rayonNumThreads = nativeBinding.rayonNumThreads
 module.exports.urlDecode = nativeBinding.urlDecode
 module.exports.urlDecodeBytes = nativeBinding.urlDecodeBytes

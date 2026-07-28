@@ -4,14 +4,18 @@ import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-interface IngressInstance {
-  handlePacked(
-    meta: Uint8Array,
+
+export interface IngressInstance {
+  handleRequest(
+    methodKind: number,
+    url: Uint8Array,
+    ip: Uint8Array,
+    requestId: Uint8Array,
+    headers: Uint8Array,
     body: Uint8Array | null,
-  ): Buffer;
+    output: Uint8Array,
+  ): number;
 }
-
-
 
 function resolveAddonPath(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -60,30 +64,38 @@ function resolveAddonPath(): string {
 
   throw new Error(
     `Could not find rust_bench native addon.\n` +
-    `Run: bun run build\n` +
-    `Looked in:\n${candidates.map((c) => `  - ${c}`).join("\n")}`,
+      `Run: bun run build\n` +
+      `Looked in:\n${candidates.map((c) => `  - ${c}`).join("\n")}`,
   );
 }
 
 interface NativeAddon {
   HmacSigner: new (key: Uint8Array) => HmacSignerInstance;
-  Ingress: new (options: any) => IngressInstance;
+  Ingress: new (options: Record<string, unknown>) => IngressInstance;
+
   crc32(input: Uint8Array): number;
   fnv1a64(input: Uint8Array): bigint;
+
   hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array;
   hmacSha256Verify(key: Uint8Array, data: Uint8Array, sig: Uint8Array): boolean;
+
   jsonValid(input: Uint8Array): boolean;
   jsonSumIds(input: Uint8Array): bigint;
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array;
+
   mimeFromExtension(ext: Uint8Array): Uint8Array;
   randomToken(byteLen: number): Uint8Array;
+
   urlEncode(input: Uint8Array): Uint8Array;
   urlDecode(input: Uint8Array): Uint8Array;
+
   validateEmail(input: Uint8Array): boolean;
   validateUuid(input: Uint8Array): boolean;
   validateIpv4(input: Uint8Array): boolean;
   validateIpv6(input: Uint8Array): boolean;
+
   wsAcceptKey(key: Uint8Array): Uint8Array;
+
   SchemaValidator: new (schema: Uint8Array) => SchemaValidatorInstance;
 
   initThreadPool(rayonThreads?: number): void;
@@ -101,6 +113,7 @@ interface NativeAddon {
   queryParseBatchPacked(input: Uint8Array): Uint8Array;
   cookieParseBatchPacked(input: Uint8Array): Uint8Array;
   httpParseRequestBatchPacked(input: Uint8Array): Uint8Array;
+
   httpParseRequestPacked(input: Uint8Array): Uint8Array;
   httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number;
 
@@ -109,7 +122,9 @@ interface NativeAddon {
 
   cookieParsePacked(input: Uint8Array): Uint8Array;
   cookieParsePackedInto(input: Uint8Array, output: Uint8Array): number;
+
   crc32BatchPacked(input: Uint8Array): Uint8Array;
+
   jsonValidBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   validateEmailBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   validateUuidBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
@@ -120,6 +135,7 @@ interface NativeAddon {
   cookieParseBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   httpParseRequestBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
 }
+
 const addonPath = resolveAddonPath();
 const addon: NativeAddon = require(addonPath);
 
@@ -127,18 +143,17 @@ if (process.env.RUST_BENCH_DEBUG) {
   console.log("Native addon loaded from:", addonPath);
   console.log("Exported keys:", Object.keys(addon).sort());
 }
-interface SchemaValidatorInstance {
+
+export interface SchemaValidatorInstance {
   validateBatchPackedCount(packed: Uint8Array): number;
   validateBatchPackedBitset(packed: Uint8Array): Uint8Array;
   validateBatchStreaming(batchBytes: Uint8Array): number;
 }
-export default addon;
-export { addonPath };
-
-export type {  SchemaValidatorInstance };
-
 
 export interface HmacSignerInstance {
   sign(data: Uint8Array): Uint8Array;
   verify(data: Uint8Array, sig: Uint8Array): boolean;
 }
+
+export default addon;
+export { addonPath };
