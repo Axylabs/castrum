@@ -1,79 +1,20 @@
-use napi::bindgen_prelude::Uint8Array;
-use napi::{Error, Result};
-use napi_derive::napi;
+// rust/core/util.rs — Core utilities: PackedIter, VecWriter, trim, helpers
+// Pure Rust, no napi dependencies.
+
 use std::borrow::Cow;
-use std::sync::OnceLock;
-use memchr;
 
-static RAYON_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+use crate::core::prelude::*;
 
-#[cfg(target_os = "linux")]
-static CORE_IDS: OnceLock<Option<Vec<core_affinity::CoreId>>> = OnceLock::new();
+// ── VecWriter ────────────────────────────────────────────────────
 
-#[napi]
-pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
-    let stored = RAYON_INIT.get_or_init(|| {
-        let default_threads = std::thread::available_parallelism()
-            .map(|n| n.get() as u32)
-            .unwrap_or(2);
-
-        // Leave a little headroom for Bun/internal runtime threads.
-        let preferred = default_threads.saturating_sub(1).max(1);
-
-        // Do not hard-cap to 8 by default.
-        // If you need a cap, set RUST_BENCH_MAX_RAYON_THREADS.
-        let max_threads = std::env::var("RUST_BENCH_MAX_RAYON_THREADS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default_threads.max(1));
-
-        let threads = rayon_threads
-            .unwrap_or(preferred)
-            .clamp(1, max_threads.max(1));
-
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads as usize)
-            .stack_size(512 * 1024)
-            .thread_name(|i| format!("rust-bench-rayon-{}", i))
-            .start_handler(move |id| pin_rayon_thread(id))
-            .build_global()
-            .map_err(|e| e.to_string())
-    });
-
-    match stored {
-        Ok(()) => Ok(()),
-        Err(msg) => Err(Error::from_reason(msg.clone())),
-    }
-}
-#[cfg(target_os = "linux")]
-fn pin_rayon_thread(id: usize) {
-    if std::env::var_os("RUST_BENCH_PIN_CORES").is_none() {
-        return;
-    }
-
-    let ids = CORE_IDS.get_or_init(core_affinity::get_core_ids);
-    if let Some(ids) = ids {
-        if ids.len() > 1 {
-            let idx = 1 + (id % (ids.len() - 1));
-            let _ = core_affinity::set_for_current(ids[idx]);
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn pin_rayon_thread(_id: usize) {}
-
-#[napi]
-pub fn rayon_num_threads() -> u32 {
-    rayon::current_num_threads() as u32
-}
-
+/// A simple byte vector writer that provides efficient write operations.
 #[derive(Default)]
 pub struct VecWriter {
     buf: Vec<u8>,
 }
 
 impl VecWriter {
+    /// Create a new `VecWriter` with the given capacity.
     #[inline(always)]
     pub fn with_capacity(cap: usize) -> Self {
         Self {
@@ -81,31 +22,43 @@ impl VecWriter {
         }
     }
 
+    /// The current length of the buffer.
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.buf.len()
     }
 
+    /// Returns `true` if the buffer is empty.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// Consume the writer and return the underlying bytes.
     #[inline(always)]
     pub fn into_bytes(self) -> Vec<u8> {
         self.buf
     }
 
+    /// Push a single byte.
     #[inline(always)]
     pub fn push(&mut self, byte: u8) {
         self.buf.push(byte);
     }
 
+    /// Write a u32 in little-endian.
     #[inline(always)]
     pub fn write_u32(&mut self, value: u32) {
         self.buf.extend_from_slice(&value.to_le_bytes());
     }
 
+    /// Write a byte slice.
     #[inline(always)]
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
     }
 
+    /// Write a byte slice as lowercase ASCII.
     #[inline(always)]
     pub fn write_bytes_ascii_lowercase(&mut self, bytes: &[u8]) {
         let start = self.buf.len();
@@ -113,23 +66,26 @@ impl VecWriter {
         self.buf[start..].make_ascii_lowercase();
     }
 
+    /// Patch a u32 at a specific position.
     #[inline(always)]
     pub fn patch_u32(&mut self, pos: usize, value: u32) {
         debug_assert!(pos + 4 <= self.buf.len());
         self.buf[pos..pos + 4].copy_from_slice(&value.to_le_bytes());
     }
-
 }
 
+// ── Read u32 from slice ─────────────────────────────────────────
+
+/// Read a u32 in little-endian at the given offset.
 #[inline(always)]
-pub fn read_u32_le(data: &[u8], offset: usize) -> Result<u32> {
+pub fn read_u32_le(data: &[u8], offset: usize) -> CoreResult<u32> {
     let slice = data
         .get(offset..offset + 4)
-        .ok_or_else(|| Error::from_reason("packed buffer: truncated u32"))?;
+        .ok_or_else(|| malformed_data("truncated u32", offset))?;
 
     let bytes: [u8; 4] = slice
         .try_into()
-        .map_err(|_| Error::from_reason("packed buffer: invalid u32"))?;
+        .map_err(|_| malformed_data("invalid u32", offset))?;
 
     Ok(u32::from_le_bytes(bytes))
 }
@@ -137,7 +93,8 @@ pub fn read_u32_le(data: &[u8], offset: usize) -> Result<u32> {
 // ── Zero-Alloc Packed Iterator ─────────────────────────────────────
 
 /// A zero-allocation iterator over packed batch buffers.
-/// Format: [u32 count] repeated: [u32 len] [bytes]
+///
+/// Format: `[u32 count]` repeated: `[u32 len] [bytes]`
 #[derive(Clone, Copy)]
 pub struct PackedIter<'a> {
     data: &'a [u8],
@@ -147,11 +104,11 @@ pub struct PackedIter<'a> {
 
 impl<'a> PackedIter<'a> {
     /// Create a new `PackedIter` from a packed buffer.
-    /// Returns `None` if the buffer is malformed (too short, count impossible).
+    /// Returns `Err` if the buffer is malformed.
     #[inline]
-    pub fn new(data: &'a [u8]) -> Result<Self> {
+    pub fn new(data: &'a [u8]) -> CoreResult<Self> {
         if data.len() < 4 {
-            return Err(Error::from_reason("packed buffer: missing count"));
+            return Err(malformed_data("packed buffer: missing count", 0));
         }
 
         let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
@@ -159,7 +116,7 @@ impl<'a> PackedIter<'a> {
         // Validate count is plausible
         let max_possible = (data.len() - 4) / 4;
         if count > max_possible {
-            return Err(Error::from_reason("packed buffer: impossible item count"));
+            return Err(malformed_data("packed buffer: impossible item count", 0));
         }
 
         Ok(Self {
@@ -175,13 +132,13 @@ impl<'a> PackedIter<'a> {
         self.count
     }
 
+    /// Returns `true` if there are no items.
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Get the raw item at a specific index without advancing the iterator.
-    /// Returns `None` if index out of bounds or data is incomplete.
     #[inline]
     pub fn get(&self, index: usize) -> Option<&'a [u8]> {
         if index >= self.count {
@@ -219,14 +176,14 @@ impl<'a> PackedIter<'a> {
         Some(&self.data[offset..offset + len])
     }
 
-    /// Collect into a `Vec<&[u8]>` (allocating, for compatibility with existing code).
+    /// Collect into a `Vec<&[u8]>` (allocating, for compatibility).
     #[inline]
-    pub fn collect_vec(&self) -> Result<Vec<&'a [u8]>> {
+    pub fn collect_vec(&self) -> CoreResult<Vec<&'a [u8]>> {
         let mut items = Vec::with_capacity(self.count);
         let mut offset = 4usize;
         for _ in 0..self.count {
             if offset + 4 > self.data.len() {
-                return Err(Error::from_reason("packed buffer: truncated length"));
+                return Err(malformed_data("packed buffer: truncated length", offset));
             }
             let len = u32::from_le_bytes([
                 self.data[offset],
@@ -236,7 +193,7 @@ impl<'a> PackedIter<'a> {
             ]) as usize;
             offset += 4;
             if offset + len > self.data.len() {
-                return Err(Error::from_reason("packed buffer: truncated item"));
+                return Err(malformed_data("packed buffer: truncated item", offset));
             }
             items.push(&self.data[offset..offset + len]);
             offset += len;
@@ -389,36 +346,9 @@ fn total_bytes_ref<T: AsRef<[u8]>>(items: &[T]) -> usize {
     items.iter().map(|x| x.as_ref().len()).sum()
 }
 
-// ── Cow helpers ─────────────────────────────────────────────────────
+// ── Trim helpers ───────────────────────────────────────────────────
 
-/// Returns `Cow::Borrowed` when no escaping/decoding is needed,
-/// `Cow::Owned` when modifications were necessary.
-pub fn cow_decode_url(input: &[u8]) -> Cow<'_, [u8]> {
-    if memchr::memchr2(b'+', b'%', input).is_none() {
-        return Cow::Borrowed(input);
-    }
-    // At least some decoding needed; caller should use the _into_slice functions
-    Cow::Owned(input.to_vec())
-}
-
-/// Returns the underlying data for a Cow, whether owned or borrowed.
-#[inline(always)]
-pub fn cow_as_slice<'a>(c: &'a Cow<'_, [u8]>) -> &'a [u8] {
-    c.as_ref()
-}
-
-// ── Legacy unpack (wraps PackedIter for backwards compat) ──────────
-
-/// Packed batch input format:
-///   [u32 count]
-///   repeated count times:
-///     [u32 byte_length]
-///     [bytes]
-#[inline]
-pub fn unpack<'a>(data: &'a [u8]) -> Result<Vec<&'a [u8]>> {
-    PackedIter::new(data)?.collect_vec()
-}
-
+/// Trim ASCII whitespace from both ends of a byte slice.
 #[inline(always)]
 pub fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
     let mut start = 0usize;
@@ -435,11 +365,13 @@ pub fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
     &bytes[start..end]
 }
 
+/// Total bytes in a slice of slices.
 #[inline(always)]
 pub fn total_bytes(items: &[&[u8]]) -> usize {
     items.iter().map(|x| x.len()).sum()
 }
 
+/// Convert a hex digit byte to its numeric value.
 #[inline(always)]
 pub fn hex_val(b: u8) -> Option<u8> {
     match b {
@@ -450,37 +382,41 @@ pub fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+/// Ensure there is enough capacity in the output buffer.
 #[inline(always)]
-pub fn ensure_capacity(out: &[u8], pos: usize, additional: usize) -> Result<()> {
+pub fn ensure_capacity(out: &[u8], pos: usize, additional: usize) -> CoreResult<()> {
     let end = pos
         .checked_add(additional)
-        .ok_or_else(|| Error::from_reason("packed output: overflow"))?;
+        .ok_or_else(|| overflow("packed output"))?;
 
     if end > out.len() {
-        return Err(Error::from_reason("packed output: buffer too small"));
+        return Err(buffer_too_small(end, out.len()));
     }
 
     Ok(())
 }
 
+/// Write a u32 at the given position and advance the position.
 #[inline(always)]
-pub fn write_u32_le(out: &mut [u8], pos: &mut usize, value: u32) -> Result<()> {
+pub fn write_u32_le(out: &mut [u8], pos: &mut usize, value: u32) -> CoreResult<()> {
     ensure_capacity(out, *pos, 4)?;
     out[*pos..*pos + 4].copy_from_slice(&value.to_le_bytes());
     *pos += 4;
     Ok(())
 }
 
+/// Write bytes at the given position and advance the position.
 #[inline(always)]
-pub fn write_bytes(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> Result<()> {
+pub fn write_bytes(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> CoreResult<()> {
     ensure_capacity(out, *pos, bytes.len())?;
     out[*pos..*pos + bytes.len()].copy_from_slice(bytes);
     *pos += bytes.len();
     Ok(())
 }
 
+/// Write bytes as lowercase at the given position.
 #[inline(always)]
-pub fn write_bytes_lowercase(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> Result<()> {
+pub fn write_bytes_lowercase(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> CoreResult<()> {
     ensure_capacity(out, *pos, bytes.len())?;
     let start = *pos;
     let end = start + bytes.len();
@@ -490,17 +426,14 @@ pub fn write_bytes_lowercase(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> R
     Ok(())
 }
 
+/// Determine if a batch should be parallelized based on size.
 #[inline(always)]
 pub fn should_parallelize(items: usize, bytes: usize) -> bool {
     let threads = rayon::current_num_threads().max(1);
     items >= threads.saturating_mul(2048) || bytes >= threads.saturating_mul(1024 * 1024)
 }
 
-#[inline(always)]
-pub fn tokio_join_error(e: tokio::task::JoinError) -> Error {
-    Error::from_reason(format!("tokio blocking task failed: {e}"))
-}
-
+/// Check if two slices overlap in memory.
 #[inline(always)]
 pub fn slices_overlap(a: &[u8], b: &[u8]) -> bool {
     if a.is_empty() || b.is_empty() {
@@ -515,24 +448,62 @@ pub fn slices_overlap(a: &[u8], b: &[u8]) -> bool {
     a_start < b_end && b_start < a_end
 }
 
+/// Returns `Cow::Borrowed` when no escaping/decoding is needed.
+pub fn cow_decode_url(input: &[u8]) -> Cow<'_, [u8]> {
+    if memchr::memchr2(b'+', b'%', input).is_none() {
+        return Cow::Borrowed(input);
+    }
+    // At least some decoding needed; caller should use the _into_slice functions
+    Cow::Owned(input.to_vec())
+}
+
+/// Pack a batch from individual items into a packed buffer.
+///
+/// Format: `[u32 count]` repeated `[u32 len] [bytes]`
 #[inline]
-pub fn run_packed_into<F>(input: &Uint8Array, output: &mut Uint8Array, f: F) -> Result<u32>
-where
-    F: FnOnce(&[u8], &mut [u8]) -> Result<usize>,
-{
-    let input_bytes = input.as_ref();
+pub fn pack_batch(items: &[&[u8]]) -> Vec<u8> {
+    let total_len: usize = items.iter().map(|i| 4 + i.len()).sum();
+    let mut out = Vec::with_capacity(4 + total_len);
+    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    for item in items {
+        out.extend_from_slice(&(item.len() as u32).to_le_bytes());
+        out.extend_from_slice(item);
+    }
+    out
+}
 
-    let overlaps = {
-        let output_bytes = output.as_ref();
-        slices_overlap(input_bytes, output_bytes)
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let written = if overlaps {
-        let owned_input = input_bytes.to_vec();
-        unsafe { f(&owned_input, output.as_mut())? }
-    } else {
-        unsafe { f(input_bytes, output.as_mut())? }
-    };
+    #[test]
+    fn test_vec_writer() {
+        let mut w = VecWriter::with_capacity(16);
+        w.write_u32(42);
+        w.push(b'a');
+        w.write_bytes(b"bc");
+        assert_eq!(w.len(), 7);
+        assert_eq!(w.into_bytes(), vec![42, 0, 0, 0, 97, 98, 99]);
+    }
 
-    Ok(written as u32)
+    #[test]
+    fn test_packed_iter() {
+        let items = vec![b"hello" as &[u8], b"world"];
+        let packed = pack_batch(&items);
+        let iter = PackedIter::new(&packed).unwrap();
+        let collected: Vec<&[u8]> = iter.collect();
+        assert_eq!(collected, vec![b"hello" as &[u8], b"world"]);
+    }
+
+    #[test]
+    fn test_trim() {
+        assert_eq!(trim_ascii_whitespace(b"  hello  "), b"hello");
+        assert_eq!(trim_ascii_whitespace(b"\t\n foo \r\n"), b"foo");
+    }
+
+    #[test]
+    fn test_read_u32_le() {
+        let data = [0x78, 0x56, 0x34, 0x12];
+        assert_eq!(read_u32_le(&data, 0).unwrap(), 0x12345678);
+    }
 }

@@ -1,15 +1,13 @@
-// rust/cookie_parser.rs — Unified zero-alloc cookie parser
-// Eliminated the _vec variant; all callers use the single _into_slice path.
-// Upper-bound pre-allocation for callers that need a Vec.
+// rust/core/cookie_parser.rs — Unified zero-alloc cookie parser
+// Pure Rust, no napi dependencies.
 
-use crate::util::{trim_ascii_whitespace, write_bytes, write_u32_le};
-use napi::bindgen_prelude::*;
-use napi_derive::napi;
+use crate::core::prelude::*;
+use crate::core::util::{trim_ascii_whitespace, write_bytes, write_u32_le};
 
 /// Parse cookies into a caller-provided slice (zero-alloc).
 /// Output format: [u32 count] repeated { [u32 name_len] [name] [u32 value_len] [value] }
 #[inline]
-pub fn cookie_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
+pub fn cookie_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> CoreResult<usize> {
     let mut pos = 0usize;
     write_u32_le(out, &mut pos, 0)?;
 
@@ -53,18 +51,25 @@ pub fn cookie_parse_packed_vec(input: &[u8]) -> Vec<u8> {
             out
         }
         Err(_) => {
-            // Fall back to VecWriter if slice is too small (rare).
             vec![0u8; 4] // empty result
         }
     }
 }
 
-#[napi]
-pub fn cookie_parse_packed(input: Uint8Array) -> Result<Buffer> {
-    Ok(Buffer::from(cookie_parse_packed_vec(input.as_ref())))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[napi]
-pub fn cookie_parse_packed_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
-    crate::util::run_packed_into(&input, &mut output, cookie_parse_packed_into_slice)
+    #[test]
+    fn test_cookie_parse_empty() {
+        let result = cookie_parse_packed_vec(b"");
+        assert_eq!(&result[..4], &[0u8, 0, 0, 0]); // count = 0
+    }
+
+    #[test]
+    fn test_cookie_parse_single() {
+        let result = cookie_parse_packed_vec(b"session=abc123");
+        let count = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);
+        assert_eq!(count, 1);
+    }
 }

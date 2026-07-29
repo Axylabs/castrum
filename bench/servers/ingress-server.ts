@@ -473,206 +473,6 @@ class FastIngressResult {
   }
 }
 
-// ── Direct packed input writer ──
-class FastPackedInput {
-
-  beginLenPrefixedSection(): [number, number] {
-    this.ensure(4);
-    const lenPos = this.pos;
-    this.pos += 4;
-    return [lenPos, this.pos];
-  }
-
-  endLenPrefixedSection(lenPos: number, start: number): void {
-    this.writeU32At(lenPos, this.pos - start);
-  }
-  private buf: Uint8Array;
-  private view: DataView;
-  private pos = 0;
-
-  constructor(initialSize = 262144) {
-    this.buf = new Uint8Array(Math.max(1024, initialSize));
-    this.view = new DataView(this.buf.buffer);
-  }
-
-  reset(): void {
-    this.pos = 0;
-  }
-
-  finish(): Uint8Array {
-    return this.buf.subarray(0, this.pos);
-  }
-
-  private ensure(additional: number): void {
-    const needed = this.pos + additional;
-    if (needed <= this.buf.byteLength) return;
-
-    let nextSize = this.buf.byteLength * 2;
-    while (nextSize < needed) {
-      nextSize *= 2;
-    }
-
-    const next = new Uint8Array(nextSize);
-    next.set(this.buf.subarray(0, this.pos));
-    this.buf = next;
-    this.view = new DataView(next.buffer);
-  }
-
-  private writeU16At(pos: number, value: number): void {
-    this.view.setUint16(pos, value, true);
-  }
-
-  private writeU32At(pos: number, value: number): void {
-    this.view.setUint32(pos, value, true);
-  }
-
-  writeU8(value: number): void {
-    this.ensure(1);
-    this.buf[this.pos++] = value & 0xff;
-  }
-
-  writeLenPrefixedBytes(bytes: Uint8Array): void {
-    this.ensure(4 + bytes.byteLength);
-    this.writeU32At(this.pos, bytes.byteLength);
-    this.pos += 4;
-    this.buf.set(bytes, this.pos);
-    this.pos += bytes.byteLength;
-  }
-
-  writeStringLenPrefixed(
-    value: string,
-    maxBytes: number = Number.MAX_SAFE_INTEGER,
-  ): void {
-    if (value.length > maxBytes) {
-      this.ensure(4);
-      this.writeU32At(
-        this.pos,
-        maxBytes > 0xffffffff ? 0xffffffff : maxBytes + 1,
-      );
-      this.pos += 4;
-      return;
-    }
-
-    const maxEncoded = value.length * 3;
-    this.ensure(4 + maxEncoded);
-
-    const lenPos = this.pos;
-    this.pos += 4;
-
-    const { written } = encoder.encodeInto(value, this.buf.subarray(this.pos));
-    this.writeU32At(lenPos, written);
-    this.pos += written;
-  }
-
-  beginHeaderCount(): number {
-    this.ensure(2);
-    const countPos = this.pos;
-    this.pos += 2;
-    return countPos;
-  }
-
-  endHeaderCount(countPos: number, count: number): void {
-    this.writeU16At(countPos, count);
-  }
-
-  writeHeaderName(name: Uint8Array): void {
-    this.ensure(2 + name.length);
-    this.writeU16At(this.pos, name.length);
-    this.pos += 2;
-    this.buf.set(name, this.pos);
-    this.pos += name.length;
-  }
-}
-
-// ── Header packing ──
-interface HeaderPlan {
-  cookie: boolean;
-  cors: boolean;
-  proxy: boolean;
-  proto: boolean;
-}
-
-const HDR_COOKIE = encoder.encode("cookie");
-const HDR_ORIGIN = encoder.encode("origin");
-const HDR_ACRM = encoder.encode("access-control-request-method");
-const HDR_ACRH = encoder.encode("access-control-request-headers");
-const HDR_XFF = encoder.encode("x-forwarded-for");
-const HDR_XRI = encoder.encode("x-real-ip");
-const HDR_XFP = encoder.encode("x-forwarded-proto");
-
-function packHeadersDirect(
-  req: Request,
-  isOptions: boolean,
-  packer: FastPackedInput,
-  plan: HeaderPlan,
-): void {
-  const countPos = packer.beginHeaderCount();
-  let count = 0;
-
-  const headers = req.headers;
-
-  if (plan.cookie) {
-    const value = headers.get("cookie");
-    if (value !== null && value.length <= MAX_COOKIE_HEADER_BYTES) {
-      packer.writeHeaderName(HDR_COOKIE);
-      packer.writeStringLenPrefixed(value, MAX_COOKIE_HEADER_BYTES);
-      count++;
-    }
-  }
-
-  if (plan.cors) {
-    const origin = headers.get("origin");
-    if (origin !== null && origin.length <= MAX_SMALL_HEADER_BYTES) {
-      packer.writeHeaderName(HDR_ORIGIN);
-      packer.writeStringLenPrefixed(origin, MAX_SMALL_HEADER_BYTES);
-      count++;
-    }
-
-    if (isOptions) {
-      const acrm = headers.get("access-control-request-method");
-      if (acrm !== null && acrm.length <= MAX_SMALL_HEADER_BYTES) {
-        packer.writeHeaderName(HDR_ACRM);
-        packer.writeStringLenPrefixed(acrm, MAX_SMALL_HEADER_BYTES);
-        count++;
-      }
-
-      const acrh = headers.get("access-control-request-headers");
-      if (acrh !== null && acrh.length <= MAX_SMALL_HEADER_BYTES) {
-        packer.writeHeaderName(HDR_ACRH);
-        packer.writeStringLenPrefixed(acrh, MAX_SMALL_HEADER_BYTES);
-        count++;
-      }
-    }
-  }
-
-  if (plan.proxy) {
-    const xff = headers.get("x-forwarded-for");
-    if (xff !== null && xff.length <= MAX_XFF_HEADER_BYTES) {
-      packer.writeHeaderName(HDR_XFF);
-      packer.writeStringLenPrefixed(xff, MAX_XFF_HEADER_BYTES);
-      count++;
-    }
-
-    const xri = headers.get("x-real-ip");
-    if (xri !== null && xri.length <= MAX_SMALL_HEADER_BYTES) {
-      packer.writeHeaderName(HDR_XRI);
-      packer.writeStringLenPrefixed(xri, MAX_SMALL_HEADER_BYTES);
-      count++;
-    }
-  }
-
-  if (plan.proto) {
-    const xfp = headers.get("x-forwarded-proto");
-    if (xfp !== null && xfp.length <= MAX_SMALL_HEADER_BYTES) {
-      packer.writeHeaderName(HDR_XFP);
-      packer.writeStringLenPrefixed(xfp, MAX_SMALL_HEADER_BYTES);
-      count++;
-    }
-  }
-
-  packer.endHeaderCount(countPos, count);
-}
-
 const METHOD_KIND: Record<string, number> = {
   GET: 0,
   HEAD: 1,
@@ -683,38 +483,14 @@ const METHOD_KIND: Record<string, number> = {
   OPTIONS: 6,
 };
 
-const EMPTY_IP_BYTES = encoder.encode("0.0.0.0");
-
-function packRequest(
-  packer: FastPackedInput,
-  req: Request,
-  methodKind: number,
-  isOptions: boolean,
-  ip: string | undefined,
-  requestIdBytes: Uint8Array,
-  plan: HeaderPlan,
-): Uint8Array {
-  packer.reset();
-
-  packer.writeU8(methodKind);
-
-  packer.writeStringLenPrefixed(req.url, MAX_URL_BYTES);
-
-  if (NEED_SOCKET_IP && ip) {
-    packer.writeStringLenPrefixed(ip, 128);
-  } else {
-    packer.writeLenPrefixedBytes(EMPTY_IP_BYTES);
-  }
-
-  packer.writeLenPrefixedBytes(requestIdBytes);
-
-  // Headers must be wrapped in a u32le length prefix.
-  const [headersLenPos, headersStart] = packer.beginLenPrefixedSection();
-  packHeadersDirect(req, isOptions, packer, plan);
-  packer.endLenPrefixedSection(headersLenPos, headersStart);
-
-  return packer.finish();
+interface HeaderPlan {
+  cookie: boolean;
+  cors: boolean;
+  proxy: boolean;
+  proto: boolean;
 }
+
+const EMPTY_IP = "0.0.0.0";
 
 // ── Optimized ingress wrapper ──
 interface IngressContext {
@@ -734,13 +510,13 @@ interface OptimizedIngressHandler {
 function createOptimizedIngress(options: any): OptimizedIngressHandler {
   const NativeIngress = (addon as any).Ingress;
   if (typeof NativeIngress !== "function") {
-    throw new Error("Native Ingress class missing");
+    throw new Error("Native Ingress class missing. Rebuild the Rust addon.");
   }
 
   const handler = new NativeIngress(options);
-  if (typeof handler.handleRequestPacked !== "function") {
+  if (typeof handler.handleRequestFullSync !== "function") {
     throw new Error(
-      "Native Ingress.handleRequestPacked missing. Rebuild the Rust addon.",
+      "Native Ingress.handleRequestFullSync missing. Rebuild the Rust addon.",
     );
   }
 
@@ -756,14 +532,6 @@ function createOptimizedIngress(options: any): OptimizedIngressHandler {
     proto: trust && options.https === undefined,
   };
 
-  const outputBuf = new Uint8Array(OUTPUT_BUF_SIZE);
-  const outputView = new DataView(
-    outputBuf.buffer,
-    outputBuf.byteOffset,
-    outputBuf.byteLength,
-  );
-
-  const packer = new FastPackedInput(OUTPUT_BUF_SIZE);
   const result = new FastIngressResult();
   const ctx: IngressContext = {
     requestIdHeader: null,
@@ -773,38 +541,84 @@ function createOptimizedIngress(options: any): OptimizedIngressHandler {
   return {
     run(req, ip, body, fn) {
       const methodKind = METHOD_KIND[req.method] ?? 7;
-      const isOptions = methodKind === 6;
-
       const ridBytes = generateRequestId();
+      const requestIdStr = decoder.decode(ridBytes);
 
-      ctx.requestIdHeader = EMIT_REQUEST_ID_HEADER
-        ? decoder.decode(ridBytes)
-        : null;
+      ctx.requestIdHeader = EMIT_REQUEST_ID_HEADER ? requestIdStr : null;
       ctx.origin = headerPlan.cors ? req.headers.get("origin") : null;
 
-      const input = packRequest(
-        packer,
-        req,
-        methodKind,
-        isOptions,
-        ip,
-        ridBytes,
-        headerPlan,
-      );
+      // Gather raw headers as [name, value][] — no binary packing in JS
+      const headers: [string, string][] = [];
+      const h = req.headers;
+
+      if (headerPlan.cookie) {
+        const v = h.get("cookie");
+        if (v !== null && v.length <= MAX_COOKIE_HEADER_BYTES) {
+          headers.push(["cookie", v]);
+        }
+      }
+
+      if (headerPlan.cors) {
+        const originV = h.get("origin");
+        if (originV !== null && originV.length <= MAX_SMALL_HEADER_BYTES) {
+          headers.push(["origin", originV]);
+        }
+
+        if (methodKind === 6) {
+          const acrm = h.get("access-control-request-method");
+          if (acrm !== null && acrm.length <= MAX_SMALL_HEADER_BYTES) {
+            headers.push(["access-control-request-method", acrm]);
+          }
+
+          const acrh = h.get("access-control-request-headers");
+          if (acrh !== null && acrh.length <= MAX_SMALL_HEADER_BYTES) {
+            headers.push(["access-control-request-headers", acrh]);
+          }
+        }
+      }
+
+      if (headerPlan.proxy) {
+        const xff = h.get("x-forwarded-for");
+        if (xff !== null && xff.length <= MAX_XFF_HEADER_BYTES) {
+          headers.push(["x-forwarded-for", xff]);
+        }
+
+        const xri = h.get("x-real-ip");
+        if (xri !== null && xri.length <= MAX_SMALL_HEADER_BYTES) {
+          headers.push(["x-real-ip", xri]);
+        }
+      }
+
+      if (headerPlan.proto) {
+        const xfp = h.get("x-forwarded-proto");
+        if (xfp !== null && xfp.length <= MAX_SMALL_HEADER_BYTES) {
+          headers.push(["x-forwarded-proto", xfp]);
+        }
+      }
+
+      const ipStr = ip ?? EMPTY_IP;
 
       try {
-        handler.handleRequestPacked(
-          input as Uint8Array,
-          body as Uint8Array | null,
-          outputBuf as Uint8Array,
+        // Pass raw values to Rust — handleRequestFullSync packs them internally
+        // in Rust synchronously, eliminating both JS-side encoding AND tokio overhead.
+        const outputBuf = handler.handleRequestFullSync(
+          methodKind,
+          req.url,
+          ipStr,
+          requestIdStr,
+          headers,
+          body,
+          OUTPUT_BUF_SIZE,
         );
 
-        result.refresh(
-          outputBuf,
-          (body ?? EMPTY_BODY) as Uint8Array,
-          outputView,
+        const outputView = new DataView(
+          outputBuf.buffer,
+          outputBuf.byteOffset,
+          outputBuf.byteLength,
         );
-      } catch {
+
+        result.refresh(outputBuf, body ?? EMPTY_BODY, outputView);
+      } catch (err) {
         result.setInternalError();
       }
 

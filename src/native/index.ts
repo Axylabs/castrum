@@ -12,15 +12,27 @@ export interface IngressInstance {
     output: Uint8Array,
   ): number;
 
-  handleRequest?(
+  handleRequestFullSync(
     methodKind: number,
-    url: Uint8Array,
-    ip: Uint8Array,
-    requestId: Uint8Array,
-    headers: Uint8Array,
+    url: string,
+    ip: string,
+    requestId: string,
+    headers: Array<[string, string]>,
     body: Uint8Array | null,
-    output: Uint8Array,
-  ): number;
+    outputBufferSize?: number,
+  ): Uint8Array;
+}
+
+export interface AsyncIngressInstance {
+  handleRequestFull(
+    methodKind: number,
+    url: string,
+    ip: string,
+    requestId: string,
+    headers: Array<[string, string]>,
+    body: Uint8Array | null,
+    outputBufferSize?: number,
+  ): Promise<Uint8Array>;
 }
 
 function resolveAddonPath(): string {
@@ -76,6 +88,7 @@ function resolveAddonPath(): string {
 interface NativeAddon {
   HmacSigner: new (key: Uint8Array) => HmacSignerInstance;
   Ingress: new (options: Record<string, unknown>) => IngressInstance;
+  AsyncIngress: new (options: Record<string, unknown>) => AsyncIngressInstance;
 
   crc32(input: Uint8Array): number;
   fnv1a64(input: Uint8Array): bigint;
