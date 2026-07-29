@@ -1,11 +1,6 @@
-// bench/servers/ingress-server.ts — v9: PRODUCTION OPTIMIZED
-//
-// Env tuning:
-//   INGRESS_REQUEST_ID_HEADER=1   Emit X-Request-Id header (off by default)
-//   INGRESS_UNSAFE_ZERO_COPY=1    Benchmark-only: return subarrays of shared buffer
-//   INGRESS_OUTPUT_BUF_BYTES=N    Rust output buffer size (default 131072)
-
+// bench/servers/ingress-server.ts — production-ready optimized Bun ingress server
 import addon from "../../src/native";
+import { safeTerminalStatus } from "../../src/ingress";
 import {
   PORTS,
   USER_SCHEMA_BYTES,
@@ -46,6 +41,7 @@ const FLAG_SCHEMA_VALID = 1 << 3;
 const FLAG_CORS_ALLOWED = 1 << 4;
 const FLAG_IS_PREFLIGHT = 1 << 5;
 const FLAG_RATE_LIMITED = 1 << 6;
+const FLAG_BODY_TRUNCATED = 1 << 9;
 
 // ── Error codes ──
 const ERROR_CODE_CORS_PREFLIGHT = 1;
@@ -53,26 +49,53 @@ const ERROR_CODE_RATE_LIMITED = 2;
 const ERROR_CODE_BODY_TOO_LARGE = 3;
 const ERROR_CODE_INVALID_JSON = 4;
 const ERROR_CODE_SCHEMA_VALIDATION = 5;
+const ERROR_CODE_BAD_REQUEST = 6;
+const ERROR_CODE_REQUEST_TOO_LARGE = 7;
+const ERROR_CODE_INTERNAL = 8;
 
 // ── Runtime configuration ──
 const RATE_LIMIT_U32_MAX = 4_294_967_295;
 const RATE_ENABLED =
   RATE_LIMIT_CONFIG.limit !== RATE_LIMIT_U32_MAX &&
   RATE_LIMIT_CONFIG.limit > 0;
-const TRUST_PROXY = true;
+
+const TRUST_PROXY = process.env.INGRESS_TRUST_PROXY !== "0";
 const HTTPS_FIXED = true;
 const NEED_SOCKET_IP = RATE_ENABLED;
+
 const EMIT_REQUEST_ID_HEADER = process.env.INGRESS_REQUEST_ID_HEADER === "1";
+
+// Safe default: copy response bodies.
+// Do not enable zero-copy unless you implement per-response output buffers.
 const UNSAFE_ZERO_COPY = process.env.INGRESS_UNSAFE_ZERO_COPY === "1";
+const COPY_BODY = !UNSAFE_ZERO_COPY;
+
 const OUTPUT_BUF_SIZE = Math.max(
   65536,
   Number(process.env.INGRESS_OUTPUT_BUF_BYTES || 131072) | 0,
 );
 
+const MAX_URL_BYTES = 65536;
+const MAX_COOKIE_HEADER_BYTES = 8192;
+const MAX_SMALL_HEADER_BYTES = 2048;
+const MAX_XFF_HEADER_BYTES = 8192;
+
+// Security headers are safe by default.
+// For maximum API throughput behind an edge/proxy, set INGRESS_SECURITY_HEADERS=0.
+const SECURITY_HEADERS_ENABLED = process.env.INGRESS_SECURITY_HEADERS !== "0";
+
+const REUSE_PORT = process.env.INGRESS_REUSE_PORT === "1";
+
 // ── Static header templates ──
-const STATIC_SECURITY_ENTRIES: ReadonlyArray<[string, string]> = Object.freeze(
-  Object.entries(SECURITY_HEADERS) as [string, string][],
-);
+const STATIC_SECURITY_ENTRIES: ReadonlyArray<[string, string]> =
+  SECURITY_HEADERS_ENABLED
+    ? Object.freeze(
+      Object.entries(SECURITY_HEADERS).map(
+        ([k, v]) => [k.toLowerCase(), v] as [string, string],
+      ),
+    )
+    : Object.freeze([] as [string, string][]);
+
 const CORS_ALLOW_METHODS = CORS_CONFIG.allowMethods.join(", ");
 const CORS_ALLOW_HEADERS = CORS_CONFIG.allowHeaders.join(", ");
 const CORS_EXPOSE_HEADERS = CORS_CONFIG.exposeHeaders.join(", ");
@@ -83,20 +106,38 @@ const HEADER_TEMPLATES: ReadonlyArray<ReadonlyArray<[string, string]>> =
   Object.freeze(
     Array.from({ length: 32 }, (_, variant) => {
       const entries: [string, string][] = [...STATIC_SECURITY_ENTRIES];
-      if ((variant & HV_JSON) !== 0) entries.push(["Content-Type", "application/json"]);
+
+      if ((variant & HV_JSON) !== 0) {
+        entries.push(["content-type", "application/json"]);
+      }
+
       if ((variant & HV_CORS_SIMPLE) !== 0) {
-        entries.push(["Vary", "Origin"]);
-        if (CORS_CONFIG.allowCredentials) entries.push(["Access-Control-Allow-Credentials", "true"]);
-        if (CORS_EXPOSE_HEADERS.length > 0) entries.push(["Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS]);
+        entries.push(["vary", "Origin"]);
+        if (CORS_CONFIG.allowCredentials) {
+          entries.push(["access-control-allow-credentials", "true"]);
+        }
+        if (CORS_EXPOSE_HEADERS.length > 0) {
+          entries.push(["access-control-expose-headers", CORS_EXPOSE_HEADERS]);
+        }
       }
+
       if ((variant & HV_CORS_PREFLIGHT) !== 0) {
-        entries.push(["Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"]);
-        if (CORS_CONFIG.allowCredentials) entries.push(["Access-Control-Allow-Credentials", "true"]);
-        entries.push(["Access-Control-Allow-Methods", CORS_ALLOW_METHODS]);
-        entries.push(["Access-Control-Allow-Headers", CORS_ALLOW_HEADERS]);
-        entries.push(["Access-Control-Max-Age", CORS_MAX_AGE]);
+        entries.push([
+          "vary",
+          "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+        ]);
+        if (CORS_CONFIG.allowCredentials) {
+          entries.push(["access-control-allow-credentials", "true"]);
+        }
+        entries.push(["access-control-allow-methods", CORS_ALLOW_METHODS]);
+        entries.push(["access-control-allow-headers", CORS_ALLOW_HEADERS]);
+        entries.push(["access-control-max-age", CORS_MAX_AGE]);
       }
-      if ((variant & HV_RATE_ACTIVE) !== 0) entries.push(["RateLimit-Limit", RATE_LIMIT_STR]);
+
+      if ((variant & HV_RATE_ACTIVE) !== 0) {
+        entries.push(["ratelimit-limit", RATE_LIMIT_STR]);
+      }
+
       return Object.freeze(entries);
     }),
   );
@@ -109,15 +150,19 @@ function responseHeaders(
   rateResetSecs?: number,
   retryAfterSecs?: number,
 ): [string, string][] {
-  const template = HEADER_TEMPLATES[variant & 31];
+  const template: ReadonlyArray<[string, string]> =
+    HEADER_TEMPLATES[variant & 31] ?? HEADER_TEMPLATES[0] ?? [];
+
   const needsRequestId = EMIT_REQUEST_ID_HEADER && requestIdHeader !== null;
   const needsOrigin =
-    ((variant & HV_CORS_SIMPLE) !== 0 || (variant & HV_CORS_PREFLIGHT) !== 0) && origin !== null;
+    ((variant & HV_CORS_SIMPLE) !== 0 ||
+      (variant & HV_CORS_PREFLIGHT) !== 0) &&
+    origin !== null;
   const needsRate = (variant & HV_RATE_ACTIVE) !== 0;
   const needsRetry = (variant & HV_RATE_LIMITED) !== 0;
 
   if (!needsRequestId && !needsOrigin && !needsRate && !needsRetry) {
-    return template as [string, string][];
+    return template as unknown as [string, string][];
   }
 
   let extra = 0;
@@ -128,63 +173,169 @@ function responseHeaders(
 
   const entries = new Array<[string, string]>(template.length + extra);
   let i = 0;
-  for (; i < template.length; i++) entries[i] = template[i];
-  if (needsRequestId) entries[i++] = ["X-Request-Id", requestIdHeader as string];
-  if (needsOrigin) entries[i++] = ["Access-Control-Allow-Origin", origin as string];
-  if (needsRate) {
-    entries[i++] = ["RateLimit-Remaining", String(rateRemaining ?? 0)];
-    entries[i++] = ["RateLimit-Reset", String(rateResetSecs ?? 0)];
+
+  for (; i < template.length; i++) {
+    entries[i] = template[i]!;
   }
-  if (needsRetry) entries[i++] = ["Retry-After", String(retryAfterSecs ?? 0)];
+
+  if (needsRequestId) {
+    entries[i++] = ["x-request-id", requestIdHeader as string];
+  }
+
+  if (needsOrigin) {
+    entries[i++] = ["access-control-allow-origin", origin as string];
+  }
+
+  if (needsRate) {
+    entries[i++] = ["ratelimit-remaining", String(rateRemaining ?? 0)];
+    entries[i++] = ["ratelimit-reset", String(rateResetSecs ?? 0)];
+  }
+
+  if (needsRetry) {
+    entries[i++] = ["retry-after", String(retryAfterSecs ?? 0)];
+  }
+
   return entries;
 }
 
-// ── Pre-serialized static error payloads ──
-const STATIC_ERROR_BODIES: Record<number, Uint8Array> = {};
-function initStaticErrors() {
-  STATIC_ERROR_BODIES[ERROR_CODE_CORS_PREFLIGHT] = encoder.encode('{"ok":false,"error":{"code":"cors_preflight_not_allowed","message":"CORS preflight not allowed"}}');
-  STATIC_ERROR_BODIES[ERROR_CODE_BODY_TOO_LARGE] = encoder.encode('{"ok":false,"error":{"code":"body_too_large","message":"Request body is too large"}}');
-  STATIC_ERROR_BODIES[ERROR_CODE_INVALID_JSON] = encoder.encode('{"ok":false,"error":{"code":"invalid_json","message":"Invalid JSON body"}}');
-  STATIC_ERROR_BODIES[ERROR_CODE_SCHEMA_VALIDATION] = encoder.encode('{"ok":false,"error":{"code":"schema_validation_failed","message":"Request body failed schema validation"}}');
-}
-initStaticErrors();
-const STATIC_DEFAULT_ERROR = encoder.encode('{"ok":false,"error":{"code":"rejected","message":"Rejected by ingress"}}');
+function terminalHeaders(
+  variant: number,
+  ctx: IngressContext,
+  result: FastIngressResult | null,
+): [string, string][] {
+  const base = responseHeaders(
+    variant | HV_JSON,
+    ctx.requestIdHeader,
+    ctx.origin,
+    result?.rateRemaining,
+    result && result.rateResetMs > 0
+      ? Math.ceil(result.rateResetMs / 1000)
+      : undefined,
+    result && result.retryAfterMs > 0
+      ? Math.ceil(result.retryAfterMs / 1000)
+      : undefined,
+  );
 
-// ── Fast Request ID Generator (Hex Counter) ──
-const reqIdCounter = { hi: 0, lo: 0 };
-const reqIdBytes = new Uint8Array(16);
+  const out = new Array<[string, string]>(base.length + 1);
+  for (let i = 0; i < base.length; i++) {
+    out[i] = base[i]!;
+  }
+  out[base.length] = ["cache-control", "no-store"];
+  return out;
+}
+
+// ── Static error bodies ──
+function staticErrorBody(code: string, message: string): Uint8Array {
+  return encoder.encode(
+    `{"ok":false,"error":{"code":"${code}","message":"${message}"}}`,
+  );
+}
+
+const ERROR_BODIES: Record<string, Uint8Array> = {
+  not_found: staticErrorBody("not_found", "Not found"),
+  unsupported_media_type: staticErrorBody(
+    "unsupported_media_type",
+    "Content-Type must be application/json",
+  ),
+  body_too_large: staticErrorBody(
+    "body_too_large",
+    "Request body is too large",
+  ),
+  invalid_json: staticErrorBody("invalid_json", "Invalid JSON body"),
+  schema_validation_failed: staticErrorBody(
+    "schema_validation_failed",
+    "Request body failed schema validation",
+  ),
+  cors_preflight_not_allowed: staticErrorBody(
+    "cors_preflight_not_allowed",
+    "CORS preflight not allowed",
+  ),
+  bad_request: staticErrorBody("bad_request", "Bad request"),
+  request_too_large: staticErrorBody("request_too_large", "Request too large"),
+  rate_limited: staticErrorBody("rate_limited", "Too Many Requests"),
+  internal: staticErrorBody("internal_error", "Internal server error"),
+  rejected: staticErrorBody("rejected", "Rejected by ingress"),
+};
+
+const ERROR_CODE_BODIES: (Uint8Array | undefined)[] = [];
+ERROR_CODE_BODIES[ERROR_CODE_CORS_PREFLIGHT] =
+  ERROR_BODIES.cors_preflight_not_allowed;
+ERROR_CODE_BODIES[ERROR_CODE_RATE_LIMITED] = ERROR_BODIES.rate_limited;
+ERROR_CODE_BODIES[ERROR_CODE_BODY_TOO_LARGE] = ERROR_BODIES.body_too_large;
+ERROR_CODE_BODIES[ERROR_CODE_INVALID_JSON] = ERROR_BODIES.invalid_json;
+ERROR_CODE_BODIES[ERROR_CODE_SCHEMA_VALIDATION] =
+  ERROR_BODIES.schema_validation_failed;
+ERROR_CODE_BODIES[ERROR_CODE_BAD_REQUEST] = ERROR_BODIES.bad_request;
+ERROR_CODE_BODIES[ERROR_CODE_REQUEST_TOO_LARGE] =
+  ERROR_BODIES.request_too_large;
+ERROR_CODE_BODIES[ERROR_CODE_INTERNAL] = ERROR_BODIES.internal;
+
+const RATE_LIMIT_BODY_PREFIX = encoder.encode(
+  '{"ok":false,"error":{"code":"rate_limited","message":"Too Many Requests","retry_after_ms":',
+);
+const RATE_LIMIT_BODY_SUFFIX = encoder.encode("}}");
+
+function rateLimitedBody(retryAfterMs: number): Uint8Array {
+  const digits = encoder.encode(String(Math.max(0, Math.floor(retryAfterMs))));
+  const out = new Uint8Array(
+    RATE_LIMIT_BODY_PREFIX.byteLength +
+    digits.byteLength +
+    RATE_LIMIT_BODY_SUFFIX.byteLength,
+  );
+  out.set(RATE_LIMIT_BODY_PREFIX, 0);
+  out.set(digits, RATE_LIMIT_BODY_PREFIX.byteLength);
+  out.set(
+    RATE_LIMIT_BODY_SUFFIX,
+    RATE_LIMIT_BODY_PREFIX.byteLength + digits.byteLength,
+  );
+  return out;
+}
+
+// ── Fast request ID generator ──
+const reqIdBinary = new Uint8Array(8);
+const reqIdHex = new Uint8Array(16);
 const reqIdHexLookup = new Uint8Array(256 * 2);
+
 for (let i = 0; i < 256; i++) {
   reqIdHexLookup[i * 2] = "0123456789abcdef".charCodeAt(i >> 4);
   reqIdHexLookup[i * 2 + 1] = "0123456789abcdef".charCodeAt(i & 0x0f);
 }
 
+const workerId = Number(process.env.INGRESS_WORKER_ID || 0) & 0xffff;
+const bootRandom = (Math.random() * 0xffffffff) >>> 0;
+
+const reqIdCounter = {
+  hi: (bootRandom ^ (workerId << 16)) >>> 0,
+  lo: 0,
+};
+
 function generateRequestId(): Uint8Array {
-  if (reqIdCounter.lo === 0xFFFFFFFF) {
+  if (reqIdCounter.lo === 0xffffffff) {
     reqIdCounter.lo = 0;
-    reqIdCounter.hi++;
+    reqIdCounter.hi = (reqIdCounter.hi + 1) >>> 0;
   } else {
     reqIdCounter.lo++;
   }
-  
-  reqIdBytes[0] = (reqIdCounter.hi >>> 24) & 0xFF;
-  reqIdBytes[1] = (reqIdCounter.hi >>> 16) & 0xFF;
-  reqIdBytes[2] = (reqIdCounter.hi >>> 8) & 0xFF;
-  reqIdBytes[3] = reqIdCounter.hi & 0xFF;
-  reqIdBytes[4] = (reqIdCounter.lo >>> 24) & 0xFF;
-  reqIdBytes[5] = (reqIdCounter.lo >>> 16) & 0xFF;
-  reqIdBytes[6] = (reqIdCounter.lo >>> 8) & 0xFF;
-  reqIdBytes[7] = reqIdCounter.lo & 0xFF;
-  
+
+  reqIdBinary[0] = (reqIdCounter.hi >>> 24) & 0xff;
+  reqIdBinary[1] = (reqIdCounter.hi >>> 16) & 0xff;
+  reqIdBinary[2] = (reqIdCounter.hi >>> 8) & 0xff;
+  reqIdBinary[3] = reqIdCounter.hi & 0xff;
+  reqIdBinary[4] = (reqIdCounter.lo >>> 24) & 0xff;
+  reqIdBinary[5] = (reqIdCounter.lo >>> 16) & 0xff;
+  reqIdBinary[6] = (reqIdCounter.lo >>> 8) & 0xff;
+  reqIdBinary[7] = reqIdCounter.lo & 0xff;
+
   for (let i = 0; i < 8; i++) {
-    const b = reqIdBytes[i];
-    reqIdBytes[i * 2] = reqIdHexLookup[b * 2];
-    reqIdBytes[i * 2 + 1] = reqIdHexLookup[b * 2 + 1];
+    const b = reqIdBinary[i]!;
+    reqIdHex[i * 2] = reqIdHexLookup[b * 2]!;
+    reqIdHex[i * 2 + 1] = reqIdHexLookup[b * 2 + 1]!;
   }
-  return reqIdBytes;
+
+  return reqIdHex;
 }
 
-// ── Fast result wrapper (unchanged — binary protocol) ──
+// ── Fast result wrapper ──
 const EMPTY_BODY = new Uint8Array(0);
 
 class FastIngressResult {
@@ -201,34 +352,54 @@ class FastIngressResult {
   corsAllowed = false;
   bodyValidJson = false;
   schemaValid = false;
+  bodyTruncated = false;
   body: Uint8Array = EMPTY_BODY;
+
   private _buf: Uint8Array = EMPTY_BODY;
-  private _view: DataView | null = null;
-  private _cookiesJson: string | undefined = undefined;
-  private _queryJson: string | undefined = undefined;
-  private _cookiesLen = 0;
-  private _queryLen = 0;
-  private _queryStart = OUT_DATA_START;
   private _bodyJsonStart = OUT_DATA_START;
   private _bodyJsonLen = 0;
 
   refresh(buf: Uint8Array, body: Uint8Array, view: DataView): void {
     this._buf = buf;
-    this._view = view;
     this.body = body;
-    
-    // Batch read 48-byte header to minimize DataView boundary crossings
-    const h0 = view.getUint32(OUT_VERDICT, true);     // verdict, error, status
-    const h1 = view.getUint32(OUT_FLAGS, true);       // flags
-    const h2 = view.getUint32(OUT_RATE_LIMIT, true);  // rate_limit
-    const h3 = view.getUint32(OUT_RATE_REMAINING, true); // rate_remaining
-    
-    this.verdict = h0 & 0xFF;
-    this.errorCode = (h0 >>> 8) & 0xFF;
-    this.status = (h0 >>> 16) & 0xFFFF;
+
+    const h0 = view.getUint32(OUT_VERDICT, true);
+    const h1 = view.getUint32(OUT_FLAGS, true);
+    const h2 = view.getUint32(OUT_RATE_LIMIT, true);
+    const h3 = view.getUint32(OUT_RATE_REMAINING, true);
+
+    const cookiesLenRaw = view.getUint32(OUT_COOKIES_JSON_LEN, true);
+    const queryLenRaw = view.getUint32(OUT_QUERY_JSON_LEN, true);
+    const headerVariant = view.getUint8(OUT_HEADER_VARIANT);
+    const bodyJsonLenRaw = view.getUint32(OUT_BODY_JSON_LEN, true);
+
+    const safeCookiesLen =
+      OUT_DATA_START + cookiesLenRaw <= buf.byteLength ? cookiesLenRaw : 0;
+    const queryStart = OUT_DATA_START + safeCookiesLen;
+    const safeQueryLen =
+      queryStart + queryLenRaw <= buf.byteLength ? queryLenRaw : 0;
+    const bodyJsonStart = queryStart + safeQueryLen;
+    const safeBodyJsonLen =
+      bodyJsonStart + bodyJsonLenRaw <= buf.byteLength ? bodyJsonLenRaw : 0;
+
+    if (h0 === 0 && h1 === 0) {
+      this.verdict = 1;
+      this.errorCode = ERROR_CODE_INTERNAL;
+      this.status = 500;
+    } else {
+      this.verdict = h0 & 0xff;
+      this.errorCode = (h0 >>> 8) & 0xff;
+
+      const rawStatus = (h0 >>> 16) & 0xffff;
+      const validStatus =
+        rawStatus === 101 || (rawStatus >= 200 && rawStatus <= 599);
+      this.status = validStatus ? rawStatus : 500;
+    }
+
     const flags = h1;
-    
+
     this.rateRemaining = h3;
+
     if (h2 > 0 || (flags & FLAG_RATE_LIMITED) !== 0) {
       this.rateResetMs = Number(view.getBigUint64(OUT_RATE_RESET, true));
       this.retryAfterMs = Number(view.getBigUint64(OUT_RETRY_AFTER, true));
@@ -236,230 +407,506 @@ class FastIngressResult {
       this.rateResetMs = 0;
       this.retryAfterMs = 0;
     }
-    
-    this._cookiesLen = view.getUint32(OUT_COOKIES_JSON_LEN, true);
-    this._queryLen = view.getUint32(OUT_QUERY_JSON_LEN, true);
-    this.headerVariant = view.getUint8(OUT_HEADER_VARIANT);
-    this._bodyJsonLen = view.getUint32(OUT_BODY_JSON_LEN, true);
-    
-    this._queryStart = OUT_DATA_START + this._cookiesLen;
-    this._bodyJsonStart = this._queryStart + this._queryLen;
-    
+
+    this.headerVariant = headerVariant;
+    this._bodyJsonStart = bodyJsonStart;
+    this._bodyJsonLen = safeBodyJsonLen;
+
     this.terminal = this.verdict !== 0 || this.status >= 400;
-    this.ok = this.verdict === 0 && this.status < 400;
+    this.ok = this.verdict === 0 && this.status >= 200 && this.status < 400;
+
     this.isPreflight = (flags & FLAG_IS_PREFLIGHT) !== 0;
     this.corsAllowed = (flags & FLAG_CORS_ALLOWED) !== 0;
     this.bodyValidJson = (flags & FLAG_BODY_VALID_JSON) !== 0;
     this.schemaValid = (flags & FLAG_SCHEMA_VALID) !== 0;
-    this._cookiesJson = undefined;
-    this._queryJson = undefined;
+
+    this.bodyTruncated =
+      (flags & FLAG_BODY_TRUNCATED) !== 0 ||
+      safeCookiesLen !== cookiesLenRaw ||
+      safeQueryLen !== queryLenRaw ||
+      safeBodyJsonLen !== bodyJsonLenRaw;
   }
 
   invalidate(): void {
-    this.status = 0; this.verdict = 0; this.errorCode = 0; this.headerVariant = 0;
-    this.rateRemaining = 0; this.rateResetMs = 0; this.retryAfterMs = 0;
-    this.terminal = true; this.ok = false; this.isPreflight = false; this.corsAllowed = false;
-    this.bodyValidJson = false; this.schemaValid = false; this.body = EMPTY_BODY;
-    this._buf = EMPTY_BODY; this._view = null;
-    this._cookiesJson = undefined; this._queryJson = undefined;
-    this._cookiesLen = 0; this._queryLen = 0;
-    this._queryStart = OUT_DATA_START; this._bodyJsonStart = OUT_DATA_START; this._bodyJsonLen = 0;
+    this.status = 0;
+    this.verdict = 0;
+    this.errorCode = 0;
+    this.headerVariant = 0;
+    this.rateRemaining = 0;
+    this.rateResetMs = 0;
+    this.retryAfterMs = 0;
+    this.terminal = true;
+    this.ok = false;
+    this.isPreflight = false;
+    this.corsAllowed = false;
+    this.bodyValidJson = false;
+    this.schemaValid = false;
+    this.bodyTruncated = false;
+    this.body = EMPTY_BODY;
+    this._buf = EMPTY_BODY;
+    this._bodyJsonStart = OUT_DATA_START;
+    this._bodyJsonLen = 0;
   }
 
-  cookiesJson(): string {
-    if (this._cookiesJson !== undefined) return this._cookiesJson;
-    if (this._cookiesLen === 0) { this._cookiesJson = "{}"; return this._cookiesJson; }
-    this._cookiesJson = decoder.decode(this._buf.subarray(OUT_DATA_START, OUT_DATA_START + this._cookiesLen));
-    return this._cookiesJson;
+  setInternalError(): void {
+    this.invalidate();
+    this.status = 500;
+    this.verdict = 1;
+    this.errorCode = ERROR_CODE_INTERNAL;
+    this.headerVariant = HV_JSON;
+    this.terminal = true;
+    this.ok = false;
   }
 
-  queryJson(): string {
-    if (this._queryJson !== undefined) return this._queryJson;
-    if (this._queryLen === 0) { this._queryJson = "{}"; return this._queryJson; }
-    this._queryJson = decoder.decode(this._buf.subarray(this._queryStart, this._queryStart + this._queryLen));
-    return this._queryJson;
-  }
-
-  bodyJson(copy: boolean): Uint8Array<ArrayBuffer> {
+  bodyJson(copy: boolean): Uint8Array {
     if (this._bodyJsonLen === 0) {
-      return EMPTY_BODY as Uint8Array<ArrayBuffer>;
+      return EMPTY_BODY;
     }
-    const slice = this._buf.subarray(
-      this._bodyJsonStart,
-      this._bodyJsonStart + this._bodyJsonLen,
-    );
-    // Fixed dead ternary: actually respect the copy flag
-    return copy ? slice.slice() : slice;
+
+    const end = this._bodyJsonStart + this._bodyJsonLen;
+    if (end > this._buf.byteLength) {
+      return EMPTY_BODY;
+    }
+
+    const slice = this._buf.subarray(this._bodyJsonStart, end);
+    return (copy ? slice.slice() : slice) as Uint8Array;
   }
 }
 
-// ── Header packing (unchanged — binary protocol to Rust) ──
-interface HeaderPlan { cookie: boolean; cors: boolean; proxy: boolean; proto: boolean; }
+// ── Direct packed input writer ──
+class FastPackedInput {
+
+  beginLenPrefixedSection(): [number, number] {
+    this.ensure(4);
+    const lenPos = this.pos;
+    this.pos += 4;
+    return [lenPos, this.pos];
+  }
+
+  endLenPrefixedSection(lenPos: number, start: number): void {
+    this.writeU32At(lenPos, this.pos - start);
+  }
+  private buf: Uint8Array;
+  private view: DataView;
+  private pos = 0;
+
+  constructor(initialSize = 262144) {
+    this.buf = new Uint8Array(Math.max(1024, initialSize));
+    this.view = new DataView(this.buf.buffer);
+  }
+
+  reset(): void {
+    this.pos = 0;
+  }
+
+  finish(): Uint8Array {
+    return this.buf.subarray(0, this.pos);
+  }
+
+  private ensure(additional: number): void {
+    const needed = this.pos + additional;
+    if (needed <= this.buf.byteLength) return;
+
+    let nextSize = this.buf.byteLength * 2;
+    while (nextSize < needed) {
+      nextSize *= 2;
+    }
+
+    const next = new Uint8Array(nextSize);
+    next.set(this.buf.subarray(0, this.pos));
+    this.buf = next;
+    this.view = new DataView(next.buffer);
+  }
+
+  private writeU16At(pos: number, value: number): void {
+    this.view.setUint16(pos, value, true);
+  }
+
+  private writeU32At(pos: number, value: number): void {
+    this.view.setUint32(pos, value, true);
+  }
+
+  writeU8(value: number): void {
+    this.ensure(1);
+    this.buf[this.pos++] = value & 0xff;
+  }
+
+  writeLenPrefixedBytes(bytes: Uint8Array): void {
+    this.ensure(4 + bytes.byteLength);
+    this.writeU32At(this.pos, bytes.byteLength);
+    this.pos += 4;
+    this.buf.set(bytes, this.pos);
+    this.pos += bytes.byteLength;
+  }
+
+  writeStringLenPrefixed(
+    value: string,
+    maxBytes: number = Number.MAX_SAFE_INTEGER,
+  ): void {
+    if (value.length > maxBytes) {
+      this.ensure(4);
+      this.writeU32At(
+        this.pos,
+        maxBytes > 0xffffffff ? 0xffffffff : maxBytes + 1,
+      );
+      this.pos += 4;
+      return;
+    }
+
+    const maxEncoded = value.length * 3;
+    this.ensure(4 + maxEncoded);
+
+    const lenPos = this.pos;
+    this.pos += 4;
+
+    const { written } = encoder.encodeInto(value, this.buf.subarray(this.pos));
+    this.writeU32At(lenPos, written);
+    this.pos += written;
+  }
+
+  beginHeaderCount(): number {
+    this.ensure(2);
+    const countPos = this.pos;
+    this.pos += 2;
+    return countPos;
+  }
+
+  endHeaderCount(countPos: number, count: number): void {
+    this.writeU16At(countPos, count);
+  }
+
+  writeHeaderName(name: Uint8Array): void {
+    this.ensure(2 + name.length);
+    this.writeU16At(this.pos, name.length);
+    this.pos += 2;
+    this.buf.set(name, this.pos);
+    this.pos += name.length;
+  }
+}
+
+// ── Header packing ──
+interface HeaderPlan {
+  cookie: boolean;
+  cors: boolean;
+  proxy: boolean;
+  proto: boolean;
+}
+
 const HDR_COOKIE = encoder.encode("cookie");
 const HDR_ORIGIN = encoder.encode("origin");
 const HDR_ACRM = encoder.encode("access-control-request-method");
+const HDR_ACRH = encoder.encode("access-control-request-headers");
 const HDR_XFF = encoder.encode("x-forwarded-for");
 const HDR_XRI = encoder.encode("x-real-ip");
 const HDR_XFP = encoder.encode("x-forwarded-proto");
 
-function createHeaderPacker(plan: HeaderPlan) {
-  let buf = new Uint8Array(8192);
-  let view = new DataView(buf.buffer);
+function packHeadersDirect(
+  req: Request,
+  isOptions: boolean,
+  packer: FastPackedInput,
+  plan: HeaderPlan,
+): void {
+  const countPos = packer.beginHeaderCount();
+  let count = 0;
 
-  function ensureCapacity(pos: number, needed: number): void {
-    if (pos + needed <= buf.length) return;
-    const next = new Uint8Array(Math.max(buf.length * 2, pos + needed));
-    next.set(buf.subarray(0, pos));
-    buf = next;
-    view = new DataView(buf.buffer);
+  const headers = req.headers;
+
+  if (plan.cookie) {
+    const value = headers.get("cookie");
+    if (value !== null && value.length <= MAX_COOKIE_HEADER_BYTES) {
+      packer.writeHeaderName(HDR_COOKIE);
+      packer.writeStringLenPrefixed(value, MAX_COOKIE_HEADER_BYTES);
+      count++;
+    }
   }
 
-  function writeHeaderPair(pos: number, name: Uint8Array, value: string): number {
-    const needed = 2 + name.length + 4 + value.length * 3;
-    ensureCapacity(pos, needed);
-    view.setUint16(pos, name.length, true);
-    buf.set(name, pos + 2);
-    pos += 2 + name.length;
-    const valueLenPos = pos;
-    pos += 4;
-    const { written } = encoder.encodeInto(value, buf.subarray(pos));
-    view.setUint32(valueLenPos, written, true);
-    pos += written;
-    return pos;
+  if (plan.cors) {
+    const origin = headers.get("origin");
+    if (origin !== null && origin.length <= MAX_SMALL_HEADER_BYTES) {
+      packer.writeHeaderName(HDR_ORIGIN);
+      packer.writeStringLenPrefixed(origin, MAX_SMALL_HEADER_BYTES);
+      count++;
+    }
+
+    if (isOptions) {
+      const acrm = headers.get("access-control-request-method");
+      if (acrm !== null && acrm.length <= MAX_SMALL_HEADER_BYTES) {
+        packer.writeHeaderName(HDR_ACRM);
+        packer.writeStringLenPrefixed(acrm, MAX_SMALL_HEADER_BYTES);
+        count++;
+      }
+
+      const acrh = headers.get("access-control-request-headers");
+      if (acrh !== null && acrh.length <= MAX_SMALL_HEADER_BYTES) {
+        packer.writeHeaderName(HDR_ACRH);
+        packer.writeStringLenPrefixed(acrh, MAX_SMALL_HEADER_BYTES);
+        count++;
+      }
+    }
   }
 
-  return function packHeaders(req: Request, isOptions: boolean): Uint8Array {
-    let pos = 2;
-    let count = 0;
-    const headers = req.headers;
-    if (plan.cookie) { const v = headers.get("cookie"); if (v !== null) { pos = writeHeaderPair(pos, HDR_COOKIE, v); count++; } }
-    if (plan.cors) {
-      const origin = headers.get("origin");
-      if (origin !== null) { pos = writeHeaderPair(pos, HDR_ORIGIN, origin); count++; }
-      if (isOptions) { const acrm = headers.get("access-control-request-method"); if (acrm !== null) { pos = writeHeaderPair(pos, HDR_ACRM, acrm); count++; } }
+  if (plan.proxy) {
+    const xff = headers.get("x-forwarded-for");
+    if (xff !== null && xff.length <= MAX_XFF_HEADER_BYTES) {
+      packer.writeHeaderName(HDR_XFF);
+      packer.writeStringLenPrefixed(xff, MAX_XFF_HEADER_BYTES);
+      count++;
     }
-    if (plan.proxy) {
-      const xff = headers.get("x-forwarded-for"); if (xff !== null) { pos = writeHeaderPair(pos, HDR_XFF, xff); count++; }
-      const xri = headers.get("x-real-ip"); if (xri !== null) { pos = writeHeaderPair(pos, HDR_XRI, xri); count++; }
+
+    const xri = headers.get("x-real-ip");
+    if (xri !== null && xri.length <= MAX_SMALL_HEADER_BYTES) {
+      packer.writeHeaderName(HDR_XRI);
+      packer.writeStringLenPrefixed(xri, MAX_SMALL_HEADER_BYTES);
+      count++;
     }
-    if (plan.proto) { const xfp = headers.get("x-forwarded-proto"); if (xfp !== null) { pos = writeHeaderPair(pos, HDR_XFP, xfp); count++; } }
-    view.setUint16(0, count, true);
-    return buf.subarray(0, pos);
-  };
+  }
+
+  if (plan.proto) {
+    const xfp = headers.get("x-forwarded-proto");
+    if (xfp !== null && xfp.length <= MAX_SMALL_HEADER_BYTES) {
+      packer.writeHeaderName(HDR_XFP);
+      packer.writeStringLenPrefixed(xfp, MAX_SMALL_HEADER_BYTES);
+      count++;
+    }
+  }
+
+  packer.endHeaderCount(countPos, count);
+}
+
+const METHOD_KIND: Record<string, number> = {
+  GET: 0,
+  HEAD: 1,
+  POST: 2,
+  PUT: 3,
+  PATCH: 4,
+  DELETE: 5,
+  OPTIONS: 6,
+};
+
+const EMPTY_IP_BYTES = encoder.encode("0.0.0.0");
+
+function packRequest(
+  packer: FastPackedInput,
+  req: Request,
+  methodKind: number,
+  isOptions: boolean,
+  ip: string | undefined,
+  requestIdBytes: Uint8Array,
+  plan: HeaderPlan,
+): Uint8Array {
+  packer.reset();
+
+  packer.writeU8(methodKind);
+
+  packer.writeStringLenPrefixed(req.url, MAX_URL_BYTES);
+
+  if (NEED_SOCKET_IP && ip) {
+    packer.writeStringLenPrefixed(ip, 128);
+  } else {
+    packer.writeLenPrefixedBytes(EMPTY_IP_BYTES);
+  }
+
+  packer.writeLenPrefixedBytes(requestIdBytes);
+
+  // Headers must be wrapped in a u32le length prefix.
+  const [headersLenPos, headersStart] = packer.beginLenPrefixedSection();
+  packHeadersDirect(req, isOptions, packer, plan);
+  packer.endLenPrefixedSection(headersLenPos, headersStart);
+
+  return packer.finish();
 }
 
 // ── Optimized ingress wrapper ──
-const METHOD_KIND: Record<string, number> = { GET: 0, HEAD: 1, POST: 2, PUT: 3, PATCH: 4, DELETE: 5, OPTIONS: 6 };
-const EMPTY_IP_BYTES = encoder.encode("0.0.0.0");
-
 interface IngressContext {
   requestIdHeader: string | null;
   origin: string | null;
 }
 
 interface OptimizedIngressHandler {
-  run<T>(req: Request, ip: string | undefined, body: Uint8Array | null, fn: (result: FastIngressResult, ctx: IngressContext) => T): T;
+  run<T>(
+    req: Request,
+    ip: string | undefined,
+    body: Uint8Array | null,
+    fn: (result: FastIngressResult, ctx: IngressContext) => T,
+  ): T;
 }
 
 function createOptimizedIngress(options: any): OptimizedIngressHandler {
   const NativeIngress = (addon as any).Ingress;
-  if (typeof NativeIngress !== "function") throw new Error("Native Ingress class missing");
+  if (typeof NativeIngress !== "function") {
+    throw new Error("Native Ingress class missing");
+  }
+
   const handler = new NativeIngress(options);
-  if (typeof handler.handleRequest !== "function") throw new Error("Native Ingress.handleRequest missing. Rebuild the Rust addon.");
+  if (typeof handler.handleRequestPacked !== "function") {
+    throw new Error(
+      "Native Ingress.handleRequestPacked missing. Rebuild the Rust addon.",
+    );
+  }
 
   const trust = options.trustProxy === true;
   const limit = options.rateLimit?.limit;
-  const rateEnabled = typeof limit === "number" && limit !== RATE_LIMIT_U32_MAX && limit > 0;
+  const rateEnabled =
+    typeof limit === "number" && limit !== RATE_LIMIT_U32_MAX && limit > 0;
+
   const headerPlan: HeaderPlan = {
     cookie: options.parseCookies === true,
     cors: options.cors != null,
     proxy: trust && rateEnabled,
     proto: trust && options.https === undefined,
   };
-  const packHeaders = createHeaderPacker(headerPlan);
+
   const outputBuf = new Uint8Array(OUTPUT_BUF_SIZE);
-  const outputView = new DataView(outputBuf.buffer, outputBuf.byteOffset, outputBuf.byteLength);
-  const urlBuf = new Uint8Array(65536);
-  const ipBuf = new Uint8Array(64);
+  const outputView = new DataView(
+    outputBuf.buffer,
+    outputBuf.byteOffset,
+    outputBuf.byteLength,
+  );
+
+  const packer = new FastPackedInput(OUTPUT_BUF_SIZE);
   const result = new FastIngressResult();
+  const ctx: IngressContext = {
+    requestIdHeader: null,
+    origin: null,
+  };
 
   return {
     run(req, ip, body, fn) {
       const methodKind = METHOD_KIND[req.method] ?? 7;
       const isOptions = methodKind === 6;
 
-      const urlWrite = encoder.encodeInto(req.url, urlBuf);
-      let urlBytes: Uint8Array = urlBuf.subarray(0, urlWrite.written);
-      if (urlWrite.read < req.url.length) urlBytes = encoder.encode(req.url);
+      const ridBytes = generateRequestId();
 
-      let ipBytes: Uint8Array = EMPTY_IP_BYTES;
-      if (NEED_SOCKET_IP && ip) {
-        const ipWrite = encoder.encodeInto(ip, ipBuf);
-        ipBytes = ipBuf.subarray(0, ipWrite.written);
+      ctx.requestIdHeader = EMIT_REQUEST_ID_HEADER
+        ? decoder.decode(ridBytes)
+        : null;
+      ctx.origin = headerPlan.cors ? req.headers.get("origin") : null;
+
+      const input = packRequest(
+        packer,
+        req,
+        methodKind,
+        isOptions,
+        ip,
+        ridBytes,
+        headerPlan,
+      );
+
+      try {
+        handler.handleRequestPacked(
+          input as Uint8Array,
+          body as Uint8Array | null,
+          outputBuf as Uint8Array,
+        );
+
+        result.refresh(
+          outputBuf,
+          (body ?? EMPTY_BODY) as Uint8Array,
+          outputView,
+        );
+      } catch {
+        result.setInternalError();
       }
 
-      // Fast hex counter ID
-      const ridBytes = generateRequestId();
-      
-      // Extract origin exactly once per request
-      const origin = req.headers.get("origin");
-
-      const ctx: IngressContext = {
-        requestIdHeader: EMIT_REQUEST_ID_HEADER ? decoder.decode(ridBytes) : null,
-        origin,
-      };
-
-      const headers = packHeaders(req, isOptions);
-      handler.handleRequest(methodKind, urlBytes, ipBytes, ridBytes, headers, body, outputBuf);
-      result.refresh(outputBuf, body ?? EMPTY_BODY, outputView);
       try {
         return fn(result, ctx);
       } finally {
         result.invalidate();
+        ctx.requestIdHeader = null;
+        ctx.origin = null;
       }
     },
   };
 }
 
-// ── Terminal / error response helpers ──
-function terminalResponse(req: Request, result: FastIngressResult, ctx: IngressContext): Response | null {
-  if (!result.terminal) return null;
-  const hv = result.headerVariant;
-  const origin = ctx.origin;
+// ── Response helpers ──
+function internalErrorResponse(
+  ctx: IngressContext,
+  result?: FastIngressResult,
+): Response {
+  return new Response(ERROR_BODIES.internal, {
+    status: 500,
+    headers: terminalHeaders(result?.headerVariant ?? HV_JSON, ctx, result ?? null),
+  });
+}
 
-  if (result.isPreflight && result.corsAllowed) {
-    return new Response(null, { status: 204, headers: responseHeaders(hv, ctx.requestIdHeader, origin) });
+function terminalResponse(
+  _req: Request,
+  result: FastIngressResult,
+  ctx: IngressContext,
+): Response | null {
+  if (!result.terminal) {
+    return null;
   }
 
-  let body: Uint8Array;
-  if (result.errorCode === ERROR_CODE_RATE_LIMITED) {
-    // Dynamic payload for rate limited
-    const retryAfterMs = Math.max(0, Math.round(result.retryAfterMs));
-    body = encoder.encode(`{"ok":false,"error":{"code":"rate_limited","message":"Too Many Requests","retry_after_ms":${retryAfterMs}}}`);
-  } else {
-    body = STATIC_ERROR_BODIES[result.errorCode] ?? STATIC_DEFAULT_ERROR;
+  const preflightAllowed = result.isPreflight && result.corsAllowed;
+
+  if (preflightAllowed) {
+    return new Response(null, {
+      status: 204,
+      headers: responseHeaders(
+        result.headerVariant,
+        ctx.requestIdHeader,
+        ctx.origin,
+        result.rateRemaining,
+        result.rateResetMs > 0
+          ? Math.ceil(result.rateResetMs / 1000)
+          : undefined,
+        result.retryAfterMs > 0
+          ? Math.ceil(result.retryAfterMs / 1000)
+          : undefined,
+      ),
+    });
   }
+
+  const status = safeTerminalStatus(result);
+
+  const body: Uint8Array =
+    result.errorCode === ERROR_CODE_RATE_LIMITED
+      ? rateLimitedBody(result.retryAfterMs)
+      : ERROR_CODE_BODIES[result.errorCode] ?? ERROR_BODIES.internal;
 
   return new Response(body, {
-    status: result.status,
-    headers: responseHeaders(hv, ctx.requestIdHeader, origin, result.rateRemaining, Math.ceil(result.rateResetMs / 1000), Math.ceil(result.retryAfterMs / 1000)),
-  });
-}
-
-function errorResponse(req: Request, result: FastIngressResult | null, status: number, code: string, message: string, ctx: IngressContext): Response {
-  const hv = result?.headerVariant ?? HV_JSON;
-  const origin = ctx.origin;
-  return Response.json({ ok: false, error: { code, message } }, {
     status,
-    headers: responseHeaders(hv, ctx.requestIdHeader, origin, result?.rateRemaining, result ? Math.ceil(result.rateResetMs / 1000) : undefined, result ? Math.ceil(result.retryAfterMs / 1000) : undefined),
+    headers: terminalHeaders(result.headerVariant, ctx, result),
   });
 }
 
-function withContentType(headers: ReadonlyArray<[string, string]>, contentType: string): [string, string][] {
+function errorResponse(
+  _req: Request,
+  result: FastIngressResult | null,
+  status: number,
+  code: string,
+  message: string,
+  ctx: IngressContext,
+): Response {
+  const body =
+    ERROR_BODIES[code] ??
+    encoder.encode(
+      JSON.stringify({ ok: false, error: { code, message } }),
+    );
+
+  return new Response(body, {
+    status,
+    headers: terminalHeaders(result?.headerVariant ?? HV_JSON, ctx, result),
+  });
+}
+
+function withContentType(
+  headers: ReadonlyArray<[string, string]>,
+  contentType: string,
+): [string, string][] {
   const out = new Array<[string, string]>(headers.length + 1);
-  for (let i = 0; i < headers.length; i++) out[i] = headers[i];
-  out[headers.length] = ["Content-Type", contentType];
+  for (let i = 0; i < headers.length; i++) {
+    out[i] = headers[i]!;
+  }
+  out[headers.length] = ["content-type", contentType];
   return out;
+}
+
+function ipFor(req: Request, srv: any): string | undefined {
+  if (!NEED_SOCKET_IP) return undefined;
+  return srv?.requestIP?.(req)?.address || "0.0.0.0";
 }
 
 // ── Ingress instances ──
@@ -467,11 +914,8 @@ const baseOptions = {
   trustProxy: TRUST_PROXY,
   https: HTTPS_FIXED,
   maxBodyBytes: MAX_BODY_BYTES,
-  enableSecurityHeaders: false,
-  enableRequestIds: false,
-  enableCacheKey: false,
-  enablePathQuery: false,
   enableBodySizeGuard: false,
+  emitMetadataJson: true,
   cors: {
     allowOrigin: [...CORS_CONFIG.allowOrigin],
     allowMethods: [...CORS_CONFIG.allowMethods],
@@ -480,191 +924,363 @@ const baseOptions = {
     allowCredentials: CORS_CONFIG.allowCredentials,
     maxAge: CORS_CONFIG.maxAge,
   },
-  rateLimit: { limit: RATE_LIMIT_CONFIG.limit, windowMs: RATE_LIMIT_CONFIG.windowMs },
-  security: { hstsMaxAge: 15_552_000, hstsIncludeSubdomains: true, hstsPreload: false },
+  rateLimit: {
+    limit: RATE_LIMIT_CONFIG.limit,
+    windowMs: RATE_LIMIT_CONFIG.windowMs,
+  },
 };
 
-const healthIngress = createOptimizedIngress({ ...baseOptions, parseCookies: false, parseQuery: false, readBody: false });
-const usersReadIngress = createOptimizedIngress({ ...baseOptions, parseCookies: true, parseQuery: true, readBody: false });
-const usersWriteIngress = createOptimizedIngress({ ...baseOptions, parseCookies: true, parseQuery: true, schema: USER_SCHEMA_BYTES, readBody: true, enableBodySizeGuard: true });
-const cookiesIngress = createOptimizedIngress({ ...baseOptions, parseCookies: true, parseQuery: false, readBody: false });
-const echoIngress = createOptimizedIngress({ ...baseOptions, parseCookies: false, parseQuery: false, readBody: false });
-const fallbackIngress = healthIngress;
-
-// ── Server with Bun routes ──
-const server = Bun.serve({
-  hostname: "0.0.0.0",
-  port: PORTS.ingress,
-  idleTimeout: 30,
-  maxRequestBodySize: MAX_BODY_BYTES + 1024,
-
-  routes: {
-    "/health": {
-      GET: (req: Request, srv: any) => {
-        const ip = NEED_SOCKET_IP ? srv?.requestIP?.(req)?.address || "0.0.0.0" : undefined;
-        return healthIngress.run(req, ip, null, (result, ctx) => {
-          const terminal = terminalResponse(req, result, ctx);
-          if (terminal) return terminal;
-          const hv = result.headerVariant;
-          return new Response(result.bodyJson(!UNSAFE_ZERO_COPY), {
-            status: 200,
-            headers: responseHeaders(hv, ctx.requestIdHeader, ctx.origin, result.rateRemaining, Math.ceil(result.rateResetMs / 1000)),
-          });
-        });
-      },
-      HEAD: (req: Request, srv: any) => {
-        const ip = NEED_SOCKET_IP ? srv?.requestIP?.(req)?.address || "0.0.0.0" : undefined;
-        return healthIngress.run(req, ip, null, (result, ctx) => {
-          const terminal = terminalResponse(req, result, ctx);
-          if (terminal) return terminal;
-          const hv = result.headerVariant;
-          return new Response(null, {
-            status: 200,
-            headers: responseHeaders(hv, ctx.requestIdHeader, ctx.origin, result.rateRemaining, Math.ceil(result.rateResetMs / 1000)),
-          });
-        });
-      },
-    },
-
-    "/api/users": {
-      GET: (req: Request, srv: any) => {
-        const ip = NEED_SOCKET_IP ? srv?.requestIP?.(req)?.address || "0.0.0.0" : undefined;
-        return usersReadIngress.run(req, ip, null, (result, ctx) => {
-          const terminal = terminalResponse(req, result, ctx);
-          if (terminal) return terminal;
-          const hv = result.headerVariant;
-          return new Response(result.bodyJson(!UNSAFE_ZERO_COPY), {
-            status: 200,
-            headers: responseHeaders(hv, ctx.requestIdHeader, ctx.origin, result.rateRemaining, Math.ceil(result.rateResetMs / 1000)),
-          });
-        });
-      },
-
-      POST: async (req: Request, srv: any) => handleUsersWrite(req, srv),
-      PUT: async (req: Request, srv: any) => handleUsersWrite(req, srv),
-      PATCH: async (req: Request, srv: any) => handleUsersWrite(req, srv),
-
-      OPTIONS: (req: Request, srv: any) => {
-        const ip = NEED_SOCKET_IP ? srv?.requestIP?.(req)?.address || "0.0.0.0" : undefined;
-        return fallbackIngress.run(req, ip, null, (result, ctx) => {
-          const terminal = terminalResponse(req, result, ctx);
-          if (terminal) return terminal;
-          return errorResponse(req, result, 404, "not_found", "Not found", ctx);
-        });
-      },
-    },
-
-    "/api/echo": {
-      POST: (req: Request, srv: any) => {
-        const ip = NEED_SOCKET_IP ? srv?.requestIP?.(req)?.address || "0.0.0.0" : undefined;
-        const prep = echoIngress.run<{ terminal?: Response; headers?: ReadonlyArray<[string, string]> }>(req, ip, null, (result, ctx) => {
-          const terminal = terminalResponse(req, result, ctx);
-          if (terminal) return { terminal };
-          const hv = result.headerVariant & ~HV_JSON;
-          return { headers: responseHeaders(hv, ctx.requestIdHeader, ctx.origin, result.rateRemaining, Math.ceil(result.rateResetMs / 1000)) };
-        });
-        if (prep.terminal) return prep.terminal;
-
-        const baseHeaders = prep.headers ?? HEADER_TEMPLATES[0];
-        const requestedContentType = req.headers.get("content-type") ?? "application/octet-stream";
-        const contentLengthHeader = req.headers.get("content-length");
-        const contentLength = contentLengthHeader === null ? NaN : Number(contentLengthHeader);
-
-        if (Number.isFinite(contentLength)) {
-          if (contentLength > MAX_BODY_BYTES) {
-            return new Response(STATIC_ERROR_BODIES[ERROR_CODE_BODY_TOO_LARGE], {
-              status: 413,
-              headers: withContentType(baseHeaders, "application/json"),
-            });
-          }
-          if (contentLength <= 0 || req.body === null) {
-            return new Response(null, { status: 200, headers: withContentType(baseHeaders, requestedContentType) });
-          }
-          return new Response(req.body, { status: 200, headers: withContentType(baseHeaders, requestedContentType) });
-        }
-
-        return req.arrayBuffer().then((ab) => {
-          const bodyBytes = new Uint8Array(ab);
-          if (bodyBytes.byteLength > MAX_BODY_BYTES) {
-            return new Response(STATIC_ERROR_BODIES[ERROR_CODE_BODY_TOO_LARGE], {
-              status: 413,
-              headers: withContentType(baseHeaders, "application/json"),
-            });
-          }
-          return new Response(bodyBytes.byteLength > 0 ? bodyBytes : null, {
-            status: 200,
-            headers: withContentType(baseHeaders, requestedContentType),
-          });
-        });
-      },
-    },
-
-    "/api/cookies": {
-      GET: (req: Request, srv: any) => {
-        const ip = NEED_SOCKET_IP ? srv?.requestIP?.(req)?.address || "0.0.0.0" : undefined;
-        return cookiesIngress.run(req, ip, null, (result, ctx) => {
-          const terminal = terminalResponse(req, result, ctx);
-          if (terminal) return terminal;
-          const hv = result.headerVariant;
-          return new Response(result.bodyJson(!UNSAFE_ZERO_COPY), {
-            status: 200,
-            headers: responseHeaders(hv, ctx.requestIdHeader, ctx.origin, result.rateRemaining, Math.ceil(result.rateResetMs / 1000)),
-          });
-        });
-      },
-    },
-  },
-
-  fetch(req: Request, srv: any) {
-    const ip = NEED_SOCKET_IP ? srv?.requestIP?.(req)?.address || "0.0.0.0" : undefined;
-    return fallbackIngress.run(req, ip, null, (result, ctx) => {
-      const terminal = terminalResponse(req, result, ctx);
-      if (terminal) return terminal;
-      const url = new URL(req.url);
-      return errorResponse(req, result, 404, "not_found", `Route ${req.method} ${url.pathname} not found`, ctx);
-    });
-  },
+const healthIngress = createOptimizedIngress({
+  ...baseOptions,
+  parseCookies: false,
+  parseQuery: false,
 });
 
-// ── Shared POST/PUT/PATCH /api/users handler ──
+const usersReadIngress = createOptimizedIngress({
+  ...baseOptions,
+  parseCookies: true,
+  parseQuery: true,
+});
+
+const usersWriteIngress = createOptimizedIngress({
+  ...baseOptions,
+  parseCookies: true,
+  parseQuery: true,
+  schema: USER_SCHEMA_BYTES,
+  enableBodySizeGuard: true,
+});
+
+const cookiesIngress = createOptimizedIngress({
+  ...baseOptions,
+  parseCookies: true,
+  parseQuery: false,
+});
+
+const echoIngress = createOptimizedIngress({
+  ...baseOptions,
+  parseCookies: false,
+  parseQuery: false,
+  emitMetadataJson: false,
+});
+
+const fallbackIngress = healthIngress;
+
+// ── Route handler factories ──
+function makeReadHandler(ingress: OptimizedIngressHandler) {
+  return (req: Request, srv: any): Response =>
+    ingress.run<Response>(req, ipFor(req, srv), null, (result, ctx) => {
+      const terminal = terminalResponse(req, result, ctx);
+      if (terminal) return terminal;
+
+      if (result.bodyTruncated) {
+        return internalErrorResponse(ctx, result);
+      }
+
+      return new Response(result.bodyJson(COPY_BODY), {
+        status: 200,
+        headers: responseHeaders(
+          result.headerVariant,
+          ctx.requestIdHeader,
+          ctx.origin,
+          result.rateRemaining,
+          result.rateResetMs > 0
+            ? Math.ceil(result.rateResetMs / 1000)
+            : undefined,
+        ),
+      });
+    });
+}
+
+function makeHeadHandler(ingress: OptimizedIngressHandler) {
+  return (req: Request, srv: any): Response =>
+    ingress.run<Response>(req, ipFor(req, srv), null, (result, ctx) => {
+      const terminal = terminalResponse(req, result, ctx);
+      if (terminal) return terminal;
+
+      if (result.bodyTruncated) {
+        return internalErrorResponse(ctx, result);
+      }
+
+      return new Response(null, {
+        status: 200,
+        headers: responseHeaders(
+          result.headerVariant,
+          ctx.requestIdHeader,
+          ctx.origin,
+          result.rateRemaining,
+          result.rateResetMs > 0
+            ? Math.ceil(result.rateResetMs / 1000)
+            : undefined,
+        ),
+      });
+    });
+}
+
 async function handleUsersWrite(req: Request, srv: any): Promise<Response> {
-  const ip = NEED_SOCKET_IP ? srv?.requestIP?.(req)?.address || "0.0.0.0" : undefined;
+  const ip = ipFor(req, srv);
 
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     return fallbackIngress.run(req, ip, null, (result, ctx) => {
       const terminal = terminalResponse(req, result, ctx);
       if (terminal) return terminal;
-      return errorResponse(req, result, 415, "unsupported_media_type", "Content-Type must be application/json", ctx);
+
+      return errorResponse(
+        req,
+        result,
+        415,
+        "unsupported_media_type",
+        "Content-Type must be application/json",
+        ctx,
+      );
     });
   }
 
-  const bodyBytes = new Uint8Array(await req.arrayBuffer());
+  const contentLengthHeader = req.headers.get("content-length");
+  const contentLength =
+    contentLengthHeader === null ? NaN : Number(contentLengthHeader);
+
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return fallbackIngress.run(req, ip, null, (result, ctx) => {
+      const terminal = terminalResponse(req, result, ctx);
+      if (terminal) return terminal;
+
+      return errorResponse(
+        req,
+        result,
+        413,
+        "body_too_large",
+        "Request body is too large",
+        ctx,
+      );
+    });
+  }
+
+  let bodyBytes: Uint8Array;
+  try {
+    bodyBytes = new Uint8Array(await req.arrayBuffer());
+  } catch {
+    return fallbackIngress.run(req, ip, null, (result, ctx) => {
+      const terminal = terminalResponse(req, result, ctx);
+      if (terminal) return terminal;
+
+      return errorResponse(
+        req,
+        result,
+        400,
+        "bad_request",
+        "Unable to read request body",
+        ctx,
+      );
+    });
+  }
+
   if (bodyBytes.byteLength > MAX_BODY_BYTES) {
     return fallbackIngress.run(req, ip, null, (result, ctx) => {
       const terminal = terminalResponse(req, result, ctx);
       if (terminal) return terminal;
-      return errorResponse(req, result, 413, "body_too_large", "Request body is too large", ctx);
+
+      return errorResponse(
+        req,
+        result,
+        413,
+        "body_too_large",
+        "Request body is too large",
+        ctx,
+      );
     });
   }
 
   return usersWriteIngress.run(req, ip, bodyBytes, (result, ctx) => {
     const terminal = terminalResponse(req, result, ctx);
     if (terminal) return terminal;
-    if (!result.bodyValidJson) {
-      return errorResponse(req, result, 400, "invalid_json", "Invalid JSON body", ctx);
-    }
-    if (!result.schemaValid) {
-      return errorResponse(req, result, 422, "schema_validation_failed", "Request body failed schema validation", ctx);
+
+    if (result.bodyTruncated) {
+      return internalErrorResponse(ctx, result);
     }
 
-    // ★ FIX: Use the pre-serialized body from Rust directly! No JSON.parse/stringify!
-    const hv = result.headerVariant;
-    return new Response(result.bodyJson(!UNSAFE_ZERO_COPY), {
+    if (!result.bodyValidJson) {
+      return errorResponse(
+        req,
+        result,
+        400,
+        "invalid_json",
+        "Invalid JSON body",
+        ctx,
+      );
+    }
+
+    if (!result.schemaValid) {
+      return errorResponse(
+        req,
+        result,
+        422,
+        "schema_validation_failed",
+        "Request body failed schema validation",
+        ctx,
+      );
+    }
+
+    return new Response(result.bodyJson(COPY_BODY), {
       status: 200,
-      headers: responseHeaders(hv, ctx.requestIdHeader, ctx.origin, result.rateRemaining, Math.ceil(result.rateResetMs / 1000)),
+      headers: responseHeaders(
+        result.headerVariant,
+        ctx.requestIdHeader,
+        ctx.origin,
+        result.rateRemaining,
+        result.rateResetMs > 0
+          ? Math.ceil(result.rateResetMs / 1000)
+          : undefined,
+      ),
     });
   });
 }
 
-console.log(`[ingress] listening on :${PORTS.ingress} (Bun.serve routes)`);
+// ── Server ──
+const serverOptions: any = {
+  hostname: process.env.INGRESS_HOST || "0.0.0.0",
+  port: PORTS.ingress,
+  idleTimeout: Number(process.env.INGRESS_IDLE_TIMEOUT || 30) | 0,
+  maxRequestBodySize: MAX_BODY_BYTES + 1024,
+  routes: {
+    "/health": {
+      GET: makeReadHandler(healthIngress),
+      HEAD: makeHeadHandler(healthIngress),
+    },
+
+    "/api/users": {
+      GET: makeReadHandler(usersReadIngress),
+      POST: async (req: Request, srv: any) => handleUsersWrite(req, srv),
+      PUT: async (req: Request, srv: any) => handleUsersWrite(req, srv),
+      PATCH: async (req: Request, srv: any) => handleUsersWrite(req, srv),
+      OPTIONS: (req: Request, srv: any) =>
+        fallbackIngress.run(req, ipFor(req, srv), null, (result, ctx) => {
+          const terminal = terminalResponse(req, result, ctx);
+          if (terminal) return terminal;
+
+          return errorResponse(req, result, 404, "not_found", "Not found", ctx);
+        }),
+    },
+
+    "/api/echo": {
+      POST: async (req: Request, srv: any) => {
+        const ip = ipFor(req, srv);
+
+        const prep = echoIngress.run<{
+          terminal?: Response;
+          headers?: ReadonlyArray<[string, string]>;
+        }>(req, ip, null, (result, ctx) => {
+          const terminal = terminalResponse(req, result, ctx);
+          if (terminal) return { terminal };
+
+          if (result.bodyTruncated) {
+            return { terminal: internalErrorResponse(ctx, result) };
+          }
+
+          const hv = result.headerVariant & ~HV_JSON;
+
+          return {
+            headers: responseHeaders(
+              hv,
+              ctx.requestIdHeader,
+              ctx.origin,
+              result.rateRemaining,
+              result.rateResetMs > 0
+                ? Math.ceil(result.rateResetMs / 1000)
+                : undefined,
+            ),
+          };
+        });
+
+        if (prep.terminal) return prep.terminal;
+
+        const baseHeaders: ReadonlyArray<[string, string]> =
+          prep.headers ?? HEADER_TEMPLATES[0] ?? [];
+
+        const requestedContentType =
+          req.headers.get("content-type") ?? "application/octet-stream";
+
+        const contentLengthHeader = req.headers.get("content-length");
+        const contentLength =
+          contentLengthHeader === null ? NaN : Number(contentLengthHeader);
+
+        if (Number.isFinite(contentLength)) {
+          if (contentLength > MAX_BODY_BYTES) {
+            return new Response(ERROR_BODIES.body_too_large, {
+              status: 413,
+              headers: withContentType(baseHeaders, "application/json"),
+            });
+          }
+
+          if (contentLength <= 0 || req.body === null) {
+            return new Response(null, {
+              status: 200,
+              headers: withContentType(baseHeaders, requestedContentType),
+            });
+          }
+
+          return new Response(req.body, {
+            status: 200,
+            headers: withContentType(baseHeaders, requestedContentType),
+          });
+        }
+
+        try {
+          const bodyBytes = new Uint8Array(await req.arrayBuffer());
+
+          if (bodyBytes.byteLength > MAX_BODY_BYTES) {
+            return new Response(ERROR_BODIES.body_too_large, {
+              status: 413,
+              headers: withContentType(baseHeaders, "application/json"),
+            });
+          }
+
+          return new Response(bodyBytes.byteLength > 0 ? bodyBytes : null, {
+            status: 200,
+            headers: withContentType(baseHeaders, requestedContentType),
+          });
+        } catch {
+          return new Response(ERROR_BODIES.bad_request, {
+            status: 400,
+            headers: withContentType(baseHeaders, "application/json"),
+          });
+        }
+      },
+    },
+
+    "/api/cookies": {
+      GET: makeReadHandler(cookiesIngress),
+    },
+  },
+
+  fetch(req: Request, srv: any) {
+    const ip = ipFor(req, srv);
+
+    return fallbackIngress.run(req, ip, null, (result, ctx) => {
+      const terminal = terminalResponse(req, result, ctx);
+      if (terminal) return terminal;
+
+      return errorResponse(req, result, 404, "not_found", "Not found", ctx);
+    });
+  },
+};
+
+if (REUSE_PORT) {
+  serverOptions.reusePort = true;
+}
+
+let server: any;
+try {
+  server = Bun.serve(serverOptions);
+} catch (err) {
+  if (REUSE_PORT) {
+    delete serverOptions.reusePort;
+    server = Bun.serve(serverOptions);
+  } else {
+    throw err;
+  }
+}
+
+console.log(
+  `[ingress] listening on :${PORTS.ingress} (optimized Bun.serve routes)`,
+);

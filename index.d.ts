@@ -8,7 +8,13 @@ export declare class HmacSigner {
 
 export declare class Ingress {
   constructor(options: IngressOptions)
-  handleRequest(method_kind: number, url: Uint8Array, ip: Uint8Array, request_id: Uint8Array, headers: Uint8Array, body: Uint8Array | null, output: Uint8Array): number
+  /**
+   * Production API:
+   *   input = packed metadata frame
+   *   body = separate zero-copy body
+   *   output = response decision buffer
+   */
+  handleRequestPacked(input: Uint8Array, body: Uint8Array | null, output: Uint8Array): number
 }
 
 export declare class SchemaValidator {
@@ -66,20 +72,6 @@ export interface CorsOptions {
 
 export declare function crc32(input: Uint8Array): number
 
-/**
- * Packed batch CRC32.
- *
- * Input format:
- *   [u32 count]
- *   repeated:
- *     [u32 len]
- *     [bytes]
- *
- * Output format:
- *   [u32 count]
- *   repeated:
- *     [u32 crc]
- */
 export declare function crc32BatchPacked(input: Uint8Array): Buffer
 
 export declare function fnv1a64(input: Uint8Array): bigint
@@ -98,8 +90,18 @@ export declare function httpParseRequestPacked(input: Uint8Array): Buffer
 
 export declare function httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number
 
+export interface IngressLimitsOptions {
+  maxUrlBytes?: number
+  maxQueryBytes?: number
+  maxCookieBytes?: number
+  maxHeadersBytes?: number
+  maxHeaders?: number
+  maxPairs?: number
+}
+
 export interface IngressOptions {
   trustProxy?: boolean
+  trustedProxies?: TrustedProxyOptions
   parseCookies?: boolean
   parseQuery?: boolean
   requireJsonBody?: boolean
@@ -109,6 +111,8 @@ export interface IngressOptions {
   https?: boolean
   maxBodyBytes?: number
   enableBodySizeGuard?: boolean
+  emitMetadataJson?: boolean
+  limits?: IngressLimitsOptions
 }
 
 export declare function initThreadPool(rayonThreads?: number | undefined | null): void
@@ -152,9 +156,15 @@ export declare function randomToken(byteLen: number): Buffer
 export interface RateLimitOptions {
   limit?: number
   windowMs?: number
+  maxEntries?: number
 }
 
 export declare function rayonNumThreads(): number
+
+export interface TrustedProxyOptions {
+  enabled?: boolean
+  networks?: Array<string>
+}
 
 export declare function urlDecode(input: Uint8Array): Buffer
 

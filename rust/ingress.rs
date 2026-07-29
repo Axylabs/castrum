@@ -1,16 +1,15 @@
-// rust/ingress.rs — production ingress decision engine
 #![allow(clippy::too_many_arguments)]
 
 use napi::bindgen_prelude::*;
-use napi::{Env, Status};
+use napi::Status;
 use napi_derive::napi;
-use quanta::Instant as QuantaInstant;
-use std::ptr;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::hashing::{fast_hash_bytes, fast_hash_seeded};
+use std::ptr;
+use std::sync::{Arc, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use crate::ip_trust::{resolve_client_ip, ProxyTrustMode};
+use crate::rate_limit::KeyedRateLimiter;
 use crate::util::trim_ascii_whitespace;
 
 // ── Output buffer binary layout ───────────────────────────────────
@@ -52,6 +51,8 @@ const ERR_CODE_RATE_LIMITED: u8 = 2;
 const ERR_CODE_BODY_TOO_LARGE: u8 = 3;
 const ERR_CODE_INVALID_JSON: u8 = 4;
 const ERR_CODE_SCHEMA_VALIDATION: u8 = 5;
+const ERR_CODE_BAD_REQUEST: u8 = 6;
+const ERR_CODE_REQUEST_TOO_LARGE: u8 = 7;
 
 const HAS_ORIGIN: u8 = 1 << 0;
 const HAS_COOKIE: u8 = 1 << 1;
@@ -78,12 +79,12 @@ unsafe fn write_u64_le_unchecked(out: &mut [u8], pos: usize, value: u64) {
 }
 
 // ── Time helpers ──────────────────────────────────────────────────
-static START: OnceLock<QuantaInstant> = OnceLock::new();
+static START: OnceLock<Instant> = OnceLock::new();
 static WALL_OFFSET_MS: OnceLock<i128> = OnceLock::new();
 
 #[inline(always)]
 fn monotonic_ms() -> u128 {
-    START.get_or_init(QuantaInstant::now).elapsed().as_millis()
+    START.get_or_init(Instant::now).elapsed().as_millis()
 }
 
 #[inline(always)]
@@ -106,131 +107,6 @@ fn rate_now_ms() -> u64 {
         0
     } else {
         v as u64
-    }
-}
-
-// ── Lock-free striped rate limiter ────────────────────────────────
-const RATE_STRIPE_COUNT: usize = 4096;
-const RATE_STRIPE_MASK: usize = RATE_STRIPE_COUNT - 1;
-
-#[repr(align(64))]
-struct RateStripe {
-    prev: AtomicU32,
-    curr: AtomicU32,
-    window_start: AtomicU64,
-}
-
-impl RateStripe {
-    #[inline(always)]
-    fn new() -> Self {
-        Self {
-            prev: AtomicU32::new(0),
-            curr: AtomicU32::new(0),
-            window_start: AtomicU64::new(0),
-        }
-    }
-}
-
-struct RateLimiterState {
-    stripes: Box<[RateStripe]>,
-}
-
-static RATE_STATE: OnceLock<RateLimiterState> = OnceLock::new();
-static LIMITER_ID: AtomicU64 = AtomicU64::new(0);
-
-fn rate_state() -> &'static RateLimiterState {
-    RATE_STATE.get_or_init(|| RateLimiterState {
-        stripes: (0..RATE_STRIPE_COUNT)
-            .map(|_| RateStripe::new())
-            .collect::<Box<[RateStripe]>>(),
-    })
-}
-
-#[derive(Clone)]
-struct RateLimitPolicy {
-    limit: u32,
-    window_ms: u64,
-    key_base: u64,
-    disabled: bool,
-}
-
-impl Default for RateLimitPolicy {
-    fn default() -> Self {
-        Self {
-            limit: 0,
-            window_ms: 1,
-            key_base: 0,
-            disabled: true,
-        }
-    }
-}
-
-impl RateLimitPolicy {
-    fn new(limit: u32, window_ms: u32) -> Self {
-        let id = LIMITER_ID.fetch_add(1, Ordering::Relaxed);
-        let key_base = fast_hash_bytes(&id.to_le_bytes());
-        Self {
-            limit,
-            window_ms: window_ms.max(1) as u64,
-            key_base,
-            disabled: limit == 0 || limit == u32::MAX,
-        }
-    }
-}
-
-#[inline(always)]
-fn rate_limit_check_lockfree(key: u64, limit: u32, window_ms: u64, now_ms: u64) -> (bool, u32, u64) {
-    if limit == 0 {
-        return (false, 0, now_ms.saturating_add(window_ms.max(1)));
-    }
-
-    let state = rate_state();
-    let stripe_idx = (key as usize) & RATE_STRIPE_MASK;
-    let stripe = &state.stripes[stripe_idx];
-
-    let window = window_ms.max(1);
-    let double_window = window.saturating_mul(2);
-
-    let ws = stripe.window_start.load(Ordering::Acquire);
-    let elapsed = now_ms.saturating_sub(ws);
-
-    if elapsed >= window {
-        let new_ws = if elapsed >= double_window {
-            now_ms
-        } else {
-            ws.saturating_add(window)
-        };
-
-        if stripe
-            .window_start
-            .compare_exchange(ws, new_ws, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            if elapsed >= double_window {
-                stripe.prev.store(0, Ordering::Relaxed);
-                stripe.curr.store(0, Ordering::Relaxed);
-            } else {
-                let old_curr = stripe.curr.swap(0, Ordering::Relaxed);
-                stripe.prev.store(old_curr, Ordering::Relaxed);
-            }
-        }
-    }
-
-    let ws = stripe.window_start.load(Ordering::Relaxed);
-    let elapsed = now_ms.saturating_sub(ws);
-    let overlap = window.saturating_sub(elapsed.min(window));
-
-    let prev = stripe.prev.load(Ordering::Relaxed) as u64;
-    let curr = stripe.curr.load(Ordering::Relaxed) as u64;
-    let weighted = (prev * overlap / window) + curr;
-    let reset = ws.saturating_add(window);
-
-    if weighted < limit as u64 {
-        stripe.curr.fetch_add(1, Ordering::Relaxed);
-        let remaining = (limit as u64).saturating_sub(weighted.saturating_add(1)) as u32;
-        (true, remaining, reset)
-    } else {
-        (false, 0, reset)
     }
 }
 
@@ -330,33 +206,37 @@ impl<'a> HeaderRefs<'a> {
     }
 
     #[inline]
-    fn parse(packed: &'a [u8], is_options: bool) -> Self {
+    fn parse(packed: &'a [u8], is_options: bool, max_headers: usize) -> Result<Self> {
         let mut h = Self::empty();
 
         if packed.len() < 2 {
-            return h;
+            return Ok(h);
         }
 
         let count = u16::from_le_bytes([packed[0], packed[1]]) as usize;
+        if count > max_headers {
+            return Err(Error::from_reason("too many headers"));
+        }
+
         let mut pos = 2usize;
 
         for _ in 0..count {
             if pos + 2 > packed.len() {
-                break;
+                return Err(Error::from_reason("malformed packed headers"));
             }
 
             let name_len = u16::from_le_bytes([packed[pos], packed[pos + 1]]) as usize;
             pos += 2;
 
             if pos + name_len > packed.len() {
-                break;
+                return Err(Error::from_reason("malformed packed header name"));
             }
 
             let name = &packed[pos..pos + name_len];
             pos += name_len;
 
             if pos + 4 > packed.len() {
-                break;
+                return Err(Error::from_reason("malformed packed header value length"));
             }
 
             let value_len = u32::from_le_bytes([
@@ -368,7 +248,7 @@ impl<'a> HeaderRefs<'a> {
             pos += 4;
 
             if pos + value_len > packed.len() {
-                break;
+                return Err(Error::from_reason("malformed packed header value"));
             }
 
             let value = &packed[pos..pos + value_len];
@@ -408,7 +288,7 @@ impl<'a> HeaderRefs<'a> {
             }
         }
 
-        h
+        Ok(h)
     }
 
     #[inline(always)]
@@ -419,16 +299,6 @@ impl<'a> HeaderRefs<'a> {
     #[inline(always)]
     fn has_cookie(&self) -> bool {
         (self.flags & HAS_COOKIE) != 0
-    }
-
-    #[inline(always)]
-    fn has_xff(&self) -> bool {
-        (self.flags & HAS_XFF) != 0
-    }
-
-    #[inline(always)]
-    fn has_x_real_ip(&self) -> bool {
-        (self.flags & HAS_X_REAL_IP) != 0
     }
 
     #[inline(always)]
@@ -634,15 +504,18 @@ fn parse_allowed_methods(list: Option<Vec<String>>) -> (bool, Vec<MethodKind>) {
 
     for raw in list {
         let trimmed = raw.trim();
+
         if trimmed == "*" {
             return (true, Vec::new());
         }
+
         if trimmed.is_empty() {
             continue;
         }
 
         let upper = trimmed.to_ascii_uppercase();
         let kind = classify_method(&upper);
+
         if kind != MethodKind::Other {
             methods.push(kind);
         }
@@ -660,9 +533,11 @@ fn parse_allowed_headers(list: Option<Vec<String>>) -> (bool, Vec<Box<[u8]>>) {
 
     for raw in list {
         let trimmed = raw.trim();
+
         if trimmed == "*" {
             return (true, Vec::new());
         }
+
         if trimmed.is_empty() {
             continue;
         }
@@ -695,11 +570,29 @@ pub struct CorsOptions {
 pub struct RateLimitOptions {
     pub limit: Option<u32>,
     pub window_ms: Option<u32>,
+    pub max_entries: Option<u32>,
+}
+
+#[napi(object)]
+pub struct TrustedProxyOptions {
+    pub enabled: Option<bool>,
+    pub networks: Option<Vec<String>>,
+}
+
+#[napi(object)]
+pub struct IngressLimitsOptions {
+    pub max_url_bytes: Option<u32>,
+    pub max_query_bytes: Option<u32>,
+    pub max_cookie_bytes: Option<u32>,
+    pub max_headers_bytes: Option<u32>,
+    pub max_headers: Option<u32>,
+    pub max_pairs: Option<u32>,
 }
 
 #[napi(object)]
 pub struct IngressOptions {
     pub trust_proxy: Option<bool>,
+    pub trusted_proxies: Option<TrustedProxyOptions>,
     pub parse_cookies: Option<bool>,
     pub parse_query: Option<bool>,
     pub require_json_body: Option<bool>,
@@ -709,6 +602,60 @@ pub struct IngressOptions {
     pub https: Option<bool>,
     pub max_body_bytes: Option<u32>,
     pub enable_body_size_guard: Option<bool>,
+    pub emit_metadata_json: Option<bool>,
+    pub limits: Option<IngressLimitsOptions>,
+}
+
+// ── Limits ────────────────────────────────────────────────────────
+#[derive(Clone)]
+struct Limits {
+    max_url_bytes: usize,
+    max_query_bytes: usize,
+    max_cookie_bytes: usize,
+    max_headers_bytes: usize,
+    max_headers: usize,
+    max_pairs: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_url_bytes: 65536,
+            max_query_bytes: 16384,
+            max_cookie_bytes: 8192,
+            max_headers_bytes: 65536,
+            max_headers: 100,
+            max_pairs: 1024,
+        }
+    }
+}
+
+impl Limits {
+    fn from_options(opts: Option<IngressLimitsOptions>) -> Self {
+        let d = Self::default();
+
+        let Some(o) = opts else {
+            return d;
+        };
+
+        Self {
+            max_url_bytes: o.max_url_bytes.map(|v| v as usize).unwrap_or(d.max_url_bytes),
+            max_query_bytes: o
+                .max_query_bytes
+                .map(|v| v as usize)
+                .unwrap_or(d.max_query_bytes),
+            max_cookie_bytes: o
+                .max_cookie_bytes
+                .map(|v| v as usize)
+                .unwrap_or(d.max_cookie_bytes),
+            max_headers_bytes: o
+                .max_headers_bytes
+                .map(|v| v as usize)
+                .unwrap_or(d.max_headers_bytes),
+            max_headers: o.max_headers.map(|v| v as usize).unwrap_or(d.max_headers),
+            max_pairs: o.max_pairs.map(|v| v as usize).unwrap_or(d.max_pairs),
+        }
+    }
 }
 
 // ── Ingress state ─────────────────────────────────────────────────
@@ -716,16 +663,18 @@ pub struct IngressOptions {
 struct IngressInner {
     https_fixed: Option<bool>,
     max_body_bytes: usize,
-    trust_proxy: bool,
+    proxy_trust: ProxyTrustMode,
     parse_cookies: bool,
     parse_query: bool,
     require_json_body: bool,
     guard_enabled: bool,
+    emit_metadata_json: bool,
     cors_enabled: bool,
     cors: CorsEngine,
     rate_enabled: bool,
-    rate: RateLimitPolicy,
+    rate_limiter: Option<Arc<KeyedRateLimiter>>,
     schema: Option<Arc<jsonschema::Validator>>,
+    limits: Limits,
 }
 
 #[napi]
@@ -737,13 +686,20 @@ pub struct Ingress {
 impl Ingress {
     #[napi(constructor)]
     pub fn new(options: IngressOptions) -> Result<Self> {
-        let trust_proxy = options.trust_proxy.unwrap_or(false);
         let parse_cookies = options.parse_cookies.unwrap_or(false);
         let parse_query = options.parse_query.unwrap_or(false);
         let require_json_body = options.require_json_body.unwrap_or(false);
-
         let max_body_bytes = options.max_body_bytes.unwrap_or(1_048_576) as usize;
         let guard_enabled = options.enable_body_size_guard.unwrap_or(true);
+        let emit_metadata_json = options.emit_metadata_json.unwrap_or(false);
+
+        let proxy_trust = if let Some(tp) = options.trusted_proxies {
+            ProxyTrustMode::from_config(tp.enabled.unwrap_or(false), tp.networks)?
+        } else if options.trust_proxy.unwrap_or(false) {
+            ProxyTrustMode::All
+        } else {
+            ProxyTrustMode::None
+        };
 
         let schema = if let Some(schema_bytes) = options.schema {
             let schema_str = std::str::from_utf8(&schema_bytes)
@@ -763,28 +719,38 @@ impl Ingress {
         let cors_enabled = options.cors.is_some();
         let cors = CorsEngine::from_options(options.cors)?;
 
-        let rate_enabled = options.rate_limit.is_some();
-        let rate = if let Some(rl_opts) = options.rate_limit {
+        let (rate_enabled, rate_limiter) = if let Some(rl_opts) = options.rate_limit {
             let limit = rl_opts.limit.unwrap_or(0);
             let window_ms = rl_opts.window_ms.unwrap_or(1000);
-            RateLimitPolicy::new(limit, window_ms)
+
+            if limit == 0 || limit == u32::MAX {
+                (false, None)
+            } else {
+                let max_entries = rl_opts.max_entries.map(|v| v as usize);
+                let limiter = KeyedRateLimiter::new(limit, window_ms, max_entries);
+                (true, Some(Arc::new(limiter)))
+            }
         } else {
-            RateLimitPolicy::default()
+            (false, None)
         };
+
+        let limits = Limits::from_options(options.limits);
 
         let inner = IngressInner {
             https_fixed: options.https,
             max_body_bytes,
-            trust_proxy,
+            proxy_trust,
             parse_cookies,
             parse_query,
             require_json_body,
             guard_enabled,
+            emit_metadata_json,
             cors_enabled,
             cors,
             rate_enabled,
-            rate,
+            rate_limiter,
             schema,
+            limits,
         };
 
         Ok(Self {
@@ -792,59 +758,111 @@ impl Ingress {
         })
     }
 
-    #[napi(ts_args_type = "method_kind: number, url: Uint8Array, ip: Uint8Array, request_id: Uint8Array, headers: Uint8Array, body: Uint8Array | null, output: Uint8Array")]
-    pub fn handle_request(
+    /// Production API:
+    ///   input = packed metadata frame
+    ///   body = separate zero-copy body
+    ///   output = response decision buffer
+    #[napi(ts_args_type = "input: Uint8Array, body: Uint8Array | null, output: Uint8Array")]
+    pub fn handle_request_packed(
         &self,
-        _env: Env,
-        method_kind: u8,
-        url: Uint8Array,
-        ip: Uint8Array,
-        request_id: Uint8Array,
-        headers_packed: Uint8Array,
+        input: Uint8Array,
         body: Option<Uint8Array>,
         mut output: Uint8Array,
     ) -> Result<u32> {
-        let inner = &self.inner;
-        let out: &mut [u8] = unsafe { output.as_mut() };
+        let inner: &IngressInner = self.inner.as_ref();
 
+        crate::util::run_packed_into(&input, &mut output, move |inp, out| {
+            match body {
+                Some(b) => {
+                    let b_bytes = b.as_ref();
+
+                    if crate::util::slices_overlap(b_bytes, out) {
+                        let owned = b_bytes.to_vec();
+                        inner.handle_packed(inp, &owned, out)
+                    } else {
+                        inner.handle_packed(inp, b_bytes, out)
+                    }
+                }
+                None => inner.handle_packed(inp, &[], out),
+            }
+        })
+    }
+
+
+
+
+}
+
+impl IngressInner {
+    fn handle_packed(&self, input: &[u8], body_bytes: &[u8], out: &mut [u8]) -> Result<usize> {
         if out.len() < OUT_DATA_START {
             return Err(Error::new(Status::InvalidArg, "output buffer too small"));
         }
 
-        let url_bytes: &[u8] = url.as_ref();
-        let ip_bytes: &[u8] = ip.as_ref();
-        let rid_bytes: &[u8] = request_id.as_ref();
-
-        let mk = method_kind_from_u8(method_kind);
-        let is_options = mk == MethodKind::Options;
-        let headers = HeaderRefs::parse(headers_packed.as_ref(), is_options);
-
-        let mut flags: u32 = 0;
-        let rate_active = inner.rate_enabled && !inner.rate.disabled;
-
-        if detect_https_bytes(inner, url_bytes, &headers) {
-            flags |= FLAG_HTTPS;
+        if input.is_empty() {
+            return Err(Error::new(Status::InvalidArg, "input buffer too small"));
         }
 
-        if inner.trust_proxy {
+        let mut pos = 1usize;
+        let mk = method_kind_from_u8(input[0]);
+        let is_options = mk == MethodKind::Options;
+
+        let url_bytes = match read_section(input, &mut pos, self.limits.max_url_bytes) {
+            Ok(v) => v,
+            Err(_) => return terminal_simple(out, 1, ERR_CODE_BAD_REQUEST, 414),
+        };
+
+        let ip_bytes = match read_section(input, &mut pos, 128) {
+            Ok(v) => v,
+            Err(_) => return terminal_simple(out, 1, ERR_CODE_BAD_REQUEST, 400),
+        };
+
+        let rid_bytes = match read_section(input, &mut pos, 128) {
+            Ok(v) => v,
+            Err(_) => return terminal_simple(out, 1, ERR_CODE_BAD_REQUEST, 400),
+        };
+
+        let headers_packed = match read_section(input, &mut pos, self.limits.max_headers_bytes) {
+            Ok(v) => v,
+            Err(_) => return terminal_simple(out, 1, ERR_CODE_REQUEST_TOO_LARGE, 431),
+        };
+
+        let headers = match HeaderRefs::parse(headers_packed, is_options, self.limits.max_headers) {
+            Ok(v) => v,
+            Err(_) => return terminal_simple(out, 1, ERR_CODE_REQUEST_TOO_LARGE, 431),
+        };
+
+        let mut flags: u32 = 0;
+        let rate_active = self.rate_enabled && self.rate_limiter.is_some();
+
+        let (resolved_ip, peer_trusted) =
+            resolve_client_ip(&self.proxy_trust, ip_bytes, headers.xff, headers.x_real_ip);
+
+        if peer_trusted {
             flags |= FLAG_TRUSTED_PROXY;
         }
 
-        if inner.cors_enabled && headers.has_origin() {
-            let eval = inner.cors.evaluate(mk, &headers);
+        if detect_https_bytes(self, url_bytes, &headers, peer_trusted) {
+            flags |= FLAG_HTTPS;
+        }
+
+        if self.cors_enabled && headers.has_origin() {
+            let eval = self.cors.evaluate(mk, &headers);
 
             if eval.preflight {
                 flags |= FLAG_IS_PREFLIGHT;
             }
+
             if eval.allowed {
                 flags |= FLAG_CORS_ALLOWED;
             }
 
             if eval.preflight {
-                let hv = compute_header_variant(eval.allowed, true, rate_active, false, !eval.allowed);
                 return if eval.allowed {
+                    let hv = compute_header_variant(true, true, rate_active, false, false);
                     terminal_preflight_ok(flags, hv, out)
                 } else {
+                    let hv = compute_header_variant(false, false, rate_active, false, true);
                     terminal_preflight_forbidden(flags, hv, out)
                 };
             }
@@ -855,23 +873,19 @@ impl Ingress {
         let mut rate_reset_ms: u64 = 0;
 
         if rate_active {
-            let policy = &inner.rate;
-            rate_limit = policy.limit;
-
-            let resolved_ip = extract_ip_bytes(inner, &headers, ip_bytes);
+            let limiter = self.rate_limiter.as_ref().unwrap();
             let now = rate_now_ms();
-            let key = fast_hash_seeded(resolved_ip, policy.key_base);
+            let key = resolved_ip.rate_key(limiter.seed());
+            let outcome = limiter.check_key(key, now);
 
-            let (allowed, remaining, reset_ms) =
-                rate_limit_check_lockfree(key, policy.limit, policy.window_ms, now);
+            rate_limit = limiter.limit();
+            rate_remaining = outcome.remaining;
+            rate_reset_ms = outcome.reset_ms;
 
-            rate_remaining = remaining;
-            rate_reset_ms = reset_ms;
-
-            if !allowed {
+            if !outcome.allowed {
                 flags |= FLAG_RATE_LIMITED;
 
-                let retry_after_ms = reset_ms.saturating_sub(now);
+                let retry_after_ms = outcome.reset_ms.saturating_sub(now);
                 let cors_ok = (flags & FLAG_CORS_ALLOWED) != 0;
                 let hv = compute_header_variant(cors_ok, false, true, true, true);
 
@@ -887,9 +901,7 @@ impl Ingress {
             }
         }
 
-        let body_bytes: &[u8] = body.as_ref().map(|b| b.as_ref()).unwrap_or(&[]);
-
-        if inner.guard_enabled && body_bytes.len() > inner.max_body_bytes {
+        if self.guard_enabled && body_bytes.len() > self.max_body_bytes {
             let cors_ok = (flags & FLAG_CORS_ALLOWED) != 0;
             let hv = compute_header_variant(cors_ok, false, rate_active, false, true);
             return terminal_body_too_large(flags, hv, rate_limit, rate_remaining, rate_reset_ms, out);
@@ -897,13 +909,19 @@ impl Ingress {
 
         let has_body = !body_bytes.is_empty();
 
-        let enforce_json = if inner.schema.is_some() {
+        let enforce_json = if self.schema.is_some() {
             method_may_have_body(mk) || has_body
         } else {
-            inner.require_json_body && (method_may_have_body(mk) || has_body)
+            self.require_json_body && (method_may_have_body(mk) || has_body)
         };
 
         if enforce_json {
+            if body_bytes.is_empty() {
+                let cors_ok = (flags & FLAG_CORS_ALLOWED) != 0;
+                let hv = compute_header_variant(cors_ok, false, rate_active, false, true);
+                return terminal_invalid_json(flags, hv, rate_limit, rate_remaining, rate_reset_ms, out);
+            }
+
             let doc: serde_json::Value = match sonic_rs::from_slice(body_bytes) {
                 Ok(d) => d,
                 Err(_) => {
@@ -915,7 +933,7 @@ impl Ingress {
 
             flags |= FLAG_BODY_VALID_JSON;
 
-            if let Some(validator) = inner.schema.as_ref() {
+            if let Some(validator) = self.schema.as_ref() {
                 if validator.is_valid(&doc) {
                     flags |= FLAG_SCHEMA_VALID;
                 } else {
@@ -935,16 +953,24 @@ impl Ingress {
 
         let mut data_pos = OUT_DATA_START;
 
-        let cookies_json_len: u32 = if inner.parse_cookies && headers.has_cookie() {
+        let cookies_json_len: u32 = if self.parse_cookies && headers.has_cookie() {
             if let Some(cookie_val) = headers.cookie {
-                match cookie_json_into_slice(cookie_val, &mut out[data_pos..]) {
-                    Ok(written) => {
-                        if written > 2 {
-                            flags |= FLAG_HAS_COOKIES;
+                if cookie_val.len() <= self.limits.max_cookie_bytes {
+                    match cookie_json_into_slice_limited(
+                        cookie_val,
+                        &mut out[data_pos..],
+                        self.limits.max_pairs,
+                    ) {
+                        Ok(written) => {
+                            if written > 2 {
+                                flags |= FLAG_HAS_COOKIES;
+                            }
+                            written as u32
                         }
-                        written as u32
+                        Err(_) => 0,
                     }
-                    Err(_) => 0,
+                } else {
+                    0
                 }
             } else {
                 0
@@ -956,17 +982,31 @@ impl Ingress {
         let cookies_start = data_pos;
         data_pos += cookies_json_len as usize;
 
-        let query_json_len: u32 = if inner.parse_query {
+        let query_json_len: u32 = if self.parse_query {
             let raw_query = extract_query_from_url_bytes(url_bytes);
+
+            if raw_query.len() > self.limits.max_query_bytes {
+                return terminal_simple(out, 1, ERR_CODE_BAD_REQUEST, 414);
+            }
+
             if !raw_query.is_empty() && data_pos < out.len() {
-                match query_json_into_slice(raw_query, &mut out[data_pos..]) {
-                    Ok(written) => {
-                        if written > 2 {
-                            flags |= FLAG_HAS_QUERY;
+                match crate::query_parser::query_parse_packed_vec(raw_query) {
+                    Ok(packed) => {
+                        match packed_pairs_to_json_into_slice_limited(
+                            &packed,
+                            &mut out[data_pos..],
+                            self.limits.max_pairs,
+                        ) {
+                            Ok(written) => {
+                                if written > 2 {
+                                    flags |= FLAG_HAS_QUERY;
+                                }
+                                written as u32
+                            }
+                            Err(_) => 0,
                         }
-                        written as u32
                     }
-                    Err(_) => 0,
+                    Err(_) => return terminal_simple(out, 1, ERR_CODE_BAD_REQUEST, 400),
                 }
             } else {
                 0
@@ -978,20 +1018,24 @@ impl Ingress {
         let query_start = data_pos;
         data_pos += query_json_len as usize;
 
-        let path = extract_path_from_url_bytes(url_bytes);
+        let body_json_len = if self.emit_metadata_json {
+            let path = extract_path_from_url_bytes(url_bytes);
 
-        let body_json_len = write_full_body_json_bytes(
-            out,
-            data_pos,
-            rid_bytes,
-            path,
-            cookies_start,
-            cookies_json_len as usize,
-            query_start,
-            query_json_len as usize,
-        );
+            write_full_body_json_bytes(
+                out,
+                data_pos,
+                rid_bytes,
+                path,
+                cookies_start,
+                cookies_json_len as usize,
+                query_start,
+                query_json_len as usize,
+            )
+        } else {
+            0
+        };
 
-        if body_json_len == 0 {
+        if self.emit_metadata_json && body_json_len == 0 {
             flags |= FLAG_BODY_TRUNCATED;
         }
 
@@ -1016,16 +1060,74 @@ impl Ingress {
     }
 }
 
+// ── Packed input helpers ──────────────────────────────────────────
+#[inline]
+fn read_u32_at(input: &[u8], pos: &mut usize) -> Result<usize> {
+    if *pos + 4 > input.len() {
+        return Err(Error::from_reason("packed input: truncated u32"));
+    }
+
+    let v = u32::from_le_bytes([
+        input[*pos],
+        input[*pos + 1],
+        input[*pos + 2],
+        input[*pos + 3],
+    ]) as usize;
+
+    *pos += 4;
+    Ok(v)
+}
+
+#[inline]
+fn read_section<'a>(input: &'a [u8], pos: &mut usize, max: usize) -> Result<&'a [u8]> {
+    let len = read_u32_at(input, pos)?;
+
+    if len > max {
+        return Err(Error::from_reason("packed input: section too large"));
+    }
+
+    let end = pos
+        .checked_add(len)
+        .ok_or_else(|| Error::from_reason("packed input: length overflow"))?;
+
+    if end > input.len() {
+        return Err(Error::from_reason("packed input: truncated section"));
+    }
+
+    let slice = &input[*pos..end];
+    *pos = end;
+    Ok(slice)
+}
+
 // ── Terminal helpers ──────────────────────────────────────────────
 #[cold]
-fn terminal_preflight_ok(flags: u32, hv: u8, out: &mut [u8]) -> Result<u32> {
+fn terminal_simple(out: &mut [u8], verdict: u8, error_code: u8, status: u16) -> Result<usize> {
+    Ok(write_output_header(
+        out,
+        verdict,
+        error_code,
+        status,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        HV_JSON,
+        0,
+    ))
+}
+
+#[cold]
+fn terminal_preflight_ok(flags: u32, hv: u8, out: &mut [u8]) -> Result<usize> {
     Ok(write_output_header(
         out, 2, ERR_CODE_NONE, 204, flags, 0, 0, 0, 0, 0, 0, hv, 0,
     ))
 }
 
 #[cold]
-fn terminal_preflight_forbidden(flags: u32, hv: u8, out: &mut [u8]) -> Result<u32> {
+fn terminal_preflight_forbidden(flags: u32, hv: u8, out: &mut [u8]) -> Result<usize> {
     Ok(write_output_header(
         out,
         2,
@@ -1052,7 +1154,7 @@ fn terminal_rate_limited(
     reset: u64,
     retry: u64,
     out: &mut [u8],
-) -> Result<u32> {
+) -> Result<usize> {
     Ok(write_output_header(
         out,
         1,
@@ -1078,7 +1180,7 @@ fn terminal_body_too_large(
     rr: u32,
     reset: u64,
     out: &mut [u8],
-) -> Result<u32> {
+) -> Result<usize> {
     Ok(write_output_header(
         out,
         1,
@@ -1104,7 +1206,7 @@ fn terminal_invalid_json(
     rr: u32,
     reset: u64,
     out: &mut [u8],
-) -> Result<u32> {
+) -> Result<usize> {
     Ok(write_output_header(
         out,
         1,
@@ -1130,7 +1232,7 @@ fn terminal_schema_validation(
     rr: u32,
     reset: u64,
     out: &mut [u8],
-) -> Result<u32> {
+) -> Result<usize> {
     Ok(write_output_header(
         out,
         1,
@@ -1163,11 +1265,16 @@ fn write_output_header(
     query_json_len: u32,
     header_variant: u8,
     body_json_len: u32,
-) -> u32 {
+) -> usize {
+    let status = if status == 101 || (200u16..=599u16).contains(&status) {
+        status
+    } else {
+        500
+    };
+
     unsafe {
         out[OUT_VERDICT] = verdict;
         out[OUT_ERROR_CODE] = error_code;
-
         write_u16_le_unchecked(out, OUT_STATUS, status);
         write_u32_le_unchecked(out, OUT_FLAGS, flags);
         write_u32_le_unchecked(out, OUT_RATE_LIMIT, rate_limit);
@@ -1176,18 +1283,18 @@ fn write_output_header(
         write_u64_le_unchecked(out, OUT_RETRY_AFTER, retry_after_ms);
         write_u32_le_unchecked(out, OUT_COOKIES_JSON_LEN, cookies_json_len);
         write_u32_le_unchecked(out, OUT_QUERY_JSON_LEN, query_json_len);
-
         out[OUT_HEADER_VARIANT] = header_variant;
         out[OUT_HEADER_VARIANT + 1] = 0;
         out[OUT_HEADER_VARIANT + 2] = 0;
         out[OUT_HEADER_VARIANT + 3] = 0;
-
         write_u32_le_unchecked(out, OUT_BODY_JSON_LEN, body_json_len);
     }
 
-    OUT_DATA_START as u32 + cookies_json_len + query_json_len + body_json_len
+    OUT_DATA_START
+        + cookies_json_len as usize
+        + query_json_len as usize
+        + body_json_len as usize
 }
-
 #[inline(always)]
 fn compute_header_variant(
     cors_ok: bool,
@@ -1201,15 +1308,19 @@ fn compute_header_variant(
     if wants_json {
         hv |= HV_JSON;
     }
+
     if cors_ok && !is_preflight {
         hv |= HV_CORS_SIMPLE;
     }
+
     if is_preflight {
         hv |= HV_CORS_PREFLIGHT;
     }
+
     if rate_active {
         hv |= HV_RATE_ACTIVE;
     }
+
     if rate_limited {
         hv |= HV_RATE_LIMITED;
     }
@@ -1218,18 +1329,6 @@ fn compute_header_variant(
 }
 
 // ── Cookie/query JSON serialization ───────────────────────────────
-#[inline]
-fn cookie_json_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(input);
-    packed_pairs_to_json_into_slice(&packed, out)
-}
-
-#[inline]
-fn query_json_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
-    let packed = crate::query_parser::query_parse_packed_vec(input)?;
-    packed_pairs_to_json_into_slice(&packed, out)
-}
-
 const JSON_HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
 #[inline(always)]
@@ -1297,66 +1396,91 @@ fn write_json_escaped(out: &mut [u8], pos: &mut usize, bytes: &[u8]) {
 }
 
 #[inline]
-fn packed_pairs_to_json_len(packed: &[u8]) -> Result<usize> {
-    if packed.len() < 4 {
-        return Ok(2);
+fn cookie_json_into_slice_limited(input: &[u8], out: &mut [u8], max_pairs: usize) -> Result<usize> {
+    if out.len() < 2 {
+        return Err(Error::from_reason("output buffer too small for cookie JSON"));
     }
 
-    let count = crate::util::read_u32_le(packed, 0)? as usize;
-    let mut pos = 4usize;
-    let mut len = 1usize; // '{'
+    out[0] = b'{';
+    let mut pos = 1usize;
+    let mut count = 0usize;
 
-    for i in 0..count {
-        let key_len = crate::util::read_u32_le(packed, pos)? as usize;
-        pos += 4;
-
-        let key_end = pos
-            .checked_add(key_len)
-            .ok_or_else(|| Error::from_reason("packed pairs: key length overflow"))?;
-
-        if key_end > packed.len() {
-            return Err(Error::from_reason("packed pairs: truncated key"));
+    for pair in input.split(|&b| b == b';') {
+        let pair = trim_ascii_whitespace(pair);
+        if pair.is_empty() {
+            continue;
         }
 
-        let key = &packed[pos..key_end];
-        pos = key_end;
+        let (name, value) = match pair.iter().position(|&b| b == b'=') {
+            Some(eq) => (&pair[..eq], &pair[eq + 1..]),
+            None => (pair, &[][..]),
+        };
 
-        let val_len = crate::util::read_u32_le(packed, pos)? as usize;
-        pos += 4;
+        let name = trim_ascii_whitespace(name);
+        let value = trim_ascii_whitespace(value);
 
-        let val_end = pos
-            .checked_add(val_len)
-            .ok_or_else(|| Error::from_reason("packed pairs: value length overflow"))?;
-
-        if val_end > packed.len() {
-            return Err(Error::from_reason("packed pairs: truncated value"));
+        if name.is_empty() {
+            continue;
         }
 
-        let val = &packed[pos..val_end];
-        pos = val_end;
+        if count >= max_pairs {
+            break;
+        }
 
-        let add = (if i == 0 { 0 } else { 1 })
-            + json_escaped_len(key)
-            + json_escaped_len(val)
-            + 5; // "key":"value"
+        let needed = (if count == 0 { 0 } else { 1 })
+            + 5
+            + json_escaped_len(name)
+            + json_escaped_len(value);
 
-        len = len
-            .checked_add(add)
-            .ok_or_else(|| Error::from_reason("packed pairs: JSON length overflow"))?;
+        if needed > out.len().saturating_sub(pos) {
+            return Err(Error::from_reason("output buffer too small for cookie JSON"));
+        }
+
+        if count != 0 {
+            out[pos] = b',';
+            pos += 1;
+        }
+
+        out[pos] = b'"';
+        pos += 1;
+
+        write_json_escaped(out, &mut pos, name);
+
+        out[pos] = b'"';
+        pos += 1;
+
+        out[pos] = b':';
+        pos += 1;
+
+        out[pos] = b'"';
+        pos += 1;
+
+        write_json_escaped(out, &mut pos, value);
+
+        out[pos] = b'"';
+        pos += 1;
+
+        count += 1;
     }
 
-    len.checked_add(1) // '}'
-        .ok_or_else(|| Error::from_reason("packed pairs: JSON length overflow"))
+    if pos + 1 > out.len() {
+        return Err(Error::from_reason("output buffer too small for cookie JSON"));
+    }
+
+    out[pos] = b'}';
+    pos += 1;
+
+    Ok(pos)
 }
 
 #[inline]
-fn packed_pairs_to_json_into_slice(packed: &[u8], out: &mut [u8]) -> Result<usize> {
-    let needed = packed_pairs_to_json_len(packed)?;
-
-    if out.len() < needed {
-        return Err(Error::from_reason(
-            "output buffer too small for packed pairs JSON",
-        ));
+fn packed_pairs_to_json_into_slice_limited(
+    packed: &[u8],
+    out: &mut [u8],
+    max_pairs: usize,
+) -> Result<usize> {
+    if out.len() < 2 {
+        return Err(Error::from_reason("output buffer too small for packed pairs JSON"));
     }
 
     if packed.len() < 4 {
@@ -1365,16 +1489,23 @@ fn packed_pairs_to_json_into_slice(packed: &[u8], out: &mut [u8]) -> Result<usiz
     }
 
     let count = crate::util::read_u32_le(packed, 0)? as usize;
-    let mut pos = 0usize;
 
-    out[pos] = b'{';
-    pos += 1;
-
+    out[0] = b'{';
+    let mut pos = 1usize;
     let mut src = 4usize;
+    let mut written_pairs = 0usize;
 
-    for i in 0..count {
+    for _ in 0..count {
+        if written_pairs >= max_pairs {
+            break;
+        }
+
         let key_len = crate::util::read_u32_le(packed, src)? as usize;
         src += 4;
+
+        if src + key_len > packed.len() {
+            return Err(Error::from_reason("packed pairs: truncated key"));
+        }
 
         let key = &packed[src..src + key_len];
         src += key_len;
@@ -1382,10 +1513,23 @@ fn packed_pairs_to_json_into_slice(packed: &[u8], out: &mut [u8]) -> Result<usiz
         let val_len = crate::util::read_u32_le(packed, src)? as usize;
         src += 4;
 
+        if src + val_len > packed.len() {
+            return Err(Error::from_reason("packed pairs: truncated value"));
+        }
+
         let val = &packed[src..src + val_len];
         src += val_len;
 
-        if i != 0 {
+        let needed = (if written_pairs == 0 { 0 } else { 1 })
+            + 5
+            + json_escaped_len(key)
+            + json_escaped_len(val);
+
+        if needed > out.len().saturating_sub(pos) {
+            return Err(Error::from_reason("output buffer too small for packed pairs JSON"));
+        }
+
+        if written_pairs != 0 {
             out[pos] = b',';
             pos += 1;
         }
@@ -1408,6 +1552,12 @@ fn packed_pairs_to_json_into_slice(packed: &[u8], out: &mut [u8]) -> Result<usiz
 
         out[pos] = b'"';
         pos += 1;
+
+        written_pairs += 1;
+    }
+
+    if pos + 1 > out.len() {
+        return Err(Error::from_reason("output buffer too small for packed pairs JSON"));
     }
 
     out[pos] = b'}';
@@ -1467,7 +1617,12 @@ fn extract_query_from_url_bytes(url: &[u8]) -> &[u8] {
 
 // ── Proxy helpers ─────────────────────────────────────────────────
 #[inline]
-fn detect_https_bytes(inner: &IngressInner, url: &[u8], headers: &HeaderRefs<'_>) -> bool {
+fn detect_https_bytes(
+    inner: &IngressInner,
+    url: &[u8],
+    headers: &HeaderRefs<'_>,
+    peer_trusted: bool,
+) -> bool {
     if let Some(v) = inner.https_fixed {
         return v;
     }
@@ -1476,38 +1631,13 @@ fn detect_https_bytes(inner: &IngressInner, url: &[u8], headers: &HeaderRefs<'_>
         return true;
     }
 
-    if inner.trust_proxy && headers.has_xfp() {
+    if !inner.proxy_trust.is_none() && peer_trusted && headers.has_xfp() {
         if let Some(xfp) = headers.x_forwarded_proto {
             return trim_ascii_whitespace(xfp) == b"https";
         }
     }
 
     false
-}
-
-#[inline]
-fn extract_ip_bytes<'a>(
-    inner: &IngressInner,
-    headers: &'a HeaderRefs<'a>,
-    socket_ip: &'a [u8],
-) -> &'a [u8] {
-    if !inner.trust_proxy {
-        return socket_ip;
-    }
-
-    if let Some(xff) = headers.xff {
-        let xff = trim_ascii_whitespace(xff);
-        if let Some(idx) = memchr::memchr(b',', xff) {
-            return trim_ascii_whitespace(&xff[..idx]);
-        }
-        return xff;
-    }
-
-    if let Some(xri) = headers.x_real_ip {
-        return xri;
-    }
-
-    socket_ip
 }
 
 // ── Metadata envelope ─────────────────────────────────────────────
@@ -1538,7 +1668,7 @@ fn write_full_body_json_bytes(
         + cookies_eff_len
         + P4.len()
         + query_eff_len
-        + 1; // final '}'
+        + 1;
 
     let end = match pos.checked_add(required) {
         Some(v) => v,
@@ -1565,10 +1695,7 @@ fn write_full_body_json_bytes(
     wp += P3.len();
 
     if cookies_len > 0 {
-        let base = out.as_mut_ptr();
-        unsafe {
-            std::ptr::copy(base.add(cookies_start), base.add(wp), cookies_len);
-        }
+        out.copy_within(cookies_start..cookies_start + cookies_len, wp);
         wp += cookies_len;
     } else {
         out[wp..wp + 2].copy_from_slice(b"{}");
@@ -1579,10 +1706,7 @@ fn write_full_body_json_bytes(
     wp += P4.len();
 
     if query_len > 0 {
-        let base = out.as_mut_ptr();
-        unsafe {
-            std::ptr::copy(base.add(query_start), base.add(wp), query_len);
-        }
+        out.copy_within(query_start..query_start + query_len, wp);
         wp += query_len;
     } else {
         out[wp..wp + 2].copy_from_slice(b"{}");

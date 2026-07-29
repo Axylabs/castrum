@@ -1,35 +1,103 @@
-import addon from "./index";
-import type { HmacSignerInstance } from "./index";
+import addon, { type HmacSignerInstance } from "./index";
 import { decoder } from "../shared/bytes";
 
-export const rustNative = {
+const mimeByText = new Map<string, Uint8Array>();
+const hmacSigners = new WeakMap<Uint8Array, HmacSignerInstance>();
 
+function asBigInt(value: unknown): bigint {
+  if (typeof value === "bigint") {
+    return value;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    return BigInt(value);
+  }
+
+  throw new TypeError(
+    `Expected bigint-compatible value, got ${typeof value}: ${String(value)}`,
+  );
+}
+
+function asNumber(value: unknown): number {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    return Number(value);
+  }
+
+  return 0;
+}
+
+function normalizeExt(ext: Uint8Array): string {
+  let s: string;
+
+  try {
+    s = decoder.decode(ext);
+  } catch {
+    return "";
+  }
+
+  if (s.charCodeAt(0) === 46) {
+    s = s.slice(1);
+  }
+
+  return s.toLowerCase();
+}
+
+function cachedMime(ext: Uint8Array): Uint8Array {
+  const key = normalizeExt(ext);
+
+  let val = mimeByText.get(key);
+  if (!val) {
+    val = addon.mimeFromExtension(ext);
+    mimeByText.set(key, val);
+  }
+
+  // Return a copy so callers cannot mutate cached bytes.
+  return val.slice();
+}
+
+function getHmacSigner(key: Uint8Array): HmacSignerInstance {
+  let signer = hmacSigners.get(key);
+
+  if (!signer) {
+    signer = new addon.HmacSigner(key);
+    hmacSigners.set(key, signer);
+  }
+
+  return signer;
+}
+
+export const rustNative = {
   jsonValid(bytes: Uint8Array): number {
     return addon.jsonValid(bytes) ? 1 : 0;
   },
 
   jsonSumIds(bytes: Uint8Array): bigint {
-    return BigInt(addon.jsonSumIds(bytes));
+    return asBigInt(addon.jsonSumIds(bytes) as unknown);
   },
 
   fnv1a64(bytes: Uint8Array): bigint {
-    return BigInt(addon.fnv1a64(bytes));
+    return asBigInt(addon.fnv1a64(bytes) as unknown);
   },
-  
 
   crc32(bytes: Uint8Array): number {
-    return addon.crc32(bytes);
+    return asNumber(addon.crc32(bytes) as unknown) >>> 0;
   },
-
-
-
-
-
 
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array {
     return addon.jsonPatch(doc, patch);
   },
-
 
   randomToken(byteLen: number): Uint8Array {
     return addon.randomToken(byteLen);
@@ -47,13 +115,12 @@ export const rustNative = {
     return addon.wsAcceptKey(key);
   },
 
-
   initThreadPool(rayonThreads?: number) {
     return addon.initThreadPool(rayonThreads);
   },
 
   rayonNumThreads() {
-    return addon.rayonNumThreads();
+    return asNumber(addon.rayonNumThreads() as unknown);
   },
 
   httpParseRequestPacked(bytes: Uint8Array): Uint8Array {
@@ -61,7 +128,7 @@ export const rustNative = {
   },
 
   httpParseRequestPackedInto(bytes: Uint8Array, out: Uint8Array): number {
-    return addon.httpParseRequestPackedInto(bytes, out);
+    return asNumber(addon.httpParseRequestPackedInto(bytes, out) as unknown) >>> 0;
   },
 
   queryParsePacked(bytes: Uint8Array): Uint8Array {
@@ -69,7 +136,7 @@ export const rustNative = {
   },
 
   queryParsePackedInto(bytes: Uint8Array, out: Uint8Array): number {
-    return addon.queryParsePackedInto(bytes, out);
+    return asNumber(addon.queryParsePackedInto(bytes, out) as unknown) >>> 0;
   },
 
   cookieParsePacked(bytes: Uint8Array): Uint8Array {
@@ -77,8 +144,9 @@ export const rustNative = {
   },
 
   cookieParsePackedInto(bytes: Uint8Array, out: Uint8Array): number {
-    return addon.cookieParsePackedInto(bytes, out);
+    return asNumber(addon.cookieParsePackedInto(bytes, out) as unknown) >>> 0;
   },
+
   createSchemaValidator(schema: Uint8Array) {
     return new addon.SchemaValidator(schema);
   },
@@ -86,7 +154,6 @@ export const rustNative = {
   validateEmail(bytes: Uint8Array): number {
     return addon.validateEmail(bytes) ? 1 : 0;
   },
-
 
   validateUuid(bytes: Uint8Array): number {
     return addon.validateUuid(bytes) ? 1 : 0;
@@ -101,72 +168,22 @@ export const rustNative = {
   },
 
   mimeFromExtension(ext: Uint8Array): Uint8Array {
-  return cachedMime(ext);
-},
+    return cachedMime(ext);
+  },
 
-hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
-  return getHmacSigner(key).sign(data);
-},
+  hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
+    return getHmacSigner(key).sign(data);
+  },
 
-hmacSha256Verify(
-  key: Uint8Array,
-  data: Uint8Array,
-  sig: Uint8Array,
-): number {
-  return getHmacSigner(key).verify(data, sig) ? 1 : 0;
-},
+  hmacSha256Verify(
+    key: Uint8Array,
+    data: Uint8Array,
+    sig: Uint8Array,
+  ): number {
+    return getHmacSigner(key).verify(data, sig) ? 1 : 0;
+  },
+
+  createHmacSigner(key: Uint8Array) {
+    return new addon.HmacSigner(key);
+  },
 };
-
-
-const mimeByBytes = new WeakMap<Uint8Array, Uint8Array>();
-const mimeByText = new Map<string, Uint8Array>();
-
-const hmacByBytes = new WeakMap<Uint8Array, HmacSignerInstance>();
-const hmacByText = new Map<string, HmacSignerInstance>();
-
-function normalizeExt(ext: Uint8Array): string {
-  let s = decoder.decode(ext);
-  if (s.charCodeAt(0) === 46) s = s.slice(1); // strip leading "."
-  return s.toLowerCase();
-}
-
-function cachedMime(ext: Uint8Array): Uint8Array {
-  const direct = mimeByBytes.get(ext);
-  if (direct) return direct;
-
-  const key = normalizeExt(ext);
-  let val = mimeByText.get(key);
-
-  if (!val) {
-    val = addon.mimeFromExtension(ext);
-    mimeByText.set(key, val);
-  }
-
-  mimeByBytes.set(ext, val);
-  return val;
-}
-
-function getHmacSigner(key: Uint8Array): HmacSignerInstance {
-  const direct = hmacByBytes.get(key);
-  if (direct) return direct;
-
-  // Optional text-based cache for textual keys.
-  // If your keys are sensitive binary material and you do not want
-  // decoded key strings retained in memory, remove this branch.
-  let keyText = "";
-  try {
-    keyText = decoder.decode(key);
-  } catch {
-    keyText = "";
-  }
-
-  let signer = keyText ? hmacByText.get(keyText) : undefined;
-
-  if (!signer) {
-    signer = new addon.HmacSigner(key);
-    if (keyText) hmacByText.set(keyText, signer);
-  }
-
-  hmacByBytes.set(key, signer);
-  return signer;
-}

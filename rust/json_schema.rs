@@ -5,8 +5,7 @@ use serde_json::Value;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::util::{should_parallelize, total_bytes, unpack, validation_bitset};
-
+use crate::util::{should_parallelize, total_bytes, unpack};
 #[napi]
 pub struct SchemaValidator {
     schema: Arc<jsonschema::Validator>,

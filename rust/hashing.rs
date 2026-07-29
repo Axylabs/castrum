@@ -1,4 +1,3 @@
-// rust/hashing.rs — PRODUCTION BREAKING OPTIMIZED
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -35,13 +34,11 @@ pub fn fast_hash_seeded(input: &[u8], seed: u64) -> u64 {
 #[inline]
 pub fn fast_hash_cache_key(method: &[u8], path: &[u8], query: &[u8]) -> u64 {
     let mut h = Xxh3::with_seed(0x9E37_79B9_7F4A_7C15);
-
     h.update(method);
     h.update(&[0]);
     h.update(path);
     h.update(&[0]);
     h.update(query);
-
     h.digest()
 }
 
@@ -55,37 +52,41 @@ pub fn fnv1a64(input: Uint8Array) -> u64 {
     fnv1a64_bytes(input.as_ref())
 }
 
-/// Packed batch CRC32.
-///
-/// Input format:
-///   [u32 count]
-///   repeated:
-///     [u32 len]
-///     [bytes]
-///
-/// Output format:
-///   [u32 count]
-///   repeated:
-///     [u32 crc]
 #[napi]
 pub fn crc32_batch_packed(input: Uint8Array) -> Result<Buffer> {
     let items = unpack(input.as_ref())?;
+    let n = items.len();
 
-    let mut out = Vec::with_capacity(4 + items.len() * 4);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    let mut out = Vec::with_capacity(4 + n * 4);
+    out.extend_from_slice(&(n as u32).to_le_bytes());
 
-    if should_parallelize(items.len(), total_bytes(&items)) {
+    let start = out.len();
+    out.resize(start + n * 4, 0);
+
+    let out_slice = &mut out[start..];
+
+    if should_parallelize(n, total_bytes(&items)) {
         use rayon::prelude::*;
 
-        let crcs: Vec<u32> = items.par_iter().map(|item| crc32fast::hash(item)).collect();
+        const CHUNK_ITEMS: usize = 256;
 
-        for crc in crcs {
-            out.extend_from_slice(&crc.to_le_bytes());
-        }
+        out_slice
+            .par_chunks_mut(CHUNK_ITEMS * 4)
+            .enumerate()
+            .for_each(|(ci, chunk)| {
+                let num_items = chunk.len() / 4;
+                let item_start = ci * CHUNK_ITEMS;
+                let item_end = (item_start + num_items).min(n);
+
+                for (i, item) in items[item_start..item_end].iter().enumerate() {
+                    let crc = crc32fast::hash(item);
+                    chunk[i * 4..(i + 1) * 4].copy_from_slice(&crc.to_le_bytes());
+                }
+            });
     } else {
-        for item in items {
+        for (i, item) in items.iter().enumerate() {
             let crc = crc32fast::hash(item);
-            out.extend_from_slice(&crc.to_le_bytes());
+            out_slice[i * 4..(i + 1) * 4].copy_from_slice(&crc.to_le_bytes());
         }
     }
 

@@ -6,7 +6,13 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
 export interface IngressInstance {
-  handleRequest(
+  handleRequestPacked(
+    input: Uint8Array,
+    body: Uint8Array | null,
+    output: Uint8Array,
+  ): number;
+
+  handleRequest?(
     methodKind: number,
     url: Uint8Array,
     ip: Uint8Array,
@@ -23,13 +29,11 @@ function resolveAddonPath(): string {
   const arch = process.arch;
 
   const candidates = [
-    // 1. Standard napi-rs output in project root.
     join(__dirname, "..", "..", `rust_bench.${platform}-${arch}-gnu.node`),
     join(__dirname, "..", "..", `rust_bench.${platform}-${arch}-musl.node`),
     join(__dirname, "..", "..", `rust_bench.${platform}-${arch}.node`),
     join(__dirname, "..", "..", "rust_bench.node"),
 
-    // 2. Fallback to target/release directory.
     join(
       __dirname,
       "..",
@@ -81,6 +85,7 @@ interface NativeAddon {
 
   jsonValid(input: Uint8Array): boolean;
   jsonSumIds(input: Uint8Array): bigint;
+
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array;
 
   mimeFromExtension(ext: Uint8Array): Uint8Array;
@@ -109,6 +114,7 @@ interface NativeAddon {
   validateUuidBatchPacked(input: Uint8Array): Uint8Array;
   validateIpv4BatchPacked(input: Uint8Array): Uint8Array;
   validateIpv6BatchPacked(input: Uint8Array): Uint8Array;
+
   jsonSumBatchPacked(input: Uint8Array): Uint8Array;
   queryParseBatchPacked(input: Uint8Array): Uint8Array;
   cookieParseBatchPacked(input: Uint8Array): Uint8Array;
@@ -130,6 +136,7 @@ interface NativeAddon {
   validateUuidBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   validateIpv4BatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   validateIpv6BatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
+
   jsonSumBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   queryParseBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
   cookieParseBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;

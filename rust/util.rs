@@ -1,4 +1,3 @@
-// rust/util.rs — OPTIMIZED
 use napi::bindgen_prelude::Uint8Array;
 use napi::{Error, Result};
 use napi_derive::napi;
@@ -16,15 +15,19 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
             .map(|n| n.get() as u32)
             .unwrap_or(2);
 
-        // ⭐ v5: leave 2 cores for Bun 1.4's internal Rust thread pool
-        let preferred = default_threads.saturating_sub(2).max(1);
+        // Leave a little headroom for Bun/internal runtime threads.
+        let preferred = default_threads.saturating_sub(1).max(1);
 
+        // Do not hard-cap to 8 by default.
+        // If you need a cap, set RUST_BENCH_MAX_RAYON_THREADS.
         let max_threads = std::env::var("RUST_BENCH_MAX_RAYON_THREADS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(8);
+            .unwrap_or(default_threads.max(1));
 
-        let threads = rayon_threads.unwrap_or(preferred).clamp(1, max_threads.max(1));
+        let threads = rayon_threads
+            .unwrap_or(preferred)
+            .clamp(1, max_threads.max(1));
 
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads as usize)
@@ -34,17 +37,18 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
             .build_global()
             .map_err(|e| e.to_string())
     });
+
     match stored {
         Ok(()) => Ok(()),
         Err(msg) => Err(Error::from_reason(msg.clone())),
     }
 }
-
 #[cfg(target_os = "linux")]
 fn pin_rayon_thread(id: usize) {
     if std::env::var_os("RUST_BENCH_PIN_CORES").is_none() {
         return;
     }
+
     let ids = CORE_IDS.get_or_init(core_affinity::get_core_ids);
     if let Some(ids) = ids {
         if ids.len() > 1 {
@@ -62,7 +66,6 @@ pub fn rayon_num_threads() -> u32 {
     rayon::current_num_threads() as u32
 }
 
-/// Fast append-only writer with no zero-init.
 #[derive(Default)]
 pub struct VecWriter {
     buf: Vec<u8>,
@@ -71,20 +74,30 @@ pub struct VecWriter {
 impl VecWriter {
     #[inline(always)]
     pub fn with_capacity(cap: usize) -> Self {
-        Self { buf: Vec::with_capacity(cap) }
+        Self {
+            buf: Vec::with_capacity(cap),
+        }
     }
 
     #[inline(always)]
-    pub fn len(&self) -> usize { self.buf.len() }
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
 
     #[inline(always)]
-    pub fn is_empty(&self) -> bool { self.buf.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
 
     #[inline(always)]
-    pub fn into_bytes(self) -> Vec<u8> { self.buf }
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.buf
+    }
 
     #[inline(always)]
-    pub fn push(&mut self, byte: u8) { self.buf.push(byte) }
+    pub fn push(&mut self, byte: u8) {
+        self.buf.push(byte);
+    }
 
     #[inline(always)]
     pub fn write_u16(&mut self, value: u16) {
@@ -119,7 +132,6 @@ impl VecWriter {
         self.buf[pos..pos + 4].copy_from_slice(&value.to_le_bytes());
     }
 
-    /// Reserve additional capacity without writing.
     #[inline(always)]
     pub fn reserve(&mut self, additional: usize) {
         self.buf.reserve(additional);
@@ -128,10 +140,14 @@ impl VecWriter {
 
 #[inline(always)]
 pub fn read_u32_le(data: &[u8], offset: usize) -> Result<u32> {
-    let slice = data.get(offset..offset + 4)
+    let slice = data
+        .get(offset..offset + 4)
         .ok_or_else(|| Error::from_reason("packed buffer: truncated u32"))?;
-    let bytes: [u8; 4] = slice.try_into()
+
+    let bytes: [u8; 4] = slice
+        .try_into()
         .map_err(|_| Error::from_reason("packed buffer: invalid u32"))?;
+
     Ok(u32::from_le_bytes(bytes))
 }
 
@@ -140,31 +156,42 @@ pub fn read_u32_le(data: &[u8], offset: usize) -> Result<u32> {
 ///   repeated count times:
 ///     [u32 byte_length]
 ///     [bytes]
-///
-/// v2: returns slices directly, no extra validation overhead.
 #[inline]
 pub fn unpack<'a>(data: &'a [u8]) -> Result<Vec<&'a [u8]>> {
     if data.len() < 4 {
         return Err(Error::from_reason("packed buffer: missing count"));
     }
-    let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    let mut offset = 4usize;
 
-    // Cap reservation to avoid huge alloc on malformed input.
-    let reserve = count.min(data.len() / 4 + 1).min(4_000_000);
+    let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+
+    // Each item requires at least a 4-byte length prefix.
+    let max_possible = (data.len() - 4) / 4;
+    if count > max_possible {
+        return Err(Error::from_reason("packed buffer: impossible item count"));
+    }
+
+    let mut offset = 4usize;
+    let reserve = count.min(4_000_000);
     let mut items = Vec::with_capacity(reserve);
 
     for _ in 0..count {
         if offset + 4 > data.len() {
             return Err(Error::from_reason("packed buffer: truncated length"));
         }
+
         let len = u32::from_le_bytes([
-            data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
         ]) as usize;
+
         offset += 4;
 
-        let end = offset.checked_add(len)
+        let end = offset
+            .checked_add(len)
             .ok_or_else(|| Error::from_reason("packed buffer: length overflow"))?;
+
         if end > data.len() {
             return Err(Error::from_reason("packed buffer: truncated item"));
         }
@@ -176,21 +203,24 @@ pub fn unpack<'a>(data: &'a [u8]) -> Result<Vec<&'a [u8]>> {
     Ok(items)
 }
 
-/// Packed batch output format for variable-length byte results.
 #[inline]
 pub fn pack_byte_results(results: &[Vec<u8>]) -> Vec<u8> {
-    let total: usize = results.iter().map(|r| 4usize.saturating_add(r.len())).sum();
+    let total: usize = results
+        .iter()
+        .map(|r| 4usize.saturating_add(r.len()))
+        .sum();
+
     let mut out = Vec::with_capacity(4usize.saturating_add(total));
     out.extend_from_slice(&(results.len() as u32).to_le_bytes());
+
     for r in results {
         out.extend_from_slice(&(r.len() as u32).to_le_bytes());
         out.extend_from_slice(r);
     }
+
     out
 }
 
-/// ⭐ Direct-write version: writes per-item results into a single pre-allocated buffer.
-/// Eliminates the intermediate `Vec<Vec<u8>>` allocation.
 #[inline]
 pub fn pack_byte_results_direct<F>(items: &[&[u8]], out: &mut Vec<u8>, f: F)
 where
@@ -199,6 +229,7 @@ where
     let n = items.len();
     out.reserve(4 + n * 16);
     out.extend_from_slice(&(n as u32).to_le_bytes());
+
     for item in items {
         let r = f(item);
         out.extend_from_slice(&(r.len() as u32).to_le_bytes());
@@ -210,8 +241,15 @@ where
 pub fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
     let mut start = 0usize;
     let mut end = bytes.len();
-    while start < end && bytes[start].is_ascii_whitespace() { start += 1; }
-    while end > start && bytes[end - 1].is_ascii_whitespace() { end -= 1; }
+
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
     &bytes[start..end]
 }
 
@@ -220,13 +258,12 @@ pub fn total_bytes(items: &[&[u8]]) -> usize {
     items.iter().map(|x| x.len()).sum()
 }
 
-/// Packed bitset: [u32 count][ceil(count/8) bytes].
 #[inline]
 pub fn validation_bitset(items: &[&[u8]], f: impl Fn(&[u8]) -> bool + Sync) -> Vec<u8> {
     validation_bitset_chunked(items, f, 4096)
 }
 
-/// Chunked bitset validator — avoids per-byte Rayon dispatch overhead.
+/// Direct-write chunked bitset validator.
 #[inline]
 pub fn validation_bitset_chunked(
     items: &[&[u8]],
@@ -235,12 +272,21 @@ pub fn validation_bitset_chunked(
 ) -> Vec<u8> {
     let count = items.len();
     let bitset_len = count.div_ceil(8);
-    let mut bits = vec![0u8; bitset_len];
+
+    let mut out = Vec::with_capacity(4 + bitset_len);
+    out.extend_from_slice(&(count as u32).to_le_bytes());
+    out.resize(4 + bitset_len, 0);
+
+    if count == 0 {
+        return out;
+    }
 
     if should_parallelize(count, total_bytes(items)) {
         use rayon::prelude::*;
+
         let chunk_items = chunk_items.max(64);
         let chunk_bytes = chunk_items.div_ceil(8);
+        let bits = &mut out[4..];
 
         bits.par_chunks_mut(chunk_bytes)
             .enumerate()
@@ -258,23 +304,27 @@ pub fn validation_bitset_chunked(
     } else {
         for (i, item) in items.iter().enumerate() {
             if f(item) {
-                bits[i >> 3] |= 1 << (i & 7);
+                out[4 + (i >> 3)] |= 1 << (i & 7);
             }
         }
     }
 
-    let mut out = Vec::with_capacity(4 + bitset_len);
-    out.extend_from_slice(&(count as u32).to_le_bytes());
-    out.extend_from_slice(&bits);
     out
 }
 
 #[inline]
-pub fn count_batch(items: &[&[u8]], f: impl Fn(&[u8]) -> bool + Sync, chunk_items: usize) -> usize {
+pub fn count_batch(
+    items: &[&[u8]],
+    f: impl Fn(&[u8]) -> bool + Sync,
+    chunk_items: usize,
+) -> usize {
     let chunk_items = chunk_items.max(64);
+
     if should_parallelize(items.len(), total_bytes(items)) {
         use rayon::prelude::*;
-        items.par_chunks(chunk_items)
+
+        items
+            .par_chunks(chunk_items)
             .map(|chunk| chunk.iter().filter(|item| f(item)).count())
             .sum()
     } else {
@@ -283,15 +333,26 @@ pub fn count_batch(items: &[&[u8]], f: impl Fn(&[u8]) -> bool + Sync, chunk_item
 }
 
 #[inline]
-pub fn sum_batch_i64(items: &[&[u8]], f: impl Fn(&[u8]) -> i64 + Sync, chunk_items: usize) -> i64 {
+pub fn sum_batch_i64(
+    items: &[&[u8]],
+    f: impl Fn(&[u8]) -> i64 + Sync,
+    chunk_items: usize,
+) -> i64 {
     let chunk_items = chunk_items.max(64);
+
     if should_parallelize(items.len(), total_bytes(items)) {
         use rayon::prelude::*;
-        items.par_chunks(chunk_items)
-            .fold(|| 0i64, |acc, chunk| chunk.iter().fold(acc, |a, item| a.saturating_add(f(item))))
+
+        items
+            .par_chunks(chunk_items)
+            .fold(|| 0i64, |acc, chunk| {
+                chunk.iter().fold(acc, |a, item| a.saturating_add(f(item)))
+            })
             .reduce(|| 0i64, |a, b| a.saturating_add(b))
     } else {
-        items.iter().fold(0i64, |acc, item| acc.saturating_add(f(item)))
+        items
+            .iter()
+            .fold(0i64, |acc, item| acc.saturating_add(f(item)))
     }
 }
 
@@ -307,11 +368,14 @@ pub fn hex_val(b: u8) -> Option<u8> {
 
 #[inline(always)]
 pub fn ensure_capacity(out: &[u8], pos: usize, additional: usize) -> Result<()> {
-    let end = pos.checked_add(additional)
+    let end = pos
+        .checked_add(additional)
         .ok_or_else(|| Error::from_reason("packed output: overflow"))?;
+
     if end > out.len() {
         return Err(Error::from_reason("packed output: buffer too small"));
     }
+
     Ok(())
 }
 
@@ -342,8 +406,6 @@ pub fn write_bytes_lowercase(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> R
     Ok(())
 }
 
-/// Conservative parallelization threshold.
-/// Avoids Rayon dispatch overhead for tiny batches.
 #[inline(always)]
 pub fn should_parallelize(items: usize, bytes: usize) -> bool {
     let threads = rayon::current_num_threads().max(1);
@@ -356,12 +418,16 @@ pub fn tokio_join_error(e: tokio::task::JoinError) -> Error {
 }
 
 #[inline(always)]
-fn ranges_overlap(a: &[u8], b: &[u8]) -> bool {
-    if a.is_empty() || b.is_empty() { return false; }
+pub fn slices_overlap(a: &[u8], b: &[u8]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+
     let a_start = a.as_ptr() as usize;
     let b_start = b.as_ptr() as usize;
     let a_end = a_start.saturating_add(a.len());
     let b_end = b_start.saturating_add(b.len());
+
     a_start < b_end && b_start < a_end
 }
 
@@ -371,9 +437,10 @@ where
     F: FnOnce(&[u8], &mut [u8]) -> Result<usize>,
 {
     let input_bytes = input.as_ref();
+
     let overlaps = {
         let output_bytes = output.as_ref();
-        ranges_overlap(input_bytes, output_bytes)
+        slices_overlap(input_bytes, output_bytes)
     };
 
     let written = if overlaps {

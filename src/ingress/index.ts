@@ -1,17 +1,7 @@
-// src/ingress/index.ts — v8: TEMPLATE TABLE + SHARED headersForResult
-//
-// Fixes from v7:
-//   1. Vary: Origin is now UNCONDITIONAL when CORS is configured (caching correctness).
-//   2. headersForResult() is exported for the 200 OK success path — the template
-//      lookup is no longer gated behind `r.terminal`.
-//   3. Security headers are unconditional (not gated on HV_JSON).
-//   4. content-type / cache-control are NOT in the template — they're the caller's
-//      responsibility, making headersForResult reusable for any response shape.
-
 import addon from "../native";
+import { IngressInputPacker } from "./packed-input";
 
 // ── Public option types ──────────────────────────────────────────
-
 export interface SecurityHeadersOptions {
   contentSecurityPolicy?: string;
   hsts?: boolean;
@@ -39,10 +29,26 @@ export interface CorsOptions {
 export interface RateLimitOptions {
   limit?: number;
   windowMs?: number;
+  maxEntries?: number;
+}
+
+export interface TrustedProxyOptions {
+  enabled?: boolean;
+  networks?: string[];
+}
+
+export interface IngressLimitsOptions {
+  maxUrlBytes?: number;
+  maxQueryBytes?: number;
+  maxCookieBytes?: number;
+  maxHeadersBytes?: number;
+  maxHeaders?: number;
+  maxPairs?: number;
 }
 
 export interface IngressOptions {
   trustProxy?: boolean;
+  trustedProxies?: TrustedProxyOptions;
   parseCookies?: boolean;
   parseQuery?: boolean;
   requireJsonBody?: boolean;
@@ -55,12 +61,13 @@ export interface IngressOptions {
   enableSecurityHeaders?: boolean;
   enableRequestIds?: boolean;
   enableBodySizeGuard?: boolean;
+  emitMetadataJson?: boolean;
   readBody?: boolean;
   outputBufferSize?: number;
+  limits?: IngressLimitsOptions;
 }
 
-// ── Output buffer layout (must match Rust) ───────────────────────
-
+// ── Output buffer layout ─────────────────────────────────────────
 const OUT_VERDICT = 0;
 const OUT_ERROR_CODE = 1;
 const OUT_STATUS = 2;
@@ -76,7 +83,6 @@ const OUT_BODY_JSON_LEN = 44;
 const OUT_DATA_START = 48;
 
 // ── Flags ────────────────────────────────────────────────────────
-
 const FLAG_HAS_COOKIES = 1 << 0;
 const FLAG_HAS_QUERY = 1 << 1;
 const FLAG_BODY_VALID_JSON = 1 << 2;
@@ -88,27 +94,26 @@ const FLAG_HTTPS = 1 << 7;
 const FLAG_TRUSTED_PROXY = 1 << 8;
 const FLAG_BODY_TRUNCATED = 1 << 9;
 
-// ── Header variant bits (must match Rust HV_* constants) ─────────
-
+// ── Header variant bits ──────────────────────────────────────────
 const HV_JSON = 1 << 0;
 const HV_CORS_SIMPLE = 1 << 1;
 const HV_CORS_PREFLIGHT = 1 << 2;
 const HV_RATE_ACTIVE = 1 << 3;
 const HV_RATE_LIMITED = 1 << 4;
-
 const HV_COUNT = 32;
 
 // ── Error codes ──────────────────────────────────────────────────
-
 const ERR_CODE_NONE = 0;
 const ERR_CODE_CORS_PREFLIGHT = 1;
 const ERR_CODE_RATE_LIMITED = 2;
 const ERR_CODE_BODY_TOO_LARGE = 3;
 const ERR_CODE_INVALID_JSON = 4;
 const ERR_CODE_SCHEMA_VALIDATION = 5;
+const ERR_CODE_BAD_REQUEST = 6;
+const ERR_CODE_REQUEST_TOO_LARGE = 7;
+const ERR_CODE_INTERNAL = 8;
 
 // ── Constants ────────────────────────────────────────────────────
-
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_OUTPUT_BUFFER_SIZE = 262_144;
 
@@ -120,7 +125,6 @@ const EMPTY_IP_BYTES = encoder.encode("0.0.0.0");
 const EMPTY_REQUEST_ID_BYTES = encoder.encode("");
 
 // ── Result types ─────────────────────────────────────────────────
-
 export interface IngressFastResult {
   readonly status: number;
   readonly verdict: number;
@@ -169,25 +173,75 @@ export interface IngressHandler {
   (req: Request, ip?: string): Promise<IngressContext>;
 }
 
-// ── Header template system ───────────────────────────────────────
-//
-// Built once at handler construction. 32 slots indexed by the 5-bit
-// header_variant from Rust. Each slot contains pre-computed static
-// header pairs. Per-request cost: one array index + Headers constructor
-// + 2–5 dynamic .set() calls.
-//
-// IMPORTANT: The template contains ONLY infrastructure headers:
-//   - Security (nosniff, frame-options, referrer-policy, CSP, etc.)
-//   - CORS Vary (unconditional when CORS configured — caching correctness)
-//   - CORS policy (credentials, expose-headers — variant-gated)
-//   - CORS preflight (allow-methods, allow-headers, max-age — variant-gated)
-//   - Rate-limit ceiling (x-ratelimit-limit — variant-gated)
-//
-// NOT in the template (caller's responsibility):
-//   - content-type (varies by handler: JSON, HTML, binary, etc.)
-//   - cache-control (varies by route policy)
-//   - Any application-specific headers
+// ── HTTP status helpers ─────────────────────────────────────────
+export function isValidResponseStatus(status: number): boolean {
+  return status === 101 || (status >= 200 && status <= 599);
+}
 
+export function statusForErrorCode(
+  errorCode: number,
+  isPreflightAllowed: boolean,
+): number {
+  if (isPreflightAllowed) return 204;
+
+  switch (errorCode) {
+    case ERR_CODE_CORS_PREFLIGHT:
+      return 403;
+    case ERR_CODE_RATE_LIMITED:
+      return 429;
+    case ERR_CODE_BODY_TOO_LARGE:
+      return 413;
+    case ERR_CODE_INVALID_JSON:
+      return 400;
+    case ERR_CODE_SCHEMA_VALIDATION:
+      return 422;
+    case ERR_CODE_BAD_REQUEST:
+      return 400;
+    case ERR_CODE_REQUEST_TOO_LARGE:
+      return 431;
+    case ERR_CODE_INTERNAL:
+      return 500;
+    default:
+      return 500;
+  }
+}
+
+export function normalizeResponseStatus(
+  status: number,
+  errorCode: number,
+  isPreflightAllowed: boolean,
+): number {
+  if (isValidResponseStatus(status)) {
+    return status;
+  }
+  return statusForErrorCode(errorCode, isPreflightAllowed);
+}
+
+export function safeTerminalStatus(
+  r: Pick<
+    IngressFastResult,
+    "status" | "errorCode" | "isPreflight" | "corsAllowed"
+  >,
+): number {
+  const preflightAllowed = r.isPreflight && r.corsAllowed;
+  if (preflightAllowed) return 204;
+
+  const status = normalizeResponseStatus(r.status, r.errorCode, false);
+
+  if (status >= 400) {
+    return status;
+  }
+
+  if (r.errorCode !== ERR_CODE_NONE) {
+    return statusForErrorCode(r.errorCode, false);
+  }
+
+  // A terminal result with no error code and a non-error status is invalid.
+  // Fail closed.
+  return 500;
+}
+
+// ── Header template system ───────────────────────────────────────
 interface HeaderTemplate {
   readonly entries: ReadonlyArray<readonly [string, string]>;
   readonly needsOriginEcho: boolean;
@@ -211,7 +265,9 @@ export interface ResponseBuildContext {
   readonly hstsValue: string | null;
 }
 
-function buildCorsStaticStrings(cors: CorsOptions | undefined): CorsStaticStrings | null {
+function buildCorsStaticStrings(
+  cors: CorsOptions | undefined,
+): CorsStaticStrings | null {
   if (!cors) return null;
 
   const isWildcard =
@@ -246,19 +302,20 @@ function buildHstsValue(sec: SecurityHeadersOptions): string | null {
 
   const maxAge = sec.hstsMaxAge ?? 31_536_000;
   let value = `max-age=${maxAge}`;
+
   if (sec.hstsIncludeSubdomains) value += "; includeSubDomains";
   if (sec.hstsPreload) value += "; preload";
+
   return value;
 }
 
-/**
- * Construct the ResponseBuildContext at handler creation time.
- * Exported so server code can build it once and pass to headersForResult.
- */
-export function buildResponseContext(options: IngressOptions): ResponseBuildContext {
+export function buildResponseContext(
+  options: IngressOptions,
+): ResponseBuildContext {
   const templates = buildHeaderTemplates(options);
   const corsStatic = buildCorsStaticStrings(options.cors);
   const hstsValue = buildHstsValue(options.security ?? {});
+
   return { templates, corsStatic, hstsValue };
 }
 
@@ -271,80 +328,93 @@ function buildHeaderTemplates(options: IngressOptions): HeaderTemplate[] {
   const hstsValue = buildHstsValue(sec);
   const hstsIsDynamic = options.https === undefined && hstsValue !== null;
 
-  // ── Static security pairs (unconditional on all responses) ──
   const securityPairs: Array<[string, string]> = [];
+
   if (securityEnabled) {
     if (sec.nosniff !== false) {
       securityPairs.push(["x-content-type-options", "nosniff"]);
     }
+
     securityPairs.push(["x-frame-options", sec.frameOptions ?? "DENY"]);
     securityPairs.push(["referrer-policy", sec.referrerPolicy ?? "no-referrer"]);
+
     if (sec.xssProtection) {
       securityPairs.push(["x-xss-protection", sec.xssProtection]);
     }
+
     if (sec.contentSecurityPolicy) {
       securityPairs.push(["content-security-policy", sec.contentSecurityPolicy]);
     }
+
     if (sec.coep) {
       securityPairs.push(["cross-origin-embedder-policy", sec.coep]);
     }
+
     if (sec.coop) {
       securityPairs.push(["cross-origin-opener-policy", sec.coop]);
     }
+
     if (sec.corp) {
       securityPairs.push(["cross-origin-resource-policy", sec.corp]);
     }
-    // HSTS is static only when https is fixed true at config time.
+
     if (hstsValue !== null && options.https === true) {
       securityPairs.push(["strict-transport-security", hstsValue]);
     }
   }
 
-  // ── CORS Vary pairs: UNCONDITIONAL when CORS is configured ──
-  // RFC 7231 §7.1.4: Vary must be present whenever the response *could*
-  // differ based on a request header, regardless of whether THIS request
-  // sent that header. A shared cache storing a no-Origin response without
-  // Vary: Origin may later serve it to a cross-origin client, silently
-  // breaking CORS. This is config-time, not request-time.
   const corsVaryPairs: Array<[string, string]> = [];
+
   if (corsStatic) {
     corsVaryPairs.push(["vary", "Origin"]);
+
     if (!corsStatic.isWildcard) {
       corsVaryPairs.push(["vary", "Access-Control-Request-Method"]);
       corsVaryPairs.push(["vary", "Access-Control-Request-Headers"]);
     }
   }
 
-  // ── CORS policy pairs (variant-gated: only when origin was evaluated) ──
   const corsPolicyPairs: Array<[string, string]> = [];
+
   if (corsStatic) {
     if (corsStatic.credentials) {
       corsPolicyPairs.push(["access-control-allow-credentials", "true"]);
     }
+
     if (corsStatic.exposeHeadersJoined) {
-      corsPolicyPairs.push(["access-control-expose-headers", corsStatic.exposeHeadersJoined]);
+      corsPolicyPairs.push([
+        "access-control-expose-headers",
+        corsStatic.exposeHeadersJoined,
+      ]);
     }
   }
 
-  // ── CORS preflight pairs (variant-gated: only on preflight responses) ──
   const corsPreflightPairs: Array<[string, string]> = [];
+
   if (corsStatic) {
-    corsPreflightPairs.push(["access-control-allow-methods", corsStatic.allowMethodsJoined]);
+    corsPreflightPairs.push([
+      "access-control-allow-methods",
+      corsStatic.allowMethodsJoined,
+    ]);
+
     if (corsStatic.allowHeadersJoined) {
-      corsPreflightPairs.push(["access-control-allow-headers", corsStatic.allowHeadersJoined]);
+      corsPreflightPairs.push([
+        "access-control-allow-headers",
+        corsStatic.allowHeadersJoined,
+      ]);
     }
+
     if (corsStatic.maxAgeString) {
       corsPreflightPairs.push(["access-control-max-age", corsStatic.maxAgeString]);
     }
   }
 
-  // ── Rate-limit ceiling (variant-gated) ──
   const rateLimitCeiling: Array<[string, string]> = [];
+
   if (options.rateLimit?.limit && options.rateLimit.limit > 0) {
     rateLimitCeiling.push(["x-ratelimit-limit", String(options.rateLimit.limit)]);
   }
 
-  // ── Build all 32 slots ──
   for (let variant = 0; variant < HV_COUNT; variant++) {
     const isCorsSimple = (variant & HV_CORS_SIMPLE) !== 0;
     const isCorsPreflight = (variant & HV_CORS_PREFLIGHT) !== 0;
@@ -353,33 +423,28 @@ function buildHeaderTemplates(options: IngressOptions): HeaderTemplate[] {
 
     const entries: Array<[string, string]> = [];
 
-    // Security headers: unconditional on ALL responses.
     if (securityEnabled) {
       for (let i = 0; i < securityPairs.length; i++) {
         entries.push(securityPairs[i]!);
       }
     }
 
-    // CORS Vary: unconditional when CORS is configured (caching correctness).
     for (let i = 0; i < corsVaryPairs.length; i++) {
       entries.push(corsVaryPairs[i]!);
     }
 
-    // CORS policy headers: only when Rust evaluated an origin this request.
     if (isCorsSimple || isCorsPreflight) {
       for (let i = 0; i < corsPolicyPairs.length; i++) {
         entries.push(corsPolicyPairs[i]!);
       }
     }
 
-    // CORS preflight headers: only on preflight responses.
     if (isCorsPreflight) {
       for (let i = 0; i < corsPreflightPairs.length; i++) {
         entries.push(corsPreflightPairs[i]!);
       }
     }
 
-    // Rate-limit ceiling.
     if (isRateActive) {
       for (let i = 0; i < rateLimitCeiling.length; i++) {
         entries.push(rateLimitCeiling[i]!);
@@ -398,45 +463,28 @@ function buildHeaderTemplates(options: IngressOptions): HeaderTemplate[] {
   return templates;
 }
 
-// ── Shared header builder (exported for success-path use) ────────
-//
-// This is the single source of truth for response header construction.
-// Call it for BOTH terminal (error/preflight) and non-terminal (200 OK)
-// responses. The caller then adds body-specific headers (content-type,
-// cache-control, etag, etc.) as appropriate for their handler.
-//
-// Usage in a server handler:
-//
-//   const headers = headersForResult(ctx, result, req, requestId);
-//   headers.set("content-type", "application/json; charset=utf-8");
-//   return new Response(body, { status: 200, headers });
-
 export function headersForResult(
   ctx: ResponseBuildContext,
   r: IngressFastResult,
   req: Request,
   requestId: string,
 ): Headers {
-  const template = ctx.templates[r.headerVariant & 0x1f]!;
+  const template =
+    ctx.templates[r.headerVariant & 0x1f] ?? ctx.templates[0]!;
 
-  // Bulk-init from pre-built static pairs. Single constructor call.
-  const headers = new Headers(template.entries as [string, string][]);
+  const headers = new Headers();
 
-  // ── Dynamic: request ID ──
+  for (const [name, value] of template.entries) {
+    headers.append(name, value);
+  }
+
   if (requestId) {
     headers.set("x-request-id", requestId);
   }
 
-  // ── Dynamic: CORS origin echo ──
-  // NOTE: `r.corsAllowed` gating here is deliberate. Rust sets
-  // HV_CORS_PREFLIGHT on the variant regardless of allow/deny (so the
-  // template slot includes preflight policy headers), but we must NOT
-  // echo Access-Control-Allow-Origin on a *forbidden* preflight — that
-  // would tell the browser the cross-origin request is permitted when
-  // it isn't. The variant bit says "CORS was evaluated"; corsAllowed
-  // says "the origin passed policy". Both are needed.
   if (template.needsOriginEcho && r.corsAllowed && ctx.corsStatic) {
     const origin = req.headers.get("origin");
+
     if (origin) {
       if (ctx.corsStatic.isWildcard && !ctx.corsStatic.credentials) {
         headers.set("access-control-allow-origin", "*");
@@ -446,28 +494,27 @@ export function headersForResult(
     }
   }
 
-  // ── Dynamic: rate-limit remaining/reset ──
   if (template.needsRateDynamic) {
     headers.set("x-ratelimit-remaining", String(Math.max(0, r.rateRemaining)));
+
     if (r.rateResetMs > 0) {
       headers.set("x-ratelimit-reset", String(Math.ceil(r.rateResetMs / 1000)));
     }
   }
 
-  // ── Dynamic: retry-after (only on actual 429) ──
   if (template.needsRetryAfter && r.retryAfterMs > 0) {
-    headers.set("retry-after", String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))));
+    headers.set(
+      "retry-after",
+      String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))),
+    );
   }
 
-  // ── Dynamic: HSTS (only when https is auto-detected from proxy headers) ──
   if (template.needsDynamicHsts && r.https && ctx.hstsValue) {
     headers.set("strict-transport-security", ctx.hstsValue);
   }
 
   return headers;
 }
-
-// ── Terminal response builder (internal) ─────────────────────────
 
 function buildTerminalResponse(
   ctx: ResponseBuildContext,
@@ -477,34 +524,34 @@ function buildTerminalResponse(
 ): Response | null {
   if (!r.terminal) return null;
 
+  const preflightAllowed = r.isPreflight && r.corsAllowed;
   const headers = headersForResult(ctx, r, req, requestId);
 
-  // Preflight 204: no body, no content-type.
-  if (r.isPreflight && r.corsAllowed) {
+  if (preflightAllowed) {
     return new Response(null, { status: 204, headers });
   }
 
-  // Error body: JSON envelope.
+  const status = safeTerminalStatus(r);
+
   headers.set("content-type", "application/json; charset=utf-8");
   headers.set("cache-control", "no-store");
 
   const payload = JSON.stringify({
     error: {
       code: errorCodeName(r.errorCode),
-      status: r.status,
-      message: errorMessage(r.status, r.errorCode),
+      status,
+      message: errorMessage(status, r.errorCode),
       requestId: requestId || undefined,
     },
   });
 
   return new Response(payload, {
-    status: r.status >= 400 ? r.status : 500,
+    status,
     headers,
   });
 }
 
 // ── Method mapping ───────────────────────────────────────────────
-
 const METHOD_KIND: Record<string, number> = {
   GET: 0,
   HEAD: 1,
@@ -516,7 +563,6 @@ const METHOD_KIND: Record<string, number> = {
 };
 
 // ── Header packing ───────────────────────────────────────────────
-
 const HEADER_BUF_SIZE = 8192;
 
 let headerBuf = new Uint8Array(HEADER_BUF_SIZE);
@@ -540,10 +586,9 @@ interface HeaderPlan {
 }
 
 function packHeaders(req: Request, plan: HeaderPlan): Uint8Array {
-  let pos = 0;
-  pos += 2;
-
+  let pos = 2;
   let count = 0;
+
   const headers = req.headers;
 
   if (plan.cookie) {
@@ -602,7 +647,11 @@ function packHeaders(req: Request, plan: HeaderPlan): Uint8Array {
   return headerBuf.subarray(0, pos);
 }
 
-function writeHeaderPair(pos: number, name: Uint8Array, value: string): number {
+function writeHeaderPair(
+  pos: number,
+  name: Uint8Array,
+  value: string,
+): number {
   const needed = 2 + name.length + 4 + value.length * 3;
 
   if (pos + needed > headerBuf.length) {
@@ -629,7 +678,6 @@ function writeHeaderPair(pos: number, name: Uint8Array, value: string): number {
 }
 
 // ── Body reading ─────────────────────────────────────────────────
-
 const bodyCache = new WeakMap<Request, Promise<Uint8Array>>();
 
 function readRequestBodyOnce(
@@ -661,6 +709,7 @@ async function readBodyWithLimit(
   guard: boolean,
 ): Promise<Uint8Array> {
   const body = req.body;
+
   if (!body) {
     return EMPTY_BODY;
   }
@@ -671,6 +720,7 @@ async function readBodyWithLimit(
 
   for (;;) {
     const { done, value } = await reader.read();
+
     if (done) break;
     if (!value) continue;
 
@@ -678,8 +728,10 @@ async function readBodyWithLimit(
 
     if (guard && total > maxBytes) {
       await reader.cancel().catch(() => {});
+
       const err = new Error("BODY_TOO_LARGE");
       (err as any).code = "BODY_TOO_LARGE";
+
       throw err;
     }
 
@@ -689,7 +741,10 @@ async function readBodyWithLimit(
   return concatUint8Arrays(chunks, total);
 }
 
-function concatUint8Arrays(chunks: Uint8Array[], total: number): Uint8Array {
+function concatUint8Arrays(
+  chunks: Uint8Array[],
+  total: number,
+): Uint8Array {
   if (chunks.length === 0) return EMPTY_BODY;
   if (chunks.length === 1) return chunks[0]!;
 
@@ -705,12 +760,11 @@ function concatUint8Arrays(chunks: Uint8Array[], total: number): Uint8Array {
 }
 
 // ── Mutable result ───────────────────────────────────────────────
-
 class MutableIngressResult implements IngressFastResult {
-  status = 0;
-  verdict = 0;
+  status = 500;
+  verdict = 1;
   flags = 0;
-  errorCode = 0;
+  errorCode = ERR_CODE_INTERNAL;
   terminal = true;
   ok = false;
   https = false;
@@ -734,7 +788,7 @@ class MutableIngressResult implements IngressFastResult {
   private _cookiesJson = "{}";
   private _queryJson = "{}";
   private _bodyJsonLen = 0;
-  private _bodyJsonStart = 0;
+  private _bodyJsonStart = OUT_DATA_START;
   private _buf: Uint8Array = EMPTY_BODY;
 
   refresh(buf: Uint8Array, body: Uint8Array, requestId: string): void {
@@ -742,13 +796,48 @@ class MutableIngressResult implements IngressFastResult {
 
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
 
-    this.verdict = dv.getUint8(OUT_VERDICT);
-    this.errorCode = dv.getUint8(OUT_ERROR_CODE);
-    this.status = dv.getUint16(OUT_STATUS, true);
-    this.flags = dv.getUint32(OUT_FLAGS, true);
+    const rawVerdict = dv.getUint8(OUT_VERDICT);
+    const rawErrorCode = dv.getUint8(OUT_ERROR_CODE);
+    const rawStatus = dv.getUint16(OUT_STATUS, true);
+    const flags = dv.getUint32(OUT_FLAGS, true);
 
-    this.rateLimit = dv.getUint32(OUT_RATE_LIMIT, true);
-    this.rateRemaining = dv.getUint32(OUT_RATE_REMAINING, true);
+    const rateLimit = dv.getUint32(OUT_RATE_LIMIT, true);
+    const rateRemaining = dv.getUint32(OUT_RATE_REMAINING, true);
+
+    const cookiesJsonLen = dv.getUint32(OUT_COOKIES_JSON_LEN, true);
+    const queryJsonLen = dv.getUint32(OUT_QUERY_JSON_LEN, true);
+
+    const headerVariant = dv.getUint8(OUT_HEADER_VARIANT);
+    const bodyJsonLen = dv.getUint32(OUT_BODY_JSON_LEN, true);
+
+    const preflightAllowed =
+      (flags & FLAG_IS_PREFLIGHT) !== 0 && (flags & FLAG_CORS_ALLOWED) !== 0;
+
+    const normalizedStatus = normalizeResponseStatus(
+      rawStatus,
+      rawErrorCode,
+      preflightAllowed,
+    );
+
+    const uninitialized =
+      rawVerdict === 0 &&
+      rawErrorCode === 0 &&
+      rawStatus === 0 &&
+      flags === 0;
+
+    if (uninitialized) {
+      this.status = 500;
+      this.verdict = 1;
+      this.errorCode = ERR_CODE_INTERNAL;
+    } else {
+      this.status = normalizedStatus;
+      this.verdict = rawVerdict;
+      this.errorCode = rawErrorCode;
+    }
+
+    this.flags = flags;
+    this.rateLimit = rateLimit;
+    this.rateRemaining = rateRemaining;
 
     if (this.rateLimit > 0 || (this.flags & FLAG_RATE_LIMITED) !== 0) {
       this.rateResetMs = Number(dv.getBigUint64(OUT_RATE_RESET, true));
@@ -758,14 +847,11 @@ class MutableIngressResult implements IngressFastResult {
       this.retryAfterMs = 0;
     }
 
-    const cookiesJsonLen = dv.getUint32(OUT_COOKIES_JSON_LEN, true);
-    const queryJsonLen = dv.getUint32(OUT_QUERY_JSON_LEN, true);
-
-    this.headerVariant = dv.getUint8(OUT_HEADER_VARIANT);
-    this._bodyJsonLen = dv.getUint32(OUT_BODY_JSON_LEN, true);
+    this.headerVariant = headerVariant;
+    this._bodyJsonLen = bodyJsonLen;
 
     this.terminal = this.verdict !== 0 || this.status >= 400;
-    this.ok = this.verdict === 0 && this.status < 400;
+    this.ok = this.verdict === 0 && this.status >= 200 && this.status < 400;
 
     this.https = (this.flags & FLAG_HTTPS) !== 0;
     this.trustedProxy = (this.flags & FLAG_TRUSTED_PROXY) !== 0;
@@ -776,34 +862,51 @@ class MutableIngressResult implements IngressFastResult {
     this.corsAllowed = (this.flags & FLAG_CORS_ALLOWED) !== 0;
     this.isPreflight = (this.flags & FLAG_IS_PREFLIGHT) !== 0;
     this.rateLimited = (this.flags & FLAG_RATE_LIMITED) !== 0;
-    this.bodyTruncated = (this.flags & FLAG_BODY_TRUNCATED) !== 0;
 
-    if (cookiesJsonLen > 0) {
+    const safeCookiesLen =
+      cookiesJsonLen > 0 && OUT_DATA_START + cookiesJsonLen <= buf.byteLength
+        ? cookiesJsonLen
+        : 0;
+
+    const queryStart = OUT_DATA_START + safeCookiesLen;
+
+    const safeQueryLen =
+      queryJsonLen > 0 && queryStart + queryJsonLen <= buf.byteLength
+        ? queryJsonLen
+        : 0;
+
+    if (safeCookiesLen > 0) {
       this._cookiesJson = decoder.decode(
-        buf.subarray(OUT_DATA_START, OUT_DATA_START + cookiesJsonLen),
+        buf.subarray(OUT_DATA_START, OUT_DATA_START + safeCookiesLen),
       );
     } else {
       this._cookiesJson = "{}";
     }
 
-    const qStart = OUT_DATA_START + cookiesJsonLen;
-
-    if (queryJsonLen > 0) {
-      this._queryJson = decoder.decode(buf.subarray(qStart, qStart + queryJsonLen));
+    if (safeQueryLen > 0) {
+      this._queryJson = decoder.decode(
+        buf.subarray(queryStart, queryStart + safeQueryLen),
+      );
     } else {
       this._queryJson = "{}";
     }
 
-    this._bodyJsonStart = qStart + queryJsonLen;
+    this._bodyJsonStart = queryStart + safeQueryLen;
+
     this.body = body;
     this.requestId = requestId;
+
+    this.bodyTruncated =
+      (this.flags & FLAG_BODY_TRUNCATED) !== 0 ||
+      safeCookiesLen !== cookiesJsonLen ||
+      safeQueryLen !== queryJsonLen;
   }
 
   invalidate(): void {
-    this.status = 0;
-    this.verdict = 0;
+    this.status = 500;
+    this.verdict = 1;
     this.flags = 0;
-    this.errorCode = 0;
+    this.errorCode = ERR_CODE_INTERNAL;
     this.terminal = true;
     this.ok = false;
     this.https = false;
@@ -827,8 +930,13 @@ class MutableIngressResult implements IngressFastResult {
     this._cookiesJson = "{}";
     this._queryJson = "{}";
     this._bodyJsonLen = 0;
-    this._bodyJsonStart = 0;
+    this._bodyJsonStart = OUT_DATA_START;
     this._buf = EMPTY_BODY;
+  }
+
+  setInternalError(requestId: string): void {
+    this.invalidate();
+    this.requestId = requestId;
   }
 
   cookiesJson(): string {
@@ -841,18 +949,29 @@ class MutableIngressResult implements IngressFastResult {
 
   bodyJson(): Uint8Array {
     if (this._bodyJsonLen === 0) return EMPTY_BODY;
-    return this._buf.subarray(
-      this._bodyJsonStart,
-      this._bodyJsonStart + this._bodyJsonLen,
-    );
+
+    const end = this._bodyJsonStart + this._bodyJsonLen;
+
+    if (end > this._buf.byteLength) {
+      return EMPTY_BODY;
+    }
+
+    return this._buf.subarray(this._bodyJsonStart, end);
   }
 }
 
 // ── Sync factory ─────────────────────────────────────────────────
-
-export function createIngressSync(options: IngressOptions = {}): SyncIngressHandler {
+export function createIngressSync(
+  options: IngressOptions = {},
+): SyncIngressHandler {
   const rustOptions = {
     trustProxy: options.trustProxy,
+    trustedProxies: options.trustedProxies
+      ? {
+          enabled: options.trustedProxies.enabled,
+          networks: options.trustedProxies.networks,
+        }
+      : undefined,
     parseCookies: options.parseCookies,
     parseQuery: options.parseQuery,
     requireJsonBody: options.requireJsonBody,
@@ -862,53 +981,87 @@ export function createIngressSync(options: IngressOptions = {}): SyncIngressHand
           allowOrigin: options.cors.allowOrigin,
           allowMethods: options.cors.allowMethods,
           allowHeaders: options.cors.allowHeaders,
+          exposeHeaders: options.cors.exposeHeaders,
           allowCredentials: options.cors.allowCredentials,
+          maxAge: options.cors.maxAge,
         }
       : undefined,
-    rateLimit: options.rateLimit,
+    rateLimit: options.rateLimit
+      ? {
+          limit: options.rateLimit.limit,
+          windowMs: options.rateLimit.windowMs,
+          maxEntries: options.rateLimit.maxEntries,
+        }
+      : undefined,
     https: options.https,
     maxBodyBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
     enableBodySizeGuard: options.enableBodySizeGuard !== false,
+    emitMetadataJson: options.emitMetadataJson,
+    limits: options.limits
+      ? {
+          maxUrlBytes: options.limits.maxUrlBytes,
+          maxQueryBytes: options.limits.maxQueryBytes,
+          maxCookieBytes: options.limits.maxCookieBytes,
+          maxHeadersBytes: options.limits.maxHeadersBytes,
+          maxHeaders: options.limits.maxHeaders,
+          maxPairs: options.limits.maxPairs,
+        }
+      : undefined,
   };
 
   const handler = new (addon as any).Ingress(rustOptions);
 
-  if (typeof handler.handleRequest !== "function") {
-    throw new Error("Native Ingress handleRequest() is unavailable");
+  if (typeof handler.handleRequestPacked !== "function") {
+    throw new Error("Native Ingress handleRequestPacked() is unavailable");
   }
+
+  const proxyEnabled =
+    options.trustProxy === true || options.trustedProxies?.enabled === true;
 
   const headerPlan: HeaderPlan = {
     cookie: options.parseCookies === true,
     cors: options.cors != null,
-    proxy: options.trustProxy === true,
-    proto: options.trustProxy === true && options.https === undefined,
+    proxy: proxyEnabled,
+    proto: proxyEnabled && options.https === undefined,
   };
 
   const outputBuf = new Uint8Array(
-    Math.max(OUT_DATA_START, options.outputBufferSize ?? DEFAULT_OUTPUT_BUFFER_SIZE),
+    Math.max(
+      OUT_DATA_START,
+      options.outputBufferSize ?? DEFAULT_OUTPUT_BUFFER_SIZE,
+    ),
   );
 
+  const inputPacker = new IngressInputPacker();
   const result = new MutableIngressResult();
 
   return {
     run(req, ip, body, requestId, fn) {
-      const methodKind = METHOD_KIND[req.method] ?? 7;
-      const urlBytes = encoder.encode(req.url);
-      const ipBytes = ip && ip.length > 0 ? encoder.encode(ip) : EMPTY_IP_BYTES;
-      const ridBytes = requestId ? encoder.encode(requestId) : EMPTY_REQUEST_ID_BYTES;
-      const headers = packHeaders(req, headerPlan);
+      try {
+        const methodKind = METHOD_KIND[req.method] ?? 7;
 
-      handler.handleRequest(
-        methodKind,
-        urlBytes,
-        ipBytes,
-        ridBytes,
-        headers,
-        body,
-        outputBuf,
-      );
+        const urlBytes = encoder.encode(req.url);
+        const ipBytes =
+          ip && ip.length > 0 ? encoder.encode(ip) : EMPTY_IP_BYTES;
+        const ridBytes = requestId
+          ? encoder.encode(requestId)
+          : EMPTY_REQUEST_ID_BYTES;
 
-      result.refresh(outputBuf, body ?? EMPTY_BODY, requestId);
+        const headers = packHeaders(req, headerPlan);
+
+        const input = inputPacker.pack(
+          methodKind,
+          urlBytes,
+          ipBytes,
+          ridBytes,
+          headers,
+        );
+
+        handler.handleRequestPacked(input, body, outputBuf);
+        result.refresh(outputBuf, body ?? EMPTY_BODY, requestId);
+      } catch {
+        result.setInternalError(requestId);
+      }
 
       try {
         const out = fn(result);
@@ -930,7 +1083,6 @@ export function createIngressSync(options: IngressOptions = {}): SyncIngressHand
 }
 
 // ── Async factory ────────────────────────────────────────────────
-
 export function createIngress(options: IngressOptions = {}): IngressHandler {
   const sync = createIngressSync(options);
 
@@ -943,49 +1095,74 @@ export function createIngress(options: IngressOptions = {}): IngressHandler {
     options.schema != null ||
     (options.readBody !== false && guard);
 
-  // Construction-time: build template table + hoist CORS strings.
   const responseCtx = buildResponseContext(options);
 
-  return async function ingressAsync(req: Request, ip?: string): Promise<IngressContext> {
-    // UUID format retained for log-correlation tooling compatibility.
-    const requestId = options.enableRequestIds === false ? "" : newRequestId();
+  return async function ingressAsync(
+    req: Request,
+    ip?: string,
+  ): Promise<IngressContext> {
+    const requestId =
+      options.enableRequestIds === false ? "" : newRequestId();
 
-    // Early content-length guard.
-    if (guard) {
-      const rawLen = req.headers.get("content-length");
-      const contentLength = Number(rawLen ?? "0");
+    try {
+      if (guard) {
+        const rawLen = req.headers.get("content-length");
+        const contentLength = Number(rawLen ?? "0");
 
-      if (Number.isFinite(contentLength) && contentLength > max) {
-        return syntheticContext(req, requestId, options, responseCtx, 413, ERR_CODE_BODY_TOO_LARGE);
-      }
-    }
-
-    let body: Uint8Array | null = null;
-
-    if (wantsBody && req.body !== null) {
-      try {
-        body = await readRequestBodyOnce(req, max, guard);
-      } catch (err) {
-        if ((err as any)?.code === "BODY_TOO_LARGE") {
-          return syntheticContext(req, requestId, options, responseCtx, 413, ERR_CODE_BODY_TOO_LARGE);
+        if (Number.isFinite(contentLength) && contentLength > max) {
+          return syntheticContext(
+            req,
+            requestId,
+            options,
+            responseCtx,
+            413,
+            ERR_CODE_BODY_TOO_LARGE,
+          );
         }
-        throw err;
       }
-    }
 
-    return sync.run(req, ip, body, requestId, (r) => {
-      const snapshot = snapshotResult(r);
-      const response = buildTerminalResponse(responseCtx, snapshot, req, requestId);
-      return {
-        ...snapshot,
-        response,
-      };
-    });
+      let body: Uint8Array | null = null;
+
+      if (wantsBody && req.body !== null) {
+        try {
+          body = await readRequestBodyOnce(req, max, guard);
+        } catch (err) {
+          if ((err as any)?.code === "BODY_TOO_LARGE") {
+            return syntheticContext(
+              req,
+              requestId,
+              options,
+              responseCtx,
+              413,
+              ERR_CODE_BODY_TOO_LARGE,
+            );
+          }
+
+          throw err;
+        }
+      }
+
+      return sync.run(req, ip, body, requestId, (r) => {
+        const snapshot = snapshotResult(r);
+        const response = buildTerminalResponse(
+          responseCtx,
+          snapshot,
+          req,
+          requestId,
+        );
+
+        return {
+          ...snapshot,
+          response,
+        };
+      });
+    } catch {
+      return internalContext(req, requestId, options, responseCtx);
+    }
   };
 }
 
 // ── Result helpers ───────────────────────────────────────────────
-
 function snapshotResult(r: IngressFastResult): IngressFastResult {
   const cookies = r.cookiesJson();
   const query = r.queryJson();
@@ -1016,20 +1193,13 @@ function snapshotResult(r: IngressFastResult): IngressFastResult {
     headerVariant: r.headerVariant,
     requestId: r.requestId,
     bodyTruncated: r.bodyTruncated,
+
     cookiesJson: () => cookies,
     queryJson: () => query,
     bodyJson: () => bodyJson,
   };
 }
 
-/**
- * Synthetic context for errors detected before the Rust call.
- *
- * CORS determination here is intentionally simplified (origin-match only,
- * no method/header validation). The real CORS decision always comes from
- * Rust's CorsEngine::evaluate. This helper is only reachable on the
- * pre-body-read 413 path where no preflight semantics apply.
- */
 function syntheticContext(
   req: Request,
   requestId: string,
@@ -1049,7 +1219,9 @@ function syntheticContext(
     terminal: true,
     ok: false,
     https: options.https === true,
-    trustedProxy: options.trustProxy === true,
+    trustedProxy:
+      options.trustProxy === true ||
+      options.trustedProxies?.enabled === true,
     hasCookies: false,
     hasQuery: false,
     bodyValidJson: false,
@@ -1065,6 +1237,7 @@ function syntheticContext(
     headerVariant: variant,
     requestId,
     bodyTruncated: false,
+
     cookiesJson: () => "{}",
     queryJson: () => "{}",
     bodyJson: () => EMPTY_BODY,
@@ -1076,10 +1249,30 @@ function syntheticContext(
   };
 }
 
+function internalContext(
+  req: Request,
+  requestId: string,
+  options: IngressOptions,
+  responseCtx: ResponseBuildContext,
+): IngressContext {
+  return syntheticContext(
+    req,
+    requestId,
+    options,
+    responseCtx,
+    500,
+    ERR_CODE_INTERNAL,
+  );
+}
+
 function newRequestId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
+
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
@@ -1104,7 +1297,6 @@ function staticCorsAllowed(options: IngressOptions, req: Request): boolean {
 }
 
 // ── Error code helpers ───────────────────────────────────────────
-
 function errorCodeName(code: number): string {
   switch (code) {
     case ERR_CODE_NONE:
@@ -1119,6 +1311,12 @@ function errorCodeName(code: number): string {
       return "invalid_json";
     case ERR_CODE_SCHEMA_VALIDATION:
       return "schema_validation";
+    case ERR_CODE_BAD_REQUEST:
+      return "bad_request";
+    case ERR_CODE_REQUEST_TOO_LARGE:
+      return "request_too_large";
+    case ERR_CODE_INTERNAL:
+      return "internal";
     default:
       return "unknown";
   }
@@ -1136,6 +1334,12 @@ function errorMessage(status: number, code: number): string {
       return "Invalid JSON body";
     case ERR_CODE_SCHEMA_VALIDATION:
       return "JSON schema validation failed";
+    case ERR_CODE_BAD_REQUEST:
+      return "Bad request";
+    case ERR_CODE_REQUEST_TOO_LARGE:
+      return "Request too large";
+    case ERR_CODE_INTERNAL:
+      return "Internal server error";
     default:
       return status >= 500 ? "Internal server error" : "Request rejected";
   }

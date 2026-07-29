@@ -1,6 +1,6 @@
 [package]
 name = "rust_bench"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 
 [lib]
@@ -11,18 +11,17 @@ path = "rust/lib.rs"
 [dependencies]
 napi = { version = "3", features = ["napi10", "tokio_rt"] }
 napi-derive = "3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sonic-rs = "0.5"
+
 jsonschema = "0.48"
 json-patch = "4"
-
 aws-lc-rs = "1"
 base64 = "0.23"
 crc32fast = "1"
-
 httparse = "1"
 mime_guess = "2"
 phf = { version = "0.14", features = ["macros"] }
@@ -31,26 +30,22 @@ memchr = "2"
 simdutf8 = "0.1"
 email_address = "0.2"
 fast_chemail = { version = "0.9", optional = true }
-
 rayon = "1"
 mimalloc = { version = "0.1", features = ["override", "local_dynamic_tls"] }
 core_affinity = "0.8"
-parking_lot = "0.12.5"
-itoa = "1.0.18"
-arrayvec = "0.7.8"
-hashbrown = "0.17.1"
-quanta = "0.12.6"
-fastrand = { version = "2", optional = true }
-smallvec = "1.15.2"
-xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+
+parking_lot = "0.12"
+hashbrown = "0.17"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+ipnet = "2"
+lru = "0.12"
 
 [build-dependencies]
 napi-build = "2"
 
 [features]
-default = ["fast-email", "fast-ids"]
+default = ["fast-email"]
 fast-email = ["dep:fast_chemail"]
-fast-ids = ["dep:fastrand"]
 
 [profile.release]
 opt-level = 3
@@ -63,15 +58,15 @@ overflow-checks = false
 debug-assertions = false
 panic = "abort"
 
-# Optimize dependencies as hard as the main crate
 [profile.release.package."*"]
 opt-level = 3
 codegen-units = 1
 
-# Pin heavy deps tighter
 [profile.release.package.sonic-rs]
 opt-level = 3
+
 [profile.release.package.aws-lc-rs]
 opt-level = 3
+
 [profile.release.package.jsonschema]
 opt-level = 3
