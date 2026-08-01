@@ -40,7 +40,6 @@
         "bench:http:all-heavy": "bun run bench/run-bench.ts 1"
     },
     "dependencies": {
-        "cookie-es": "^3.1.1",
         "crc-32": "^1.2.2",
         "fast-json-patch": "^3.1.1",
         "mime-types": "^3.0.2",

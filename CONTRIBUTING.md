@@ -57,7 +57,7 @@ bun run check
 │   ├── *.rs       # One module per functional area
 │   └── ...
 ├── src/           # TypeScript source
-│   ├── ingress/   # HTTP ingress pipeline
+│   ├── ingress/   # HTTP ingress pipeline (fast.ts = packed, handlers.ts = pre-baked)
 │   ├── native/    # Native addon loader
 │   ├── rust-ffi/  # Raw Rust FFI bindings
 │   ├── baseline/  # JS baseline impls (benchmarks)
@@ -200,6 +200,7 @@ Every public API element must have documentation:
 - **README.md**: Must be kept in sync with the public API
 - **docs/ARCHITECTURE.md**: Update when adding new modules or significant changes
 - **docs/INGRESS.md**: Update when modifying the ingress pipeline
+- **AGENTS.md**: AI agent instructions (commands, constraints, gotchas) — keep in sync when build/test commands or architecture change
 
 ## Pull Request Process
 

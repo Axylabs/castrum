@@ -51,6 +51,192 @@ Bun.serve({
 
 ---
 
+## Pre-Baked Handlers (recommended for servers)
+
+The fastest way to consume ingress in **any** system. `src/ingress/handlers.ts`
+wraps the optimized native pipeline (`Ingress.handleRequestFullSync`) and
+provides ready-made route handlers, response builders, and a `Bun.serve`
+builder — no need to hand-build responses, header templates, or error bodies.
+
+All of these are exported from the package root and are **re-exported from the
+benchmark server** (`bench/servers/ingress-server.ts`), which itself is built
+entirely from them:
+
+```ts
+import { createIngressHandler, createIngressServer } from "bun-rust-practical";
+
+const ingress = createIngressHandler({
+  parseCookies: true,
+  parseQuery: true,
+  cors: { allowOrigin: ["https://app.example.com"] },
+  rateLimit: { limit: 1000, windowMs: 60_000 },
+});
+
+createIngressServer({
+  port: 3000,
+  routes: {
+    "/health":    { read: ingress },                  // GET + HEAD
+    "/api/users": { read: ingress, write: ingress },  // + POST/PUT/PATCH (+OPTIONS)
+    "/api/echo":  { echo: ingress },                  // POST echo
+  },
+});
+```
+
+> **Wire format** (a contract — `bench/load.ts` depends on it):
+> - Success: the body is Rust-generated `{"ok":true,"requestId":"...",...}`.
+> - Errors: `{"ok":false,"error":{"code":"...","message":"..."}}` (rate limits
+>   also include `"retry_after_ms"`).
+> - Rate-limit headers use `ratelimit-limit/-remaining/-reset` (not
+>   `x-ratelimit-*`). This differs from `createIngressFast`/`createIngress`,
+>   which emit `{"error":{code,status,message,requestId}}`. Do not mix the two.
+
+### `createIngressHandler(options, runtime?)`
+
+Creates an optimized ingress handler (uses `handleRequestFullSync`). `options`
+are the same native options as `createIngressFast` (`trustProxy`, `https`,
+`maxBodyBytes`, `enableBodySizeGuard`, `emitMetadataJson`, `cors`, `rateLimit`,
+`parseCookies`, `parseQuery`, `schema`, `trustedProxies`, …).
+
+`runtime` configures behavior that is not sent to Rust:
+
+| Runtime option | Type | Default | Description |
+|----------------|------|---------|-------------|
+| `emitRequestIdHeader` | `boolean` | `false` | Echo `x-request-id` on responses |
+| `enableSecurityHeaders` | `boolean` | `true` | Emit the configured security headers |
+| `securityHeaders` | `[string,string][]` | — | Ordered security header pairs (names lowercased) |
+| `outputBufferSize` | `number` | `131072` | Native output buffer size |
+| `onResponse` | `(req, result, status, requestId) => void` | — | Hook invoked after a `Response` is produced (metrics/logging) |
+
+Returns an `OptimizedIngressHandler`:
+
+```ts
+interface OptimizedIngressHandler {
+  // Run one request through the pipeline. The callback MUST be synchronous;
+  // the result is invalidated after it returns.
+  run<T>(req, ip, body, fn: (result: BakedIngressResult, ctx: BakedContext) => T): T;
+
+  // Pre-baked response builders, bound to this handler's config:
+  responseHeaders(variant, requestIdHeader, origin, rateRemaining?, rateResetSecs?, retryAfterSecs?): [string,string][];
+  terminalHeaders(variant, ctx, result): [string,string][];
+  terminalResponse(req, result, ctx): Response | null;   // null when not terminal
+  errorResponse(req, result, status, code, message, ctx): Response;
+  internalErrorResponse(ctx, result?): Response;
+  withContentType(headers, contentType): [string,string][];
+}
+```
+
+### Route-handler factories
+
+Each factory takes an `OptimizedIngressHandler` and returns a
+`(req, srv?) => Response | Promise<Response>` route handler compatible with any
+fetch-style server (Bun, Deno, Node `server.fetch`, …). `srv` is the server
+object used for `requestIP` when `getIp` is provided.
+
+| Factory | Wires | Behavior |
+|---------|-------|----------|
+| `readHandler(ingress, opts?)` | GET | Returns the ingress body JSON (200) or a terminal/error response |
+| `headHandler(ingress, opts?)` | HEAD | Same as read, no body |
+| `jsonWriteHandler(ingress, opts?)` | POST/PUT/PATCH | Enforces `Content-Type`, body-size, JSON validity and schema; returns body JSON or 415/413/400/422 |
+| `echoHandler(ingress, opts?)` | POST | Streams the request body back with the client's Content-Type |
+| `fallbackHandler(ingress, opts?)` | any | 404 for unmatched routes / OPTIONS |
+
+`BakedHandlerOptions`:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `getIp` | `(req, srv) => string \| undefined` | — | Resolve client IP from the server object (e.g. `srv.requestIP`) |
+| `copyBody` | `boolean` | `true` | Copy body slices instead of sharing the native buffer (safe) |
+| `maxBodyBytes` | `number` | `1,048,576` | Body limit for write/echo handlers |
+| `fallback` | `OptimizedIngressHandler` | `ingress` | Handler used for write error paths |
+
+### `createIngressServer(options)` — Bun.serve builder
+
+```ts
+interface CreateIngressServerOptions {
+  port: number;
+  hostname?: string;            // default "0.0.0.0"
+  idleTimeout?: number;         // default 30
+  maxRequestBodySize?: number;
+  reusePort?: boolean;          // SO_REUSEPORT (with automatic retry on failure)
+  copyBody?: boolean;           // default true
+  getIp?: (req, srv) => string | undefined;
+  routes: Record<string, BakedRoute>;
+  fallback?: OptimizedIngressHandler;  // unmatched routes + OPTIONS fallback
+}
+
+interface BakedRoute {
+  read?: OptimizedIngressHandler;      // -> GET + HEAD
+  write?: OptimizedIngressHandler;     // -> POST/PUT/PATCH (+ OPTIONS via fallback)
+  echo?: OptimizedIngressHandler;      // -> POST
+  cookies?: OptimizedIngressHandler;   // -> GET
+  maxBodyBytes?: number;               // override for this route's write/echo
+}
+
+interface BakedServer {
+  server: Server;   // the Bun.serve result
+  stop(): void;     // stop(true), closes active connections
+  port: number;
+}
+```
+
+### `BakedIngressResult`
+
+The zero-alloc result passed to `run()` callbacks. Invalidated after `run()`
+returns — capture what you need inside the callback.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `number` | HTTP status |
+| `verdict` | `number` | 0 = pass, 1 = terminal |
+| `errorCode` | `number` | `ERR_CODE_*` enum |
+| `headerVariant` | `number` | Precomputed header-set index |
+| `rateRemaining` | `number` | Remaining requests in window |
+| `rateResetMs` / `retryAfterMs` | `number` | Rate-limit reset / retry-after (ms) |
+| `terminal` | `boolean` | Stop processing (error/preflight) |
+| `ok` | `boolean` | 2xx/3xx and no errors |
+| `isPreflight` / `corsAllowed` | `boolean` | CORS preflight state |
+| `rateLimited` / `trustedProxy` | `boolean` | Rate-limit hit / trusted proxy |
+| `bodyValidJson` / `schemaValid` | `boolean` | Body JSON / schema checks |
+| `bodyTruncated` | `boolean` | Output truncated (buffer too small) |
+| `body` | `Uint8Array` | Request body bytes |
+| `bodyJson(copy)` | `Uint8Array` | Metadata/body JSON slice (`copy=true` for a copy) |
+
+### Custom route using the response builders
+
+```ts
+import { createIngressHandler, readHandler } from "bun-rust-practical";
+
+const ingress = createIngressHandler({
+  parseCookies: true,
+  parseQuery: true,
+  cors: { allowOrigin: ["https://app.example.com"], allowCredentials: true },
+  rateLimit: { limit: 100, windowMs: 60_000 },
+});
+
+Bun.serve({
+  port: 3000,
+  routes: {
+    "/health": { GET: readHandler(ingress) },
+    "/v1/custom": {
+      GET: (req, srv) =>
+        ingress.run(req, undefined, null, (result, ctx) => {
+          const terminal = ingress.terminalResponse(req, result, ctx);
+          if (terminal) return terminal;
+          if (result.rateLimited) {
+            return ingress.errorResponse(req, result, 429, "rate_limited", "Too Many Requests", ctx);
+          }
+          return new Response(result.bodyJson(true), {
+            status: 200,
+            headers: ingress.responseHeaders(result.headerVariant, ctx.requestIdHeader, ctx.origin),
+          });
+        }),
+    },
+  },
+});
+```
+
+---
+
 ## API Reference
 
 ### `createIngressFast(options?)`

@@ -199,7 +199,8 @@ const myRust = createRust({ mimeCache: false });
 | `import { readPairsPacked, pairsToObject, readHttpPacked } from "bun-rust-practical"` | Decode packed pairs / parsed HTTP buffers |
 | `import { parseQueryString, parseCookieHeader } from "bun-rust-practical"` | High-level string parsers (no hand-packing) |
 | `import { jsonRowsBytes, createJsonRows } from "bun-rust-practical"` | JSON row serialization |
-| `import { createIngress, createIngressSync, createIngressFast } from "bun-rust-practical"` | HTTP ingress pipeline |
+| `import { createIngress, createIngressSync, createIngressFast } from "bun-rust-practical"` | HTTP ingress pipeline (low-level) |
+| `import { createIngressHandler, createIngressServer, readHandler, jsonWriteHandler, echoHandler, fallbackHandler } from "bun-rust-practical"` | **Pre-baked** ingress handlers — route factories + Bun.serve builder |
 
 ```ts
 import { parseQueryString, parseCookieHeader } from "bun-rust-practical";
@@ -251,6 +252,38 @@ Bun.serve({
 });
 ```
 
+#### Pre-baked handlers (recommended for servers)
+
+`src/ingress/handlers.ts` provides ready-to-use route handlers and a `Bun.serve`
+builder so **any system can consume the optimized ingress pipeline in a few
+lines** — no need to hand-build responses or manage header templates:
+
+```ts
+import { createIngressHandler, createIngressServer } from "bun-rust-practical";
+
+const ingress = createIngressHandler({
+  parseCookies: true,
+  parseQuery: true,
+  cors: { allowOrigin: ["https://app.example.com"] },
+  rateLimit: { limit: 1000, windowMs: 60_000 },
+});
+
+createIngressServer({
+  port: 3000,
+  routes: {
+    "/health":    { read: ingress },                  // GET + HEAD
+    "/api/users": { read: ingress, write: ingress },  // + POST/PUT/PATCH
+    "/api/echo":  { echo: ingress },                  // POST echo
+  },
+});
+```
+
+The route factories (`readHandler`, `headHandler`, `jsonWriteHandler`,
+`echoHandler`, `fallbackHandler`) are runtime-agnostic — use them with any
+fetch-style server. The benchmark server (`bench/servers/ingress-server.ts`)
+is built entirely from these and re-exports them. See
+[docs/INGRESS.md](./docs/INGRESS.md) for the full pre-baked API reference.
+
 
 ---
 
@@ -259,6 +292,7 @@ Bun.serve({
 ```
 bun-rust-practical/
 ├── index.ts                 # Entry point / public API
+├── AGENTS.md                # AI agent instructions (commands, constraints, gotchas)
 ├── bench.ts                 # Benchmark runner
 ├── build.rs                 # NAPI build script
 ├── Cargo.toml               # Rust dependencies & build config
@@ -297,7 +331,8 @@ bun-rust-practical/
 ├── src/                     # TypeScript source
 │   ├── ingress/             # Ingress pipeline (TS layer)
 │   │   ├── index.ts         # Public API + async factory
-│   │   ├── fast.ts          # Fast synchronous handler
+│   │   ├── fast.ts          # Fast synchronous handler (packed input)
+│   │   ├── handlers.ts      # PRE-BAKED handlers + createIngressServer
 │   │   ├── constants.ts     # Layout constants (from Rust)
 │   │   └── packed-input.ts  # Input buffer packing
 │   ├── native/              # Native addon loader
@@ -312,10 +347,11 @@ bun-rust-practical/
 │   └── shared/              # Shared utilities
 │
 ├── bench/                   # HTTP benchmark servers
-│   ├── servers/             # Server implementations
+│   ├── servers/             # bun-server.ts, elysia-server.ts, ingress-server.ts (+ shared.ts)
+│   ├── load.ts              # HTTP load generator & scenarios
 │   └── run-bench.ts         # Benchmark runner
 │
-├── test/                    # Tests (see docs/testing.md)
+├── test/                    # Tests (see CONTRIBUTING.md → Testing Requirements)
 ├── docs/                    # Documentation
 └── scripts/                 # Build/utility scripts
 ```

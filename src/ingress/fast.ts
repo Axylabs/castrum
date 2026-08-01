@@ -29,7 +29,8 @@ import {
 
 // ── Constants ──────────────────────────────────────────────────
 export const DEFAULT_MAX_BODY_BYTES = 1_048_576;
-export const DEFAULT_OUTPUT_BUFFER_SIZE = 262_144;
+// Internal-only default for the reusable output buffer.
+const DEFAULT_OUTPUT_BUFFER_SIZE = 262_144;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

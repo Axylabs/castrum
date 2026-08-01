@@ -137,6 +137,9 @@ export { isValidResponseStatus, statusForErrorCode, normalizeResponseStatus, saf
 export { buildResponseContext, headersForResult };
 export type { ResponseBuildContext, HeaderTemplate, CorsStaticStrings };
 
+// ── Pre-baked handler functions (route factories + Bun.serve builder) ──
+export * from "./handlers";
+
 // ── Constants ────────────────────────────────────────────────────
 const EMPTY_BODY = new Uint8Array(0);
 

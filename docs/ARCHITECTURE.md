@@ -94,7 +94,8 @@ rust/
 src/
 ├── ingress/               ── HTTP ingress pipeline (TS layer)
 │   ├── index.ts           ── Public API + async factory
-│   ├── fast.ts            ── Fast synchronous handler
+│   ├── fast.ts            ── Fast synchronous handler (packed input)
+│   ├── handlers.ts        ── Pre-baked handlers + createIngressServer (full_sync)
 │   ├── constants.ts       ── Layout constants (from Rust NAPI)
 │   └── packed-input.ts    ── Input buffer packing
 │
@@ -159,6 +160,19 @@ src/
     ├── json.ts            ── JSON helpers
     └── packed.ts          ── Binary packing utilities
 ```
+
+> **Two ingress consumption paths** (see `docs/INGRESS.md`):
+> 1. `src/ingress/fast.ts` (`createIngressFast`) — JS packs headers
+>    (`IngressInputPacker`) → Rust `handle_request_packed`. Wire format from
+>    `buildTerminalResponse`: `{"error":{code,status,message,requestId}}`,
+>    `x-ratelimit-*`.
+> 2. `src/ingress/handlers.ts` (`createIngressHandler` + route factories +
+>    `createIngressServer`) — Rust packs internally via
+>    `handle_request_full_sync`. Different wire format: success
+>    `{"ok":true,...,"requestId":...}`, errors
+>    `{"ok":false,"error":{code,message}}`, `ratelimit-*` headers. The
+>    benchmark server (`bench/servers/ingress-server.ts`) uses this path and
+>    re-exports the pre-baked functions.
 
 ---
 
