@@ -2,14 +2,14 @@
 
 ## Overview
 
-The Ingress pipeline is the core HTTP request processing system in bun-rust-practical. It handles incoming requests through a series of processing stages, writing decisions to a binary output buffer that is then interpreted by the TypeScript caller.
+The Ingress pipeline is the core HTTP request processing system in castrum. It handles incoming requests through a series of processing stages, writing decisions to a binary output buffer that is then interpreted by the TypeScript caller.
 
 ---
 
 ## Quick Start
 
 ```ts
-import { createIngress, createIngressFast } from "bun-rust-practical";
+import { createIngress, createIngressFast } from "castrum";
 
 // Fast synchronous handler (reuses internal buffers)
 const fast = createIngressFast({
@@ -63,7 +63,7 @@ benchmark server** (`bench/servers/ingress-server.ts`), which itself is built
 entirely from them:
 
 ```ts
-import { createIngressHandler, createIngressServer } from "bun-rust-practical";
+import { createIngressHandler, createIngressServer } from "castrum";
 
 const ingress = createIngressHandler({
   parseCookies: true,
@@ -204,7 +204,7 @@ returns — capture what you need inside the callback.
 ### Custom route using the response builders
 
 ```ts
-import { createIngressHandler, readHandler } from "bun-rust-practical";
+import { createIngressHandler, readHandler } from "castrum";
 
 const ingress = createIngressHandler({
   parseCookies: true,
@@ -452,7 +452,7 @@ At request time, Rust computes the appropriate variant index, and TypeScript use
 ## Complete Example: Custom Middleware
 
 ```ts
-import { createIngressFast, FastIngressResult } from "bun-rust-practical";
+import { createIngressFast, FastIngressResult } from "castrum";
 
 const handler = createIngressFast({
   parseCookies: true,

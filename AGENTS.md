@@ -1,12 +1,12 @@
-# AGENTS.md — bun-rust-practical
+# AGENTS.md — castrum
 
 Guidance for AI coding agents working in this repository. Read this before
 editing code. Human-facing docs live in `README.md` and `docs/`.
 
 ## What this project is
 
-`bun-rust-practical` is a hybrid **Bun (TypeScript) + Rust** package. A Rust
-cdylib (`rust_bench.<platform>-<arch>.node`, built with napi-rs) provides
+`castrum` is a hybrid **Bun (TypeScript) + Rust** package. A Rust
+cdylib (`castrum.<platform>-<arch>.node`, built with napi-rs) provides
 performance-critical primitives; TypeScript (`src/`) provides the ergonomic
 public API. It ships a CPU benchmark (`bench.ts`), an HTTP benchmark
 (`bench/run-bench.ts` + `bench/servers/*-server.ts`), and a production-grade
@@ -27,6 +27,22 @@ HTTP **ingress pipeline** for Bun servers.
 | HTTP bench (ingress only) | `bun run bench:http:ingress` |
 | HTTP smoke (fast sanity) | `bun run bench:http:smoke` |
 | Ingress load scenario | `SERVER=ingress SCENARIO=01-smoke bun run bench:http:smoke` |
+
+## Publishing (npm)
+
+- Package name is **`castrum`** (unscoped, public npm). The native binary name is
+  `castrum` (`castrum.<platform>-<arch>.node`), declared in package.json
+  `napi.binaryName` and mirrored in Cargo.toml `[package]`/`[lib] name`. Keep all
+  three in sync.
+- Runtime env vars use the `CASTRUM_*` prefix; legacy `RUST_BENCH_*` / `RUST_*`
+  names are still read as aliases (see `docs/ENVIRONMENT.md`).
+- **Do not `npm publish` locally** — the package ships ALL `napi.targets` in one
+  tarball, and `prepublishOnly` (`node scripts/prepublish.mjs`) fails unless every
+  platform `.node` is present. Push a `v*` tag instead: `.github/workflows/ci.yml`
+  builds + uploads each platform artifact, then the `publish` job downloads them
+  into `./artifacts`, stages them, and runs `npm publish --access public`
+  (requires the `NPM_TOKEN` secret). Bump `version` in package.json (and
+  Cargo.toml) and add a CHANGELOG entry before tagging.
 
 ## Layout (quick map)
 

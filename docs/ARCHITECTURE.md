@@ -2,7 +2,7 @@
 
 ## Overview
 
-bun-rust-practical is a **hybrid Bun + Rust** runtime benchmark package that provides high-performance backend primitives through a NAPI (Native API) bridge. The architecture is designed for zero-copy data transfer between TypeScript and Rust, with batching support for high-throughput scenarios.
+castrum is a **hybrid Bun + Rust** runtime benchmark package that provides high-performance backend primitives through a NAPI (Native API) bridge. The architecture is designed for zero-copy data transfer between TypeScript and Rust, with batching support for high-throughput scenarios.
 
 ---
 

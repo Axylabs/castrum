@@ -6,7 +6,7 @@
 // defaults that can be overridden per-instance via createRust() or on the
 // shared `rust` instance via rust.configure().
 //
-//   import { rust } from "bun-rust-practical";
+//   import { rust } from "castrum";
 //
 //   rust.crc32(bytes);                    // number
 //   rust.fnv1a64(bytes);                  // bigint
@@ -49,7 +49,7 @@ export interface RustOptions {
    * `OnceLock`) — the first initialization wins. Importing this module
    * initializes the pool with defaults, so this option only takes effect when
    * the pool has not yet been created. For reliable control set
-   * `RUST_BENCH_RAYON_THREADS` / `RUST_RAYON_THREADS` before import.
+   * `CASTRUM_RAYON_THREADS` / `RUST_RAYON_THREADS` before import.
    * Default: max(1, hardwareConcurrency - 1).
    */
   rayonThreads?: number;
@@ -69,7 +69,9 @@ function resolveRayonThreads(explicit?: number): number {
   }
 
   const envThreads = Number(
-    process.env.RUST_BENCH_RAYON_THREADS ?? process.env.RUST_RAYON_THREADS,
+    process.env.CASTRUM_RAYON_THREADS ??
+      process.env.RUST_BENCH_RAYON_THREADS ??
+      process.env.RUST_RAYON_THREADS,
   );
 
   if (Number.isFinite(envThreads) && envThreads > 0) {

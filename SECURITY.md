@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-We take the security of bun-rust-practical seriously. If you discover a security vulnerability, please follow these steps:
+We take the security of castrum seriously. If you discover a security vulnerability, please follow these steps:
 
 1. **Do NOT open a public GitHub issue.** Security vulnerabilities should be reported privately.
 2. Send an email to the maintainers at **[security@axylabs.dev](mailto:security@axylabs.dev)** with:
@@ -57,4 +57,4 @@ This project implements the following security measures:
 4. Patch released with advisory
 5. Public disclosure after 30 days or when users have had reasonable time to update
 
-Thank you for helping keep bun-rust-practical safe! 🔒
+Thank you for helping keep castrum safe! 🔒

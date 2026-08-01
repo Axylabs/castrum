@@ -119,6 +119,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "castrum"
+version = "0.6.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64",
+ "core_affinity",
+ "crc32fast",
+ "email_address",
+ "fast_chemail",
+ "getrandom 0.4.3",
+ "httparse",
+ "ipnet",
+ "json-patch",
+ "jsonschema",
+ "lru",
+ "memchr",
+ "mimalloc",
+ "mime_guess",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "parking_lot",
+ "phf",
+ "rayon",
+ "serde",
+ "serde_json",
+ "simdutf8",
+ "sonic-rs",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1260,38 +1292,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "rust_bench"
-version = "0.6.0"
-dependencies = [
- "aws-lc-rs",
- "base64",
- "core_affinity",
- "crc32fast",
- "email_address",
- "fast_chemail",
- "getrandom 0.4.3",
- "httparse",
- "ipnet",
- "json-patch",
- "jsonschema",
- "lru",
- "memchr",
- "mimalloc",
- "mime_guess",
- "napi",
- "napi-build",
- "napi-derive",
- "parking_lot",
- "phf",
- "rayon",
- "serde",
- "serde_json",
- "simdutf8",
- "sonic-rs",
- "xxhash-rust",
 ]
 
 [[package]]

@@ -1,11 +1,33 @@
 {
-    "name": "bun-rust-practical",
+    "name": "castrum",
     "version": "0.6.0",
     "private": false,
+    "description": "Enterprise-grade Bun + Rust runtime: Rust-accelerated FFI primitives, a production-grade HTTP ingress pipeline, validation, hashing, and JSON processing with benchmark-grade performance.",
     "type": "module",
     "main": "index.ts",
     "module": "index.ts",
     "types": "index.ts",
+    "license": "MIT",
+    "keywords": [
+        "bun",
+        "rust",
+        "napi",
+        "ffi",
+        "ingress",
+        "http",
+        "validation",
+        "hashing",
+        "json",
+        "performance",
+        "benchmark"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Axylabs/flux-rs.git"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
     "exports": {
         ".": "./index.ts"
     },
@@ -15,7 +37,8 @@
         "src",
         "rust",
         "Cargo.toml",
-        "README.md"
+        "README.md",
+        "*.node"
     ],
     "scripts": {
         "build": "napi build --release --platform",
@@ -24,7 +47,7 @@
         "test": "bun test",
         "build:debug": "napi build --platform",
         "artifacts": "napi artifacts",
-        "prepublishOnly": "napi prepublish -t npm",
+        "prepublishOnly": "node scripts/prepublish.mjs",
         "bench:http": "bun run bench/run-bench.ts",
         "bench:http:smoke": "bun run bench/run-bench.ts smoke",
         "bench:http:stress": "bun run bench/run-bench.ts stress",
@@ -57,7 +80,7 @@
         "bun": ">=1.1.0"
     },
     "napi": {
-        "binaryName": "rust_bench",
+        "binaryName": "castrum",
         "targets": [
             "aarch64-apple-darwin",
             "aarch64-unknown-linux-gnu",

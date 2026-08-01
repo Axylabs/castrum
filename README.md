@@ -1,4 +1,4 @@
-# bun-rust-practical
+# castrum
 
 **Enterprise-Grade Bun + Rust FFI Runtime Benchmark Package**
 
@@ -92,7 +92,7 @@ bun run bench:http:boundary # boundary conditions
 ### Core Exports
 
 ```ts
-import { rust, native, rustBatch } from "bun-rust-practical";
+import { rust, native, rustBatch } from "castrum";
 
 // `rust`      — All Rust FFI native implementations (flat, complete API)
 // `native`    — JavaScript/Bun baseline implementations for benchmarking
@@ -170,7 +170,7 @@ Defaults are selected automatically, and can be overridden:
 ```ts
 // Defaults:
 //   rayonThreads = max(1, hardwareConcurrency - 1)
-//                  (env override: RUST_BENCH_RAYON_THREADS / RUST_RAYON_THREADS)
+//                  (env override: CASTRUM_RAYON_THREADS / RUST_RAYON_THREADS)
 //   mimeCache    = true
 //   hmacCache    = true
 
@@ -178,14 +178,14 @@ Defaults are selected automatically, and can be overridden:
 rust.configure({ mimeCache: false, hmacCache: false });
 
 // Or create an isolated instance with custom defaults:
-import { createRust } from "bun-rust-practical";
+import { createRust } from "castrum";
 const myRust = createRust({ mimeCache: false });
 ```
 
 > **Thread pool note**: the rayon pool is process-wide and initialized **once**
 > (native `OnceLock`) — the first initialization wins. Because importing the
 > module initializes it with the default, set
-> `RUST_BENCH_RAYON_THREADS` / `RUST_RAYON_THREADS` (or call
+> `CASTRUM_RAYON_THREADS` / `RUST_RAYON_THREADS` (or call
 > `rust.configure({ rayonThreads })` / `createRust({ rayonThreads })` before any
 > other pool use) to tune it. `mimeCache` / `hmacCache` are per-instance and can
 > be toggled any time.
@@ -194,23 +194,23 @@ const myRust = createRust({ mimeCache: false });
 
 | Import | Description |
 |--------|-------------|
-| `import { encoder, decoder } from "bun-rust-practical"` | Text encode/decode utilities |
-| `import { packBatch, packPairs, unpackBitset, unpackByteResults, unpackI64ArrayAsBigInt, unpackU32Array } from "bun-rust-practical"` | Batch/pair packing + unpacking utilities |
-| `import { readPairsPacked, pairsToObject, readHttpPacked } from "bun-rust-practical"` | Decode packed pairs / parsed HTTP buffers |
-| `import { parseQueryString, parseCookieHeader } from "bun-rust-practical"` | High-level string parsers (no hand-packing) |
-| `import { jsonRowsBytes, createJsonRows } from "bun-rust-practical"` | JSON row serialization |
-| `import { createIngress, createIngressSync, createIngressFast } from "bun-rust-practical"` | HTTP ingress pipeline (low-level) |
-| `import { createIngressHandler, createIngressServer, readHandler, jsonWriteHandler, echoHandler, fallbackHandler } from "bun-rust-practical"` | **Pre-baked** ingress handlers — route factories + Bun.serve builder |
+| `import { encoder, decoder } from "castrum"` | Text encode/decode utilities |
+| `import { packBatch, packPairs, unpackBitset, unpackByteResults, unpackI64ArrayAsBigInt, unpackU32Array } from "castrum"` | Batch/pair packing + unpacking utilities |
+| `import { readPairsPacked, pairsToObject, readHttpPacked } from "castrum"` | Decode packed pairs / parsed HTTP buffers |
+| `import { parseQueryString, parseCookieHeader } from "castrum"` | High-level string parsers (no hand-packing) |
+| `import { jsonRowsBytes, createJsonRows } from "castrum"` | JSON row serialization |
+| `import { createIngress, createIngressSync, createIngressFast } from "castrum"` | HTTP ingress pipeline (low-level) |
+| `import { createIngressHandler, createIngressServer, readHandler, jsonWriteHandler, echoHandler, fallbackHandler } from "castrum"` | **Pre-baked** ingress handlers — route factories + Bun.serve builder |
 
 ```ts
-import { parseQueryString, parseCookieHeader } from "bun-rust-practical";
+import { parseQueryString, parseCookieHeader } from "castrum";
 
 parseQueryString("a=1&b=2&tag=a&tag=b"); // { a: "1", b: "2", tag: ["a", "b"] }
 parseCookieHeader("session=abc; theme=dark"); // { session: "abc", theme: "dark" }
 ```
 
 > **Environment variables**: See [docs/ENVIRONMENT.md](./docs/ENVIRONMENT.md) for the
-> full reference of `INGRESS_*`, `RUST_BENCH_*` and `RUST_*` runtime variables.
+> full reference of `INGRESS_*`, `CASTRUM_*` and `RUST_*` runtime variables.
 
 ### Ingress Pipeline
 
@@ -229,7 +229,7 @@ The ingress system is a high-performance request processing pipeline that handle
 
 ```ts
 // Fast synchronous handler (zero allocations per call)
-import { createIngressFast } from "bun-rust-practical";
+import { createIngressFast } from "castrum";
 
 const handler = createIngressFast({
   cors: { allowOrigin: ["https://example.com"] },
@@ -259,7 +259,7 @@ builder so **any system can consume the optimized ingress pipeline in a few
 lines** — no need to hand-build responses or manage header templates:
 
 ```ts
-import { createIngressHandler, createIngressServer } from "bun-rust-practical";
+import { createIngressHandler, createIngressServer } from "castrum";
 
 const ingress = createIngressHandler({
   parseCookies: true,
@@ -290,7 +290,7 @@ is built entirely from these and re-exports them. See
 ## Project Structure
 
 ```
-bun-rust-practical/
+castrum/
 ├── index.ts                 # Entry point / public API
 ├── AGENTS.md                # AI agent instructions (commands, constraints, gotchas)
 ├── bench.ts                 # Benchmark runner

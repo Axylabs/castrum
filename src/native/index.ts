@@ -29,7 +29,7 @@ function resolveAddonPath(): string {
   const arch = process.arch;
   const base = join(__dirname, "..", "..");
 
-  // napi-rs artifact naming: rust_bench.<platform>-<arch>[-<libc>].node
+  // napi-rs artifact naming: castrum.<platform>-<arch>[-<libc>].node
   // e.g. linux-x64-gnu, linux-x64-musl, win32-x64-msvc, darwin-arm64.
   const libcVariants =
     platform === "win32"
@@ -39,9 +39,9 @@ function resolveAddonPath(): string {
         : [""];
 
   const names = libcVariants.map(
-    (libc) => `rust_bench.${platform}-${arch}${libc ? `-${libc}` : ""}.node`,
+    (libc) => `castrum.${platform}-${arch}${libc ? `-${libc}` : ""}.node`,
   );
-  names.push("rust_bench.node");
+  names.push("castrum.node");
 
   const roots = [base, join(base, "target", "release")];
 
@@ -59,7 +59,7 @@ function resolveAddonPath(): string {
   }
 
   throw new Error(
-    `Could not find rust_bench native addon.\n` +
+    `Could not find castrum native addon.\n` +
       `Run: bun run build\n` +
       `Looked in:\n${candidates.map((c) => `  - ${c}`).join("\n")}`,
   );
@@ -178,7 +178,7 @@ try {
 } catch (err) {
   const cause = err instanceof Error ? `\n  Underlying cause: ${err.message}` : "";
   throw new Error(
-    `Failed to load rust_bench native addon from:\n  ${addonPath}\n` +
+    `Failed to load castrum native addon from:\n  ${addonPath}\n` +
       `The addon exists but could not be loaded (ABI mismatch, missing system ` +
       `libraries, or a corrupt/partial artifact).\n` +
       `Run: bun run build\n` +
@@ -187,7 +187,7 @@ try {
   );
 }
 
-if (process.env.RUST_BENCH_DEBUG) {
+if (process.env.CASTRUM_DEBUG || process.env.RUST_BENCH_DEBUG) {
   console.log("Native addon loaded from:", addonPath);
   console.log("Exported keys:", Object.keys(addon).sort());
 }

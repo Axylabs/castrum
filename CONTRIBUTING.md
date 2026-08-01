@@ -1,6 +1,6 @@
-# Contributing to bun-rust-practical
+# Contributing to castrum
 
-Thank you for your interest in contributing to bun-rust-practical! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to castrum! This document provides guidelines and instructions for contributing.
 
 ## Table of Contents
 
@@ -25,7 +25,7 @@ Thank you for your interest in contributing to bun-rust-practical! This document
 ```bash
 # 1. Clone the repository (or your fork)
 git clone <repository-url>
-cd bun-rust-practical
+cd castrum
 
 # 2. Install dependencies
 bun install

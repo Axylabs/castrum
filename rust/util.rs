@@ -21,9 +21,11 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
         let preferred = default_threads.saturating_sub(1).max(1);
 
         // Do not hard-cap to 8 by default.
-        // If you need a cap, set RUST_BENCH_MAX_RAYON_THREADS.
-        let max_threads = std::env::var("RUST_BENCH_MAX_RAYON_THREADS")
+        // If you need a cap, set CASTRUM_MAX_RAYON_THREADS
+        // (legacy alias: RUST_BENCH_MAX_RAYON_THREADS).
+        let max_threads = std::env::var("CASTRUM_MAX_RAYON_THREADS")
             .ok()
+            .or_else(|| std::env::var("RUST_BENCH_MAX_RAYON_THREADS").ok())
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_threads.max(1));
 
@@ -34,7 +36,7 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads as usize)
             .stack_size(512 * 1024)
-            .thread_name(|i| format!("rust-bench-rayon-{}", i))
+            .thread_name(|i| format!("castrum-rayon-{}", i))
             .start_handler(move |id| pin_rayon_thread(id))
             .build_global()
             .map_err(|e| e.to_string())
@@ -47,7 +49,9 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
 }
 #[cfg(target_os = "linux")]
 fn pin_rayon_thread(id: usize) {
-    if std::env::var_os("RUST_BENCH_PIN_CORES").is_none() {
+    if std::env::var_os("CASTRUM_PIN_CORES").is_none()
+        && std::env::var_os("RUST_BENCH_PIN_CORES").is_none()
+    {
         return;
     }
 

@@ -1,11 +1,11 @@
 [package]
-name = "rust_bench"
+name = "castrum"
 # Keep in sync with package.json "version" (single source of truth: the npm package).
 version = "0.6.0"
 edition = "2021"
 
 [lib]
-name = "rust_bench"
+name = "castrum"
 crate-type = ["cdylib"]
 path = "rust/lib.rs"
 

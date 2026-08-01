@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "bun-rust-runtime-bench",
+      "name": "castrum",
       "dependencies": {
         "@elysia/cors": "^1.4.2",
         "cookie-es": "^3.1.1",

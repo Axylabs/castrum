@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Renamed the project to `castrum`** (was `bun-rust-practical` / `rust_bench`): npm
+  package name, napi binary name (`castrum.<platform>-<arch>.node`), Rust crate name, and
+  all docs now use `castrum`. Runtime env vars use the new `CASTRUM_*` prefix; the legacy
+  `RUST_BENCH_*` / `RUST_*` names are kept as aliases for backward compatibility.
+
+### Added
+
+- npm publishing setup: publish metadata (`description`, `license` MIT, `repository`,
+  `keywords`, `publishConfig`), `*.node` artifacts included in the package `files`, a
+  `scripts/prepublish.mjs` guard that verifies every napi platform artifact is present
+  before publish, and a CI publish workflow that uploads all platform artifacts and
+  publishes to npm on `v*` tags.
+
 ## [0.6.0] — 2026-07-31
 
 ### Removed (breaking)

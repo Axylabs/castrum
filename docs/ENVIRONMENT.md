@@ -27,12 +27,12 @@ for false; anything else is warned about and falls back to the default.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `RUST_BENCH_RAYON_THREADS` / `RUST_RAYON_THREADS` | int | `max(1, cores-1)` | Rayon thread pool size. The pool is process-wide and initialized **once** — the first use wins. With lazy init, call `rust.configure({ rayonThreads })` (or set this env) before the first batch operation. |
-| `RUST_BENCH_MAX_RAYON_THREADS` | int | `cores` | Hard cap on rayon threads (native). |
-| `RUST_BENCH_PIN_CORES` | (presence) | — | When set (Linux), pin rayon worker threads to distinct cores. |
+| `CASTRUM_RAYON_THREADS` / `RUST_RAYON_THREADS` (legacy `RUST_BENCH_RAYON_THREADS`) | int | `max(1, cores-1)` | Rayon thread pool size. The pool is process-wide and initialized **once** — the first use wins. With lazy init, call `rust.configure({ rayonThreads })` (or set this env) before the first batch operation. |
+| `CASTRUM_MAX_RAYON_THREADS` (legacy `RUST_BENCH_MAX_RAYON_THREADS`) | int | `cores` | Hard cap on rayon threads (native). |
+| `CASTRUM_PIN_CORES` (legacy `RUST_BENCH_PIN_CORES`) | (presence) | — | When set (Linux), pin rayon worker threads to distinct cores. |
 
 ## Native addon loader (`src/native/index.ts`)
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `RUST_BENCH_DEBUG` | (presence) | — | Log the resolved addon path and exported keys at load time. |
+| `CASTRUM_DEBUG` (legacy `RUST_BENCH_DEBUG`) | (presence) | — | Log the resolved addon path and exported keys at load time. |
