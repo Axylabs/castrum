@@ -1,5 +1,5 @@
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi/raw";
+import { rust } from "../../rust-ffi";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 
@@ -25,7 +25,7 @@ export function hashingTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: "rust:fnv1a64",
-      run: () => rust.fnv1A64(f.crcInput),
+      run: () => rust.fnv1a64(f.crcInput),
       iterations: 1000,
       warmup: 100,
     },

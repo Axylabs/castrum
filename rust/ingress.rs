@@ -224,8 +224,11 @@ impl Ingress {
                 (false, None)
             } else {
                 let max_entries = rl_opts.max_entries.map(|v| v as usize);
-                let limiter = crate::rate_limit::KeyedRateLimiter::new(limit, window_ms, max_entries);
-                (true, Some(Arc::new(limiter)))
+                // Shared per-configuration across the process: prevents a client
+                // from bypassing a per-IP limit by spreading requests across routes.
+                let limiter =
+                    crate::rate_limit::shared_limiter(limit, window_ms, max_entries);
+                (true, Some(limiter))
             }
         } else {
             (false, None)
@@ -284,7 +287,7 @@ impl Ingress {
 
     /// Optimized sync API:
     /// Accepts raw JS values (no binary packing in JS), packs them in Rust,
-    /// processes synchronously (no tokio thread pool overhead).
+    /// and processes them synchronously.
     /// This is the fastest path for simple requests.
     #[napi(ts_args_type = "methodKind: number, url: string, ip: string, requestId: string, headers: Array<[string, string]>, body: Uint8Array | null, outputBufferSize?: number")]
     pub fn handle_request_full_sync(
@@ -523,6 +526,7 @@ impl IngressInner {
 
         // ── Parse cookies into output ────────────────────────────────
         let mut data_pos = OUT_DATA_START;
+        let mut truncated = false;
 
         let cookies_json_len: u32 = if self.parse_cookies && headers.has_cookie() {
             if let Some(cookie_val) = headers.cookie() {
@@ -536,7 +540,11 @@ impl IngressInner {
                             if written > 2 { flags |= crate::output::FLAG_HAS_COOKIES; }
                             written as u32
                         }
-                        Err(_) => 0,
+                        Err(_) => {
+                            // Output buffer too small: never drop silently.
+                            truncated = true;
+                            0
+                        }
                     }
                 } else { 0 }
             } else { 0 }
@@ -563,7 +571,11 @@ impl IngressInner {
                                 if written > 2 { flags |= crate::output::FLAG_HAS_QUERY; }
                                 written as u32
                             }
-                            Err(_) => 0,
+                            Err(_) => {
+                                // Output buffer too small: never drop silently.
+                                truncated = true;
+                                0
+                            }
                         }
                     }
                     Err(_) => return terminal_simple(out, 1, crate::output::ERR_CODE_BAD_REQUEST, 400),
@@ -584,7 +596,10 @@ impl IngressInner {
             )
         } else { 0 };
 
-        if self.emit_metadata_json && body_json_len == 0 {
+        // Any serialization shortfall (cookie/query envelope overflow or the
+        // metadata envelope) is surfaced via FLAG_BODY_TRUNCATED so the consumer
+        // never mistakes truncated data for complete data.
+        if truncated || (self.emit_metadata_json && body_json_len == 0) {
             flags |= FLAG_BODY_TRUNCATED;
         }
 

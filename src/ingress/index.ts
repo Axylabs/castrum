@@ -5,7 +5,7 @@
 // This module wraps createIngressFast with convenience async API (createIngress).
 
 import addon from "../native";
-import { IngressInputPacker } from "./packed-input";
+import { decoder } from "../shared/bytes";
 import {
   OUT_VERDICT, OUT_ERROR_CODE, OUT_STATUS, OUT_FLAGS,
   OUT_RATE_LIMIT, OUT_RATE_REMAINING, OUT_RATE_RESET, OUT_RETRY_AFTER,
@@ -37,10 +37,13 @@ import {
   type IngressFastHandler,
   type ResponseBuildContext,
   type HeaderTemplate,
+  type HeaderPlan,
   type CorsStaticStrings,
   type SecurityHeadersOptions,
   type CorsOptions,
   generateRequestId,
+  METHOD_KIND,
+  DEFAULT_MAX_BODY_BYTES,
 } from "./fast";
 
 // ── Re-export types from constants ──────────────────────────────
@@ -63,32 +66,15 @@ export {
 // ── Public option types ──────────────────────────────────────────
 export type { SecurityHeadersOptions, CorsOptions };
 
-export interface RateLimitOptions {
-  limit?: number;
-  windowMs?: number;
-  maxEntries?: number;
-}
-
-export interface TrustedProxyOptions {
-  enabled?: boolean;
-  networks?: string[];
-}
-
-export interface IngressLimitsOptions {
-  maxUrlBytes?: number;
-  maxQueryBytes?: number;
-  maxCookieBytes?: number;
-  maxHeadersBytes?: number;
-  maxHeaders?: number;
-  maxPairs?: number;
-}
-
 export interface IngressOptions extends IngressFastOptions {
   enableRequestIds?: boolean;
 }
 
 // ── Result types ─────────────────────────────────────────────────
-export interface IngressFastResult {
+// Note: the exported `FastIngressResult` class (from fast.ts) is the zero-alloc
+// implementation; this `IngressResult` interface is the readonly structural view
+// used by the public sync/async handler types.
+interface IngressResult {
   readonly status: number;
   readonly verdict: number;
   readonly flags: number;
@@ -118,17 +104,25 @@ export interface IngressFastResult {
   bodyJson(): Uint8Array;
 }
 
-export interface IngressContext extends IngressFastResult {
+export interface IngressContext extends IngressResult {
   response: Response | null;
 }
 
+/**
+ * Synchronous ingress handler.
+ *
+ * The callback runs on the zero-alloc result object and MUST be synchronous:
+ * returning a Promise (or any thenable) throws. The result is invalidated after
+ * `run()` returns, so capture the fields you need inside the callback (or use
+ * the async {@link createIngress} which snapshots for you).
+ */
 export interface SyncIngressHandler {
   run<T>(
     req: Request,
     ip: string | undefined,
     body: Uint8Array | null,
     requestId: string,
-    fn: (result: IngressFastResult) => T,
+    fn: (result: IngressResult) => T,
   ): T;
 }
 
@@ -144,11 +138,6 @@ export { buildResponseContext, headersForResult };
 export type { ResponseBuildContext, HeaderTemplate, CorsStaticStrings };
 
 // ── Constants ────────────────────────────────────────────────────
-const DEFAULT_MAX_BODY_BYTES = 1_048_576;
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
 const EMPTY_BODY = new Uint8Array(0);
 
 // ── Sync factory ─────────────────────────────────────────────────
@@ -326,7 +315,7 @@ export function createIngress(options: IngressOptions = {}): IngressHandler {
 }
 
 // ── Result helpers ───────────────────────────────────────────────
-function snapshotResult(r: IngressFastResult): IngressFastResult {
+function snapshotResult(r: IngressResult): IngressResult {
   const cookies = r.cookiesJson();
   const query = r.queryJson();
   const bodyJson = r.bodyJson().slice();
@@ -374,7 +363,7 @@ function syntheticContext(
   const corsAllowed = staticCorsAllowed(options, req);
   const variant = HV_JSON | (corsAllowed ? HV_CORS_SIMPLE : 0);
 
-  const base: IngressFastResult = {
+  const base: IngressResult = {
     status,
     verdict: 1,
     flags: 0,
@@ -449,5 +438,17 @@ function staticCorsAllowed(options: IngressOptions, req: Request): boolean {
 }
 
 // ── Re-export fast.ts API for direct use ─────────────────────────
-export { createIngressFast, FastIngressResult, generateRequestId };
-export type { IngressFastHandler, IngressFastOptions };
+// Error helpers (errorCodeName/errorMessage/buildTerminalResponse), METHOD_KIND
+// and DEFAULT_MAX_BODY_BYTES were previously internal-only; exposing them makes
+// the numeric verdict/errorCode contract usable without reaching into internals.
+export {
+  createIngressFast,
+  FastIngressResult,
+  errorCodeName,
+  errorMessage,
+  buildTerminalResponse,
+  generateRequestId,
+  METHOD_KIND,
+  DEFAULT_MAX_BODY_BYTES,
+};
+export type { IngressFastHandler, IngressFastOptions, HeaderPlan };

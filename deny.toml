@@ -1,0 +1,33 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/)
+# Run locally with: cargo deny check
+
+[advisories]
+version = 2
+# Fail CI on any security advisory or yanked crate.
+yanked = "deny"
+
+[bans]
+version = 2
+# Warn on multiple versions of the same crate; keep the count reasonable.
+multiple-versions = "warn"
+# Standard allowlist of well-known duplicate crates.
+skip-tree = [
+  # sonic-rs pulls its own faststr; json ops use serde_json's
+  { name = "faststr" },
+]
+
+[licenses]
+version = 2
+# Permissive licenses only.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "0BSD",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "MPL-2.0",
+]

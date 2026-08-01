@@ -32,9 +32,8 @@ A high-performance Bun backend framework with Rust-accelerated FFI functions, pr
 │    │                  json_ser                                    │
 │    ├── Crypto:        hashing, hmac_sha256, random_token         │
 │    ├── Data:          url_codec, mime_lookup, websocket          │
-│    ├── Batch:         batch, async_tasks                         │
+│    ├── Batch:         batch                                       │
 │    ├── Utilities:     util, method, headers, output, terminal    │
-│    └── Runtime:       runtime, export                             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -93,20 +92,124 @@ bun run bench:http:boundary # boundary conditions
 ### Core Exports
 
 ```ts
-import { rust, native } from "bun-rust-practical";
+import { rust, native, rustBatch } from "bun-rust-practical";
 
-// `rust` — All Rust FFI native implementations
-// `native` — JavaScript/Bun baseline implementations for benchmarking
+// `rust`      — All Rust FFI native implementations (flat, complete API)
+// `native`    — JavaScript/Bun baseline implementations for benchmarking
+// `rustBatch` — Back-compat alias === rust.batch
 ```
+
+### Rust Utility API
+
+`rust` is a single flat object exposing **every** native Rust utility with
+optimized defaults baked in. Text-oriented operations also have ergonomic
+string variants under `rust.text`.
+
+| Namespace | Description |
+|-----------|-------------|
+| `rust.crc32(...)`, `rust.jsonValid(...)`, … | Scalar utilities (bytes in → typed out) |
+| `rust.text.mimeFromExtension(".js")`, … | String ergonomics (string in → string/bool out) |
+| `rust.batch.jsonValid(docs)`, … | High-throughput batch (arrays → unpacked results) |
+| `rust.packed.jsonValidBatchPacked(p)`, … | Raw packed low-level variants + metadata |
+| `rust.configure({ ... })` | Override defaults on the shared instance |
+
+#### Scalar utilities
+
+| Function | Returns |
+|----------|---------|
+| `crc32(input)` | `number` — CRC32 checksum |
+| `fnv1a64(input)` | `bigint` — FNV-1a 64-bit hash |
+| `hmacSha256(key, data)` | `Uint8Array` — HMAC-SHA256 signature |
+| `hmacSha256Verify(key, data, sig)` | `boolean` |
+| `jsonValid(input)` | `boolean` — JSON validity check |
+| `jsonSumIds(input)` | `bigint` — sum of numeric `id` fields |
+| `jsonPatch(doc, patch)` | `Uint8Array` — RFC 6902 result |
+| `mimeFromExtension(ext)` | `Uint8Array` — MIME type |
+| `randomToken(byteLen)` | `Uint8Array` — CSPRNG token |
+| `urlEncode(input)` / `urlDecode(input)` | `Uint8Array` — percent encode/decode |
+| `urlDecodeBytes(input)` | `Uint8Array` — strict %-decode (no UTF-8 check) |
+| `validateEmail/Uuid/Ipv4/Ipv6(input)` | `boolean` |
+| `wsAcceptKey(key)` | `Uint8Array` — WebSocket accept key |
+
+Low-level / packed variants: `rust.httpParseRequestPacked`, `rust.queryParsePacked`,
+`rust.cookieParsePacked`.
+
+#### String ergonomics (`rust.text`)
+
+```ts
+rust.text.mimeFromExtension(".js");  // "text/javascript"
+rust.text.mimeFromExtension("html"); // "text/html"
+rust.text.urlEncode("a b");         // "a%20b"
+rust.text.urlDecode("a%20b");       // "a b"
+rust.text.wsAcceptKey(keyBase64);    // base64 accept key
+rust.text.validateEmail("a@b.co");   // true
+```
+
+#### Batch operations (`rust.batch`)
+
+All batch helpers accept `Uint8Array[]` and return unpacked, ready-to-use results:
+
+```ts
+const docs = [encoder.encode('{"id":1}'), encoder.encode('{"id":2}')];
+
+rust.batch.jsonValid(docs);             // Uint8Array bitset (1 per doc)
+rust.batch.crc32(docs);                 // Uint32Array
+rust.batch.jsonSumIds(docs);            // BigInt64Array
+rust.batch.queryParse(docs);            // Uint8Array[]
+rust.batch.schemaValidate(validator, docs); // bitset
+```
+
+Raw packed + metadata variants (advanced): `rust.packed.*` mirrors the native
+functions 1:1 (`jsonValidBatchPacked`, `jsonValidBatchCountPacked`,
+`queryParseBatchTotalLenPacked`, …).
+
+#### Configuring defaults
+
+Defaults are selected automatically, and can be overridden:
+
+```ts
+// Defaults:
+//   rayonThreads = max(1, hardwareConcurrency - 1)
+//                  (env override: RUST_BENCH_RAYON_THREADS / RUST_RAYON_THREADS)
+//   mimeCache    = true
+//   hmacCache    = true
+
+// Override per-instance options on the shared instance:
+rust.configure({ mimeCache: false, hmacCache: false });
+
+// Or create an isolated instance with custom defaults:
+import { createRust } from "bun-rust-practical";
+const myRust = createRust({ mimeCache: false });
+```
+
+> **Thread pool note**: the rayon pool is process-wide and initialized **once**
+> (native `OnceLock`) — the first initialization wins. Because importing the
+> module initializes it with the default, set
+> `RUST_BENCH_RAYON_THREADS` / `RUST_RAYON_THREADS` (or call
+> `rust.configure({ rayonThreads })` / `createRust({ rayonThreads })` before any
+> other pool use) to tune it. `mimeCache` / `hmacCache` are per-instance and can
+> be toggled any time.
 
 ### Sub-modules
 
 | Import | Description |
 |--------|-------------|
 | `import { encoder, decoder } from "bun-rust-practical"` | Text encode/decode utilities |
-| `import { packBatch, unpackBitset, unpackByteResults, unpackI64ArrayAsBigInt } from "bun-rust-practical"` | Batch packing utilities |
+| `import { packBatch, packPairs, unpackBitset, unpackByteResults, unpackI64ArrayAsBigInt, unpackU32Array } from "bun-rust-practical"` | Batch/pair packing + unpacking utilities |
+| `import { readPairsPacked, pairsToObject, readHttpPacked } from "bun-rust-practical"` | Decode packed pairs / parsed HTTP buffers |
+| `import { parseQueryString, parseCookieHeader } from "bun-rust-practical"` | High-level string parsers (no hand-packing) |
 | `import { jsonRowsBytes, createJsonRows } from "bun-rust-practical"` | JSON row serialization |
 | `import { createIngress, createIngressSync, createIngressFast } from "bun-rust-practical"` | HTTP ingress pipeline |
+
+```ts
+import { parseQueryString, parseCookieHeader } from "bun-rust-practical";
+
+parseQueryString("a=1&b=2&tag=a&tag=b"); // { a: "1", b: "2", tag: ["a", "b"] }
+parseCookieHeader("session=abc; theme=dark"); // { session: "abc", theme: "dark" }
+```
+
+> **Environment variables**: See [docs/ENVIRONMENT.md](./docs/ENVIRONMENT.md) for the
+> full reference of `INGRESS_*`, `RUST_BENCH_*` and `RUST_*` runtime variables.
 
 ### Ingress Pipeline
 
@@ -148,36 +251,6 @@ Bun.serve({
 });
 ```
 
-### Individual Rust Functions
-
-| Function | Description |
-|----------|-------------|
-| `crc32(input)` | CRC32 checksum |
-| `fnv1a64(input)` | FNV-1a 64-bit hash |
-| `hmacSha256(key, data)` | HMAC-SHA256 signature |
-| `hmacSha256Verify(key, data, sig)` | HMAC-SHA256 verification |
-| `jsonValid(input)` | JSON validity check |
-| `jsonSumIds(input)` | Sum all numeric `id` fields in JSON |
-| `jsonPatch(doc, patch)` | Apply JSON Patch (RFC 6902) |
-| `mimeFromExtension(ext)` | MIME type from file extension |
-| `randomToken(byteLen)` | Cryptographically secure random token |
-| `urlEncode(input)` | URL percent-encoding |
-| `urlDecode(input)` | URL percent-decoding |
-| `validateEmail(input)` | Email validation |
-| `validateUuid(input)` | UUID validation |
-| `validateIpv4(input)` | IPv4 address validation |
-| `validateIpv6(input)` | IPv6 address validation |
-| `wsAcceptKey(key)` | WebSocket accept key generation |
-
-### Batch Operations
-
-All individual operations have batch variants for high-throughput processing:
-
-- `jsonValidBatchPacked`, `validateEmailBatchPacked`, `validateUuidBatchPacked`
-- `jsonSumBatchPacked`, `queryParseBatchPacked`, `cookieParseBatchPacked`
-- `httpParseRequestBatchPacked`
-
-Async variants available: `jsonValidBatchPackedAsync`, `validateEmailBatchPackedAsync`, etc.
 
 ---
 
@@ -186,7 +259,6 @@ Async variants available: `jsonValidBatchPackedAsync`, `validateEmailBatchPacked
 ```
 bun-rust-practical/
 ├── index.ts                 # Entry point / public API
-├── index.d.ts               # Type declarations
 ├── bench.ts                 # Benchmark runner
 ├── build.rs                 # NAPI build script
 ├── Cargo.toml               # Rust dependencies & build config
@@ -195,8 +267,6 @@ bun-rust-practical/
 │
 ├── rust/                    # Rust source (cdylib)
 │   ├── lib.rs               # Crate root, module declarations
-│   ├── export.rs            # Public Rust API re-exports
-│   ├── runtime.rs           # Runtime abstraction trait
 │   ├── ingress.rs           # NAPI ingress class
 │   ├── cors.rs              # CORS engine
 │   ├── rate_limit.rs        # Keyed rate limiter
@@ -216,7 +286,6 @@ bun-rust-practical/
 │   ├── websocket.rs         # WebSocket utilities
 │   ├── random_token.rs      # Secure random token generation
 │   ├── batch.rs             # Batch processing
-│   ├── async_tasks.rs       # Async task management
 │   ├── method.rs            # HTTP method enum
 │   ├── headers.rs           # Header packing
 │   ├── output.rs            # Output buffer layout
@@ -230,14 +299,11 @@ bun-rust-practical/
 │   │   ├── index.ts         # Public API + async factory
 │   │   ├── fast.ts          # Fast synchronous handler
 │   │   ├── constants.ts     # Layout constants (from Rust)
-│   │   ├── packed-input.ts  # Input buffer packing
-│   │   └── smoke.ts         # Smoke test helpers
+│   │   └── packed-input.ts  # Input buffer packing
 │   ├── native/              # Native addon loader
-│   │   ├── index.ts         # Module loading + type definitions
-│   │   └── wrapper.ts       # Wrapper utilities
-│   ├── rust-ffi/            # Raw FFI bindings
-│   │   ├── index.ts         # Public exports
-│   │   └── raw.ts           # Direct FFI calls
+│   │   └── index.ts         # Module loading + type definitions
+│   ├── rust-ffi/            # Rust FFI bindings
+│   │   └── index.ts         # Flat, complete FFI API
 │   ├── baseline/            # JS baseline implementations
 │   │   ├── index.ts         # Aggregator
 │   │   └── tasks/           # Individual baseline implementations

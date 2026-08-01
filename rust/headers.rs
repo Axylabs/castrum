@@ -148,21 +148,21 @@ impl<'a> HeaderRefs<'a> {
                 }
             } else if first == b'x' {
                 let name_len = name.len();
-                if name_len == 16 && byte_slice_eq_ignore_case(name, b"x-forwarded-for") {
+                if name_len == 15 && byte_slice_eq_ignore_case(name, b"x-forwarded-for") {
                     h.flags |= HAS_XFF;
                     h.xff = Some(value);
                 } else if name_len == 9 && byte_slice_eq_ignore_case(name, b"x-real-ip") {
                     h.flags |= HAS_X_REAL_IP;
                     h.x_real_ip = Some(value);
-                } else if name_len == 19 && byte_slice_eq_ignore_case(name, b"x-forwarded-proto") {
+                } else if name_len == 17 && byte_slice_eq_ignore_case(name, b"x-forwarded-proto") {
                     h.flags |= HAS_XFP;
                     h.x_forwarded_proto = Some(value);
                 }
             } else if first == b'a' && is_options {
-                if name.len() == 38 && byte_slice_eq_ignore_case(name, b"access-control-request-method") {
+                if name.len() == 29 && byte_slice_eq_ignore_case(name, b"access-control-request-method") {
                     h.flags |= HAS_ACRM;
                     h.acrm = Some(value);
-                } else if name.len() == 39 && byte_slice_eq_ignore_case(name, b"access-control-request-headers") {
+                } else if name.len() == 30 && byte_slice_eq_ignore_case(name, b"access-control-request-headers") {
                     h.flags |= HAS_ACRH;
                     h.acrh = Some(value);
                 }

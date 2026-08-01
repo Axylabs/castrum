@@ -1,6 +1,6 @@
 // bench/servers/ingress-server.ts — production-ready optimized Bun ingress server
 import addon from "../../src/native";
-import { safeTerminalStatus } from "../../src/ingress";
+import { safeTerminalStatus, errorCodeName } from "../../src/ingress";
 import {
   PORTS,
   USER_SCHEMA_BYTES,
@@ -9,71 +9,107 @@ import {
   MAX_BODY_BYTES,
   SECURITY_HEADERS,
 } from "./shared";
+import {
+  OUT_VERDICT,
+  OUT_FLAGS,
+  OUT_RATE_LIMIT,
+  OUT_RATE_REMAINING,
+  OUT_RATE_RESET,
+  OUT_RETRY_AFTER,
+  OUT_COOKIES_JSON_LEN,
+  OUT_QUERY_JSON_LEN,
+  OUT_HEADER_VARIANT,
+  OUT_BODY_JSON_LEN,
+  OUT_DATA_START,
+  FLAG_BODY_VALID_JSON,
+  FLAG_SCHEMA_VALID,
+  FLAG_CORS_ALLOWED,
+  FLAG_IS_PREFLIGHT,
+  FLAG_RATE_LIMITED,
+  FLAG_TRUSTED_PROXY,
+  FLAG_BODY_TRUNCATED,
+  HV_JSON,
+  HV_CORS_SIMPLE,
+  HV_CORS_PREFLIGHT,
+  HV_RATE_ACTIVE,
+  HV_RATE_LIMITED,
+  ERR_CODE_NONE as ERROR_CODE_NONE,
+  ERR_CODE_CORS_PREFLIGHT as ERROR_CODE_CORS_PREFLIGHT,
+  ERR_CODE_RATE_LIMITED as ERROR_CODE_RATE_LIMITED,
+  ERR_CODE_BODY_TOO_LARGE as ERROR_CODE_BODY_TOO_LARGE,
+  ERR_CODE_INVALID_JSON as ERROR_CODE_INVALID_JSON,
+  ERR_CODE_SCHEMA_VALIDATION as ERROR_CODE_SCHEMA_VALIDATION,
+  ERR_CODE_BAD_REQUEST as ERROR_CODE_BAD_REQUEST,
+  ERR_CODE_REQUEST_TOO_LARGE as ERROR_CODE_REQUEST_TOO_LARGE,
+  ERR_CODE_INTERNAL as ERROR_CODE_INTERNAL,
+} from "../../src/ingress/constants";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-// ── Header variant bits (must match Rust) ──
-const HV_JSON = 1 << 0;
-const HV_CORS_SIMPLE = 1 << 1;
-const HV_CORS_PREFLIGHT = 1 << 2;
-const HV_RATE_ACTIVE = 1 << 3;
-const HV_RATE_LIMITED = 1 << 4;
+// ── Runtime configuration (validated) ──
 
-// ── Output buffer layout (must match Rust) ──
-const OUT_VERDICT = 0;
-const OUT_ERROR_CODE = 1;
-const OUT_STATUS = 2;
-const OUT_FLAGS = 4;
-const OUT_RATE_LIMIT = 8;
-const OUT_RATE_REMAINING = 12;
-const OUT_RATE_RESET = 16;
-const OUT_RETRY_AFTER = 24;
-const OUT_COOKIES_JSON_LEN = 32;
-const OUT_QUERY_JSON_LEN = 36;
-const OUT_HEADER_VARIANT = 40;
-const OUT_BODY_JSON_LEN = 44;
-const OUT_DATA_START = 48;
+/** Read a boolean env flag with a safe default; warn on invalid values. */
+function envFlag(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  const v = raw.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  console.warn(
+    `[ingress] WARN: env ${name}=${JSON.stringify(raw)} is not a boolean; using default ${defaultValue}`,
+  );
+  return defaultValue;
+}
 
-// ── Flags ──
-const FLAG_BODY_VALID_JSON = 1 << 2;
-const FLAG_SCHEMA_VALID = 1 << 3;
-const FLAG_CORS_ALLOWED = 1 << 4;
-const FLAG_IS_PREFLIGHT = 1 << 5;
-const FLAG_RATE_LIMITED = 1 << 6;
-const FLAG_BODY_TRUNCATED = 1 << 9;
+/** Read an integer env var with min/max clamping; warn on NaN. */
+function envNumber(
+  name: string,
+  defaultValue: number,
+  min: number,
+  max = Number.MAX_SAFE_INTEGER,
+): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.warn(
+      `[ingress] WARN: env ${name}=${JSON.stringify(raw)} is not a number; using default ${defaultValue}`,
+    );
+    return defaultValue;
+  }
+  if (n < min) {
+    console.warn(`[ingress] WARN: env ${name}=${n} below min ${min}; using ${min}`);
+    return min;
+  }
+  if (n > max) {
+    console.warn(`[ingress] WARN: env ${name}=${n} above max ${max}; using ${max}`);
+    return max;
+  }
+  return n;
+}
 
-// ── Error codes ──
-const ERROR_CODE_CORS_PREFLIGHT = 1;
-const ERROR_CODE_RATE_LIMITED = 2;
-const ERROR_CODE_BODY_TOO_LARGE = 3;
-const ERROR_CODE_INVALID_JSON = 4;
-const ERROR_CODE_SCHEMA_VALIDATION = 5;
-const ERROR_CODE_BAD_REQUEST = 6;
-const ERROR_CODE_REQUEST_TOO_LARGE = 7;
-const ERROR_CODE_INTERNAL = 8;
-
-// ── Runtime configuration ──
 const RATE_LIMIT_U32_MAX = 4_294_967_295;
 const RATE_ENABLED =
   RATE_LIMIT_CONFIG.limit !== RATE_LIMIT_U32_MAX &&
   RATE_LIMIT_CONFIG.limit > 0;
 
-const TRUST_PROXY = process.env.INGRESS_TRUST_PROXY !== "0";
+// SECURITY: proxy trust is OPT-IN. Defaulting to on lets any client spoof
+// X-Forwarded-For / X-Real-IP and impersonate arbitrary IPs for IP-based rate
+// limiting. Enable (INGRESS_TRUST_PROXY=1) only behind a trusted edge and pair
+// it with an explicit trusted-proxy network list.
+const TRUST_PROXY = envFlag("INGRESS_TRUST_PROXY", false);
 const HTTPS_FIXED = true;
 const NEED_SOCKET_IP = RATE_ENABLED;
 
-const EMIT_REQUEST_ID_HEADER = process.env.INGRESS_REQUEST_ID_HEADER === "1";
+const EMIT_REQUEST_ID_HEADER = envFlag("INGRESS_REQUEST_ID_HEADER", false);
 
 // Safe default: copy response bodies.
 // Do not enable zero-copy unless you implement per-response output buffers.
-const UNSAFE_ZERO_COPY = process.env.INGRESS_UNSAFE_ZERO_COPY === "1";
+const UNSAFE_ZERO_COPY = envFlag("INGRESS_UNSAFE_ZERO_COPY", false);
 const COPY_BODY = !UNSAFE_ZERO_COPY;
 
-const OUTPUT_BUF_SIZE = Math.max(
-  65536,
-  Number(process.env.INGRESS_OUTPUT_BUF_BYTES || 131072) | 0,
-);
+const OUTPUT_BUF_SIZE = envNumber("INGRESS_OUTPUT_BUF_BYTES", 131072, 65536);
 
 const MAX_URL_BYTES = 65536;
 const MAX_COOKIE_HEADER_BYTES = 8192;
@@ -82,9 +118,108 @@ const MAX_XFF_HEADER_BYTES = 8192;
 
 // Security headers are safe by default.
 // For maximum API throughput behind an edge/proxy, set INGRESS_SECURITY_HEADERS=0.
-const SECURITY_HEADERS_ENABLED = process.env.INGRESS_SECURITY_HEADERS !== "0";
+const SECURITY_HEADERS_ENABLED = envFlag("INGRESS_SECURITY_HEADERS", true);
 
-const REUSE_PORT = process.env.INGRESS_REUSE_PORT === "1";
+const REUSE_PORT = envFlag("INGRESS_REUSE_PORT", false);
+
+// Observability (both opt-in, both write JSON lines to stderr).
+const LOG_REQUESTS = envFlag("INGRESS_LOG_REQUESTS", false);
+const ENABLE_METRICS = envFlag("INGRESS_METRICS", false);
+
+const HOST = process.env.INGRESS_HOST || "0.0.0.0";
+const IDLE_TIMEOUT = envNumber("INGRESS_IDLE_TIMEOUT", 30, 1);
+const WORKER_ID = envNumber("INGRESS_WORKER_ID", 0, 0, 0xffff);
+
+// ── Request logging & metrics (opt-in) ────────────────────────────
+// INGRESS_LOG_REQUESTS=1 -> one JSON line per request on stderr.
+// INGRESS_METRICS=1      -> periodic aggregate summary on stderr.
+interface MetricsState {
+  total: number;
+  byStatusClass: { "2xx": number; "4xx": number; "5xx": number; "204": number };
+  rateLimited: number;
+  internalErrors: number;
+  startMs: number;
+}
+
+const metrics: MetricsState | null = ENABLE_METRICS
+  ? {
+      total: 0,
+      byStatusClass: { "2xx": 0, "4xx": 0, "5xx": 0, "204": 0 },
+      rateLimited: 0,
+      internalErrors: 0,
+      startMs: Date.now(),
+    }
+  : null;
+
+function logRequest(
+  req: Request,
+  result: FastIngressResult,
+  status: number,
+  requestId: string,
+): void {
+  if (!LOG_REQUESTS) return;
+
+  let path: string;
+  try {
+    path = new URL(req.url).pathname;
+  } catch {
+    path = req.url;
+  }
+
+  const entry: Record<string, unknown> = {
+    ts: new Date().toISOString(),
+    kind: "request",
+    requestId: requestId || undefined,
+    method: req.method,
+    path,
+    status,
+  };
+
+  if (result.errorCode !== ERROR_CODE_NONE) {
+    entry.errorCode = errorCodeName(result.errorCode);
+  }
+  if (result.rateLimited) entry.rateLimited = true;
+  if (result.trustedProxy) entry.trustedProxy = true;
+  if (result.retryAfterMs > 0) entry.retryAfterMs = result.retryAfterMs;
+
+  process.stderr.write(JSON.stringify(entry) + "\n");
+}
+
+function recordRequest(status: number, result: FastIngressResult): void {
+  if (!metrics) return;
+
+  metrics.total++;
+  if (status === 204) metrics.byStatusClass["204"]++;
+  else if (status >= 500) metrics.byStatusClass["5xx"]++;
+  else if (status >= 400) metrics.byStatusClass["4xx"]++;
+  else metrics.byStatusClass["2xx"]++;
+
+  if (result.rateLimited) metrics.rateLimited++;
+  if (result.errorCode === ERROR_CODE_INTERNAL) metrics.internalErrors++;
+}
+
+function startMetricsReporter(): void {
+  if (!metrics) return;
+
+  const timer = setInterval(() => {
+    const elapsedMs = Math.max(1, Date.now() - metrics.startMs);
+    const rps = metrics.total / (elapsedMs / 1000);
+    const summary = {
+      ts: new Date().toISOString(),
+      kind: "metrics",
+      total: metrics.total,
+      rps: Number(rps.toFixed(2)),
+      status: metrics.byStatusClass,
+      rateLimited: metrics.rateLimited,
+      internalErrors: metrics.internalErrors,
+      uptimeMs: elapsedMs,
+    };
+    process.stderr.write(JSON.stringify(summary) + "\n");
+  }, 10_000);
+
+  // Don't keep the process alive just for the reporter.
+  (timer as unknown as { unref?: () => void }).unref?.();
+}
 
 // ── Static header templates ──
 const STATIC_SECURITY_ENTRIES: ReadonlyArray<[string, string]> =
@@ -301,7 +436,7 @@ for (let i = 0; i < 256; i++) {
   reqIdHexLookup[i * 2 + 1] = "0123456789abcdef".charCodeAt(i & 0x0f);
 }
 
-const workerId = Number(process.env.INGRESS_WORKER_ID || 0) & 0xffff;
+const workerId = WORKER_ID & 0xffff;
 const bootRandom = (Math.random() * 0xffffffff) >>> 0;
 
 const reqIdCounter = {
@@ -350,6 +485,8 @@ class FastIngressResult {
   ok = false;
   isPreflight = false;
   corsAllowed = false;
+  rateLimited = false;
+  trustedProxy = false;
   bodyValidJson = false;
   schemaValid = false;
   bodyTruncated = false;
@@ -417,6 +554,8 @@ class FastIngressResult {
 
     this.isPreflight = (flags & FLAG_IS_PREFLIGHT) !== 0;
     this.corsAllowed = (flags & FLAG_CORS_ALLOWED) !== 0;
+    this.rateLimited = (flags & FLAG_RATE_LIMITED) !== 0;
+    this.trustedProxy = (flags & FLAG_TRUSTED_PROXY) !== 0;
     this.bodyValidJson = (flags & FLAG_BODY_VALID_JSON) !== 0;
     this.schemaValid = (flags & FLAG_SCHEMA_VALID) !== 0;
 
@@ -439,6 +578,8 @@ class FastIngressResult {
     this.ok = false;
     this.isPreflight = false;
     this.corsAllowed = false;
+    this.rateLimited = false;
+    this.trustedProxy = false;
     this.bodyValidJson = false;
     this.schemaValid = false;
     this.bodyTruncated = false;
@@ -623,7 +764,12 @@ function createOptimizedIngress(options: any): OptimizedIngressHandler {
       }
 
       try {
-        return fn(result, ctx);
+        const out = fn(result, ctx);
+        if (out instanceof Response) {
+          recordRequest(out.status, result);
+          logRequest(req, result, out.status, requestIdStr);
+        }
+        return out;
       } finally {
         result.invalidate();
         ctx.requestIdHeader = null;
@@ -952,9 +1098,9 @@ async function handleUsersWrite(req: Request, srv: any): Promise<Response> {
 
 // ── Server ──
 const serverOptions: any = {
-  hostname: process.env.INGRESS_HOST || "0.0.0.0",
+  hostname: HOST,
   port: PORTS.ingress,
-  idleTimeout: Number(process.env.INGRESS_IDLE_TIMEOUT || 30) | 0,
+  idleTimeout: IDLE_TIMEOUT,
   maxRequestBodySize: MAX_BODY_BYTES + 1024,
   routes: {
     "/health": {
@@ -1095,6 +1241,17 @@ try {
   }
 }
 
+startMetricsReporter();
+
 console.log(
   `[ingress] listening on :${PORTS.ingress} (optimized Bun.serve routes)`,
 );
+
+if (ENABLE_METRICS || LOG_REQUESTS) {
+  console.log(
+    `[ingress] config: trustProxy=${TRUST_PROXY} securityHeaders=${SECURITY_HEADERS_ENABLED} ` +
+      `rateLimit=${RATE_ENABLED ? `${RATE_LIMIT_CONFIG.limit}/${RATE_LIMIT_CONFIG.windowMs}ms` : "off"} ` +
+      `requestIdHeader=${EMIT_REQUEST_ID_HEADER} logRequests=${LOG_REQUESTS} metrics=${ENABLE_METRICS} ` +
+      `outputBuf=${OUTPUT_BUF_SIZE} idleTimeout=${IDLE_TIMEOUT} reusePort=${REUSE_PORT}`,
+  );
+}

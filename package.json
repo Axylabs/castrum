@@ -1,6 +1,6 @@
 {
     "name": "bun-rust-practical",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "private": false,
     "type": "module",
     "main": "index.ts",
@@ -12,9 +12,6 @@
     "files": [
         "index.ts",
         "bench.ts",
-        "native.ts",
-        "shared-practical.ts",
-        "data.ts",
         "src",
         "rust",
         "Cargo.toml",
@@ -24,6 +21,7 @@
         "build": "napi build --release --platform",
         "bench": "bun run build && bun bench.ts",
         "check": "bun bench.ts",
+        "test": "bun test",
         "build:debug": "napi build --platform",
         "artifacts": "napi artifacts",
         "prepublishOnly": "napi prepublish -t npm",
@@ -42,7 +40,6 @@
         "bench:http:all-heavy": "bun run bench/run-bench.ts 1"
     },
     "dependencies": {
-        "@elysia/cors": "^1.4.2",
         "cookie-es": "^3.1.1",
         "crc-32": "^1.2.2",
         "fast-json-patch": "^3.1.1",
@@ -50,10 +47,12 @@
         "validator": "^13.15.35"
     },
     "devDependencies": {
+        "@elysia/cors": "^1.4.2",
         "@napi-rs/cli": "^3.7.4",
         "@types/bun": "^1.3.14",
         "@types/mime-types": "^3.0.1",
-        "@types/validator": "^13.15.10"
+        "@types/validator": "^13.15.10",
+        "elysia": "^1.4.0"
     },
     "engines": {
         "bun": ">=1.1.0"

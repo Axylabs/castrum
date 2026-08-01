@@ -1,12 +1,15 @@
-[target.x86_64-unknown-linux-gnu]
-rustflags = [
-  "-C", "target-cpu=x86-64-v3",
-  "-C", "target-feature=+avx2,+bmi2,+fma,+sse4.2",
-  "-C", "link-arg=-Wl,--gc-sections",
-]
-
-[target.x86_64-apple-darwin]
-rustflags = [
-  "-C", "target-cpu=x86-64-v3",
-  "-C", "target-feature=+avx2,+bmi2,+fma,+sse4.2",
-]
+# Cargo build configuration
+#
+# IMPORTANT: Machine-local CPU tuning is intentionally NOT applied here.
+# Published artifacts (napi build --release) must run on baseline x86-64 and
+# aarch64, so we build for the default target. Committing hardcoded
+# `-C target-cpu=x86-64-v3` here previously made every release artifact require
+# AVX2/BMI2/FMA and silently leaked a machine-local setting into what got
+# published (and there was no aarch64 equivalent).
+#
+# If you are benchmarking locally and want maximum SIMD throughput, build with:
+#
+#   CARGO_BUILD_RUSTFLAGS="-C target-cpu=x86-64-v3 -C target-feature=+avx2,+bmi2,+fma,+sse4.2 -C link-arg=-Wl,--gc-sections" \
+#     bun run build
+#
+# (or create a local, uncommitted .cargo/config.toml with the flags above).

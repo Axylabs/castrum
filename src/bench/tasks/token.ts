@@ -1,5 +1,5 @@
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi/raw";
+import { rust } from "../../rust-ffi";
 import type { BenchTask } from "../types";
 
 export function tokenTasks(): BenchTask[] {

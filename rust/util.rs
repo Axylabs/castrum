@@ -497,11 +497,6 @@ pub fn should_parallelize(items: usize, bytes: usize) -> bool {
 }
 
 #[inline(always)]
-pub fn tokio_join_error(e: tokio::task::JoinError) -> Error {
-    Error::from_reason(format!("tokio blocking task failed: {e}"))
-}
-
-#[inline(always)]
 pub fn slices_overlap(a: &[u8], b: &[u8]) -> bool {
     if a.is_empty() || b.is_empty() {
         return false;

@@ -25,6 +25,7 @@ import {
   buildResponseContext,
   buildTerminalResponse,
   headersForResult,
+  createIngressFast,
   METHOD_KIND,
 } from "../../../src/ingress/fast";
 
@@ -604,5 +605,37 @@ describe("headersForResult", () => {
 
     const headers = headersForResult(ctx, r, new Request("http://localhost"), "req-001");
     expect(headers.get("x-request-id")).toBe("req-001");
+  });
+});
+
+describe("createIngressFast option validation", () => {
+  test("throws with a clear message on unknown option keys", () => {
+    // Misspelled keys would otherwise be silently ignored by the native addon.
+    expect(() => createIngressFast({ parseQuer: true } as any)).toThrow(
+      /unknown option 'parseQuer'/,
+    );
+  });
+
+  test("accepts known option keys", () => {
+    expect(() =>
+      createIngressFast({ parseQuery: true, parseCookies: true }),
+    ).not.toThrow();
+  });
+});
+
+describe("shared rate limiter across instances", () => {
+  test("same rate-limit config shares one budget (no route-splitting bypass)", () => {
+    const rl = { rateLimit: { limit: 2, windowMs: 60_000 } };
+    const a = createIngressFast(rl);
+    const b = createIngressFast(rl);
+    const ip = "203.0.113.10";
+    const hit = (h: ReturnType<typeof createIngressFast>, rid: string) =>
+      h.run(new Request("https://x.test/api", { method: "GET" }), ip, null, rid, (r) => r.status);
+
+    // Budget of 2 shared across both instances.
+    expect(hit(a, "0000000000000001")).toBe(200);
+    expect(hit(b, "0000000000000002")).toBe(200);
+    expect(hit(a, "0000000000000003")).toBe(429);
+    expect(hit(b, "0000000000000004")).toBe(429);
   });
 });

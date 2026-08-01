@@ -1,8 +1,10 @@
 use crate::hashing::fast_hash_bytes;
 use lru::LruCache;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 static LIMITER_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -156,4 +158,46 @@ fn advance_window(c: &mut Counter, now_ms: u64, window: u64) {
         c.prev = c.curr;
         c.curr = 0;
     }
+}
+
+// ── Shared limiter registry ───────────────────────────────────────
+// Rate limiting must be shared across all ingress instances/routes in the
+// process, otherwise a client can bypass a per-IP limit by spreading requests
+// across endpoints (each route would get its own independent bucket). All
+// instances configured with the same (limit, window_ms, max_entries) share one
+// process-wide limiter.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct LimiterKey {
+    limit: u32,
+    window_ms: u32,
+    max_entries: usize,
+}
+
+static SHARED_LIMITERS: OnceLock<Mutex<HashMap<LimiterKey, Arc<KeyedRateLimiter>>>> =
+    OnceLock::new();
+
+/// Return the process-wide shared limiter for the given configuration.
+/// Instances with identical configuration share the same underlying limiter.
+pub fn shared_limiter(
+    limit: u32,
+    window_ms: u32,
+    max_entries: Option<usize>,
+) -> Arc<KeyedRateLimiter> {
+    let resolved = max_entries.unwrap_or(1_048_576);
+    let key = LimiterKey {
+        limit,
+        window_ms,
+        max_entries: resolved,
+    };
+
+    let map = SHARED_LIMITERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock();
+
+    if let Some(existing) = guard.get(&key) {
+        return existing.clone();
+    }
+
+    let limiter = Arc::new(KeyedRateLimiter::new(limit, window_ms, Some(resolved)));
+    guard.insert(key, limiter.clone());
+    limiter
 }

@@ -23,9 +23,6 @@
   "include": [
     "index.ts",
     "bench.ts",
-    "native.ts",
-    "shared-practical.ts",
-    "data.ts",
     "src"
   ]
 }

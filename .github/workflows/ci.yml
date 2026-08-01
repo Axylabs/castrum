@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Rust correctness & lint ──────────────────────────────────────
+  rust:
+    name: Rust (fmt, clippy, test, deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test
+      - name: Dependency audit
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+  # ── TypeScript correctness ───────────────────────────────────────
+  typescript:
+    name: TS (build, test, typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+      - name: Build native addon (host)
+        run: bun run build:debug
+      - name: Unit tests
+        run: bun test
+      - name: Typecheck
+        run: bunx --bun tsc --noEmit
+      - name: Correctness checks (native vs baseline)
+        run: bun run check
+
+  # ── Multi-platform addon artifacts ───────────────────────────────
+  # Produces portable (baseline CPU) artifacts for every napi target.
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs: [rust, typescript]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: napi-rs/napi-rs-action@v2
+        with:
+          target: ${{ matrix.target }}
+      - run: bun install --frozen-lockfile
+      - name: Build release addon
+        run: bun run build

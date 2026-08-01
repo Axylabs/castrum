@@ -17,12 +17,16 @@ impl ProxyTrustMode {
             return Ok(Self::None);
         }
 
+        // Safety: an enabled trust-proxy mode with NO explicit networks must
+        // never fall back to ProxyTrustMode::All (which trusts every hop and
+        // lets clients spoof X-Forwarded-For). Treat it as "trust nothing"
+        // unless the operator explicitly lists trusted networks.
         let Some(networks) = networks else {
-            return Ok(Self::All);
+            return Ok(Self::Networks(Vec::new()));
         };
 
         if networks.is_empty() {
-            return Ok(Self::All);
+            return Ok(Self::Networks(Vec::new()));
         }
 
         let mut out = Vec::with_capacity(networks.len());
@@ -46,11 +50,8 @@ impl ProxyTrustMode {
             }
         }
 
-        if out.is_empty() {
-            Ok(Self::All)
-        } else {
-            Ok(Self::Networks(out))
-        }
+        // Networks that filtered down to nothing -> trust nothing (see above).
+        Ok(Self::Networks(out))
     }
 
     #[inline(always)]

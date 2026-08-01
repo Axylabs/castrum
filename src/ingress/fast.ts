@@ -434,11 +434,6 @@ export class FastIngressResult {
 
     return this._buf.subarray(this._bodyJsonStart, end);
   }
-
-  bodyJsonCopy(): Uint8Array {
-    const slice = this.bodyJson();
-    return slice.byteLength > 0 ? slice.slice() : slice;
-  }
 }
 
 // ── Status helpers ──────────────────────────────────────────
@@ -931,10 +926,48 @@ export interface IngressFastHandler {
   ): T;
 }
 
+// ── Option validation (fail fast on misspelled keys) ─────────────
+// Options are forwarded to the native addon as a plain object; a misspelled
+// key would otherwise be silently ignored. Validate against the known set so
+// misconfiguration fails loudly at construction time.
+const KNOWN_INGRESS_OPTION_KEYS: ReadonlySet<string> = new Set([
+  "trustProxy",
+  "trustedProxies",
+  "parseCookies",
+  "parseQuery",
+  "requireJsonBody",
+  "schema",
+  "cors",
+  "rateLimit",
+  "security",
+  "https",
+  "maxBodyBytes",
+  "enableSecurityHeaders",
+  "enableRequestIds",
+  "enableBodySizeGuard",
+  "emitMetadataJson",
+  "readBody",
+  "outputBufferSize",
+  "limits",
+]);
+
+function assertKnownIngressOptions(options: IngressFastOptions): void {
+  for (const key of Object.keys(options)) {
+    if (!KNOWN_INGRESS_OPTION_KEYS.has(key)) {
+      throw new TypeError(
+        `createIngressFast: unknown option '${key}'. ` +
+          `Known options: ${[...KNOWN_INGRESS_OPTION_KEYS].sort().join(", ")}`,
+      );
+    }
+  }
+}
+
 // ── Fast ingress factory ─────────────────────────────
 export function createIngressFast(
   options: IngressFastOptions = {},
 ): IngressFastHandler {
+  assertKnownIngressOptions(options);
+
   const rustOptions: Record<string, unknown> = {
     trustProxy: options.trustProxy,
     trustedProxies: options.trustedProxies

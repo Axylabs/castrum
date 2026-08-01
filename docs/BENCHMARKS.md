@@ -27,11 +27,6 @@ The benchmark system compares Rust FFI implementations against pure JavaScript/B
 ```bash
 # Run all unit benchmarks
 bun bench.ts
-
-# Run specific benchmark task
-bun bench.ts --filter hashing
-bun bench.ts --filter validation
-bun bench.ts --filter json
 ```
 
 ### HTTP Benchmarks
@@ -66,52 +61,71 @@ bun run bench:http:all-heavy
 Each scenario targets a specific performance aspect:
 
 ### 01-smoke
-- **Goal**: Quick health check
+- **Goal**: Quick health check (health, GET, POST mix)
 - **Duration**: ~10 seconds
-- **Concurrency**: 10 connections
-- **Payload**: Small JSON
+- **Concurrency**: up to 50
 
-### 02-stress
-- **Goal**: Maximum throughput
+### 02-load
+- **Goal**: Sustained mixed load (warm-up → sustain → cool-down)
+- **Duration**: ~120 seconds
+- **Concurrency**: up to 1,000
+- **Traffic**: GET/POST mix with cookies, health
+
+### 03-stress
+- **Goal**: Ramp to maximum throughput
+- **Duration**: ~100 seconds (5 × 20s ramp phases)
+- **Concurrency**: up to 10,000
+
+### 04-spike
+- **Goal**: Burst resilience (baseline → spike → recovery)
+- **Duration**: ~100 seconds
+- **Concurrency**: up to 8,000 (spikes up to 5,000 req/s)
+
+### 05-soak
+- **Goal**: Endurance/stability
+- **Duration**: ~600 seconds (10 minutes)
+- **Concurrency**: up to 1,000
+
+### 06-edge-cases
+- **Goal**: Malformed / edge-case payloads
 - **Duration**: ~30 seconds
-- **Concurrency**: 100 connections
-- **Payload**: Small JSON
+- **Concurrency**: up to 200
+- **Traffic**: invalid JSON, schema failures, 404/405/415/422, Unicode, oversize query
 
-### 03-heavy-json
+### 07-cors-preflight
+- **Goal**: CORS preflight storm (allowed + disallowed origins)
+- **Duration**: ~30 seconds
+- **Concurrency**: up to 500
+
+### 08-rate-limit
+- **Goal**: Rate limiting (under limit → over limit → recovery)
+- **Duration**: ~40 seconds
+- **Concurrency**: up to 1,000
+
+### 09-large-payload
 - **Goal**: Large payload handling
 - **Duration**: ~30 seconds
-- **Concurrency**: 50 connections
-- **Payload**: Large JSON (10KB+)
+- **Concurrency**: up to 100
+- **Payload**: large binary + large JSON arrays
 
-### 04-crud
-- **Goal**: Mixed operation throughput
+### 10-mixed-realistic
+- **Goal**: Realistic mixed traffic (origins, cookies, auth)
+- **Duration**: ~60 seconds (ramp)
+- **Concurrency**: up to 5,000
+
+### 11-concurrent-burst
+- **Goal**: High-concurrency bursts with pauses
+- **Duration**: ~35 seconds
+- **Concurrency**: up to 8,000
+
+### 12-slowloris
+- **Goal**: Slow clients
 - **Duration**: ~60 seconds
-- **Concurrency**: 50 connections
-- **Operations**: GET, POST, PUT, DELETE mix
+- **Concurrency**: up to 500
 
-### 05-spike
-- **Goal**: Burst resilience
-- **Duration**: ~60 seconds
-- **Concurrency**: 10 → 200 → 10 (stepped)
-- **Payload**: Small JSON
+### Heavy JSON scenarios (`13`–`20`)
 
-### 06-soak
-- **Goal**: Endurance/stability
-- **Duration**: ~300 seconds
-- **Concurrency**: 50 connections
-- **Payload**: Small JSON
-
-### 07-storm
-- **Goal**: Burst throughput
-- **Duration**: ~30 seconds
-- **Concurrency**: 500 connections
-- **Payload**: Small JSON
-
-### 08-boundary
-- **Goal**: Edge case handling
-- **Duration**: ~30 seconds
-- **Concurrency**: 10 connections
-- **Payload**: Empty, very large, malformed
+`13-heavy-json-nested` … `20-validation-storm` stress schema validation with nested, array-heavy, wide, CRUD-mix, spike, soak, large-body, and storm payloads. Run them with `bun run bench:http:heavy`.
 
 ---
 
@@ -193,7 +207,6 @@ bench/servers/
 ├── bun-server.ts       # Raw Bun.serve with manual routing
 ├── elysia-server.ts    # Elysia framework
 ├── ingress-server.ts   # Ingress (this project) optimized handler
-├── ingress-cluster.ts  # Ingress with multi-process clustering
 └── shared.ts           # Shared route handlers
 ```
 

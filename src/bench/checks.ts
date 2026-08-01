@@ -1,5 +1,5 @@
 import * as native from "../baseline";
-import { rust, rustBatch } from "../rust-ffi/raw";
+import { rust, rustBatch } from "../rust-ffi";
 import { decoder } from "../shared/bytes";
 import { pairsToObject, readHttpPacked, readPairsPacked } from "../shared/packed";
 import { assertDeepEqual, assertEqual, parseJsonBytes } from "./assert";
@@ -52,31 +52,31 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
 
   assertEqual(
     native.nativeHmacSha256Verify(f.hmacKey, f.hmacData, f.hmacSig),
-    rust.hmacSha256Verify(f.hmacKey, f.hmacData, f.hmacSig) === 1,
+    rust.hmacSha256Verify(f.hmacKey, f.hmacData, f.hmacSig),
     "hmac verify",
   );
 
   assertEqual(
     native.nativeValidateEmail(f.emailOk),
-    rust.validateEmail(f.emailOk) === 1,
+    rust.validateEmail(f.emailOk),
     "email valid",
   );
 
   assertEqual(
     native.nativeValidateUuid(f.uuidOk),
-    rust.validateUuid(f.uuidOk) === 1,
+    rust.validateUuid(f.uuidOk),
     "uuid valid",
   );
 
   assertEqual(
     native.nativeValidateIpv4(f.ipv4Ok),
-    rust.validateIpv4(f.ipv4Ok) === 1,
+    rust.validateIpv4(f.ipv4Ok),
     "ipv4 valid",
   );
 
   assertEqual(
     native.nativeValidateIpv6(f.ipv6Ok),
-    rust.validateIpv6(f.ipv6Ok) === 1,
+    rust.validateIpv6(f.ipv6Ok),
     "ipv6 valid",
   );
 
@@ -88,13 +88,13 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
 
   assertEqual(
     native.nativeFnv1a64(f.crcInput),
-    rust.fnv1A64(f.crcInput),
-    "fnv1A64",
+    rust.fnv1a64(f.crcInput),
+    "fnv1a64",
   );
 
    assertEqual(
     native.nativeJsonValid(f.jsonPayload),
-    rust.jsonValid(f.jsonPayload) === 1,
+    rust.jsonValid(f.jsonPayload),
     "json valid",
   );
 
@@ -173,21 +173,21 @@ export function runComplexCorrectnessChecks(
   // Large JSON validation
   assertEqual(
     native.nativeJsonValid(c.jsonLarge),
-    rust.jsonValid(c.jsonLarge) === 1,
+    rust.jsonValid(c.jsonLarge),
     "large json valid",
   );
 
   // Huge JSON validation
   assertEqual(
     native.nativeJsonValid(c.jsonHuge),
-    rust.jsonValid(c.jsonHuge) === 1,
+    rust.jsonValid(c.jsonHuge),
     "huge json valid",
   );
 
   // Deep nested JSON validation
   assertEqual(
     native.nativeJsonValid(c.jsonNestedDeep),
-    rust.jsonValid(c.jsonNestedDeep) === 1,
+    rust.jsonValid(c.jsonNestedDeep),
     "deep json valid",
   );
 

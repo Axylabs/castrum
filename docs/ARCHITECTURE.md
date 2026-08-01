@@ -21,7 +21,6 @@ bun-rust-practical is a **hybrid Bun + Rust** runtime benchmark package that pro
 │                                                             │
 │  Purpose: Performance-critical computation, I/O handling     │
 │  Allocator: mimalloc (global)                                │
-│  Async Runtime: tokio (multi-threaded)                       │
 │  Pattern: Stateless functions, pre-allocated buffers         │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -31,8 +30,7 @@ bun-rust-practical is a **hybrid Bun + Rust** runtime benchmark package that pro
 The bridge between TypeScript and Rust is provided by [napi-rs](https://napi.rs/) v3. Key characteristics:
 
 - **Zero-copy buffer sharing**: `Uint8Array` objects are passed by reference to Rust, avoiding serialization
-- **Synchronous calls**: Most functions are synchronous, running on the main JS thread
-- **Async via tokio**: Async functions use tokio's work-stealing thread pool
+- **Synchronous calls**: All functions are synchronous, running on the main JS thread
 - **Thread pool**: Rayon is available for parallel CPU-bound work
 
 ---
@@ -44,8 +42,6 @@ The bridge between TypeScript and Rust is provided by [napi-rs](https://napi.rs/
 ```
 rust/
 ├── lib.rs                 ── Crate root: module declarations, global allocator
-├── export.rs              ── Public Rust API re-exports for downstream consumers
-├── runtime.rs             ── Runtime abstraction trait (NAPI vs Native)
 │
 ├── Core Pipeline:
 │   ├── ingress.rs         ── Main NAPI Ingress class, pipeline orchestration
@@ -79,8 +75,7 @@ rust/
 │   └── websocket.rs       ── WebSocket accept key generation
 │
 ├── Batch:
-│   ├── batch.rs           ── Batch processing engine
-│   └── async_tasks.rs     ── Async task management
+│   └── batch.rs           ── Batch processing engine
 │
 ├── Utilities:
 │   ├── method.rs          ── HTTP method enum + kind mapping
@@ -101,16 +96,13 @@ src/
 │   ├── index.ts           ── Public API + async factory
 │   ├── fast.ts            ── Fast synchronous handler
 │   ├── constants.ts       ── Layout constants (from Rust NAPI)
-│   ├── packed-input.ts    ── Input buffer packing
-│   └── smoke.ts           ── Smoke test helpers
+│   └── packed-input.ts    ── Input buffer packing
 │
 ├── native/                ── Native addon loading
-│   ├── index.ts           ── Module loader + type definitions
-│   └── wrapper.ts         ── Wrapper/helper utilities
+│   └── index.ts           ── Module loader + type definitions
 │
-├── rust-ffi/              ── Raw FFI bindings
-│   ├── index.ts           ── Re-exports
-│   └── raw.ts             ── Direct FFI function calls
+├── rust-ffi/              ── Rust FFI bindings
+│   └── index.ts           ── Flat, complete FFI API
 │
 ├── baseline/              ── JS baseline implementations
 │   ├── index.ts           ── Aggregator
@@ -229,7 +221,6 @@ Multiple Inputs
 │  - Iterate over packed inputs in a tight loop                │
 │  - Process each through validation pipeline                   │
 │  - Write results as packed output (bitset or length-prefixed)│
-│  - Optional async via tokio spawn_blocking                    │
 └──────────────────┬───────────────────────────────────────────┘
                    │ packed results
                    ▼
@@ -259,9 +250,8 @@ Offset (bytes)
 ├─ 32: OUT_COOKIES_JSON_LEN (u32)   Cookie JSON length (LE)
 ├─ 36: OUT_QUERY_JSON_LEN   (u32)   Query JSON length (LE)
 ├─ 40: OUT_HEADER_VARIANT   (u8)    Header variant index
-├─ 41: OUT_BODY_JSON_LEN    (u32)   Body metadata JSON length (LE)
-├─ 45: reserved
-├─ 64: OUT_DATA_START       ─── Variable-length data starts here
+├─ 44: OUT_BODY_JSON_LEN    (u32)   Body metadata JSON length (LE)
+├─ 48: OUT_DATA_START       ─── Variable-length data starts here
 │      ├── Cookie JSON string (if present)
 │      ├── Query JSON string (if present)
 │      └── Body metadata JSON (if emitMetadataJson enabled)
@@ -298,23 +288,6 @@ Offset (bytes)
 
 ---
 
-## Runtime Abstraction
-
-The `Runtime` trait (`rust/runtime.rs`) allows the same Rust code to work in both NAPI (Bun/Node) and native (CLI/test) contexts:
-
-```rust
-pub trait Runtime {
-    type Buffer: AsRef<[u8]> + AsMut<[u8]>;
-    fn alloc_buffer(len: usize) -> Self::Buffer;
-    fn now_ms() -> u64;
-}
-```
-
-- **`NativeRuntime`**: Uses `Vec<u8>` for buffers, `SystemTime` for timestamps — for testing
-- **NAPI runtime**: Uses napi-rs `Uint8Array` for buffers (implicit, no explicit trait impl needed)
-
----
-
 ## Memory Management
 
 1. **Global allocator**: mimalloc (`MiMalloc`) for fast, scalable allocation
@@ -328,7 +301,6 @@ pub trait Runtime {
 ## Concurrency Model
 
 - **Synchronous calls**: Run on the main JS thread (Bun's event loop)
-- **Async calls**: Delegate to tokio's multi-threaded runtime via `spawn_blocking`
 - **Rayon**: Available for parallel CPU-bound work (e.g., batch validation)
 - **Rate limiter**: Uses `parking_lot::Mutex` for low-contention access
 
@@ -344,9 +316,6 @@ pub trait Runtime {
               ├─── [json_ser] ──── [util]
               ├─── [query_parser]
               └─── [cookie_parser]
-                        │
-                   [runtime] ──── [export]
-                        │
               [hashing] ──── [hmac_sha256]
               [validation]
               [json_ops] ──── [json_patch_ops]
@@ -355,5 +324,5 @@ pub trait Runtime {
               [mime_lookup]
               [websocket]
               [random_token]
-              [batch] ──── [async_tasks]
+              [batch]
               [http_parser]

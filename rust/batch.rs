@@ -193,27 +193,3 @@ fn http_parse_request_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
 #[napi] pub fn cookie_parse_batch_total_len_packed(input: Uint8Array) -> Result<u32> { total_len_batch_data(input.as_ref(), |i| Ok(cookie_parse_packed_vec(i)), 256) }
 #[napi] pub fn http_parse_request_batch_total_len_packed(input: Uint8Array) -> Result<u32> { total_len_batch_data(input.as_ref(), http_parse_request_packed_vec, 256) }
 
-// ── Async packed batch APIs ──
-
-macro_rules! packed_async_fn {
-    ($fn_name:ident, $func:path) => {
-        #[napi]
-        pub async fn $fn_name(input: Uint8Array) -> Result<Buffer> {
-            let packed = input.as_ref().to_vec();
-            let output = tokio::task::spawn_blocking(move || $func(&packed))
-                .await
-                .map_err(crate::util::tokio_join_error)?;
-            Ok(Buffer::from(output?))
-        }
-    };
-}
-
-packed_async_fn!(json_valid_batch_packed_async, json_valid_batch_bytes);
-packed_async_fn!(validate_email_batch_packed_async, validate_email_batch_bytes);
-packed_async_fn!(validate_uuid_batch_packed_async, validate_uuid_batch_bytes);
-packed_async_fn!(validate_ipv4_batch_packed_async, validate_ipv4_batch_bytes);
-packed_async_fn!(validate_ipv6_batch_packed_async, validate_ipv6_batch_bytes);
-packed_async_fn!(json_sum_batch_packed_async, json_sum_batch_bytes);
-packed_async_fn!(query_parse_batch_packed_async, query_parse_batch_bytes);
-packed_async_fn!(cookie_parse_batch_packed_async, cookie_parse_batch_bytes);
-packed_async_fn!(http_parse_request_batch_packed_async, http_parse_request_batch_bytes);

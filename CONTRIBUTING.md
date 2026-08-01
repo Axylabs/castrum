@@ -23,8 +23,8 @@ Thank you for your interest in contributing to bun-rust-practical! This document
 ### Setup Steps
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/Axylabs/flux-rs.git
+# 1. Clone the repository (or your fork)
+git clone <repository-url>
 cd bun-rust-practical
 
 # 2. Install dependencies
@@ -34,15 +34,16 @@ bun install
 bun run build
 
 # 4. Verify the build
-bun bench.ts --check
+bun run check
 ```
 
 ### Development Workflow
 
 1. **Make changes to Rust code** → `cargo build --release` (or `bun run build`)
 2. **Make changes to TypeScript code** → No build step needed (Bun runs TS directly)
-3. **Run tests** → `bun test`
-4. **Run benchmarks** → `bun bench.ts`
+3. **Run Rust tests** → `cargo test`
+4. **Run TypeScript tests** → `bun test`
+5. **Run benchmarks** → `bun bench.ts`
 
 ## Project Architecture
 
@@ -51,8 +52,8 @@ bun bench.ts --check
 ```
 /
 ├── rust/          # Rust source (NAPI cdylib)
-│   ├── lib.rs     # Crate root — module declarations only
-│   ├── export.rs  # Public API for downstream Rust consumers
+│   ├── lib.rs     # Crate root — module declarations
+│   ├── unit_tests.rs # Rust unit tests (run with `cargo test`)
 │   ├── *.rs       # One module per functional area
 │   └── ...
 ├── src/           # TypeScript source
@@ -73,7 +74,7 @@ bun bench.ts --check
 1. **Zero-copy where possible**: Rust functions accept and return `Uint8Array` to avoid serialization overhead
 2. **Batch operations**: High-throughput operations process multiple items in a single FFI call
 3. **Lazy decoding**: Parse result buffers on-demand rather than eagerly
-4. **Runtime abstraction**: The `Runtime` trait allows the same Rust code to work under NAPI or native contexts
+4. **Pure-Rust core**: Modules keep napi types out of internal signatures so the core stays testable and composable (`cargo test`)
 5. **Single source of truth**: Output buffer layout constants come from Rust via NAPI exports
 
 ## Coding Standards
@@ -162,7 +163,7 @@ test/
 ### Writing Tests
 
 - **TypeScript tests**: Use Bun's built-in test runner (`bun test`)
-- **Rust tests**: Use `#[cfg(test)]` modules within each source file
+- **Rust tests**: `cargo test` — core logic lives in `rust/unit_tests.rs` (wired from `lib.rs`)
 - **Property-based tests**: Use `fast-check` for TypeScript
 - **Naming**: `describe` blocks for modules, `test` for individual cases
 - **Edge cases**: Always include: empty input, max-size input, invalid input, concurrent access

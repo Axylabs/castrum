@@ -1,5 +1,5 @@
 import * as native from "../../baseline";
-import { rust, rustBatch } from "../../rust-ffi/raw";
+import { rust, rustBatch } from "../../rust-ffi";
 import type { ComplexFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 

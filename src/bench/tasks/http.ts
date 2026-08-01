@@ -1,5 +1,5 @@
 import * as native from "../../baseline";
-import { rust } from "../../rust-ffi/raw";
+import { rust } from "../../rust-ffi";
 import { readHttpPacked } from "../../shared/packed";
 import type { BenchFixtures } from "../fixtures";
 import type { BenchTask } from "../types";

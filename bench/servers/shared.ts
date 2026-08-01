@@ -81,9 +81,3 @@ export function validateUserBody(body: unknown): string | null {
 }
 
 export const MAX_BODY_BYTES = 8 * 1024 * 1024;
-
-// ── REMOVED (replaced by Bun / framework primitives): ──
-// - jsonBytes()       → Response.json()
-// - parseCookies()    → req.cookies (Bun) / cookie context (Elysia) / cookie-es
-// - parseQuery()      → inline URLSearchParams / query context (Elysia)
-// - nextRequestId()   → crypto.randomUUID()

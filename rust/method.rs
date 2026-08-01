@@ -61,16 +61,36 @@ impl MethodKind {
 
         // Mask the 5th bit (0x20) of all alphabetic bytes for case-insensitive comparison.
         let lower = loaded | 0x2020_2020_2020_2020;
-        let masked = METHOD_GET | 0x2020_2020_2020_2020;
+
+        // Zero the bytes beyond `len` on BOTH operands. The mask must be applied
+        // to the reference constants too, otherwise the padding bytes (0x20 after
+        // the OR above) never match and every method classifies as Other.
+        let mask = match len {
+            3 => 0x00FF_FFFF_FFFF_FFFFu64,
+            4 => 0x0000_FFFF_FFFF_FFFFu64,
+            5 => 0x0000_00FF_FFFF_FFFFu64,
+            6 => 0x0000_0000_FFFF_FFFFu64,
+            7 => 0x0000_0000_00FF_FFFFu64,
+            _ => 0,
+        };
+
+        let lower_masked = lower & mask;
+        let get = (METHOD_GET | 0x2020_2020_2020_2020) & mask;
+        let put = (METHOD_PUT | 0x2020_2020_2020_2020) & mask;
+        let post = (METHOD_POST | 0x2020_2020_2020_2020) & mask;
+        let head = (METHOD_HEAD | 0x2020_2020_2020_2020) & mask;
+        let patch = (METHOD_PATCH | 0x2020_2020_2020_2020) & mask;
+        let delete = (METHOD_DELETE | 0x2020_2020_2020_2020) & mask;
+        let options = (METHOD_OPTIONS | 0x2020_2020_2020_2020) & mask;
 
         match len {
-            3 if (lower & 0x00FF_FFFF_FFFF_FFFF) == masked => Self::Get,
-            3 if (lower & 0x00FF_FFFF_FFFF_FFFF) == (METHOD_PUT | 0x2020_2020_2020_2020) => Self::Put,
-            4 if (lower & 0x0000_FFFF_FFFF_FFFF) == (METHOD_POST | 0x2020_2020_2020_2020) => Self::Post,
-            4 if (lower & 0x0000_FFFF_FFFF_FFFF) == (METHOD_HEAD | 0x2020_2020_2020_2020) => Self::Head,
-            5 if (lower & 0x0000_00FF_FFFF_FFFF) == (METHOD_PATCH | 0x2020_2020_2020_2020) => Self::Patch,
-            6 if (lower & 0x0000_0000_FFFF_FFFF) == (METHOD_DELETE | 0x2020_2020_2020_2020) => Self::Delete,
-            7 if (lower & 0x0000_0000_00FF_FFFF) == (METHOD_OPTIONS | 0x2020_2020_2020_2020) => Self::Options,
+            3 if lower_masked == get => Self::Get,
+            3 if lower_masked == put => Self::Put,
+            4 if lower_masked == post => Self::Post,
+            4 if lower_masked == head => Self::Head,
+            5 if lower_masked == patch => Self::Patch,
+            6 if lower_masked == delete => Self::Delete,
+            7 if lower_masked == options => Self::Options,
             _ => Self::Other,
         }
     }

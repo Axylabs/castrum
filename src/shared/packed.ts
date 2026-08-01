@@ -1,4 +1,5 @@
 import { decoder, encoder } from "./bytes";
+import addon from "../native";
 import type { SchemaValidatorInstance } from "../native";
 
 export type SchemaValidator = SchemaValidatorInstance;
@@ -292,4 +293,24 @@ export function schemaValidateBatchCount(
   items: Uint8Array[],
 ): number {
   return validator.validateBatchPackedCount(packBatch(items));
+}
+
+// ── High-level string parsers (convenience) ──────────────────────
+// Wrap the native packed parsers + decoders for ergonomic use, so consumers
+// don't have to hand-pack buffers or decode packed pairs:
+//   parseQueryString("a=1&b=2")    // { a: "1", b: "2" }
+//   parseCookieHeader("a=1; b=2")  // { a: "1", b: "2" }
+
+export function parseQueryString(
+  query: string,
+): Record<string, string | string[]> {
+  const packed = addon.queryParsePacked(encoder.encode(query));
+  return pairsToObject(readPairsPacked(packed));
+}
+
+export function parseCookieHeader(
+  header: string,
+): Record<string, string | string[]> {
+  const packed = addon.cookieParsePacked(encoder.encode(header));
+  return pairsToObject(readPairsPacked(packed));
 }

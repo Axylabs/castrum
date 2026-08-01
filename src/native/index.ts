@@ -23,54 +23,34 @@ export interface IngressInstance {
   ): Uint8Array;
 }
 
-export interface AsyncIngressInstance {
-  handleRequestFull(
-    methodKind: number,
-    url: string,
-    ip: string,
-    requestId: string,
-    headers: Array<[string, string]>,
-    body: Uint8Array | null,
-    outputBufferSize?: number,
-  ): Promise<Uint8Array>;
-}
-
 function resolveAddonPath(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const platform = process.platform;
   const arch = process.arch;
+  const base = join(__dirname, "..", "..");
 
-  const candidates = [
-    join(__dirname, "..", "..", `rust_bench.${platform}-${arch}-gnu.node`),
-    join(__dirname, "..", "..", `rust_bench.${platform}-${arch}-musl.node`),
-    join(__dirname, "..", "..", `rust_bench.${platform}-${arch}.node`),
-    join(__dirname, "..", "..", "rust_bench.node"),
+  // napi-rs artifact naming: rust_bench.<platform>-<arch>[-<libc>].node
+  // e.g. linux-x64-gnu, linux-x64-musl, win32-x64-msvc, darwin-arm64.
+  const libcVariants =
+    platform === "win32"
+      ? ["msvc", "gnu"]
+      : platform === "linux"
+        ? ["gnu", "musl"]
+        : [""];
 
-    join(
-      __dirname,
-      "..",
-      "..",
-      "target",
-      "release",
-      `rust_bench.${platform}-${arch}-gnu.node`,
-    ),
-    join(
-      __dirname,
-      "..",
-      "..",
-      "target",
-      "release",
-      `rust_bench.${platform}-${arch}-musl.node`,
-    ),
-    join(
-      __dirname,
-      "..",
-      "..",
-      "target",
-      "release",
-      `rust_bench.${platform}-${arch}.node`,
-    ),
-  ];
+  const names = libcVariants.map(
+    (libc) => `rust_bench.${platform}-${arch}${libc ? `-${libc}` : ""}.node`,
+  );
+  names.push("rust_bench.node");
+
+  const roots = [base, join(base, "target", "release")];
+
+  const candidates: string[] = [];
+  for (const root of roots) {
+    for (const name of names) {
+      candidates.push(join(root, name));
+    }
+  }
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
@@ -88,7 +68,46 @@ function resolveAddonPath(): string {
 interface NativeAddon {
   HmacSigner: new (key: Uint8Array) => HmacSignerInstance;
   Ingress: new (options: Record<string, unknown>) => IngressInstance;
-  AsyncIngress: new (options: Record<string, unknown>) => AsyncIngressInstance;
+
+  // ── Ingress binary-layout constants (single source of truth: rust/ingress_constants.rs) ──
+  INGRESS_OUT_VERDICT: number;
+  INGRESS_OUT_ERROR_CODE: number;
+  INGRESS_OUT_STATUS: number;
+  INGRESS_OUT_FLAGS: number;
+  INGRESS_OUT_RATE_LIMIT: number;
+  INGRESS_OUT_RATE_REMAINING: number;
+  INGRESS_OUT_RATE_RESET: number;
+  INGRESS_OUT_RETRY_AFTER: number;
+  INGRESS_OUT_COOKIES_JSON_LEN: number;
+  INGRESS_OUT_QUERY_JSON_LEN: number;
+  INGRESS_OUT_HEADER_VARIANT: number;
+  INGRESS_OUT_BODY_JSON_LEN: number;
+  INGRESS_OUT_DATA_START: number;
+  INGRESS_FLAG_HAS_COOKIES: number;
+  INGRESS_FLAG_HAS_QUERY: number;
+  INGRESS_FLAG_BODY_VALID_JSON: number;
+  INGRESS_FLAG_SCHEMA_VALID: number;
+  INGRESS_FLAG_CORS_ALLOWED: number;
+  INGRESS_FLAG_IS_PREFLIGHT: number;
+  INGRESS_FLAG_RATE_LIMITED: number;
+  INGRESS_FLAG_HTTPS: number;
+  INGRESS_FLAG_TRUSTED_PROXY: number;
+  INGRESS_FLAG_BODY_TRUNCATED: number;
+  INGRESS_HV_JSON: number;
+  INGRESS_HV_CORS_SIMPLE: number;
+  INGRESS_HV_CORS_PREFLIGHT: number;
+  INGRESS_HV_RATE_ACTIVE: number;
+  INGRESS_HV_RATE_LIMITED: number;
+  INGRESS_HV_COUNT: number;
+  INGRESS_ERR_NONE: number;
+  INGRESS_ERR_CORS_PREFLIGHT: number;
+  INGRESS_ERR_RATE_LIMITED: number;
+  INGRESS_ERR_BODY_TOO_LARGE: number;
+  INGRESS_ERR_INVALID_JSON: number;
+  INGRESS_ERR_SCHEMA_VALIDATION: number;
+  INGRESS_ERR_BAD_REQUEST: number;
+  INGRESS_ERR_REQUEST_TOO_LARGE: number;
+  INGRESS_ERR_INTERNAL: number;
 
   crc32(input: Uint8Array): number;
   fnv1a64(input: Uint8Array): bigint;
@@ -106,6 +125,7 @@ interface NativeAddon {
 
   urlEncode(input: Uint8Array): Uint8Array;
   urlDecode(input: Uint8Array): Uint8Array;
+  urlDecodeBytes(input: Uint8Array): Uint8Array;
 
   validateEmail(input: Uint8Array): boolean;
   validateUuid(input: Uint8Array): boolean;
@@ -119,9 +139,6 @@ interface NativeAddon {
   initThreadPool(rayonThreads?: number): void;
   rayonNumThreads(): number;
 
-  jsonValidAsync(input: Uint8Array): Promise<number>;
-  jsonSumIdsAsync(input: Uint8Array): Promise<bigint>;
-
   jsonValidBatchPacked(input: Uint8Array): Uint8Array;
   validateEmailBatchPacked(input: Uint8Array): Uint8Array;
   validateUuidBatchPacked(input: Uint8Array): Uint8Array;
@@ -134,30 +151,41 @@ interface NativeAddon {
   httpParseRequestBatchPacked(input: Uint8Array): Uint8Array;
 
   httpParseRequestPacked(input: Uint8Array): Uint8Array;
-  httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number;
 
   queryParsePacked(input: Uint8Array): Uint8Array;
-  queryParsePackedInto(input: Uint8Array, output: Uint8Array): number;
 
   cookieParsePacked(input: Uint8Array): Uint8Array;
-  cookieParsePackedInto(input: Uint8Array, output: Uint8Array): number;
 
   crc32BatchPacked(input: Uint8Array): Uint8Array;
 
-  jsonValidBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
-  validateEmailBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
-  validateUuidBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
-  validateIpv4BatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
-  validateIpv6BatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
-
-  jsonSumBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
-  queryParseBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
-  cookieParseBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
-  httpParseRequestBatchPackedAsync(input: Uint8Array): Promise<Uint8Array>;
+  // ── Batch metadata / counts ──
+  jsonValidBatchCountPacked(input: Uint8Array): number;
+  validateEmailBatchCountPacked(input: Uint8Array): number;
+  validateUuidBatchCountPacked(input: Uint8Array): number;
+  validateIpv4BatchCountPacked(input: Uint8Array): number;
+  validateIpv6BatchCountPacked(input: Uint8Array): number;
+  jsonSumBatchTotalPacked(input: Uint8Array): number;
+  queryParseBatchTotalLenPacked(input: Uint8Array): number;
+  cookieParseBatchTotalLenPacked(input: Uint8Array): number;
+  httpParseRequestBatchTotalLenPacked(input: Uint8Array): number;
 }
 
 const addonPath = resolveAddonPath();
-const addon: NativeAddon = require(addonPath);
+
+let addon: NativeAddon;
+try {
+  addon = require(addonPath);
+} catch (err) {
+  const cause = err instanceof Error ? `\n  Underlying cause: ${err.message}` : "";
+  throw new Error(
+    `Failed to load rust_bench native addon from:\n  ${addonPath}\n` +
+      `The addon exists but could not be loaded (ABI mismatch, missing system ` +
+      `libraries, or a corrupt/partial artifact).\n` +
+      `Run: bun run build\n` +
+      `If the problem persists, verify the binary was built for this platform/CPU.` +
+      cause,
+  );
+}
 
 if (process.env.RUST_BENCH_DEBUG) {
   console.log("Native addon loaded from:", addonPath);
