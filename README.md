@@ -402,18 +402,25 @@ git tag v0.6.0 && git push origin v0.6.0
 
 ### Manual
 
-To build and publish a release by hand, on a clean checkout of the exact tag
-(with the GitHub CLI `gh` installed/authenticated and npm logged in):
+To build and publish a release by hand (GitHub CLI `gh` installed/authenticated and
+npm logged in):
 
 ```bash
-bun run publish:manual            # build host addon, download CI addons, publish
-bun run publish:manual:dry        # same, but verify only (no publish)
+bun run publish:manual                            # build, download CI addons, publish
+bun run publish:manual -- --increment minor       # bump version + tag + push + publish
+bun run publish:manual:dry                        # same, but verify only (no publish)
 ```
 
 `publish:manual` builds the host addon locally, downloads the CI-built `addon-*`
 artifacts for the current `v<version>` tag, verifies every platform is present, and
-runs `npm publish --access public`. It still requires the CI `build` job to have
-succeeded for that tag.
+runs `npm publish --access public`.
+
+With `--increment <patch|minor|major|...>`, it first bumps the version and creates the
+`v<version>` git tag via `bun pm version` (keeping `Cargo.toml`, `Cargo.lock`, and
+`CHANGELOG.md` in sync), pushes the tag to trigger the CI addon build, waits for the
+`build` job, then publishes. Pass `--no-wait` to push the tag and stop (re-run
+`bun run publish:manual` once CI finishes). It still requires the CI `build` job to
+succeed for the tag.
 
 ---
 

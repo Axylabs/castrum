@@ -24,7 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Manual release command: `bun run publish:manual` builds the host addon, downloads the
   CI-built multi-platform addons for the current `v<version>` tag via the GitHub CLI
   (`gh`), verifies every `napi.targets` artifact is present, and publishes to npm.
-  `bun run publish:manual:dry` (`--dry-run`) runs the same pipeline without publishing.
+  `bun run publish:manual -- --increment <patch|minor|major|...>` also bumps the version
+  and creates + pushes the `v<version>` git tag automatically via `bun pm version`
+  (syncing `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`), then waits for the CI
+  `build` job before publishing. `--no-wait` pushes the tag and stops.
+  `bun run publish:manual:dry` (`--dry-run`) runs the same pipeline without publishing
+  or touching git.
 
 ## [0.6.0] — 2026-07-31
 

@@ -49,9 +49,13 @@ HTTP **ingress pipeline** for Bun servers.
   the GitHub CLI (`gh`), verifies every target is present, and runs
   `npm publish --access public`. It is NOT an escape hatch from the
   all-platforms rule: it requires a successful CI `build` run for the tag and still
-  fails if any artifact is missing. Prereqs: clean checkout of the exact tag, `gh`
-  authenticated, npm logged in. Use `bun run publish:manual:dry` (`--dry-run`) to
-  build + download + verify without publishing.
+  fails if any artifact is missing. Prereqs: `gh` authenticated, npm logged in; for
+  the no-`--increment` resume path, a clean checkout of the exact tag. Use
+  `bun run publish:manual -- --increment <patch|minor|major|...>` to bump the version
+  and create + push the `v<version>` tag automatically via `bun pm version` (syncing
+  `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`), wait for the CI `build` job, then
+  publish. `--no-wait` pushes the tag and stops; `bun run publish:manual:dry`
+  (`--dry-run`) runs the pipeline without publishing or touching git.
 
 ## Layout (quick map)
 
