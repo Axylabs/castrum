@@ -43,6 +43,15 @@ HTTP **ingress pipeline** for Bun servers.
   into `./artifacts`, stages them, and runs `npm publish --access public`
   (requires the `NPM_TOKEN` secret). Bump `version` in package.json (and
   Cargo.toml) and add a CHANGELOG entry before tagging.
+- **Manual release (no tag-push dependency on CI's `publish` job):**
+  `bun run publish:manual` (`scripts/publish-manual.mjs`) — builds the host addon,
+  downloads the CI-built `addon-*` artifacts for the current `v<version>` tag via
+  the GitHub CLI (`gh`), verifies every target is present, and runs
+  `npm publish --access public`. It is NOT an escape hatch from the
+  all-platforms rule: it requires a successful CI `build` run for the tag and still
+  fails if any artifact is missing. Prereqs: clean checkout of the exact tag, `gh`
+  authenticated, npm logged in. Use `bun run publish:manual:dry` (`--dry-run`) to
+  build + download + verify without publishing.
 
 ## Layout (quick map)
 

@@ -108,7 +108,8 @@ if (missing.length > 0) {
       "workflow artifacts; the CI \"publish\" job downloads them into ./artifacts\n" +
       "and this script stages + verifies them before publishing.\n" +
       "  - Build only the current platform locally:  bun run build\n" +
-      "  - Publish all platforms: push a v* tag and let CI do it.",
+      "  - Manual release (downloads CI artifacts): bun run publish:manual\n" +
+      "  - Publish all platforms via CI: push a v* tag and let the workflow do it.",
   );
   process.exit(1);
 }

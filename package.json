@@ -47,6 +47,8 @@
         "test": "bun test",
         "build:debug": "napi build --platform",
         "artifacts": "napi artifacts",
+        "publish:manual": "node scripts/publish-manual.mjs",
+        "publish:manual:dry": "node scripts/publish-manual.mjs --dry-run",
         "prepublishOnly": "node scripts/prepublish.mjs",
         "bench:http": "bun run bench/run-bench.ts",
         "bench:http:smoke": "bun run bench/run-bench.ts smoke",

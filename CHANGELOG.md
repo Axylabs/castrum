@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/prepublish.mjs` guard that verifies every napi platform artifact is present
   before publish, and a CI publish workflow that uploads all platform artifacts and
   publishes to npm on `v*` tags.
+- Manual release command: `bun run publish:manual` builds the host addon, downloads the
+  CI-built multi-platform addons for the current `v<version>` tag via the GitHub CLI
+  (`gh`), verifies every `napi.targets` artifact is present, and publishes to npm.
+  `bun run publish:manual:dry` (`--dry-run`) runs the same pipeline without publishing.
 
 ## [0.6.0] — 2026-07-31
 

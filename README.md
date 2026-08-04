@@ -385,6 +385,38 @@ bun test --coverage
 
 ---
 
+## Publishing
+
+The package ships **all platform native addons in a single tarball**, so a release
+needs every `napi.targets` platform artifact present (see `scripts/prepublish.mjs`).
+
+### Automatic (recommended)
+
+CI builds every platform addon and publishes to npm when you push a `v*` tag.
+Bump `version` in `package.json` (and `Cargo.toml`), add a `CHANGELOG.md` entry,
+then:
+
+```bash
+git tag v0.6.0 && git push origin v0.6.0
+```
+
+### Manual
+
+To build and publish a release by hand, on a clean checkout of the exact tag
+(with the GitHub CLI `gh` installed/authenticated and npm logged in):
+
+```bash
+bun run publish:manual            # build host addon, download CI addons, publish
+bun run publish:manual:dry        # same, but verify only (no publish)
+```
+
+`publish:manual` builds the host addon locally, downloads the CI-built `addon-*`
+artifacts for the current `v<version>` tag, verifies every platform is present, and
+runs `npm publish --access public`. It still requires the CI `build` job to have
+succeeded for that tag.
+
+---
+
 ## License
 
 MIT
