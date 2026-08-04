@@ -249,18 +249,19 @@ async function pollForRun() {
     const json = capture("gh", [
       "run",
       "list",
-      "--workflow",
-      WORKFLOW,
-      "--branch",
-      TAG,
       "--event",
       "push",
       "--limit",
-      "1",
+      "25",
       "--json",
-      "databaseId,status",
+      "databaseId,status,headBranch,event",
     ]);
-    const runs = JSON.parse(json);
+    // `gh run list --workflow <file>` resolves the workflow against the default
+    // branch and can 404 (e.g. on private repos / token access); filter runs
+    // ourselves so we don't depend on that lookup.
+    const runs = JSON.parse(json).filter(
+      (r) => r.headBranch === TAG && r.event === "push",
+    );
     if (runs.length > 0) return String(runs[0].databaseId);
     log(`waiting for a CI run on ${TAG} to appear...`);
     await sleep(10_000);
@@ -298,6 +299,31 @@ function alreadyPublished() {
     return out.includes(VERSION);
   } catch {
     return false;
+  }
+}
+
+function ghRepoHint() {
+  try {
+    const url = capture("git", ["remote", "get-url", "origin"]);
+    const m = url.match(/([^/:]+)\/([^/]+?)(?:\.git)?$/);
+    if (m) return `${m[1]}/${m[2]}`;
+  } catch {
+    /* no origin remote */
+  }
+  return "your repository";
+}
+
+function checkGhAccess() {
+  try {
+    capture("gh", ["run", "list", "--limit", "1", "--json", "databaseId"]);
+  } catch (err) {
+    const detail = String(err.message || err).split("\n")[0];
+    fail(
+      `GitHub CLI \`gh\` could not list workflow runs for ${ghRepoHint()}.\n` +
+        `  Authenticate and make sure your account has access to the repo:\n` +
+        `    gh auth login\n    gh repo view ${ghRepoHint()}\n` +
+        `  Underlying error: ${detail}`,
+    );
   }
 }
 
@@ -353,6 +379,7 @@ function preflight() {
       "GitHub CLI `gh` was not found. Install it (https://cli.github.com) and run `gh auth login`.",
     );
   }
+  checkGhAccess();
 
   if (!DRY_RUN) {
     try {
@@ -377,8 +404,6 @@ function findTagRun() {
   const json = capture("gh", [
     "run",
     "list",
-    "--workflow",
-    WORKFLOW,
     "--limit",
     "25",
     "--json",
