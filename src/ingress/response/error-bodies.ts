@@ -32,6 +32,10 @@ export const ERROR_BODIES: Record<string, Uint8Array> = {
     "Content-Type must be application/json",
   ),
   body_too_large: staticErrorBody("body_too_large", "Request body is too large"),
+  request_timeout: staticErrorBody(
+    "request_timeout",
+    "Request body read timed out",
+  ),
   invalid_json: staticErrorBody("invalid_json", "Invalid JSON body"),
   schema_validation_failed: staticErrorBody(
     "schema_validation_failed",

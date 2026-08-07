@@ -10,6 +10,13 @@
 
 import { describe, test, expect } from "bun:test";
 import { getAddon } from "../../src/native";
+import {
+  OUT_DATA_START,
+  OUT_COOKIES_JSON_LEN,
+  OUT_QUERY_JSON_LEN,
+  FLAG_HAS_COOKIES,
+  FLAG_HAS_QUERY,
+} from "../../src/ingress/constants";
 
 const addon = getAddon();
 
@@ -188,6 +195,57 @@ describe("pooled vs allocating parity (property)", () => {
         131072,
       );
       expect(got).toBe(Buffer.from(expected).toString("base64"));
+    }
+  });
+
+  test("metadata JSON (cookies/query) is RFC-8259-valid for control-char inputs", () => {
+    // Regression guard for the json_ser escape fix: a control char (\t \r \x08
+    // \x0c) that appears BEFORE a JSON special (" \ \n) must be escaped, not
+    // copied raw — otherwise the emitted cookies/query JSON is invalid.
+    const ingress = new addon.Ingress({
+      parseCookies: true,
+      parseQuery: true,
+      https: true,
+      emitMetadataJson: true,
+    });
+
+    const out = new Uint8Array(131072);
+
+    for (let i = 0; i < 300; i++) {
+      const cookie = `a=${randString(60)}; b=${randString(60)}; c=${randString(60)}`;
+      // encodeURIComponent turns control chars into %XX, so the query parser
+      // decodes them back into raw control bytes that must be JSON-escaped.
+      const url = `/?q=${encodeURIComponent(randString(40))}`;
+
+      const written = ingress.handleRequestFullSyncInto(
+        0,
+        url,
+        "1.1.1.1",
+        "rid",
+        [["cookie", cookie]],
+        null,
+        out,
+      );
+
+      const dv = new DataView(out.buffer, out.byteOffset, written);
+      const flags = dv.getUint32(4, true);
+      const cookiesLen = dv.getUint32(OUT_COOKIES_JSON_LEN, true);
+      const queryLen = dv.getUint32(OUT_QUERY_JSON_LEN, true);
+
+      if ((flags & FLAG_HAS_COOKIES) !== 0 && cookiesLen > 0) {
+        const cookiesJson = Buffer.from(
+          out.subarray(OUT_DATA_START, OUT_DATA_START + cookiesLen),
+        ).toString("utf8");
+        expect(() => JSON.parse(cookiesJson), cookiesJson).not.toThrow();
+      }
+
+      if ((flags & FLAG_HAS_QUERY) !== 0 && queryLen > 0) {
+        const queryStart = OUT_DATA_START + cookiesLen;
+        const queryJson = Buffer.from(
+          out.subarray(queryStart, queryStart + queryLen),
+        ).toString("utf8");
+        expect(() => JSON.parse(queryJson), queryJson).not.toThrow();
+      }
     }
   });
 });

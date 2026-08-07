@@ -37,13 +37,29 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
             .unwrap_or(preferred)
             .clamp(1, max_threads.max(1));
 
-        rayon::ThreadPoolBuilder::new()
+        let built = rayon::ThreadPoolBuilder::new()
             .num_threads(threads as usize)
             .stack_size(512 * 1024)
             .thread_name(|i| format!("castrum-rayon-{}", i))
             .start_handler(move |id| pin_rayon_thread(id))
-            .build_global()
-            .map_err(|e| e.to_string())
+            .build_global();
+        match built {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("already been initialized") {
+                    // Rayon's GLOBAL pool may already exist (e.g. a direct
+                    // par_iter call auto-created it with defaults before our
+                    // explicit init, such as an instance batch method). That
+                    // is NOT an error — the pool is up and usable; our
+                    // thread-count request is simply moot. Treat as success so
+                    // the OnceLock is never poisoned by this benign race.
+                    Ok(())
+                } else {
+                    Err(msg)
+                }
+            }
+        }
     });
 
     match stored {

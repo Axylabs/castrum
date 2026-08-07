@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Production-hardening pass (instance-time precompute, correctness, Node compat):**
+  - **New precompiled higher-order instances** (key/params compiled ONCE at construction,
+    no per-call derivation): `createJwtSigner(secret, ttlSeconds?)` (HS256),
+    `createAeadCipher(key, algorithm?)` (AES-256-GCM / chacha20-poly1305),
+    `createArgon2Hasher(options?)` (argon2id), and `createMediaTypeMatcher(expected)`.
+    `TemplateRenderer` gained `renderBatchPacked` (reuses the compiled template).
+  - **Optimized existing instances**: `AcceptNegotiator.negotiate` is now allocation-free
+    (stack-buffer parse, exact heap fallback for oversized headers); `MediaTypeParser`/
+    `Base64Codec` no longer re-parse/re-select config per call; `etag`/`httpDate` write into
+    fixed stack buffers (no `format!`).
+  - **Ingress hot path**: JSON body validation is DOM-free when no schema is configured
+    (`jsonValidBytes`/IgnoredAny instead of a thrown-away `serde_json::Value`), removing the
+    largest per-request allocation.
+  - **Correctness fix**: `json_ser` now escapes control chars (`\t \r \x08 \x0c`, others)
+    everywhere, including before a `"`/`\`/`\n` — previously they were emitted raw,
+    producing RFC-8259-invalid JSON for cookies/queries (e.g. `?q=%09%22`).
+  - **Body hardening**: non-zero default body-read deadline (30s) on the async
+    `createIngress` path and the `echo`/`jsonWrite` route handlers; `echoHandler` stream-reads
+    chunked bodies via `readBodyWithLimit` (guard + deadline, never fully buffers first);
+    fixed a timeout race where canceling a pending web-stream read could swallow
+    `REQUEST_TIMEOUT`. `onError` is now accepted by `createIngressFast`.
+  - **Resource guards**: `random_token`/`FormParser` capacities clamped; the `unsafe`
+    ingress output writers self-check (bounds panic → clean JS 500 instead of OOB write);
+    `hex_encode` guards are release-checked.
+  - **Node adapter hardening** (`createIngressServerNode`): `requestTimeout`/`headersTimeout`/
+    `maxRequestsPerSocket` mapped, socket-level `maxRequestBodySize` rejection (413 before
+    buffering), DELETE/OPTIONS-with-body preserved, `clientError` → castrum JSON 400,
+    keep-alive reuse verified.
+  - **Loader fix**: a directory-valued `CASTRUM_NATIVE_LIBRARY_PATH`/`NAPI_RS_NATIVE_LIBRARY_PATH`
+    now resolves to `dir/<name>.node` instead of `require(<dir>)` failing.
+  - **Node test matrix**: new `test/integration/node-enterprise.test.mjs` (Buffer interop,
+    new instances, `node:crypto` cross-checks incl. chacha20-poly1305, keep-alive, 413,
+    `clientError`, slowloris 408) + `scripts/verify-install.mjs` installed-tarball e2e.
+    `test:node` now lists files explicitly (Node 24-safe). `@types/node` declared as an
+    optional peer dep; `dist/` added to `.gitignore`.
+  - **Robustness**: `init_thread_pool` treats a rayon pool already auto-initialized by a
+    direct `par_iter` as success (was a permanently poisoned error).
+
+- **Eight new Rust-backed "framework action" modules** (all exported on the `rust`
+  client, each with a compiled-once higher-order instance + scalar + bench task +
+  correctness check):
+  - **Form-urlencoded body parser** (`formParsePacked`, `createFormParser`).
+  - **Media-type / Content-Type parser** (`parseMediaType`, `createMediaTypeParser`
+    with wildcard `matches`).
+  - **HTTP cache semantics** (`etag`, `httpDate`, `parseHttpDate`,
+    `createConditionalRequest` → If-None-Match / If-Modified-Since 304 decisions).
+  - **Accept-Encoding negotiation** (`parseAcceptEncoding`, `createAcceptNegotiator`
+    — q-values, wildcards, specificity-first).
+  - **Base64 / hex** (`base64Encode/Decode`, `base64UrlEncode/Decode`, `hexEncode/Decode`,
+    `createBase64Codec`).
+  - **Signed cookies** (`signCookie`, `verifyCookie`, `createCookieSigner`).
+  - **CSRF tokens** (`csrfToken`, `csrfVerify`, `createCsrfProtector`).
+  - **URL building** (`urlResolve`, `urlEncodeQuery`, `createUrlBuilder`).
+  - New batch helpers: `rust.batch.formParse`, `signCookie`, `verifyCookie`, `csrfVerify`.
+  - New high-level helper `parseFormBody(body)`.
+- Benchmark coverage + proven-registry entries for all of the above (release-build
+  classifications: proven = form parse, conditional request, accept-negotiate, cookie
+  sign/verify, CSRF create/verify; parity = media-type, ETag, base64/hex decode, URL
+  resolve; not-competitive = base64/hex encode, HTTP-date, URL query build).
+- Reclassified `createSchemaValidator` from `not-competitive` → **parity** based on
+  release-build numbers (scalar wins ~1.6x; per-doc batch loses ~1.17x).
 - **Node.js backward compatibility (Bun remains the primary target).** A compiled ESM
   entry (`dist/index.js` + bundled `dist/index.d.ts`) is built by `bun run build:js` and
   shipped in the tarball; `package.json` `exports` now has `types` / `bun` / `node` /

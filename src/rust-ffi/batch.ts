@@ -29,6 +29,13 @@ export interface RustBatch {
   queryParse(items: Uint8Array[]): Uint8Array[];
   cookieParse(items: Uint8Array[]): Uint8Array[];
   httpParseRequest(items: Uint8Array[]): Uint8Array[];
+  formParse(items: Uint8Array[]): Uint8Array[];
+  /** Sign N cookie values (packed → byte results). */
+  signCookie(items: Uint8Array[], secret: Uint8Array): Uint8Array[];
+  /** Verify N signed cookies (bitset of valid). */
+  verifyCookie(items: Uint8Array[], secret: Uint8Array): Uint8Array;
+  /** Verify N CSRF tokens (bitset of valid). */
+  csrfVerify(items: Uint8Array[], secret: Uint8Array): Uint8Array;
   schemaValidate(validator: SchemaValidator, items: Uint8Array[]): Uint8Array;
   schemaValidateCount(validator: SchemaValidator, items: Uint8Array[]): number;
 
@@ -93,6 +100,24 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
     },
     cookieParse(items) {
       return unpackByteResults(addon.cookieParseBatchPacked(packBatch(items)));
+    },
+    formParse(items) {
+      return unpackByteResults(addon.formParseBatchPacked(packBatch(items)));
+    },
+    signCookie(items, secret) {
+      return unpackByteResults(
+        addon.signCookieBatchPacked(packBatch(items), secret),
+      );
+    },
+    verifyCookie(items, secret) {
+      return unpackBitset(
+        addon.verifyCookieBatchPacked(packBatch(items), secret),
+      );
+    },
+    csrfVerify(items, secret) {
+      return unpackBitset(
+        addon.csrfVerifyBatchPacked(packBatch(items), secret),
+      );
     },
     httpParseRequest(items) {
       return unpackByteResults(

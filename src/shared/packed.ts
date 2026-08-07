@@ -316,3 +316,11 @@ export function parseCookieHeader(
   const packed = addon.cookieParsePacked(encoder.encode(header));
   return pairsToObject(readPairsPacked(packed));
 }
+
+/** Parse an application/x-www-form-urlencoded body into a key/value object. */
+export function parseFormBody(
+  body: Uint8Array,
+): Record<string, string | string[]> {
+  const packed = addon.formParsePacked(body);
+  return pairsToObject(readPairsPacked(packed));
+}

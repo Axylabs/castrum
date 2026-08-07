@@ -9,6 +9,13 @@
 /** Default maximum request body size in bytes. */
 export const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 
+/**
+ * Default overall deadline (ms) for reading a request body. Non-zero so the
+ * async `createIngress` / route handlers are protected against slowloris and
+ * trickling bodies by default. Set `bodyTimeoutMs: 0` to disable.
+ */
+export const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+
 /** Maps HTTP methods to the native Ingress method-kind enum. */
 export const METHOD_KIND: Record<string, number> = {
   GET: 0,

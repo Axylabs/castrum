@@ -54,7 +54,8 @@
         "bench": "bun run build && bun bench.ts",
         "check": "bun bench.ts",
         "test": "bun test",
-        "test:node": "node --test test/integration/",
+        "test:node": "node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs",
+        "verify:install": "node scripts/verify-install.mjs",
         "build:debug": "napi build --platform",
         "artifacts": "napi artifacts",
         "publish:manual": "node scripts/publish-manual.mjs",
@@ -82,6 +83,14 @@
         "fast-json-patch": "^3.1.1",
         "mime-types": "^3.0.2",
         "validator": "^13.15.35"
+    },
+    "peerDependencies": {
+        "@types/node": ">=20"
+    },
+    "peerDependenciesMeta": {
+        "@types/node": {
+            "optional": true
+        }
     },
     "devDependencies": {
         "@elysia/cors": "^1.4.2",

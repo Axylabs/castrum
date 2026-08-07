@@ -58,11 +58,21 @@ pub fn encrypt(
     nonce: &[u8],
     plaintext: &[u8],
 ) -> std::result::Result<Vec<u8>, Unspecified> {
+    let unbound = UnboundKey::new(alg, key)?;
+    let sealing = LessSafeKey::new(unbound);
+    encrypt_with_key(&sealing, nonce, plaintext)
+}
+
+/// Encrypt with a PRE-COMPILED key (no per-call `UnboundKey`/`LessSafeKey`
+/// derivation — the win the `AeadCipher` instance exploits).
+pub fn encrypt_with_key(
+    sealing: &LessSafeKey,
+    nonce: &[u8],
+    plaintext: &[u8],
+) -> std::result::Result<Vec<u8>, Unspecified> {
     if nonce.len() != NONCE_LEN {
         return Err(Unspecified);
     }
-    let unbound = UnboundKey::new(alg, key)?;
-    let sealing = LessSafeKey::new(unbound);
     let mut nonce_arr = [0u8; NONCE_LEN];
     nonce_arr.copy_from_slice(nonce);
     let nonce = Nonce::assume_unique_for_key(nonce_arr);
@@ -78,11 +88,20 @@ pub fn decrypt(
     nonce: &[u8],
     ciphertext: &[u8],
 ) -> std::result::Result<Vec<u8>, Unspecified> {
+    let unbound = UnboundKey::new(alg, key)?;
+    let opening = LessSafeKey::new(unbound);
+    decrypt_with_key(&opening, nonce, ciphertext)
+}
+
+/// Decrypt with a PRE-COMPILED key (no per-call key derivation).
+pub fn decrypt_with_key(
+    opening: &LessSafeKey,
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> std::result::Result<Vec<u8>, Unspecified> {
     if nonce.len() != NONCE_LEN {
         return Err(Unspecified);
     }
-    let unbound = UnboundKey::new(alg, key)?;
-    let opening = LessSafeKey::new(unbound);
     let mut nonce_arr = [0u8; NONCE_LEN];
     nonce_arr.copy_from_slice(nonce);
     let nonce = Nonce::assume_unique_for_key(nonce_arr);
@@ -121,6 +140,44 @@ pub fn aead_decrypt(
     match decrypt(alg, key.as_ref(), nonce.as_ref(), ciphertext.as_ref()) {
         Ok(pt) => Ok(Some(Buffer::from(pt))),
         Err(_) => Ok(None),
+    }
+}
+
+/// Higher-order instance: precompiles the algorithm + key into a `LessSafeKey`
+/// once at construction, so `encrypt`/`decrypt` never re-derive the key on the
+/// per-call path.
+#[napi]
+pub struct AeadCipher {
+    key: LessSafeKey,
+}
+
+#[napi]
+impl AeadCipher {
+    #[napi(constructor)]
+    pub fn new(key: Uint8Array, algorithm: Option<String>) -> Result<Self> {
+        let alg = resolve_algorithm(algorithm.as_deref())?;
+        let unbound = UnboundKey::new(alg, key.as_ref())
+            .map_err(|e| Error::from_reason(format!("invalid aead key: {e:?}")))?;
+        Ok(Self {
+            key: LessSafeKey::new(unbound),
+        })
+    }
+
+    /// Encrypt `plaintext` → ciphertext+tag with the precompiled key.
+    #[napi]
+    pub fn encrypt(&self, nonce: Uint8Array, plaintext: Uint8Array) -> Result<Buffer> {
+        encrypt_with_key(&self.key, nonce.as_ref(), plaintext.as_ref())
+            .map(Buffer::from)
+            .map_err(|e| Error::from_reason(format!("aead encrypt failed: {e:?}")))
+    }
+
+    /// Decrypt `ciphertext`+tag → plaintext, or `null` on auth failure.
+    #[napi]
+    pub fn decrypt(&self, nonce: Uint8Array, ciphertext: Uint8Array) -> Result<Option<Buffer>> {
+        match decrypt_with_key(&self.key, nonce.as_ref(), ciphertext.as_ref()) {
+            Ok(pt) => Ok(Some(Buffer::from(pt))),
+            Err(_) => Ok(None),
+        }
     }
 }
 
@@ -235,6 +292,56 @@ mod tests {
         assert_eq!(ct.len(), pt.len() + 16);
         let dec = decrypt(&aead::AES_256_GCM, &key_bytes(), &nonce_bytes(), &ct).unwrap();
         assert_eq!(dec, pt);
+    }
+
+    #[test]
+    fn aead_cipher_instance_roundtrips_and_rejects() {
+        // Precompiled-key instance: encrypt/decrypt with no per-call key
+        // derivation. Must match the scalar core exactly.
+        let cipher = AeadCipher::new(Uint8Array::new(key_bytes().to_vec()), None).unwrap();
+        let pt = b"session cookie value";
+
+        let ct = cipher
+            .encrypt(
+                Uint8Array::new(nonce_bytes().to_vec()),
+                Uint8Array::new(pt.to_vec()),
+            )
+            .unwrap();
+        assert_eq!(ct.len(), pt.len() + 16);
+
+        let ct_bytes = ct.to_vec();
+        let dec = cipher
+            .decrypt(
+                Uint8Array::new(nonce_bytes().to_vec()),
+                Uint8Array::new(ct_bytes.clone()),
+            )
+            .unwrap();
+        assert_eq!(&dec.unwrap()[..], pt);
+
+        // Wrong-key instance fails to authenticate.
+        let other = AeadCipher::new(Uint8Array::new([9u8; 32].to_vec()), None).unwrap();
+        assert!(other
+            .decrypt(
+                Uint8Array::new(nonce_bytes().to_vec()),
+                Uint8Array::new(ct_bytes)
+            )
+            .unwrap()
+            .is_none());
+
+        // Malformed nonce length → error.
+        assert!(cipher
+            .encrypt(
+                Uint8Array::new(vec![0u8; 8]),
+                Uint8Array::new(pt.to_vec())
+            )
+            .is_err());
+
+        // Unsupported algorithm → construction error.
+        assert!(AeadCipher::new(
+            Uint8Array::new(key_bytes().to_vec()),
+            Some("aes-128-gcm".to_string())
+        )
+        .is_err());
     }
 
     #[test]

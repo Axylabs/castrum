@@ -100,10 +100,12 @@ jobs:
         run: bun run build:debug
       - name: Build compiled ESM entry (dist)
         run: bun run build:js
-      - name: Node smoke tests
-        run: node --test test/integration/node-smoke.test.mjs
+      - name: Node smoke + enterprise tests
+        run: node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs
       - name: Validate npm tarball (dist + native binaries)
         run: npm pack --dry-run 2>&1 | grep -E "dist/index|\.node" | head -20
+      - name: Installed-tarball end-to-end (import from node_modules)
+        run: node scripts/verify-install.mjs
 
   # ── Multi-platform addon artifacts ───────────────────────────────
   # Produces portable (baseline CPU) artifacts for every napi target.

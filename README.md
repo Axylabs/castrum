@@ -207,8 +207,36 @@ string variants under `rust.text`.
 | `validateEmail/Uuid/Ipv4/Ipv6(input)` | `boolean` |
 | `wsAcceptKey(key)` | `Uint8Array` — WebSocket accept key |
 
+#### Framework actions (HTTP semantics + security)
+
+| Function | Returns |
+|----------|---------|
+| `formParsePacked(body)` | `Uint8Array` — packed x-www-form-urlencoded pairs |
+| `createFormParser(capacity?)` | `FormParser` — reusable-buffer form parser (`.parse`, `.parseInto`) |
+| `parseMediaType(header)` | `{ mediaType, charset, boundary, params }` — Content-Type parse |
+| `createMediaTypeParser()` | `MediaTypeParser` — `.parse`, `.matches(actual, expected)` (wildcards) |
+| `etag(data, weak?)` | `Uint8Array` — strong/weak ETag (crc32-based) |
+| `httpDate(secs?)` / `parseHttpDate(input)` | `Uint8Array` / `bigint | null` — IMF-fixdate format/parse |
+| `createConditionalRequest(etag, lastModifiedSecs?)` | `ConditionalRequest` — `.isNotModified(ifNoneMatch, ifModifiedSince)` → 304 |
+| `parseAcceptEncoding(header)` | `{ encoding, q, order }[]` |
+| `createAcceptNegotiator(supported[])` | `AcceptNegotiator` — `.negotiate(header)` → best encoding |
+| `base64Encode/Decode(input, urlSafe?, padding?)`, `base64UrlEncode/Decode(input)` | `Uint8Array` |
+| `createBase64Codec(urlSafe?, padding?)` | `Base64Codec` — `.encode`, `.decode` |
+| `hexEncode(input)` / `hexDecode(input)` | `Uint8Array` — lowercase hex |
+| `signCookie(value, secret)` / `verifyCookie(signed, secret)` | `Uint8Array` / `Uint8Array | null` — signed cookies |
+| `createCookieSigner(secret)` | `CookieSigner` — `.sign`, `.verify` (HMAC key compiled once) |
+| `csrfToken(secret)` / `csrfVerify(token, secret)` | `Uint8Array` / `boolean` |
+| `createCsrfProtector(secret)` | `CsrfProtector` — `.create`, `.verify` |
+| `urlResolve(base, reference)` | `Uint8Array` — RFC 3986 resolution |
+| `urlEncodeQuery(params)` | `Uint8Array` — percent-encoded query (sorted keys) |
+| `createUrlBuilder(base)` | `UrlBuilder` — `.resolve(reference)` (base parsed once) |
+| `createJwtSigner(secret, ttlSeconds?)` | `JwtSigner` — `.sign(claims, now)`, `.verify(token, now)` (HS256 key + ttl compiled once) |
+| `createAeadCipher(key, algorithm?)` | `AeadCipher` — `.encrypt(nonce, pt)`, `.decrypt(nonce, ct)` (key compiled once) |
+| `createArgon2Hasher(options?)` | `Argon2Hasher` — `.hash(password, salt)`, `.verify(password, phc)` (params compiled once) |
+| `createMediaTypeMatcher(expected)` | `MediaTypeMatcher` — `.matches(actual)` (expected precompiled once) |
+
 Low-level / packed variants: `rust.httpParseRequestPacked`, `rust.queryParsePacked`,
-`rust.cookieParsePacked`.
+`rust.cookieParsePacked`, `rust.formParsePacked`.
 
 #### String ergonomics (`rust.text`)
 
@@ -232,6 +260,10 @@ rust.batch.jsonValid(docs);             // Uint8Array bitset (1 per doc)
 rust.batch.crc32(docs);                 // Uint32Array
 rust.batch.jsonSumIds(docs);            // BigInt64Array
 rust.batch.queryParse(docs);            // Uint8Array[]
+rust.batch.formParse(docs);             // Uint8Array[] (packed pairs per doc)
+rust.batch.signCookie(docs, secret);    // Uint8Array[] (signed)
+rust.batch.verifyCookie(docs, secret);  // Uint8Array bitset (valid?)
+rust.batch.csrfVerify(tokens, secret);  // Uint8Array bitset (valid?)
 rust.batch.schemaValidate(validator, docs); // bitset
 ```
 
@@ -273,7 +305,7 @@ const myRust = createRust({ mimeCache: false });
 | `import { encoder, decoder } from "castrum"` | Text encode/decode utilities |
 | `import { packBatch, packPairs, unpackBitset, unpackByteResults, unpackI64ArrayAsBigInt, unpackU32Array } from "castrum"` | Batch/pair packing + unpacking utilities |
 | `import { readPairsPacked, pairsToObject, readHttpPacked } from "castrum"` | Decode packed pairs / parsed HTTP buffers |
-| `import { parseQueryString, parseCookieHeader } from "castrum"` | High-level string parsers (no hand-packing) |
+| `import { parseQueryString, parseCookieHeader, parseFormBody } from "castrum"` | High-level parsers (no hand-packing) |
 | `import { jsonRowsBytes, createJsonRows } from "castrum"` | JSON row serialization |
 | `import { createIngress, createIngressSync, createIngressFast } from "castrum"` | HTTP ingress pipeline (low-level) |
 | `import { createIngressHandler, createIngressServer, readHandler, jsonWriteHandler, echoHandler, fallbackHandler } from "castrum"` | **Pre-baked** ingress handlers — route factories + Bun.serve builder |

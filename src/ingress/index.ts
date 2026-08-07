@@ -6,7 +6,7 @@
 
 import { decoder } from "../shared/bytes";
 import { generateRequestId } from "../shared/request-id";
-import { DEFAULT_MAX_BODY_BYTES, METHOD_KIND } from "./shared";
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, METHOD_KIND } from "./shared";
 import { createIngressFast } from "./fast";
 import { buildResponseContext } from "./headers/fast-templates";
 import { buildTerminalResponse } from "./response/terminal";
@@ -74,6 +74,7 @@ export function createIngress(options: IngressOptions = {}): IngressHandler {
 
   const guard = options.enableBodySizeGuard !== false;
   const max = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  const bodyTimeoutMs = options.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
 
   const wantsBody =
     options.readBody === true ||
@@ -111,7 +112,7 @@ export function createIngress(options: IngressOptions = {}): IngressHandler {
 
       if (wantsBody && req.body !== null) {
         try {
-          body = await readRequestBodyOnce(req, max, guard);
+          body = await readRequestBodyOnce(req, max, guard, bodyTimeoutMs);
         } catch (err) {
           if ((err as any)?.code === "BODY_TOO_LARGE") {
             return syntheticContext(

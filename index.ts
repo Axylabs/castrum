@@ -25,6 +25,7 @@ export {
   pairsToObject,
   parseQueryString,
   parseCookieHeader,
+  parseFormBody,
   unpackBitset,
   unpackByteResults,
   unpackI64ArrayAsBigInt,

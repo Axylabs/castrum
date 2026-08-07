@@ -89,6 +89,16 @@ rust/
 │   ├── packed.rs          ── Zero-alloc packed iterators + byte writers
 │   └── util.rs            ── Re-export shim (threadpool/packed/batch_core) for back-compat
 │
+├── Framework Actions (2026-08-07) — compiled-once higher-order instances:
+│   ├── form.rs            ── x-www-form-urlencoded body parser + FormParser instance
+│   ├── media_type.rs      ── Content-Type parser (type/subtype + params) + MediaTypeParser
+│   ├── etag.rs            ── ETag + IMF-fixdate HTTP-date + ConditionalRequest (304)
+│   ├── accept.rs          ── Accept-Encoding q-value parse + AcceptNegotiator
+│   ├── base64.rs          ── base64/base64url/hex encode-decode + Base64Codec instance
+│   ├── cookie_sign.rs     ── Signed cookies (value.signature, HMAC-SHA256) + CookieSigner
+│   ├── csrf.rs            ── CSRF tokens (random hex + HMAC) + CsrfProtector
+│   └── url_join.rs        ── RFC 3986 url_resolve + url_encode_query + UrlBuilder instance
+│
 └── Constants:
     └── ingress_constants.rs ── NAPI-exported layout constants
 ```

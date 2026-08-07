@@ -433,17 +433,28 @@ impl IngressInner {
                 return terminal_invalid_json(flags, success_hv, rate, out);
             }
 
-            let doc: serde_json::Value = match sonic_rs::from_slice(body_bytes) {
-                Ok(d) => d,
-                Err(_) => return terminal_invalid_json(flags, success_hv, rate, out),
-            };
-
-            flags |= FLAG_BODY_VALID_JSON;
-
             if let Some(validator) = self.schema.as_ref() {
+                // Schema path: build the DOM (jsonschema validates a Value).
+                let doc: serde_json::Value = match sonic_rs::from_slice(body_bytes) {
+                    Ok(d) => d,
+                    Err(_) => return terminal_invalid_json(flags, success_hv, rate, out),
+                };
+
+                flags |= FLAG_BODY_VALID_JSON;
+
                 if !validator.is_valid(&doc) {
                     return terminal_schema_validation(flags, success_hv, rate, out);
                 }
+            } else {
+                // No schema configured (the common case): validate WITHOUT
+                // building a serde_json::Value DOM that would be thrown away
+                // immediately. `json_valid_bytes` skips values via IgnoredAny
+                // (SIMD-validated, zero DOM allocation) — identical "is valid
+                // JSON" semantics at a fraction of the per-request cost.
+                if !crate::json_ops::json_valid_bytes(body_bytes) {
+                    return terminal_invalid_json(flags, success_hv, rate, out);
+                }
+                flags |= FLAG_BODY_VALID_JSON;
             }
             // With no schema configured, validation trivially passes. Setting
             // the flag here keeps `schemaValid` meaning "schema passed" for

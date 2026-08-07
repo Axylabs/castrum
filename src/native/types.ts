@@ -55,6 +55,75 @@ export interface HmacSignerInstance {
   verify(data: Uint8Array, sig: Uint8Array): boolean;
 }
 
+/** The native `FormParser` class instance (reusable output buffer). */
+export interface FormParserInstance {
+  /** Parse an x-www-form-urlencoded body into packed pairs (reuses the buffer). */
+  parse(input: Uint8Array): Uint8Array;
+  /** Zero-alloc parse into a caller-provided output buffer. */
+  parseInto(input: Uint8Array, output: Uint8Array): number;
+}
+
+/** A parsed Content-Type / media type. */
+export interface MediaTypeResult {
+  /** Lowercased `type/subtype`. */
+  mediaType: string;
+  charset: string | null;
+  boundary: string | null;
+  params: Record<string, string>;
+}
+
+/** The native `MediaTypeParser` class instance. */
+export interface MediaTypeParserInstance {
+  parse(input: Uint8Array): MediaTypeResult;
+  /** Wildcard match: any/any, type/any, or exact type/subtype. */
+  matches(actual: Uint8Array, expected: Uint8Array): boolean;
+}
+
+/** The native `ConditionalRequest` class instance (per-resource 304 checks). */
+export interface ConditionalRequestInstance {
+  isNotModified(
+    ifNoneMatch: Uint8Array | null,
+    ifModifiedSince: Uint8Array | null,
+  ): boolean;
+}
+
+/** One parsed Accept-Encoding preference. */
+export interface EncodingPrefResult {
+  encoding: string;
+  q: number;
+  order: number;
+}
+
+/** The native `AcceptNegotiator` class instance. */
+export interface AcceptNegotiatorInstance {
+  /** Best supported encoding for `header`, or null for identity. */
+  negotiate(header: Uint8Array): string | null;
+}
+
+/** The native `Base64Codec` class instance (config compiled once). */
+export interface Base64CodecInstance {
+  encode(input: Uint8Array): Uint8Array;
+  decode(input: Uint8Array): Uint8Array;
+}
+
+/** The native `CookieSigner` class instance (HMAC key compiled once). */
+export interface CookieSignerInstance {
+  sign(value: Uint8Array): Uint8Array;
+  /** Returns the signed value without its signature, or null on invalid. */
+  verify(signed: Uint8Array): Uint8Array | null;
+}
+
+/** The native `CsrfProtector` class instance (HMAC key compiled once). */
+export interface CsrfProtectorInstance {
+  create(): Uint8Array;
+  verify(token: Uint8Array): boolean;
+}
+
+/** The native `UrlBuilder` class instance (base parsed once). */
+export interface UrlBuilderInstance {
+  resolve(reference: Uint8Array): Uint8Array;
+}
+
 /** Options for `passwordHash` (argon2id). */
 export interface PasswordHashOptions {
   mCost?: number;
@@ -81,6 +150,32 @@ export interface WsFrame {
 /** The native `TemplateRenderer` class instance. */
 export interface TemplateRendererInstance {
   render(context: unknown): Uint8Array;
+  /** Parallel batch render: packed contexts in → packed rendered out. */
+  renderBatchPacked(data: Uint8Array): Uint8Array;
+}
+
+/** The native `MediaTypeMatcher` class instance (expected precompiled once). */
+export interface MediaTypeMatcherInstance {
+  /** Wildcard match against the precompiled expected type. */
+  matches(actual: Uint8Array): boolean;
+}
+
+/** The native `JwtSigner` class instance (HS256 key + ttl compiled once). */
+export interface JwtSignerInstance {
+  sign(claims: unknown, nowSeconds: number): Uint8Array;
+  verify(token: Uint8Array, nowSeconds: number): unknown;
+}
+
+/** The native `AeadCipher` class instance (algorithm + key compiled once). */
+export interface AeadCipherInstance {
+  encrypt(nonce: Uint8Array, plaintext: Uint8Array): Uint8Array;
+  decrypt(nonce: Uint8Array, ciphertext: Uint8Array): Uint8Array | null;
+}
+
+/** The native `Argon2Hasher` class instance (params compiled once). */
+export interface Argon2HasherInstance {
+  hash(password: Uint8Array, salt: Uint8Array): Uint8Array;
+  verify(password: Uint8Array, phc: Uint8Array): boolean;
 }
 
 /**
@@ -233,6 +328,18 @@ export interface NativeAddon {
 
   TemplateRenderer: new (source: string) => TemplateRendererInstance;
   templateRenderBatchPacked(data: Uint8Array, source: string): Uint8Array;
+  JwtSigner: new (
+    secret: Uint8Array,
+    ttlSeconds?: number | null,
+  ) => JwtSignerInstance;
+  AeadCipher: new (
+    key: Uint8Array,
+    algorithm?: string | null,
+  ) => AeadCipherInstance;
+  Argon2Hasher: new (
+    options?: PasswordHashOptions | null,
+  ) => Argon2HasherInstance;
+  MediaTypeMatcher: new (expected: Uint8Array) => MediaTypeMatcherInstance;
 
   wsFrameEncode(
     opcode: number,
@@ -263,6 +370,37 @@ export interface NativeAddon {
   ): Uint8Array;
 
   SchemaValidator: new (schema: Uint8Array) => SchemaValidatorInstance;
+  FormParser: new (capacity?: number) => FormParserInstance;
+  MediaTypeParser: new () => MediaTypeParserInstance;
+  ConditionalRequest: new (
+    etagValue: Uint8Array,
+    lastModifiedSecs?: number,
+  ) => ConditionalRequestInstance;
+  AcceptNegotiator: new (supported: string[]) => AcceptNegotiatorInstance;
+  Base64Codec: new (urlSafe?: boolean, padding?: boolean) => Base64CodecInstance;
+  CookieSigner: new (secret: Uint8Array) => CookieSignerInstance;
+  CsrfProtector: new (secret: Uint8Array) => CsrfProtectorInstance;
+  UrlBuilder: new (base: Uint8Array) => UrlBuilderInstance;
+  parseAcceptEncoding(input: Uint8Array): EncodingPrefResult[];
+  urlResolve(base: Uint8Array, reference: Uint8Array): Uint8Array;
+  urlEncodeQuery(params: Record<string, string>): Uint8Array;
+  csrfToken(secret: Uint8Array): Uint8Array;
+  csrfVerify(token: Uint8Array, secret: Uint8Array): boolean;
+  csrfVerifyBatchPacked(data: Uint8Array, secret: Uint8Array): Uint8Array;
+  signCookie(value: Uint8Array, secret: Uint8Array): Uint8Array;
+  verifyCookie(signed: Uint8Array, secret: Uint8Array): Uint8Array | null;
+  signCookieBatchPacked(data: Uint8Array, secret: Uint8Array): Uint8Array;
+  verifyCookieBatchPacked(data: Uint8Array, secret: Uint8Array): Uint8Array;
+  base64Encode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
+  base64Decode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
+  base64UrlEncode(input: Uint8Array): Uint8Array;
+  base64UrlDecode(input: Uint8Array): Uint8Array;
+  hexEncode(input: Uint8Array): Uint8Array;
+  hexDecode(input: Uint8Array): Uint8Array;
+  parseMediaType(input: Uint8Array): MediaTypeResult;
+  etag(input: Uint8Array, weak?: boolean): Uint8Array;
+  httpDate(secs?: number): Uint8Array;
+  parseHttpDate(input: Uint8Array): bigint | null;
 
   initThreadPool(rayonThreads?: number): void;
   rayonNumThreads(): number;
@@ -276,6 +414,7 @@ export interface NativeAddon {
   jsonSumBatchPacked(input: Uint8Array): Uint8Array;
   queryParseBatchPacked(input: Uint8Array): Uint8Array;
   cookieParseBatchPacked(input: Uint8Array): Uint8Array;
+  formParseBatchPacked(input: Uint8Array): Uint8Array;
   httpParseRequestBatchPacked(input: Uint8Array): Uint8Array;
 
   httpParseRequestPacked(input: Uint8Array): Uint8Array;
@@ -283,6 +422,8 @@ export interface NativeAddon {
   queryParsePacked(input: Uint8Array): Uint8Array;
 
   cookieParsePacked(input: Uint8Array): Uint8Array;
+
+  formParsePacked(input: Uint8Array): Uint8Array;
 
   crc32BatchPacked(input: Uint8Array): Uint8Array;
 

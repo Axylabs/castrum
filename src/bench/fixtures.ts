@@ -55,6 +55,38 @@ export interface BenchFixtures {
   schemaDoc: Uint8Array;
   schemaBadDoc: Uint8Array;
   schemaDocs: Uint8Array[];
+
+  // ── Form-urlencoded body (M1) ──
+  formBody: Uint8Array;
+  formBodies: Uint8Array[];
+
+  // ── Media-type / Content-Type (M2) ──
+  contentTypeJson: Uint8Array;
+  contentTypeMultipart: Uint8Array;
+
+  // ── ETag / HTTP-date / conditional (M3) ──
+  etagData: Uint8Array;
+  httpDateSecs: number;
+  ifNoneMatchHeader: Uint8Array;
+  ifModifiedSinceHeader: Uint8Array;
+
+  // ── Accept-Encoding negotiation (M4) ──
+  acceptEncodingHeader: Uint8Array;
+
+  // ── Base64 / hex encoding (M5) ──
+  encodeData: Uint8Array;
+
+  // ── Cookie signing (M6) ──
+  cookieValue: Uint8Array;
+  cookieSecret: Uint8Array;
+
+  // ── CSRF (M7) ──
+  csrfSecret: Uint8Array;
+
+  // ── URL join / building (M8) ──
+  urlBase: Uint8Array;
+  urlReference: Uint8Array;
+  urlQueryParams: Record<string, string>;
 }
 
 export interface ComplexFixtures {
@@ -238,6 +270,58 @@ export function createFixtures(): BenchFixtures {
     ),
   );
 
+  // ── Form-urlencoded body (M1) ──
+  const formBody = encoder.encode(
+    "name=John+Doe&email=john%40example.com&age=30&tags[]=a&tags[]=b&empty=&note=hello+world%21",
+  );
+  const formBodies = Array.from({ length: 100 }, (_, i) =>
+    encoder.encode(
+      `name=user${i}&age=${20 + (i % 50)}&email=user${i}%40example.com&tag=a&tag=b&note=item+${i}`,
+    ),
+  );
+
+  // ── Media-type / Content-Type (M2) ──
+  const contentTypeJson = encoder.encode("application/json; charset=utf-8");
+  const contentTypeMultipart = encoder.encode(
+    "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW",
+  );
+
+  // ── ETag / HTTP-date / conditional (M3) ──
+  const etagData = encoder.encode(
+    "the quick brown fox jumps over the lazy dog 1234567890",
+  );
+  const httpDateSecs = 784111777; // Sun, 06 Nov 1994 08:49:37 GMT
+  const ifNoneMatchHeader = encoder.encode('"abc123", W/"def456"');
+  const ifModifiedSinceHeader = encoder.encode(
+    "Sun, 06 Nov 1994 08:49:37 GMT",
+  );
+
+  // ── Accept-Encoding negotiation (M4) ──
+  const acceptEncodingHeader = encoder.encode(
+    "gzip;q=0.8, deflate, br;q=1.0, *;q=0.1",
+  );
+
+  // ── Base64 / hex encoding (M5) ──
+  const encodeData = encoder.encode(
+    "The quick brown fox jumps over the lazy dog. 0123456789!@#$%^&*()_+\n",
+  );
+
+  // ── Cookie signing (M6) ──
+  const cookieValue = encoder.encode("session=abc123; theme=dark");
+  const cookieSecret = encoder.encode("cookie-signing-secret-2026");
+
+  // ── CSRF (M7) ──
+  const csrfSecret = encoder.encode("csrf-protection-secret-2026");
+
+  // ── URL join / building (M8) ──
+  const urlBase = encoder.encode("http://example.com/api/users?page=1");
+  const urlReference = encoder.encode("v2/items/42?active=true#top");
+  const urlQueryParams: Record<string, string> = {
+    q: "hello world",
+    page: "2",
+    tag: "a b",
+  };
+
   return {
     jsonPayload,
     httpRaw,
@@ -281,6 +365,22 @@ export function createFixtures(): BenchFixtures {
     schemaDoc,
     schemaBadDoc,
     schemaDocs,
+    formBody,
+    formBodies,
+    contentTypeJson,
+    contentTypeMultipart,
+    etagData,
+    httpDateSecs,
+    ifNoneMatchHeader,
+    ifModifiedSinceHeader,
+    acceptEncodingHeader,
+    encodeData,
+    cookieValue,
+    cookieSecret,
+    csrfSecret,
+    urlBase,
+    urlReference,
+    urlQueryParams,
   };
 }
 

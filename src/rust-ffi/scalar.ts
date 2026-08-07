@@ -10,6 +10,20 @@ import type {
   HmacSignerInstance,
   SchemaValidatorInstance,
   TemplateRendererInstance,
+  FormParserInstance,
+  MediaTypeParserInstance,
+  MediaTypeResult,
+  MediaTypeMatcherInstance,
+  ConditionalRequestInstance,
+  EncodingPrefResult,
+  AcceptNegotiatorInstance,
+  Base64CodecInstance,
+  CookieSignerInstance,
+  CsrfProtectorInstance,
+  UrlBuilderInstance,
+  JwtSignerInstance,
+  AeadCipherInstance,
+  Argon2HasherInstance,
   MultipartPart,
   WsFrame,
   PasswordHashOptions,
@@ -47,11 +61,72 @@ export interface RustScalar {
   httpParseRequestPacked(input: Uint8Array): Uint8Array;
   queryParsePacked(input: Uint8Array): Uint8Array;
   cookieParsePacked(input: Uint8Array): Uint8Array;
+  /** Parse an application/x-www-form-urlencoded body into packed pairs. */
+  formParsePacked(input: Uint8Array): Uint8Array;
+  /** Parse a Content-Type header into a structured media type. */
+  parseMediaType(input: Uint8Array): MediaTypeResult;
+  /** Generate a strong/weak ETag (crc32-based). */
+  etag(data: Uint8Array, weak?: boolean): Uint8Array;
+  /** Format a unix timestamp as an IMF-fixdate HTTP-date. */
+  httpDate(secs?: number): Uint8Array;
+  /** Parse an IMF-fixdate HTTP-date back to unix seconds. */
+  parseHttpDate(input: Uint8Array): bigint | null;
+  /** Parse an Accept-Encoding header into ordered preferences. */
+  parseAcceptEncoding(input: Uint8Array): EncodingPrefResult[];
+  /** Base64 encode (standard by default; url-safe/padding configurable). */
+  base64Encode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
+  /** Base64 decode (standard); throws on invalid input. */
+  base64Decode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
+  base64UrlEncode(input: Uint8Array): Uint8Array;
+  base64UrlDecode(input: Uint8Array): Uint8Array;
+  /** Lowercase hex encode. */
+  hexEncode(input: Uint8Array): Uint8Array;
+  /** Hex decode; throws on odd length or invalid digits. */
+  hexDecode(input: Uint8Array): Uint8Array;
+  /** Sign a cookie value as `value.signature` (HMAC-SHA256 hex). */
+  signCookie(value: Uint8Array, secret: Uint8Array): Uint8Array;
+  /** Verify a signed cookie; returns the value or null. */
+  verifyCookie(signed: Uint8Array, secret: Uint8Array): Uint8Array | null;
+  /** Create a CSRF token (32-byte random hex + HMAC signature). */
+  csrfToken(secret: Uint8Array): Uint8Array;
+  /** Constant-time verify a CSRF token. */
+  csrfVerify(token: Uint8Array, secret: Uint8Array): boolean;
+  /** Resolve a URL reference against a base (RFC 3986). */
+  urlResolve(base: Uint8Array, reference: Uint8Array): Uint8Array;
+  /** Build a percent-encoded query string from params (sorted keys). */
+  urlEncodeQuery(params: Record<string, string>): Uint8Array;
 
   // ── Factories / runtime ──
   createSchemaValidator(schema: Uint8Array): SchemaValidatorInstance;
   createHmacSigner(key: Uint8Array): HmacSignerInstance;
   createTemplateRenderer(source: string): TemplateRendererInstance;
+  /** Higher-order form parser: owns a reusable output buffer (setup once). */
+  createFormParser(capacity?: number): FormParserInstance;
+  /** Higher-order media-type parser: reusable wildcard matcher. */
+  createMediaTypeParser(): MediaTypeParserInstance;
+  /** Higher-order conditional-request check: per-resource 304 decision (setup once). */
+  createConditionalRequest(
+    etagValue: Uint8Array,
+    lastModifiedSecs?: number,
+  ): ConditionalRequestInstance;
+  /** Higher-order negotiator: precompiles supported encodings once. */
+  createAcceptNegotiator(supported: string[]): AcceptNegotiatorInstance;
+  /** Higher-order codec: base64 config compiled once. */
+  createBase64Codec(urlSafe?: boolean, padding?: boolean): Base64CodecInstance;
+  /** Higher-order cookie signer: HMAC key compiled once. */
+  createCookieSigner(secret: Uint8Array): CookieSignerInstance;
+  /** Higher-order CSRF protector: HMAC key compiled once. */
+  createCsrfProtector(secret: Uint8Array): CsrfProtectorInstance;
+  /** Higher-order URL builder: base parsed once, reused. */
+  createUrlBuilder(base: Uint8Array): UrlBuilderInstance;
+  /** Higher-order JWT signer: HS256 key + ttl compiled once. */
+  createJwtSigner(secret: Uint8Array, ttlSeconds?: number): JwtSignerInstance;
+  /** Higher-order AEAD cipher: algorithm + key compiled once. */
+  createAeadCipher(key: Uint8Array, algorithm?: string): AeadCipherInstance;
+  /** Higher-order argon2id hasher: params compiled once. */
+  createArgon2Hasher(options?: PasswordHashOptions | null): Argon2HasherInstance;
+  /** Higher-order media-type matcher: expected precompiled once. */
+  createMediaTypeMatcher(expected: Uint8Array): MediaTypeMatcherInstance;
   initThreadPool(rayonThreads?: number): void;
   rayonNumThreads(): number;
 
@@ -176,6 +251,68 @@ export function buildScalar(ctx: RustClientContext): RustScalar {
     cookieParsePacked(bytes) {
       return addon.cookieParsePacked(bytes);
     },
+    formParsePacked(bytes) {
+      return addon.formParsePacked(bytes);
+    },
+    parseMediaType(bytes) {
+      const r = addon.parseMediaType(bytes);
+      // napi serializes Option fields as undefined; normalize to null to match
+      // the declared `string | null` public type.
+      return {
+        mediaType: r.mediaType,
+        charset: r.charset ?? null,
+        boundary: r.boundary ?? null,
+        params: r.params,
+      };
+    },
+    etag(data, weak) {
+      return addon.etag(data, weak ?? undefined);
+    },
+    httpDate(secs) {
+      return addon.httpDate(secs ?? undefined);
+    },
+    parseHttpDate(input) {
+      return addon.parseHttpDate(input);
+    },
+    parseAcceptEncoding(input) {
+      return addon.parseAcceptEncoding(input);
+    },
+    base64Encode(input, urlSafe, padding) {
+      return addon.base64Encode(input, urlSafe ?? undefined, padding ?? undefined);
+    },
+    base64Decode(input, urlSafe, padding) {
+      return addon.base64Decode(input, urlSafe ?? undefined, padding ?? undefined);
+    },
+    base64UrlEncode(input) {
+      return addon.base64UrlEncode(input);
+    },
+    base64UrlDecode(input) {
+      return addon.base64UrlDecode(input);
+    },
+    hexEncode(input) {
+      return addon.hexEncode(input);
+    },
+    hexDecode(input) {
+      return addon.hexDecode(input);
+    },
+    signCookie(value, secret) {
+      return addon.signCookie(value, secret);
+    },
+    verifyCookie(signed, secret) {
+      return addon.verifyCookie(signed, secret);
+    },
+    csrfToken(secret) {
+      return addon.csrfToken(secret);
+    },
+    csrfVerify(token, secret) {
+      return addon.csrfVerify(token, secret);
+    },
+    urlResolve(base, reference) {
+      return addon.urlResolve(base, reference);
+    },
+    urlEncodeQuery(params) {
+      return addon.urlEncodeQuery(params);
+    },
 
     // ── Factories / runtime ──
     createSchemaValidator(schema) {
@@ -186,6 +323,42 @@ export function buildScalar(ctx: RustClientContext): RustScalar {
     },
     createTemplateRenderer(source) {
       return new addon.TemplateRenderer(source);
+    },
+    createFormParser(capacity) {
+      return new addon.FormParser(capacity);
+    },
+    createMediaTypeParser() {
+      return new addon.MediaTypeParser();
+    },
+    createConditionalRequest(etagValue, lastModifiedSecs) {
+      return new addon.ConditionalRequest(etagValue, lastModifiedSecs ?? undefined);
+    },
+    createAcceptNegotiator(supported) {
+      return new addon.AcceptNegotiator(supported);
+    },
+    createBase64Codec(urlSafe, padding) {
+      return new addon.Base64Codec(urlSafe ?? undefined, padding ?? undefined);
+    },
+    createCookieSigner(secret) {
+      return new addon.CookieSigner(secret);
+    },
+    createCsrfProtector(secret) {
+      return new addon.CsrfProtector(secret);
+    },
+    createUrlBuilder(base) {
+      return new addon.UrlBuilder(base);
+    },
+    createJwtSigner(secret, ttlSeconds) {
+      return new addon.JwtSigner(secret, ttlSeconds ?? undefined);
+    },
+    createAeadCipher(key, algorithm) {
+      return new addon.AeadCipher(key, algorithm ?? undefined);
+    },
+    createArgon2Hasher(options) {
+      return new addon.Argon2Hasher(options ?? undefined);
+    },
+    createMediaTypeMatcher(expected) {
+      return new addon.MediaTypeMatcher(expected);
     },
     initThreadPool(threads) {
       // Explicit user call also establishes the pool state locally.

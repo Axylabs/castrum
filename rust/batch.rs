@@ -79,6 +79,24 @@ fn http_parse_request_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[inline]
+fn form_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
+    crate::form::form_parse_packed_vec(input)
+}
+
+#[inline]
+fn sign_cookie_batch_bytes(data: &[u8], secret: &[u8]) -> Result<Vec<u8>> {
+    let items = unpack(data)?;
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
+    let mut out = Vec::with_capacity(items.len() * 32);
+    parse_batch_direct(
+        &items,
+        &mut out,
+        |v| Ok(crate::cookie_sign::sign_cookie_bytes(v, &key)),
+    );
+    Ok(out)
+}
+
+#[inline]
 fn count_batch_data(data: &[u8], f: impl Fn(&[u8]) -> bool + Sync, chunk_items: usize) -> Result<u32> {
     let items = unpack(data)?;
     Ok(count_batch(&items, f, chunk_items) as u32)
@@ -162,6 +180,14 @@ fn cookie_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[inline]
+fn form_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
+    let items = unpack(data)?;
+    let mut out = Vec::with_capacity(items.len() * 32);
+    parse_batch_direct(&items, &mut out, form_parse_packed_vec);
+    Ok(out)
+}
+
+#[inline]
 fn http_parse_request_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
     let items = unpack(data)?;
     let mut out = Vec::with_capacity(items.len() * 64);
@@ -179,6 +205,26 @@ fn http_parse_request_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
 #[napi] pub fn json_sum_batch_packed(input: Uint8Array) -> Result<Buffer> { Ok(Buffer::from(json_sum_batch_bytes(input.as_ref())?)) }
 #[napi] pub fn query_parse_batch_packed(input: Uint8Array) -> Result<Buffer> { Ok(Buffer::from(query_parse_batch_bytes(input.as_ref())?)) }
 #[napi] pub fn cookie_parse_batch_packed(input: Uint8Array) -> Result<Buffer> { Ok(Buffer::from(cookie_parse_batch_bytes(input.as_ref())?)) }
+#[napi] pub fn form_parse_batch_packed(input: Uint8Array) -> Result<Buffer> { Ok(Buffer::from(form_parse_batch_bytes(input.as_ref())?)) }
+#[napi] pub fn sign_cookie_batch_packed(data: Uint8Array, secret: Uint8Array) -> Result<Buffer> { Ok(Buffer::from(sign_cookie_batch_bytes(data.as_ref(), secret.as_ref())?)) }
+#[napi] pub fn verify_cookie_batch_packed(data: Uint8Array, secret: Uint8Array) -> Result<Buffer> {
+    let items = unpack(data.as_ref())?;
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret.as_ref());
+    Ok(Buffer::from(crate::util::validation_bitset_chunked(
+        &items,
+        |s| crate::cookie_sign::verify_cookie_bytes(s, &key).is_some(),
+        4096,
+    )))
+}
+#[napi] pub fn csrf_verify_batch_packed(data: Uint8Array, secret: Uint8Array) -> Result<Buffer> {
+    let items = unpack(data.as_ref())?;
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret.as_ref());
+    Ok(Buffer::from(crate::util::validation_bitset_chunked(
+        &items,
+        |t| crate::csrf::csrf_verify_with_key(t, &key),
+        4096,
+    )))
+}
 #[napi] pub fn http_parse_request_batch_packed(input: Uint8Array) -> Result<Buffer> { Ok(Buffer::from(http_parse_request_batch_bytes(input.as_ref())?)) }
 
 // ── Aggregate sync packed batch APIs ──

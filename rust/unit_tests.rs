@@ -378,6 +378,53 @@ fn output_write_header_keeps_101() {
     assert_eq!(status, 101);
 }
 
+#[test]
+#[should_panic(expected = "output buffer overflow")]
+fn output_write_u32_panics_on_undersized() {
+    // Enterprise guard: the unsafe writers self-check so a miscalculated
+    // buffer becomes a clean panic (→ napi catch_unwind → JS 500) instead of
+    // a silent OOB write.
+    let mut out = vec![0u8; 3];
+    unsafe {
+        crate::output::write_u32(&mut out, 0, 0xDEADBEEF);
+    }
+}
+
+#[test]
+fn random_token_rejects_huge_len() {
+    // A u32 byte_len must not be able to trigger a ~4 GiB single allocation.
+    assert!(
+        crate::random_token::random_token(16 * 1024 * 1024 + 1).is_err(),
+        "huge byte_len must error"
+    );
+    // A normal size still works.
+    assert!(crate::random_token::random_token(32).is_ok());
+}
+
+#[test]
+fn init_thread_pool_is_idempotent() {
+    // The rayon global pool is process-wide and first-call-wins. A second
+    // init_thread_pool (after a prior init OR after a direct par_iter
+    // auto-initialized rayon) must return Ok — never a poisoned error.
+    let first = crate::threadpool::init_thread_pool(Some(2));
+    let second = crate::threadpool::init_thread_pool(Some(2));
+    assert!(
+        first.is_ok(),
+        "first init must succeed (got {first:?})"
+    );
+    assert!(
+        second.is_ok(),
+        "second init must be a no-op, not an error (got {second:?})"
+    );
+}
+
+#[test]
+#[should_panic(expected = "hex_encode: output buffer too small")]
+fn hex_encode_panics_on_undersized() {
+    let mut out = [0u8; 4];
+    crate::bytes::hex_encode(b"abcd", &mut out);
+}
+
 // ── headers ───────────────────────────────────────────────────────
 
 #[test]
@@ -726,9 +773,8 @@ fn json_escaped_len_control_char_wide() {
 
 #[test]
 fn json_escaped_len_short_control_escapes() {
-    // Regression: \r, \t, \x08, \x0c are written as 2-byte escapes but were
-    // counted as +0 by json_escaped_len (memchr3 only finds ", \, \n).
-    // Each must contribute +1.
+    // \r, \t, \x08, \x0c are written as 2-byte escapes, each contributing
+    // +1. (memchr3 only finds ", \, \n; the run scanner handles these.)
     assert_eq!(crate::json_ser::json_escaped_len(b"a\rb"), 4); // a, \r, b
     assert_eq!(crate::json_ser::json_escaped_len(b"a\tb"), 4);
     assert_eq!(crate::json_ser::json_escaped_len(&[b'a', 0x08, b'b']), 4);
@@ -757,6 +803,51 @@ fn write_json_escaped_never_overflows_exact_buffer() {
         let mut pos = 0usize;
         crate::json_ser::write_json_escaped(&mut out, &mut pos, input);
         assert_eq!(pos, len, "must write exactly json_escaped_len bytes: {input:?}");
+    }
+}
+
+#[test]
+fn write_json_escaped_escapes_control_before_special() {
+    // Regression: control chars that appear BEFORE a memchr3 special (", \,
+    // \n) must still be escaped. Previously they were copied raw into the JSON
+    // string → RFC-8259-invalid output (e.g. a cookie value `a\tb"c` or a URL
+    // query `?q=%09%22`). The length accounting must match the write exactly.
+    let cases: &[(&[u8], &[u8])] = &[
+        // a\rb"c → a \\r b \"
+        (
+            b"a\rb\"c",
+            &[
+                b'a', b'\\', b'r', b'b', // \r → \\r
+                b'\\', b'"',             // " → \"
+                b'c',
+            ],
+        ),
+        // a\tb\\c → a \t b \ \
+        (
+            b"a\tb\\c",
+            &[
+                b'a', b'\\', b't', b'b', // \t → \\t
+                b'\\', b'\\',            // \ → \\
+                b'c',
+            ],
+        ),
+        // 0x01 before \n → \u0001 then \n
+        (
+            &[b'a', 0x01, b'b', b'\n', b'c'],
+            &[
+                b'a', b'\\', b'u', b'0', b'0', b'0', b'1', // \u0001
+                b'b', b'\\', b'n', b'c', // \n
+            ],
+        ),
+    ];
+
+    for (input, expected) in cases {
+        let len = crate::json_ser::json_escaped_len(input);
+        let mut out = vec![0u8; len];
+        let mut pos = 0usize;
+        crate::json_ser::write_json_escaped(&mut out, &mut pos, input);
+        assert_eq!(pos, len, "accounting must be exact for {input:?}");
+        assert_eq!(&out[..pos], *expected, "output must be valid JSON for {input:?}");
     }
 }
 

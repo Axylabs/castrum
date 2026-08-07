@@ -33,9 +33,16 @@ fn b64url_decode(data: &[u8]) -> Option<Vec<u8>> {
 
 // ── HMAC-SHA256 (aws-lc-rs) ────────────────────────────────────
 
+/// HMAC-SHA256 with a freshly derived key (scalar convenience path).
 pub fn hmac_sha256(secret: &[u8], data: &[u8]) -> [u8; 32] {
     let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
-    let tag = aws_lc_rs::hmac::sign(&key, data);
+    hmac_sha256_with_key(&key, data)
+}
+
+/// HMAC-SHA256 with a PRE-COMPILED key — avoids re-deriving the key on every
+/// call (the win the `JwtSigner`/`HmacSigner` instances exploit).
+pub fn hmac_sha256_with_key(key: &aws_lc_rs::hmac::Key, data: &[u8]) -> [u8; 32] {
+    let tag = aws_lc_rs::hmac::sign(key, data);
     let mut out = [0u8; 32];
     out.copy_from_slice(tag.as_ref());
     out
@@ -69,13 +76,22 @@ pub fn split_token(token: &[u8]) -> Option<TokenParts<'_>> {
 
 /// Build a full HS256 token from base64url-encoded header + payload segments.
 pub fn build_token(header_b64: &[u8], payload_b64: &[u8], secret: &[u8]) -> Vec<u8> {
-    let mut signing_input =
-        Vec::with_capacity(header_b64.len() + 1 + payload_b64.len());
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
+    build_token_with_key(header_b64, payload_b64, &key)
+}
+
+/// Build a token with a PRE-COMPILED key (per-call key derivation removed).
+pub fn build_token_with_key(
+    header_b64: &[u8],
+    payload_b64: &[u8],
+    key: &aws_lc_rs::hmac::Key,
+) -> Vec<u8> {
+    let mut signing_input = Vec::with_capacity(header_b64.len() + 1 + payload_b64.len());
     signing_input.extend_from_slice(header_b64);
     signing_input.push(b'.');
     signing_input.extend_from_slice(payload_b64);
 
-    let sig = hmac_sha256(secret, &signing_input);
+    let sig = hmac_sha256_with_key(key, &signing_input);
     let sig_b64 = b64url_encode(&sig);
 
     signing_input.push(b'.');
@@ -98,17 +114,22 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Verify an HS256 signature (constant-time). Does NOT check claims/expiry.
 pub fn verify_signature(token: &[u8], secret: &[u8]) -> bool {
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
+    verify_signature_with_key(token, &key)
+}
+
+/// Verify an HS256 signature (constant-time) with a PRE-COMPILED key.
+pub fn verify_signature_with_key(token: &[u8], key: &aws_lc_rs::hmac::Key) -> bool {
     let Some(parts) = split_token(token) else {
         return false;
     };
 
-    let mut signing_input =
-        Vec::with_capacity(parts.header_b64.len() + 1 + parts.payload_b64.len());
+    let mut signing_input = Vec::with_capacity(parts.header_b64.len() + 1 + parts.payload_b64.len());
     signing_input.extend_from_slice(parts.header_b64);
     signing_input.push(b'.');
     signing_input.extend_from_slice(parts.payload_b64);
 
-    let sig = hmac_sha256(secret, &signing_input);
+    let sig = hmac_sha256_with_key(key, &signing_input);
 
     match b64url_decode(parts.sig_b64) {
         Some(provided) => ct_eq(&sig, &provided),
@@ -160,7 +181,17 @@ pub fn verify_token(
     secret: &[u8],
     now_seconds: i64,
 ) -> Option<serde_json::Value> {
-    if !verify_signature(token, secret) {
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
+    verify_token_with_key(token, &key, now_seconds)
+}
+
+/// Verify with a PRE-COMPILED key (no per-call key derivation).
+pub fn verify_token_with_key(
+    token: &[u8],
+    key: &aws_lc_rs::hmac::Key,
+    now_seconds: i64,
+) -> Option<serde_json::Value> {
+    if !verify_signature_with_key(token, key) {
         return None;
     }
 
@@ -213,6 +244,61 @@ pub fn jwt_verify(
 ) -> serde_json::Value {
     verify_token(token.as_ref(), secret.as_ref(), now_seconds)
         .unwrap_or(serde_json::Value::Null)
+}
+
+/// Higher-order instance: precompiles the HMAC-SHA256 key once from `secret`,
+/// so `sign`/`verify` never re-derive the key on the per-call path. `ttl` is
+/// fixed at construction (0/absent → no `iat`/`exp` injection).
+#[napi]
+pub struct JwtSigner {
+    key: aws_lc_rs::hmac::Key,
+    ttl_seconds: Option<i64>,
+}
+
+#[napi]
+impl JwtSigner {
+    #[napi(constructor)]
+    pub fn new(secret: Uint8Array, ttl_seconds: Option<i64>) -> Self {
+        Self {
+            key: aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret.as_ref()),
+            ttl_seconds,
+        }
+    }
+
+    /// Sign a JWT with the precompiled key. When `ttl` was set at construction,
+    /// `iat`/`exp` are injected into object claims (unless already present).
+    #[napi]
+    pub fn sign(&self, claims: serde_json::Value, now_seconds: i64) -> Result<Buffer> {
+        let mut claims = claims;
+        if let Some(obj) = claims.as_object_mut() {
+            if let Some(ttl) = self.ttl_seconds {
+                if ttl > 0 {
+                    obj.entry("iat")
+                        .or_insert_with(|| serde_json::json!(now_seconds));
+                    obj.entry("exp")
+                        .or_insert_with(|| serde_json::json!(now_seconds + ttl));
+                }
+            }
+        }
+
+        let header = serde_json::json!({ "alg": "HS256", "typ": "JWT" });
+        let header_b64 = b64url_encode(&serde_json::to_vec(&header).map_err(napi_err)?);
+        let payload_b64 = b64url_encode(&serde_json::to_vec(&claims).map_err(napi_err)?);
+
+        Ok(Buffer::from(build_token_with_key(
+            &header_b64,
+            &payload_b64,
+            &self.key,
+        )))
+    }
+
+    /// Verify a JWT with the precompiled key (signature + `alg` + time claims).
+    /// Returns the decoded claims, or `null` on any failure.
+    #[napi]
+    pub fn verify(&self, token: Uint8Array, now_seconds: i64) -> serde_json::Value {
+        verify_token_with_key(token.as_ref(), &self.key, now_seconds)
+            .unwrap_or(serde_json::Value::Null)
+    }
 }
 
 fn napi_err(e: impl std::fmt::Display) -> Error {
@@ -445,5 +531,35 @@ mod tests {
         assert_eq!(parts.header_b64, b"aaa");
         assert_eq!(parts.payload_b64, b"bbb");
         assert_eq!(parts.sig_b64, b"ccc");
+    }
+
+    #[test]
+    fn jwt_signer_instance_roundtrips_and_injects_claims() {
+        // Precompiled-key instance: sign+verify with no per-call key derivation.
+        let signer = JwtSigner::new(Uint8Array::new(SECRET.to_vec()), Some(3600));
+        let now = 1_000_000i64;
+
+        let claims = serde_json::json!({ "sub": "123" });
+        let token = signer.sign(claims.clone(), now).unwrap();
+
+        // ttl injected iat/exp at construction time.
+        let verified = signer.verify(Uint8Array::new(token.to_vec()), now);
+        assert_eq!(verified["sub"], "123");
+        assert_eq!(verified["iat"], now);
+        assert_eq!(verified["exp"], now + 3600);
+
+        // Same instance verifies, wrong key instance rejects.
+        let other = JwtSigner::new(Uint8Array::new(b"other-secret".to_vec()), None);
+        assert_eq!(
+            other.verify(Uint8Array::new(token.to_vec()), now),
+            serde_json::Value::Null
+        );
+
+        // No ttl -> no iat/exp injected.
+        let no_ttl = JwtSigner::new(Uint8Array::new(SECRET.to_vec()), None);
+        let t2 = no_ttl.sign(claims.clone(), now).unwrap();
+        let v2 = no_ttl.verify(Uint8Array::new(t2.to_vec()), now);
+        assert!(v2.get("iat").is_none());
+        assert!(v2.get("exp").is_none());
     }
 }

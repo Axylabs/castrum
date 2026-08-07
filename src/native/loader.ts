@@ -4,7 +4,7 @@
 // `lazyAddon()` trigger loading exactly once on first use. This keeps
 // `import castrum` as cheap as possible on Bun.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
@@ -41,7 +41,18 @@ function resolveAddonPath(): string {
     process.env.RUST_BENCH_NATIVE_LIBRARY_PATH;
 
   if (envOverride) {
-    if (existsSync(envOverride)) {
+    // A DIRECT file override must resolve to a FILE (a .node/loadable path).
+    // If the override is a DIRECTORY, only the joined `dir/<name>.node`
+    // candidates are valid — pushing the directory itself used to make
+    // `require(<dir>)` fail with MODULE_NOT_FOUND (no package.json/index inside).
+    const isFile = (p: string): boolean => {
+      try {
+        return statSync(p).isFile();
+      } catch {
+        return false;
+      }
+    };
+    if (existsSync(envOverride) && isFile(envOverride)) {
       candidates.push(envOverride);
     }
     for (const name of names) {

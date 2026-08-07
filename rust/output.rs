@@ -52,21 +52,52 @@ pub const ERR_CODE_INTERNAL: u8 = 8;
 
 // ── Unsafe output helpers ─────────────────────────────────────────
 
+/// Panic-safe capacity check for the unsafe writers. This makes each write
+/// self-checking instead of resting on a single upstream `out.len() >= 48`
+/// guard — with `panic = "unwind"` a miscalculation becomes a clean JS error
+/// (napi catch_unwind) rather than a silent OOB write.
+#[inline(always)]
+fn check_capacity(out: &[u8], pos: usize, n: usize) {
+    let end = pos
+        .checked_add(n)
+        .unwrap_or_else(|| panic!("castrum output position overflow at {pos} (n={n})"));
+    assert!(
+        end <= out.len(),
+        "castrum output buffer overflow at {pos} (n={n}, len={})",
+        out.len()
+    );
+}
+
 /// Write a u16 at the given position in little-endian format.
+///
+/// # Safety
+/// `pos + 2` must be within `out` (enforced by `check_capacity`, which panics
+/// on overflow — with `panic = "unwind"` napi converts that to a clean JS error).
 #[inline(always)]
 pub unsafe fn write_u16(out: &mut [u8], pos: usize, value: u16) {
+    check_capacity(out, pos, 2);
     ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), out.as_mut_ptr().add(pos), 2);
 }
 
 /// Write a u32 at the given position in little-endian format.
+///
+/// # Safety
+/// `pos + 4` must be within `out` (enforced by `check_capacity`, which panics
+/// on overflow — with `panic = "unwind"` napi converts that to a clean JS error).
 #[inline(always)]
 pub unsafe fn write_u32(out: &mut [u8], pos: usize, value: u32) {
+    check_capacity(out, pos, 4);
     ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), out.as_mut_ptr().add(pos), 4);
 }
 
 /// Write a u64 at the given position in little-endian format.
+///
+/// # Safety
+/// `pos + 8` must be within `out` (enforced by `check_capacity`, which panics
+/// on overflow — with `panic = "unwind"` napi converts that to a clean JS error).
 #[inline(always)]
 pub unsafe fn write_u64(out: &mut [u8], pos: usize, value: u64) {
+    check_capacity(out, pos, 8);
     ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), out.as_mut_ptr().add(pos), 8);
 }
 

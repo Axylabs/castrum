@@ -31,6 +31,27 @@ pub fn json_escaped_len(bytes: &[u8]) -> usize {
     }
 }
 
+/// Extra bytes (beyond the base 1 already counted per input byte) required to
+/// escape control characters in a run that contains NO `"`, `\` or `\n`
+/// (those three memchr3 specials are accounted for by the caller).
+///
+/// - `\r` (0x0d), `\t` (0x09), 0x08 and 0x0c become 2-byte escapes → +1.
+/// - every other control char (< 0x20) becomes `\uXXXX` (6 bytes → +5).
+#[inline(always)]
+fn control_escape_extra(run: &[u8]) -> usize {
+    let mut extra = 0;
+    for &b in run {
+        if b < 0x20 {
+            extra += if b == b'\r' || b == b'\t' || b == 0x08 || b == 0x0c {
+                1
+            } else {
+                5
+            };
+        }
+    }
+    extra
+}
+
 /// Inner: assumes valid UTF-8, uses memchr for skip.
 #[inline(always)]
 fn json_escaped_len_impl(bytes: &[u8]) -> usize {
@@ -40,31 +61,21 @@ fn json_escaped_len_impl(bytes: &[u8]) -> usize {
     // Use memchr3 to find any of the special chars: ", \, \n
     while let Some(pos) = memchr::memchr3(b'"', b'\\', b'\n', &bytes[offset..]) {
         let abs = offset + pos;
-        let b = bytes[abs];
-        offset = abs + 1;
+
+        // Control chars before the special are escaped too — they contribute
+        // the same extra count the writer emits. This keeps the length an
+        // EXACT accounting of the escaped output, so the output is always
+        // RFC-8259-valid and never depends on memchr3's needle set.
+        total += control_escape_extra(&bytes[offset..abs]);
 
         // memchr3 only matches ", \, \n — every hit is a 2-byte escape (+1).
-        total += if b == b'"' || b == b'\\' || b == b'\n' {
-            1
-        } else {
-            0
-        };
+        total += 1;
+
+        offset = abs + 1;
     }
 
-    // Now check for remaining control characters (<0x20) that memchr3 missed.
-    // memchr3 only finds ", \, \n, so \r (0x0d), \t (0x09), 0x08 and 0x0c are
-    // counted HERE — they are written as 2-byte escapes (+1). Every other
-    // control char is written as \uXXXX (6 bytes instead of 1 → +5).
-    for &b in &bytes[offset..] {
-        if b < 0x20 && b != b'\n' {
-            total += if b == b'\r' || b == b'\t' || b == 0x08 || b == 0x0c {
-                1
-            } else {
-                5
-            };
-        }
-    }
-
+    // Trailing run after the last special — may contain control chars.
+    total += control_escape_extra(&bytes[offset..]);
     total
 }
 
@@ -90,28 +101,20 @@ pub fn write_json_escaped(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> usiz
     *pos - start
 }
 
-/// Write escaped bytes for valid UTF-8 input.
+/// Write a run of bytes that contains no `"`, `\` or `\n`, escaping any
+/// control characters (< 0x20) present. Assumes `out` has room for
+/// `run.len() + control_escape_extra(run)` bytes.
 #[inline(always)]
-fn write_json_escaped_utf8(out: &mut [u8], pos: &mut usize, bytes: &[u8]) {
-    let mut offset = 0usize;
-
-    while let Some(mut idx) = memchr::memchr3(b'"', b'\\', b'\n', &bytes[offset..]) {
-        idx += offset;
-
-        // Copy unescaped bytes before the special character
-        let unescaped = &bytes[offset..idx];
-        if !unescaped.is_empty() {
-            out[*pos..*pos + unescaped.len()].copy_from_slice(unescaped);
-            *pos += unescaped.len();
-        }
-
-        let b = bytes[idx];
+fn write_escaped_run(out: &mut [u8], pos: &mut usize, run: &[u8]) {
+    if run.is_empty() {
+        return;
+    }
+    let mut i = 0;
+    while i < run.len() {
+        let b = run[i];
         match b {
-            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => {
+            b'\r' | b'\t' | 0x08 | 0x0c => {
                 let esc = match b {
-                    b'"' => b'"',
-                    b'\\' => b'\\',
-                    b'\n' => b'n',
                     b'\r' => b'r',
                     b'\t' => b't',
                     0x08 => b'b',
@@ -121,8 +124,9 @@ fn write_json_escaped_utf8(out: &mut [u8], pos: &mut usize, bytes: &[u8]) {
                 out[*pos] = b'\\';
                 out[*pos + 1] = esc;
                 *pos += 2;
+                i += 1;
             }
-            _ => {
+            b if b < 0x20 => {
                 // Control character (< 0x20) → \u00XX
                 out[*pos] = b'\\';
                 out[*pos + 1] = b'u';
@@ -131,65 +135,66 @@ fn write_json_escaped_utf8(out: &mut [u8], pos: &mut usize, bytes: &[u8]) {
                 out[*pos + 4] = JSON_HEX_LOWER[(b >> 4) as usize];
                 out[*pos + 5] = JSON_HEX_LOWER[(b & 0x0f) as usize];
                 *pos += 6;
+                i += 1;
             }
-        }
-
-        offset = idx + 1;
-    }
-
-    // Copy remaining
-    let remaining = &bytes[offset..];
-    if !remaining.is_empty() {
-        // Check for remaining low control chars that memchr3 missed (\r, \t, etc.)
-        let mut i = 0;
-        while i < remaining.len() {
-            let b = remaining[i];
-            match b {
-                b'\r' | b'\t' | 0x08 | 0x0c => {
-                    let esc = match b {
-                        b'\r' => b'r',
-                        b'\t' => b't',
-                        0x08 => b'b',
-                        0x0c => b'f',
-                        _ => unreachable!(),
-                    };
-                    out[*pos] = b'\\';
-                    out[*pos + 1] = esc;
-                    *pos += 2;
-                    i += 1;
-                }
-                b if b < 0x20 => {
-                    out[*pos] = b'\\';
-                    out[*pos + 1] = b'u';
-                    out[*pos + 2] = b'0';
-                    out[*pos + 3] = b'0';
-                    out[*pos + 4] = JSON_HEX_LOWER[(b >> 4) as usize];
-                    out[*pos + 5] = JSON_HEX_LOWER[(b & 0x0f) as usize];
-                    *pos += 6;
-                    i += 1;
-                }
-                _ => {
-                    // Bulk copy of safe bytes up to next special char
-                    let remaining_slice = &remaining[i..];
-                    let next_special = remaining_slice.iter().position(|&c| {
-                        c < 0x20
-                    });
-                    match next_special {
-                        Some(n) => {
-                            out[*pos..*pos + n].copy_from_slice(&remaining_slice[..n]);
-                            *pos += n;
-                            i += n;
-                        }
-                        None => {
-                            out[*pos..*pos + remaining_slice.len()].copy_from_slice(remaining_slice);
-                            *pos += remaining_slice.len();
-                            i = remaining.len();
-                        }
+            _ => {
+                // Bulk copy of safe bytes up to next control char.
+                let rest = &run[i..];
+                match rest.iter().position(|&c| c < 0x20) {
+                    Some(n) => {
+                        out[*pos..*pos + n].copy_from_slice(&rest[..n]);
+                        *pos += n;
+                        i += n;
+                    }
+                    None => {
+                        out[*pos..*pos + rest.len()].copy_from_slice(rest);
+                        *pos += rest.len();
+                        i = run.len();
                     }
                 }
             }
         }
     }
+}
+
+/// Write escaped bytes for valid UTF-8 input.
+#[inline(always)]
+fn write_json_escaped_utf8(out: &mut [u8], pos: &mut usize, bytes: &[u8]) {
+    let mut offset = 0usize;
+
+    while let Some(mut idx) = memchr::memchr3(b'"', b'\\', b'\n', &bytes[offset..]) {
+        idx += offset;
+
+        // Copy the unescaped bytes before the special character, escaping any
+        // control chars memchr3 skipped — a raw control char (e.g. `\t` before
+        // a `"`) would produce RFC-8259-invalid JSON.
+        write_escaped_run(out, pos, &bytes[offset..idx]);
+
+        let b = bytes[idx];
+        match b {
+            b'"' => {
+                out[*pos] = b'\\';
+                out[*pos + 1] = b'"';
+                *pos += 2;
+            }
+            b'\\' => {
+                out[*pos] = b'\\';
+                out[*pos + 1] = b'\\';
+                *pos += 2;
+            }
+            b'\n' => {
+                out[*pos] = b'\\';
+                out[*pos + 1] = b'n';
+                *pos += 2;
+            }
+            _ => unreachable!(),
+        }
+
+        offset = idx + 1;
+    }
+
+    // Trailing run after the last special — may contain control chars.
+    write_escaped_run(out, pos, &bytes[offset..]);
 }
 
 /// Parse cookies from `input` and write JSON to `out` with max_pairs limit.

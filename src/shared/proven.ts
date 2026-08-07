@@ -95,8 +95,8 @@ export const PROVEN_SURFACE = [
     label: "JSON schema validate",
     nativeTask: "native:json_schema_validate",
     rustTask: "rust:json_schema_validate",
-    status: "not-competitive",
-    note: "Per-doc DOM build makes the native path slower than ajv for small docs.",
+    status: "proven",
+    note: "Zero-DOM fast path validates raw bytes for the common keyword subset (scalar ~1.2-2.4x, batch ~1.0-1.56x vs ajv); unsupported keywords fall back to the jsonschema crate.",
   },
   {
     name: "jwtSign",
@@ -122,6 +122,24 @@ export const PROVEN_SURFACE = [
     status: "not-competitive",
     note: "The hand-rolled JS mini-template wins for small templates.",
   },
+
+  // ── Framework actions (2026-08-07; release-build numbers) ──
+  { name: "formParsePacked", label: "Form parse", nativeTask: "native:form_parse", rustTask: "rust:form_parse", status: "proven", typicalRatio: 5.8, note: "Benchmarked via the FormParser instance (same parser core)." },
+  { name: "parseMediaType", label: "Media type parse", nativeTask: "native:media_type_parse", rustTask: "rust:media_type_parse", status: "parity", typicalRatio: 1.04 },
+  { name: "etag", label: "ETag", nativeTask: "native:etag", rustTask: "rust:etag", status: "parity", typicalRatio: 1.06 },
+  { name: "httpDate", label: "HTTP date", nativeTask: "native:http_date", rustTask: "rust:http_date", status: "not-competitive", note: "Date.toUTCString() is native; loses ~1.5x." },
+  { name: "createConditionalRequest", label: "Conditional request", nativeTask: "native:conditional", rustTask: "rust:conditional", status: "proven", typicalRatio: 1.4 },
+  { name: "createAcceptNegotiator", label: "Accept-Encoding negotiate", nativeTask: "native:accept_negotiate", rustTask: "rust:accept_negotiate", status: "proven", typicalRatio: 4 },
+  { name: "base64Encode", label: "Base64 encode", nativeTask: "native:base64_encode", rustTask: "rust:base64_encode", status: "not-competitive", note: "Bun Buffer base64 is SIMD; loses ~1.5x." },
+  { name: "base64Decode", label: "Base64 decode", nativeTask: "native:base64_decode", rustTask: "rust:base64_decode", status: "parity", typicalRatio: 1.17 },
+  { name: "hexEncode", label: "Hex encode", nativeTask: "native:hex_encode", rustTask: "rust:hex_encode", status: "not-competitive", note: "Buffer.toString('hex') is native; loses ~2x." },
+  { name: "hexDecode", label: "Hex decode", nativeTask: "native:hex_decode", rustTask: "rust:hex_decode", status: "parity", typicalRatio: 0.78, note: "Slightly slower than Buffer hex decode (~1.3x)." },
+  { name: "signCookie", label: "Cookie sign", nativeTask: "native:cookie_sign", rustTask: "rust:cookie_sign", status: "proven", typicalRatio: 9 },
+  { name: "verifyCookie", label: "Cookie verify", nativeTask: "native:cookie_verify", rustTask: "rust:cookie_verify", status: "proven", typicalRatio: 2.1 },
+  { name: "csrfToken", label: "CSRF create", nativeTask: "native:csrf_create", rustTask: "rust:csrf_create", status: "proven", typicalRatio: 13.8 },
+  { name: "csrfVerify", label: "CSRF verify", nativeTask: "native:csrf_verify", rustTask: "rust:csrf_verify", status: "proven", typicalRatio: 2.7 },
+  { name: "urlResolve", label: "URL resolve", nativeTask: "native:url_resolve", rustTask: "rust:url_resolve", status: "parity", typicalRatio: 1.11 },
+  { name: "urlEncodeQuery", label: "URL query build", nativeTask: "native:url_encode_query", rustTask: "rust:url_encode_query", status: "not-competitive", note: "encodeURIComponent baseline wins (~1.2-1.35x)." },
 
   // ── Unmeasured (no direct comparison task) ──
   { name: "passwordVerify", label: "Password verify", nativeTask: "", rustTask: "", status: "unmeasured", note: "Depends on the hash cost; no standalone comparison." },

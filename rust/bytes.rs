@@ -73,7 +73,14 @@ pub fn hex_val(b: u8) -> Option<u8> {
 /// Encode `bytes` as lowercase hex into `out`, which must hold `2 * bytes.len()`.
 #[inline]
 pub fn hex_encode(bytes: &[u8], out: &mut [u8]) {
-    debug_assert!(out.len() >= bytes.len() * 2);
+    // Checked (not debug-only): with `debug-assertions = false` an undersized
+    // `out` would otherwise surface as an unhelpful index panic in release.
+    assert!(
+        out.len() >= bytes.len() * 2,
+        "hex_encode: output buffer too small ({} < {})",
+        out.len(),
+        bytes.len() * 2
+    );
     for (i, &b) in bytes.iter().enumerate() {
         out[2 * i] = HEX_LOWER[(b >> 4) as usize];
         out[2 * i + 1] = HEX_LOWER[(b & 0x0f) as usize];
@@ -83,7 +90,12 @@ pub fn hex_encode(bytes: &[u8], out: &mut [u8]) {
 /// Encode `bytes` as UPPERCASE hex into `out` (used by URL percent-encoding).
 #[inline]
 pub fn hex_encode_upper(bytes: &[u8], out: &mut [u8]) {
-    debug_assert!(out.len() >= bytes.len() * 2);
+    assert!(
+        out.len() >= bytes.len() * 2,
+        "hex_encode_upper: output buffer too small ({} < {})",
+        out.len(),
+        bytes.len() * 2
+    );
     for (i, &b) in bytes.iter().enumerate() {
         out[2 * i] = HEX_UPPER[(b >> 4) as usize];
         out[2 * i + 1] = HEX_UPPER[(b & 0x0f) as usize];

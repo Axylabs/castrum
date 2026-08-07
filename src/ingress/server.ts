@@ -49,6 +49,14 @@ export interface CreateIngressServerOptions {
    * hook failures are swallowed.
    */
   onError?: (info: { error: Error; request?: Request }) => void;
+  /** Node adapter only: ms to receive the complete request (headers + body).
+   *  Guards slowloris/trickling requests. Default: 30_000. */
+  requestTimeoutMs?: number;
+  /** Node adapter only: ms to receive the request headers. Default: 30_000. */
+  headersTimeoutMs?: number;
+  /** Node adapter only: max requests per keep-alive socket before Node forces
+   *  a fresh connection (bounds long-lived socket reuse). Default: 1000. */
+  maxRequestsPerSocket?: number;
 }
 
 /**

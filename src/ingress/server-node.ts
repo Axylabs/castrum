@@ -60,13 +60,20 @@ function nodeRequestToWebRequest(req: IncomingMessage): Request {
   }
 
   const method = req.method ?? "GET";
-  const canHaveBody = method === "POST" || method === "PUT" || method === "PATCH";
+  // The fetch Request constructor forbids a body on GET/HEAD, but allows it on
+  // POST/PUT/PATCH/DELETE/OPTIONS etc. Attach the body stream whenever the
+  // request actually carries one (content-length > 0 or chunked), so DELETE/
+  // OPTIONS-with-a-body are no longer dropped.
+  const bodyForbidden = method === "GET" || method === "HEAD";
+  const hasBody =
+    Number(req.headers["content-length"] ?? 0) > 0 ||
+    req.headers["transfer-encoding"] !== undefined;
 
   const init: RequestInit & { duplex?: "half" } = { method, headers };
 
   // Stream the request body through (the route handlers call
   // `req.arrayBuffer()` which drains this stream).
-  if (canHaveBody) {
+  if (hasBody && !bodyForbidden) {
     init.body = Readable.toWeb(req) as ReadableStream<Uint8Array>;
     init.duplex = "half";
   }
@@ -119,6 +126,24 @@ function makeRequestListener(
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
     try {
+      // Socket-level body cap: reject oversized requests BEFORE any body is
+      // buffered (mirrors Bun's `maxRequestBodySize` on the Node adapter).
+      const contentLengthHeader = req.headers["content-length"];
+      if (
+        options.maxRequestBodySize !== undefined &&
+        contentLengthHeader !== undefined &&
+        Number(contentLengthHeader) > options.maxRequestBodySize
+      ) {
+        const body = JSON.stringify({
+          error: { code: "body_too_large", message: "Request body is too large" },
+        });
+        res.statusCode = 413;
+        res.setHeader("content-type", "application/json");
+        res.setHeader("content-length", String(Buffer.byteLength(body)));
+        res.end(body);
+        return;
+      }
+
       const webReq = nodeRequestToWebRequest(req);
       const pathname = new URL(webReq.url).pathname;
       const method = webReq.method ?? "GET";
@@ -182,8 +207,31 @@ export function createIngressServerNode(
     makeRequestListener(options, routes, baseOpts),
   );
 
-  // Map Bun-style options onto Node equivalents.
+  // Map Bun-style options onto Node equivalents + harden slowloris/DoS.
   server.keepAliveTimeout = (options.idleTimeout ?? 30) * 1000;
+  server.requestTimeout = options.requestTimeoutMs ?? 30_000;
+  server.headersTimeout = options.headersTimeoutMs ?? 30_000;
+  if (server.maxRequestsPerSocket !== undefined) {
+    server.maxRequestsPerSocket = options.maxRequestsPerSocket ?? 1000;
+  }
+
+  // Malformed requests → castrum's JSON error shape (not Node's raw 400/431).
+  server.on("clientError", (_err, socket) => {
+    if (!socket.writable) {
+      socket.destroy();
+      return;
+    }
+    const body = JSON.stringify({
+      error: { code: "bad_request", message: "Bad request" },
+    });
+    socket.end(
+      "HTTP/1.1 400 Bad Request\r\n" +
+        "Content-Type: application/json\r\n" +
+        `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+        "Connection: close\r\n\r\n" +
+        body,
+    );
+  });
 
   const hostname = options.hostname ?? "0.0.0.0";
 

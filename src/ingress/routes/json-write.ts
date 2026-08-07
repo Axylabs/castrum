@@ -3,7 +3,7 @@
 
 import type { OptimizedIngressHandler } from "../handlers";
 import { resolveIp, type BakedHandlerOptions } from "./common";
-import { DEFAULT_MAX_BODY_BYTES } from "../shared";
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from "../shared";
 import { readBodyWithLimit } from "../body";
 
 /**
@@ -18,7 +18,9 @@ export function jsonWriteHandler(
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const fallback = opts.fallback ?? ingress;
   const copyBody = opts.copyBody !== false;
-  const bodyTimeoutMs = opts.bodyTimeoutMs ?? 0;
+  // Non-zero default: protect against slowloris / trickling bodies. Set
+  // `bodyTimeoutMs: 0` to disable.
+  const bodyTimeoutMs = opts.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
 
   return async (req, srv) => {
     const ip = resolveIp(req, srv, opts);

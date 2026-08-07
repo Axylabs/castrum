@@ -21,7 +21,8 @@ HTTP **ingress pipeline** for Bun servers.
 | Build Rust addon (LOCAL max perf) | `bun run build:perf` (x86-64-v3 + AVX2/BMI2/FMA — never for publish) |
 | Build Rust addon (debug) | `bun run build:debug` |
 | Build compiled JS entry (Node) | `bun run build:js` (bundle + types → `dist/`) |
-| Node smoke tests | `bun run test:node` (== `node --test test/integration/`) |
+| Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
+| Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
 | Rust unit tests | `cargo test` (~138 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
 | TS unit tests | `bun test` (~154 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
@@ -105,7 +106,7 @@ bench/load.ts             HTTP load generator + scenarios; validates response SH
 bench/startup.ts          "instant execution" benchmark (import + first-call timing)
 scripts/build-perf.sh     LOCAL-only max-perf build (x86-64-v3 + SIMD)
 test/unit/                TS tests (ingress/fast, shared/packed, shared/bytes, features, ingress/body)
-test/integration/         Node smoke tests (node-smoke.test.mjs, run via node --test)
+test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test.mjs, run via node --test; the enterprise file adds Buffer interop, the precompiled instances, node:crypto cross-checks, keep-alive/413/clientError/slowloris)
 rust/                     single cdylib crate, one module per area (lib.rs declares mods)
   ├── bytes.rs            SHARED byte primitives: word-compare, hex, %XX decode, cookie_pairs
   ├── output.rs           SINGLE NUMERIC SOURCE for the ingress binary layout
@@ -114,8 +115,27 @@ rust/                     single cdylib crate, one module per area (lib.rs decla
   ├── threadpool.rs       rayon global pool init + parallelism heuristic
   ├── packed.rs           zero-alloc packed iterators + byte writers (VecWriter, PackedIter, ...)
   ├── batch_core.rs       generic rayon-parallel batch helpers (bitset/count/sum)
+  ├── fast_schema.rs      zero-DOM JSON Schema fast path: compiles the common keyword subset
+  │                       (type/required/properties/additionalProperties/items/min-max/…)
+  │                       into an AST and validates raw bytes in one allocation-free pass.
+  │                       `json_schema.rs` (SchemaValidator) uses it automatically; schemas
+  │                       with unsupported keywords (pattern/format/anyOf/$ref/enum/…) fall
+  │                       back to the jsonschema crate DOM path. Both paths must stay.
+  ├── json_schema.rs      SchemaValidator napi class (fast path + jsonschema-crate fallback)
   ├── ingress.rs          ingress pipeline (IngressInner + napi class), with submodules:
   │   └── ingress/        options.rs (napi option structs + Limits), time.rs (clock), packed.rs (packed readers + builder)
+  ├── form.rs             x-www-form-urlencoded body parser (reuses query_parser core) + FormParser instance
+  ├── media_type.rs       Content-Type parser (type/subtype + params) + MediaTypeParser (wildcard matches)
+  ├── etag.rs             HTTP cache semantics: etag(), http_date, parse_http_date + ConditionalRequest (304)
+  ├── accept.rs           Accept-Encoding parse + AcceptNegotiator (q-values, wildcard, specificity-first; allocation-free stack path)
+  ├── base64.rs           base64/base64url/hex encode-decode + Base64Codec instance (concrete engine stored once)
+  ├── jwt.rs              HS256 JWT sign/verify + JwtSigner instance (HMAC key + ttl compiled once)
+  ├── aead.rs             AES-256-GCM / chacha20-poly1305 + AeadCipher instance (LessSafeKey compiled once)
+  ├── argon2.rs           argon2id password hashing + Argon2Hasher instance (params compiled once)
+  ├── base64.rs           base64/base64url/hex encode-decode + Base64Codec instance
+  ├── cookie_sign.rs      signed cookies (value.signature, HMAC-SHA256) + CookieSigner instance
+  ├── csrf.rs             CSRF tokens (random hex + HMAC) + CsrfProtector instance
+  ├── url_join.rs         RFC 3986 url_resolve + url_encode_query + UrlBuilder instance
   └── test_support.rs     shared #[cfg(test)] helpers (pack_headers, decode_packed_pairs, Rng)
 ```
 

@@ -56,8 +56,9 @@ for false; anything else is warned about and falls back to the default.
 - **Request bodies**: `createIngressServer` applies a server-level `maxRequestBodySize`
   default of 16 MiB, and JSON-write routes stream-read with `maxBodyBytes` enforced
   while reading (an oversized body is rejected as soon as the limit is crossed, never
-  fully buffered). Set `bodyTimeoutMs` on routes to protect against slowloris/trickling
-  bodies (default 0 = disabled).
+  fully buffered). Route/async handlers apply a non-zero body-read deadline by default
+  (`bodyTimeoutMs`, default **30 s** — set `bodyTimeoutMs: 0` to disable) that guards
+  against slowloris/trickling bodies.
 - **Secrets (JWT/AEAD)**: keys and secrets are caller-owned buffers; treat them as
   sensitive (never log them, rotate regularly). The AEAD **batch** APIs derive a unique
   nonce per item, but callers MUST use a fresh base nonce for every batch call — never

@@ -1,4 +1,5 @@
 import * as native from "../baseline";
+import { Buffer } from "node:buffer";
 import { rust, rustBatch } from "../rust-ffi";
 import { decoder, encoder } from "../shared/bytes";
 import { pairsToObject, readHttpPacked, readPairsPacked } from "../shared/packed";
@@ -6,6 +7,25 @@ import {
   nativeJsonSchemaValidate,
   nativeJsonSchemaValidateBatch,
 } from "./schema-baseline";
+import { nativeFormParsePacked } from "./form-baseline";
+import { nativeParseMediaType } from "./media-type-baseline";
+import { nativeEtag, nativeHttpDate, nativeIsNotModified } from "./etag-baseline";
+import { nativeNegotiateEncoding } from "./accept-baseline";
+import {
+  nativeBase64Decode,
+  nativeBase64Encode,
+  nativeHexDecode,
+  nativeHexEncode,
+} from "./encoding-baseline";
+import {
+  nativeSignCookie,
+  nativeVerifyCookie,
+} from "./cookie-sign-baseline";
+import { nativeCsrfToken, nativeCsrfVerify } from "./csrf-baseline";
+import {
+  nativeUrlEncodeQuery,
+  nativeUrlResolve,
+} from "./url-join-baseline";
 import { assertDeepEqual, assertEqual, parseJsonBytes } from "./assert";
 import type { BenchFixtures, ComplexFixtures } from "./fixtures";
 
@@ -72,6 +92,197 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     rust.batch.schemaValidateCount(schemaValidator, f.schemaDocs),
     f.schemaDocs.length,
     "schema batch rust",
+  );
+
+  // ── Form-urlencoded body parsing (URLSearchParams baseline vs rust) ──
+  assertDeepEqual(
+    pairsToObject(readPairsPacked(rust.formParsePacked(f.formBody))),
+    pairsToObject(readPairsPacked(nativeFormParsePacked(f.formBody))),
+    "form parse parity native vs rust",
+  );
+  assertEqual(
+    rust.batch.formParse(f.formBodies).length,
+    f.formBodies.length,
+    "form parse batch count",
+  );
+
+  // ── Media-type / Content-Type parsing (hand-rolled JS baseline vs rust) ──
+  const mediaParser = rust.createMediaTypeParser();
+  for (const header of [f.contentTypeJson, f.contentTypeMultipart]) {
+    const rustM = mediaParser.parse(header);
+    const nativeM = nativeParseMediaType(decoder.decode(header));
+    assertEqual(rustM.mediaType, nativeM.mediaType, "media type: essence parity");
+    assertDeepEqual(rustM.params, nativeM.params, "media type: params parity");
+  }
+  assertEqual(
+    mediaParser.matches(f.contentTypeJson, f.contentTypeJson),
+    true,
+    "media type: exact match",
+  );
+  assertEqual(
+    mediaParser.matches(f.contentTypeJson, encoder.encode("application/*")),
+    true,
+    "media type: subtype wildcard",
+  );
+  assertEqual(
+    mediaParser.matches(f.contentTypeJson, encoder.encode("text/*")),
+    false,
+    "media type: mismatched wildcard",
+  );
+
+  // ── ETag / HTTP-date / conditional (M3) ──
+  const etagStr = decoder.decode(rust.etag(f.etagData));
+  assertEqual(etagStr, decoder.decode(nativeEtag(f.etagData)), "etag parity");
+  assertEqual(
+    decoder.decode(rust.etag(f.etagData, true)).startsWith('W/"'),
+    true,
+    "etag weak prefix",
+  );
+  assertEqual(
+    decoder.decode(rust.httpDate(f.httpDateSecs)),
+    decoder.decode(nativeHttpDate(f.httpDateSecs)),
+    "http date parity",
+  );
+  assertEqual(
+    rust.parseHttpDate(f.ifModifiedSinceHeader),
+    BigInt(f.httpDateSecs),
+    "http date parse",
+  );
+  const conditional = rust.createConditionalRequest(rust.etag(f.etagData), f.httpDateSecs);
+  assertEqual(
+    conditional.isNotModified(
+      encoder.encode(`"nope", ${etagStr}`),
+      null,
+    ),
+    true,
+    "conditional: matching etag → 304",
+  );
+  assertEqual(
+    conditional.isNotModified(encoder.encode('"nope"'), null),
+    false,
+    "conditional: non-matching etag → 200",
+  );
+  assertEqual(
+    conditional.isNotModified(null, f.ifModifiedSinceHeader),
+    nativeIsNotModified(
+      etagStr,
+      f.httpDateSecs,
+      null,
+      decoder.decode(f.ifModifiedSinceHeader),
+    ),
+    "conditional: if-modified-since parity",
+  );
+
+  // ── Accept-Encoding negotiation (M4) ──
+  const negotiator = rust.createAcceptNegotiator(["gzip", "br", "identity"]);
+  assertEqual(
+    negotiator.negotiate(f.acceptEncodingHeader),
+    nativeNegotiateEncoding(
+      ["gzip", "br", "identity"],
+      decoder.decode(f.acceptEncodingHeader),
+    ),
+    "accept-encoding negotiate parity",
+  );
+  assertEqual(
+    negotiator.negotiate(encoder.encode("gzip;q=0, *;q=1")),
+    "br",
+    "accept-encoding: gzip q=0 disables gzip only; br via wildcard",
+  );
+  assertEqual(
+    negotiator.negotiate(encoder.encode("gzip;q=0, br;q=0, *;q=0")),
+    null,
+    "accept-encoding: all disabled → identity",
+  );
+
+  // ── Base64 / hex encoding (M5) ──
+  assertEqual(
+    decoder.decode(rust.base64Encode(f.encodeData)),
+    decoder.decode(nativeBase64Encode(f.encodeData)),
+    "base64 encode parity",
+  );
+  assertEqual(
+    decoder.decode(rust.base64UrlEncode(f.encodeData)),
+    Buffer.from(f.encodeData).toString("base64url"),
+    "base64url encode parity",
+  );
+  assertEqual(
+    decoder.decode(rust.hexEncode(f.encodeData)),
+    decoder.decode(nativeHexEncode(f.encodeData)),
+    "hex encode parity",
+  );
+  const b64Sample = encoder.encode(Buffer.from(f.encodeData).toString("base64"));
+  const hexSample = encoder.encode(Buffer.from(f.encodeData).toString("hex"));
+  assertEqual(
+    decoder.decode(rust.base64Decode(b64Sample)),
+    decoder.decode(nativeBase64Decode(b64Sample)),
+    "base64 decode parity",
+  );
+  assertEqual(
+    decoder.decode(rust.hexDecode(hexSample)),
+    decoder.decode(nativeHexDecode(hexSample)),
+    "hex decode parity",
+  );
+
+  // ── Cookie signing (M6) ──
+  const cookieSigner = rust.createCookieSigner(f.cookieSecret);
+  const signedCookie = cookieSigner.sign(f.cookieValue);
+  assertEqual(
+    decoder.decode(signedCookie),
+    decoder.decode(nativeSignCookie(f.cookieValue, f.cookieSecret)),
+    "cookie sign parity",
+  );
+  assertEqual(
+    decoder.decode(cookieSigner.verify(signedCookie) ?? new Uint8Array(0)),
+    decoder.decode(f.cookieValue),
+    "cookie verify roundtrip",
+  );
+  assertEqual(
+    cookieSigner.verify(encoder.encode("tampered.deadbeef")) === null,
+    true,
+    "cookie verify rejects tampered",
+  );
+  assertEqual(
+    rust.batch.verifyCookie(
+      [signedCookie, encoder.encode("bad.deadbeef")],
+      f.cookieSecret,
+    )[0],
+    1,
+    "cookie verify batch bitset",
+  );
+
+  // ── CSRF (M7) ──
+  const csrfProtector = rust.createCsrfProtector(f.csrfSecret);
+  const csrfTok = csrfProtector.create();
+  assertEqual(csrfProtector.verify(csrfTok), true, "csrf verify roundtrip");
+  assertEqual(
+    csrfProtector.verify(encoder.encode("deadbeef.deadbeef")),
+    false,
+    "csrf verify rejects tampered",
+  );
+  assertEqual(
+    rust.batch.csrfVerify(
+      [csrfTok, encoder.encode("bad.bad")],
+      f.csrfSecret,
+    )[0],
+    1,
+    "csrf batch bitset",
+  );
+  assertEqual(
+    nativeCsrfVerify(csrfTok, f.csrfSecret),
+    true,
+    "csrf verify parity with native baseline",
+  );
+
+  // ── URL join / building (M8) ──
+  assertEqual(
+    decoder.decode(rust.urlResolve(f.urlBase, f.urlReference)),
+    decoder.decode(nativeUrlResolve(f.urlBase, f.urlReference)),
+    "url resolve parity",
+  );
+  assertEqual(
+    decoder.decode(rust.urlEncodeQuery(f.urlQueryParams)),
+    decoder.decode(nativeUrlEncodeQuery(f.urlQueryParams)),
+    "url query build parity",
   );
 
 

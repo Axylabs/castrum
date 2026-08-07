@@ -5,6 +5,15 @@ use napi_derive::napi;
 
 #[napi]
 pub fn random_token(byte_len: u32) -> Result<Buffer> {
+    // Enterprise guard: never allocate more than this from a single call, even
+    // on API misuse — a u32 byte_len would otherwise permit a ~4 GiB alloc.
+    const MAX_BYTE_LEN: usize = 16 * 1024 * 1024;
+    if byte_len as usize > MAX_BYTE_LEN {
+        return Err(Error::from_reason(format!(
+            "random_token: byte_len {byte_len} exceeds max {MAX_BYTE_LEN}"
+        )));
+    }
+
     let len = byte_len as usize;
 
     // ⭐ Common sizes (16, 32, 64) use stack buffers — no heap alloc.

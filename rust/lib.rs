@@ -29,8 +29,17 @@ pub mod ip_trust;
 pub mod rate_limit;
 
 pub mod json_schema;
+pub mod fast_schema;
 
 pub mod cookie_parser;
+pub mod form;
+pub mod media_type;
+pub mod etag;
+pub mod accept;
+pub mod base64;
+pub mod cookie_sign;
+pub mod csrf;
+pub mod url_join;
 pub mod hashing;
 pub mod hmac_sha256;
 pub mod http_parser;

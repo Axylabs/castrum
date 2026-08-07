@@ -2,9 +2,10 @@
 
 import type { OptimizedIngressHandler } from "../handlers";
 import { resolveIp, type BakedHandlerOptions } from "./common";
-import { DEFAULT_MAX_BODY_BYTES } from "../shared";
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from "../shared";
 import { HV_JSON } from "../constants";
 import { ERROR_BODIES } from "../response/error-bodies";
+import { readBodyWithLimit } from "../body";
 
 /**
  * Pre-baked echo handler: streams the request body back with the client's
@@ -15,6 +16,8 @@ export function echoHandler(
   opts: BakedHandlerOptions = {},
 ): (req: Request, srv?: unknown) => Promise<Response> {
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  // Non-zero default: protect against slowloris / trickling bodies.
+  const bodyTimeoutMs = opts.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
 
   return async (req, srv) => {
     const ip = resolveIp(req, srv, opts);
@@ -78,24 +81,36 @@ export function echoHandler(
     }
 
     try {
-      const bodyBytes = new Uint8Array(await req.arrayBuffer());
-
-      if (bodyBytes.byteLength > maxBodyBytes) {
-        return new Response(ERROR_BODIES.body_too_large, {
-          status: 413,
-          headers: ingress.withContentType(baseHeaders, "application/json"),
-        });
-      }
+      // Chunked / unknown-length body: stream-read with the limit enforced
+      // WHILE reading and an overall deadline — never fully buffer an
+      // oversized or trickling body before rejecting it.
+      const bodyBytes = await readBodyWithLimit(
+        req,
+        maxBodyBytes,
+        true,
+        bodyTimeoutMs,
+      );
 
       return new Response(bodyBytes.byteLength > 0 ? bodyBytes : null, {
         status: 200,
         headers: ingress.withContentType(baseHeaders, requestedContentType),
       });
-    } catch {
-      return new Response(ERROR_BODIES.bad_request, {
-        status: 400,
-        headers: ingress.withContentType(baseHeaders, "application/json"),
-      });
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      const isTooLarge = code === "BODY_TOO_LARGE";
+      const isTimeout = code === "REQUEST_TIMEOUT";
+
+      return new Response(
+        isTooLarge
+          ? ERROR_BODIES.body_too_large
+          : isTimeout
+            ? ERROR_BODIES.request_timeout
+            : ERROR_BODIES.bad_request,
+        {
+          status: isTooLarge ? 413 : isTimeout ? 408 : 400,
+          headers: ingress.withContentType(baseHeaders, "application/json"),
+        },
+      );
     }
   };
 }

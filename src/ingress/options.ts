@@ -24,6 +24,12 @@ export interface IngressFastOptions {
   readBody?: boolean;
   outputBufferSize?: number;
   /**
+   * Overall deadline (ms) for reading a request body in the async
+   * `createIngress` path. 0 disables. Default: `DEFAULT_BODY_TIMEOUT_MS` (30s).
+   * Ignored by the sync `createIngressFast` (it does not read bodies).
+   */
+  bodyTimeoutMs?: number;
+  /**
    * Invoked when the native pipeline throws (the request becomes a 500).
    * Native failures are otherwise silent in the fast path. Never throws.
    */
@@ -71,6 +77,8 @@ const KNOWN_INGRESS_OPTION_KEYS: ReadonlySet<string> = new Set([
   "emitMetadataJson",
   "readBody",
   "outputBufferSize",
+  "bodyTimeoutMs",
+  "onError",
   "limits",
 ]);
 

@@ -11,8 +11,9 @@ export interface BakedHandlerOptions {
   /** Maximum request body bytes for write/echo handlers. Default: 1 MiB. */
   maxBodyBytes?: number;
   /**
-   * Overall deadline (ms) for reading the request body. Default: 0 (disabled).
-   * Set to protect against slowloris / trickling bodies.
+   * Overall deadline (ms) for reading the request body. Default: 30s
+   * (`DEFAULT_BODY_TIMEOUT_MS`). Set `0` to disable. Protects against
+   * slowloris / trickling bodies.
    */
   bodyTimeoutMs?: number;
   /** Fallback handler used for write error paths. Defaults to the write ingress. */

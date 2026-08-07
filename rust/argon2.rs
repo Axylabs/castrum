@@ -95,6 +95,46 @@ pub fn password_verify(password: Uint8Array, phc: Buffer) -> bool {
     verify_password(password.as_ref(), phc.as_ref())
 }
 
+/// Higher-order instance: precompiles the argon2id `Params`/`Argon2` once at
+/// construction (fixed m/t/p/out_len), so every `hash` skips the per-call
+/// parameter construction — the CPU/memory cost of the hash itself is
+/// unchanged, only the setup is amortized.
+#[napi]
+pub struct Argon2Hasher {
+    argon2: Argon2<'static>,
+}
+
+#[napi]
+impl Argon2Hasher {
+    #[napi(constructor)]
+    pub fn new(options: Option<PasswordHashOptions>) -> Result<Self> {
+        let (m, t, p, out_len) = resolve_opts(options.as_ref());
+        let params = Params::new(m, t, p, Some(out_len as usize))
+            .map_err(|e| Error::from_reason(format!("invalid argon2 params: {e}")))?;
+        Ok(Self {
+            argon2: Argon2::new(Algorithm::Argon2id, Version::V0x13, params),
+        })
+    }
+
+    /// Hash a password with the precompiled params → PHC string bytes.
+    #[napi]
+    pub fn hash(&self, password: Uint8Array, salt: Uint8Array) -> Result<Buffer> {
+        let salt = SaltString::encode_b64(salt.as_ref())
+            .map_err(|e| Error::from_reason(format!("invalid salt: {e}")))?;
+        let phc = self
+            .argon2
+            .hash_password(password.as_ref(), &salt)
+            .map_err(|e| Error::from_reason(format!("argon2 hash failed: {e}")))?;
+        Ok(Buffer::from(phc.to_string().into_bytes()))
+    }
+
+    /// Verify a password against a PHC string. Returns false on any failure.
+    #[napi]
+    pub fn verify(&self, password: Uint8Array, phc: Buffer) -> bool {
+        verify_password(password.as_ref(), phc.as_ref())
+    }
+}
+
 /// Parallel argon2id batch: packed `[u32 count]{[u32 len][password]}` in →
 /// packed `[u32 count]{[u32 len][phc]}` out, all hashed with the SAME salt.
 #[napi]
@@ -145,6 +185,48 @@ mod tests {
         let phc = hash_password(PASSWORD, SALT, 4096, 2, 1, 32).unwrap();
         assert!(phc.starts_with("$argon2id$v=19$"));
         assert!(verify_password(PASSWORD, phc.as_bytes()));
+    }
+
+    #[test]
+    fn argon2_hasher_instance_roundtrips() {
+        // Precompiled-params instance: hash/verify with no per-call Params
+        // construction. Output must match the scalar core for the same params.
+        let hasher = Argon2Hasher::new(Some(PasswordHashOptions {
+            m_cost: Some(4096),
+            t_cost: Some(2),
+            p_cost: Some(1),
+            out_len: Some(32),
+        }))
+        .unwrap();
+
+        let phc = hasher
+            .hash(
+                Uint8Array::new(PASSWORD.to_vec()),
+                Uint8Array::new(SALT.to_vec()),
+            )
+            .unwrap();
+        let phc_str = String::from_utf8(phc.to_vec()).unwrap();
+        assert!(phc_str.starts_with("$argon2id$v=19$"));
+
+        // The instance output matches the scalar core byte-for-byte.
+        let scalar = hash_password(PASSWORD, SALT, 4096, 2, 1, 32).unwrap();
+        assert_eq!(phc_str, scalar);
+
+        // Verify: correct password true, wrong password false.
+        assert!(hasher.verify(Uint8Array::new(PASSWORD.to_vec()), Buffer::from(phc_str.clone().into_bytes())));
+        assert!(!hasher.verify(
+            Uint8Array::new(b"wrong-password".to_vec()),
+            Buffer::from(phc_str.into_bytes())
+        ));
+
+        // Invalid options → construction error.
+        assert!(Argon2Hasher::new(Some(PasswordHashOptions {
+            m_cost: Some(0),
+            t_cost: Some(2),
+            p_cost: Some(1),
+            out_len: Some(32),
+        }))
+        .is_err());
     }
 
     #[test]

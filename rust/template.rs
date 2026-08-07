@@ -16,6 +16,7 @@ use crate::util::{should_parallelize, total_bytes, unpack};
 /// with different contexts.
 #[napi]
 pub struct TemplateRenderer {
+    // Owns the compiled template state (templates added via add_template_owned).
     env: minijinja::Environment<'static>,
 }
 
@@ -35,11 +36,55 @@ impl TemplateRenderer {
         let tpl = self
             .env
             .get_template("main")
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
         let out = tpl
             .render(&context)
             .map_err(|e| Error::from_reason(format!("template render failed: {e}")))?;
         Ok(Buffer::from(out.into_bytes()))
+    }
+
+    /// Parallel render batch: packed `[u32 count]{[u32 len][context-json]}` in
+    /// → packed `[u32 count]{[u32 len][rendered]}` out. The compiled template
+    /// is fetched ONCE and reused for every item — no per-call recompilation.
+    #[napi]
+    pub fn render_batch_packed(&self, data: Uint8Array) -> Result<Buffer> {
+        let items = unpack(data.as_ref())?;
+
+        // get_template is a cheap internal Arc lookup — the expensive part
+        // (compiling the template) happened once in the constructor.
+        let tpl = self
+            .env
+            .get_template("main")
+            .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
+
+        let render_one = |context_json: &[u8]| -> Vec<u8> {
+            let Ok(context) = serde_json::from_slice::<serde_json::Value>(context_json) else {
+                return Vec::new();
+            };
+            tpl.render(&context)
+                .map(|s| s.into_bytes())
+                .unwrap_or_default()
+        };
+
+        let mut out = Vec::with_capacity(4 + items.len() * 32);
+        out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+
+        if should_parallelize(items.len(), total_bytes(&items)) {
+            use rayon::prelude::*;
+            let results: Vec<Vec<u8>> = items.par_iter().map(|c| render_one(c)).collect();
+            for r in results {
+                out.extend_from_slice(&(r.len() as u32).to_le_bytes());
+                out.extend_from_slice(&r);
+            }
+        } else {
+            for c in items {
+                let r = render_one(c);
+                out.extend_from_slice(&(r.len() as u32).to_le_bytes());
+                out.extend_from_slice(&r);
+            }
+        }
+
+        Ok(Buffer::from(out))
     }
 }
 
@@ -138,5 +183,49 @@ mod tests {
         let tpl = env.get_template("t").unwrap();
         let ctx = serde_json::json!({});
         assert_eq!(tpl.render(&ctx).unwrap(), "[]");
+    }
+
+    fn pack_contexts(contexts: &[serde_json::Value]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(contexts.len() as u32).to_le_bytes());
+        for c in contexts {
+            let bytes = serde_json::to_vec(c).unwrap();
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(&bytes);
+        }
+        out
+    }
+
+    #[test]
+    fn renderer_instance_reuses_compiled_template() {
+        let r = TemplateRenderer::new("Hello {{ name }}!".to_string()).unwrap();
+        let ctx = serde_json::json!({ "name": "World" });
+        assert_eq!(&r.render(ctx).unwrap()[..], b"Hello World!");
+
+        // Batch path must reuse the SAME compiled template.
+        let data = pack_contexts(&[
+            serde_json::json!({ "name": "Alice" }),
+            serde_json::json!({ "name": "Bob" }),
+        ]);
+        let batch = r.render_batch_packed(Uint8Array::new(data)).unwrap();
+        assert_eq!(u32::from_le_bytes(batch[..4].try_into().unwrap()), 2);
+
+        let mut pos = 4usize;
+        let mut renders = Vec::new();
+        for _ in 0..2 {
+            let len = u32::from_le_bytes(batch[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+            renders.push(String::from_utf8(batch[pos..pos + len].to_vec()).unwrap());
+            pos += len;
+        }
+        assert_eq!(
+            renders,
+            vec!["Hello Alice!".to_string(), "Hello Bob!".to_string()]
+        );
+    }
+
+    #[test]
+    fn renderer_rejects_bad_compile() {
+        assert!(TemplateRenderer::new("{% for x in %}".to_string()).is_err());
     }
 }

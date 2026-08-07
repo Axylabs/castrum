@@ -8,6 +8,8 @@ castrum.linux-x64-gnu.node
 repomix-output.md
 repomix.config.json
 bench/results
+# Compiled ESM entry for Node (built by `bun run build:js`) — never committed
+dist
 # NAPI-RS generated loader/declarations (package main is index.ts)
 index.js
 index.d.ts

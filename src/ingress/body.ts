@@ -8,12 +8,13 @@ export function readRequestBodyOnce(
   req: Request,
   maxBytes: number,
   guard: boolean,
+  timeoutMs?: number,
 ): Promise<Uint8Array> {
   if (req.body === null) {
     return Promise.resolve(EMPTY_BODY);
   }
 
-  return readBodyWithLimit(req, maxBytes, guard);
+  return readBodyWithLimit(req, maxBytes, guard, timeoutMs);
 }
 
 /**
@@ -42,21 +43,21 @@ export async function readBodyWithLimit(
   const chunks: Uint8Array[] = [];
   let total = 0;
 
+  const deadline = timeoutMs && timeoutMs > 0 ? timeoutMs : 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
-    if (!timeoutMs || timeoutMs <= 0) return;
+    if (deadline <= 0) return;
     timer = setTimeout(() => {
-      reader.cancel().catch(() => {});
       const err = new Error("REQUEST_TIMEOUT") as Error & { code?: string };
       err.code = "REQUEST_TIMEOUT";
       reject(err);
-    }, timeoutMs);
+    }, deadline);
   });
 
   try {
     for (;;) {
       const { done, value } =
-        timeoutMs && timeoutMs > 0
+        deadline > 0
           ? await Promise.race([reader.read(), timeout])
           : await reader.read();
 
@@ -66,11 +67,8 @@ export async function readBodyWithLimit(
       total += value.byteLength;
 
       if (guard && total > maxBytes) {
-        await reader.cancel().catch(() => {});
-
         const err = new Error("BODY_TOO_LARGE") as Error & { code?: string };
         err.code = "BODY_TOO_LARGE";
-
         throw err;
       }
 
@@ -78,6 +76,12 @@ export async function readBodyWithLimit(
     }
   } finally {
     clearTimeout(timer);
+    // Release the underlying stream. Cancelling while a read() is still
+    // pending (the timeout case) can resolve that pending read() as `done`
+    // and RACE the timeout rejection — so reject first, cancel only AFTER
+    // the loop has settled. The `.catch` keeps the cancel from masking a
+    // thrown REQUEST_TIMEOUT / BODY_TOO_LARGE.
+    await reader.cancel().catch(() => {});
   }
 
   return concatUint8Arrays(chunks, total);
