@@ -3,7 +3,9 @@ import type { ComparisonReport } from "./types";
 export const comparisonReports: ComparisonReport[] = [
   // ── Original sequential benchmarks ──
   { label: "JSON valid", nativeName: "native:json_valid", rustName: "rust:json_valid" },
+  { label: "JSON parse (5k rows)", nativeName: "native:json_parse", rustName: "rust:json_parse" },
   { label: "JSON sum", nativeName: "native:json_sum", rustName: "rust:json_sum" },
+  { label: "JSON schema validate", nativeName: "native:json_schema_validate", rustName: "rust:json_schema_validate" },
   { label: "HTTP parse", nativeName: "native:http_parse", rustName: "rust:http_parse" },
   { label: "Query parse", nativeName: "native:query_parse", rustName: "rust:query_parse" },
   { label: "Cookie parse", nativeName: "native:cookie_parse", rustName: "rust:cookie_parse" },
@@ -54,6 +56,7 @@ export const comparisonReports: ComparisonReport[] = [
   { label: "UUID validate (batch 100)", nativeName: "native:validate_uuid_batch", rustName: "rust:validate_uuid_batch" },
   { label: "IPv4 validate (batch 100)", nativeName: "native:validate_ipv4_batch", rustName: "rust:validate_ipv4_batch" },
   { label: "Query parse (batch 100)", nativeName: "native:query_parse_batch", rustName: "rust:query_parse_batch" },
+  { label: "JSON schema validate (batch 100)", nativeName: "native:json_schema_validate_batch", rustName: "rust:json_schema_validate_batch" },
 
   // ── Backend-framework features (batch) ──
   { label: "Password hash (batch 20)", nativeName: "native:password_hash_batch", rustName: "rust:password_hash_batch" },

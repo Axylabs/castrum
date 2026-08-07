@@ -27,6 +27,8 @@ export interface RustScalar {
     sig: Uint8Array,
   ): boolean;
   jsonValid(input: Uint8Array): boolean;
+  /** Parse JSON to a JS value (native sonic-rs DOM → napi). Throws on invalid JSON. */
+  jsonParse(input: Uint8Array): unknown;
   jsonSumIds(input: Uint8Array): bigint;
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array;
   mimeFromExtension(ext: Uint8Array): Uint8Array;
@@ -123,6 +125,9 @@ export function buildScalar(ctx: RustClientContext): RustScalar {
     },
     jsonValid(bytes) {
       return addon.jsonValid(bytes);
+    },
+    jsonParse(bytes) {
+      return addon.jsonParse(bytes);
     },
     jsonSumIds(bytes) {
       return asBigInt(addon.jsonSumIds(bytes) as unknown);

@@ -54,6 +54,27 @@ jobs:
       - name: Correctness checks (native vs baseline)
         run: bun run check
 
+  # ── Performance-proven surface ───────────────────────────────────
+  # Guards `src/shared/proven.ts`: builds the RELEASE addon (the shipped CPU
+  # baseline), runs the CPU benchmark, then audits the proven registry against
+  # the report. Fails if a "proven" function regresses past the tolerance.
+  proven:
+    name: Proven surface audit
+    runs-on: ubuntu-latest
+    needs: [typescript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+      - name: Build release addon (baseline CPU)
+        run: bun run build
+      - name: CPU benchmark (writes bench/results/cpu/latest.json)
+        run: bun run check
+      - name: Audit proven surface (fail on regression)
+        run: bun run check:proven:fail
+
   # ── Node.js compatibility ────────────────────────────────────────
   # Builds the compiled ESM entry (dist/) and runs the Node smoke suite on the
   # supported Node versions. Bun stays the primary target; this job guards the

@@ -2,6 +2,10 @@ import * as native from "../baseline";
 import { rust, rustBatch } from "../rust-ffi";
 import { decoder, encoder } from "../shared/bytes";
 import { pairsToObject, readHttpPacked, readPairsPacked } from "../shared/packed";
+import {
+  nativeJsonSchemaValidate,
+  nativeJsonSchemaValidateBatch,
+} from "./schema-baseline";
 import { assertDeepEqual, assertEqual, parseJsonBytes } from "./assert";
 import type { BenchFixtures, ComplexFixtures } from "./fixtures";
 
@@ -29,6 +33,45 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     native.nativeJsonSum(f.jsonPayload),
     rust.jsonSumIds(f.jsonPayload),
     "json sum",
+  );
+
+  assertDeepEqual(
+    native.nativeJsonParse(f.jsonPayload),
+    rust.jsonParse(f.jsonPayload),
+    "json parse",
+  );
+
+  // ── JSON schema validation (native jsonschema vs ajv baseline) ──
+  const schemaValidator = rust.createSchemaValidator(f.jsonSchema);
+  assertEqual(
+    nativeJsonSchemaValidate(f.schemaDoc, f.jsonSchema),
+    true,
+    "schema: native accepts valid doc",
+  );
+  assertEqual(
+    schemaValidator.validate(f.schemaDoc),
+    true,
+    "schema: rust accepts valid doc",
+  );
+  assertEqual(
+    nativeJsonSchemaValidate(f.schemaBadDoc, f.jsonSchema),
+    false,
+    "schema: native rejects bad doc",
+  );
+  assertEqual(
+    schemaValidator.validate(f.schemaBadDoc),
+    false,
+    "schema: rust rejects bad doc",
+  );
+  assertEqual(
+    nativeJsonSchemaValidateBatch(f.schemaDocs, f.jsonSchema),
+    f.schemaDocs.length,
+    "schema batch native",
+  );
+  assertEqual(
+    rust.batch.schemaValidateCount(schemaValidator, f.schemaDocs),
+    f.schemaDocs.length,
+    "schema batch rust",
   );
 
 

@@ -38,6 +38,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   users to the `trustedProxies` network-list API.
 - CI: new `node` job (Node 20 + 22) builds `dist/`, runs the Node smoke suite, and
   validates the tarball.
+- **JSON parse + JSON schema validation benchmarks.** Added `rust.jsonParse` (native
+  sonic-rs → JS value; throws on invalid) and a scalar `SchemaValidator.validate(doc)`
+  (alongside the existing batch methods). The CPU benchmark now includes
+  `native:json_parse` / `rust:json_parse` and `native:json_schema_validate[_batch]` /
+  `rust:json_schema_validate[_batch]` (JS baseline = `JSON.parse` / `ajv`), with
+  correctness checks and comparison entries. Findings: Bun's `JSON.parse` beats the
+  Rust DOM+marshaling path (~5x), and `ajv` beats the jsonschema path for small docs —
+  Rust's wins are in the zero-DOM workloads (`jsonValid`/`jsonSum`/ingress).
+- **Performance-proven surface.** New curated `proven` export (`castrum.proven`) that
+  exposes ONLY the `rust.*` functions whose status is `proven` in `PROVEN_SURFACE`
+  (`src/shared/proven.ts` — the single source of truth, statuses
+  proven/parity/not-competitive/unmeasured). Functions that lose to their JS baseline
+  (e.g. `jsonParse` vs `JSON.parse`, schema validation vs `ajv`, `urlEncode`/`urlDecode`
+  on the baseline CPU, `jwtSign`, `brotliCompress`, `templateRender`) are excluded from
+  `proven` but remain on the full `rust` surface. New `scripts/check-proven.ts` audits
+  the registry against `bench/results/cpu/latest.json` (`bun run check:proven`, with
+  `--fail` for CI) — it fails if a proven function regresses past the tolerance. New CI
+  `proven` job builds the release addon, runs the benchmark, and gates on the audit.
 
 ### Fixed
 

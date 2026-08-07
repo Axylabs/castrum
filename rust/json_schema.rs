@@ -41,6 +41,12 @@ impl SchemaValidator {
         }
     }
 
+    /// Validate a single JSON document against the schema.
+    #[napi]
+    pub fn validate(&self, input: Uint8Array) -> bool {
+        self.validate_doc(input.as_ref())
+    }
+
     /// Validate a packed batch of individual JSON documents.
     ///
     /// Input format:
@@ -147,5 +153,63 @@ impl<'de> Visitor<'de> for BatchVisitor<'_> {
         }
 
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCHEMA: &str = r#"{
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }"#;
+
+    fn validator() -> SchemaValidator {
+        SchemaValidator::new(Uint8Array::new(SCHEMA.as_bytes().to_vec())).unwrap()
+    }
+
+    #[test]
+    fn validate_accepts_valid_doc() {
+        let v = validator();
+        assert!(v.validate_doc(br#"{"id":1,"name":"alice"}"#));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_doc() {
+        let v = validator();
+        // Wrong types + extra properties (additionalProperties: false).
+        assert!(!v.validate_doc(br#"{"id":"x","name":"alice"}"#));
+        assert!(!v.validate_doc(br#"{"id":1,"name":42}"#));
+        assert!(!v.validate_doc(br#"{"id":1,"name":"alice","extra":true}"#));
+        // Malformed JSON is not valid either.
+        assert!(!v.validate_doc(b"{nope"));
+    }
+
+    #[test]
+    fn validate_batch_count_matches() {
+        let v = validator();
+        let docs: [&[u8]; 3] = [
+            br#"{"id":1,"name":"a"}"#,
+            br#"{"id":2,"name":"b"}"#,
+            br#"{"id":"bad"}"#,
+        ];
+        // Build packed [u32 count]{[u32 len][doc]} by hand.
+        let mut packed = Vec::new();
+        packed.extend_from_slice(&(docs.len() as u32).to_le_bytes());
+        for doc in docs {
+            packed.extend_from_slice(&(doc.len() as u32).to_le_bytes());
+            packed.extend_from_slice(doc);
+        }
+
+        let count = v
+            .validate_batch_packed_count(Uint8Array::new(packed))
+            .unwrap();
+        assert_eq!(count, 2);
     }
 }

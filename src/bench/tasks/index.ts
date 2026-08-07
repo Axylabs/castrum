@@ -7,6 +7,7 @@ import { hashingTasks } from "./hashing";
 import { hmacTasks } from "./hmac";
 import { httpTasks } from "./http";
 import { jsonTasks } from "./json";
+import { jsonSchemaTasks } from "./json-schema";
 import { jsonPatchTasks } from "./json-patch";
 import { mimeTasks } from "./mime";
 import { queryTasks } from "./query";
@@ -27,6 +28,7 @@ import { templateTasks } from "./template";
 export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
   return [
     ...jsonTasks(fixtures),
+    ...jsonSchemaTasks(fixtures),
     ...httpTasks(fixtures),
     ...queryTasks(fixtures),
     ...cookieTasks(fixtures),

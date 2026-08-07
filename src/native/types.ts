@@ -42,6 +42,8 @@ export interface IngressInstance {
 
 /** The native `SchemaValidator` class instance. */
 export interface SchemaValidatorInstance {
+  /** Validate a single JSON document. */
+  validate(input: Uint8Array): boolean;
   validateBatchPackedCount(packed: Uint8Array): number;
   validateBatchPackedBitset(packed: Uint8Array): Uint8Array;
   validateBatchStreaming(batchBytes: Uint8Array): number;
@@ -137,6 +139,7 @@ export interface NativeAddon {
   hmacSha256Verify(key: Uint8Array, data: Uint8Array, sig: Uint8Array): boolean;
 
   jsonValid(input: Uint8Array): boolean;
+  jsonParse(input: Uint8Array): unknown;
   jsonSumIds(input: Uint8Array): bigint;
 
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array;

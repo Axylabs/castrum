@@ -49,6 +49,12 @@ export interface BenchFixtures {
   templateContext: Record<string, unknown>;
   wsPayload: Uint8Array;
   sseData: Uint8Array;
+
+  // ── JSON schema validation ──
+  jsonSchema: Uint8Array;
+  schemaDoc: Uint8Array;
+  schemaBadDoc: Uint8Array;
+  schemaDocs: Uint8Array[];
 }
 
 export interface ComplexFixtures {
@@ -177,6 +183,61 @@ export function createFixtures(): BenchFixtures {
   const wsPayload = encoder.encode("Hello WebSocket! ".repeat(10));
   const sseData = encoder.encode("line1\nline2\nline3");
 
+  // ── JSON schema validation ──
+  // A draft-07 object schema matching the `jsonRows` shape (JsonRow).
+  const jsonSchema = encoder.encode(
+    JSON.stringify({
+      type: "object",
+      required: ["id", "name", "active", "score", "tags", "nested"],
+      properties: {
+        id: { type: "number" },
+        name: { type: "string", minLength: 1 },
+        active: { type: "boolean" },
+        score: { type: "number" },
+        tags: { type: "array", items: { type: "string" }, maxItems: 20 },
+        nested: {
+          type: "object",
+          required: ["version", "createdAt"],
+          properties: {
+            version: { type: "number" },
+            createdAt: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    }),
+  );
+
+  const schemaDoc = encoder.encode(
+    JSON.stringify({
+      id: 1,
+      name: "user_1",
+      active: true,
+      score: 1.25,
+      tags: ["alpha", "beta"],
+      nested: { version: 1, createdAt: "2026-01-01T00:00:00Z" },
+    }),
+  );
+
+  // Deliberately invalid: wrong types + extra property (additionalProperties: false).
+  const schemaBadDoc = encoder.encode(
+    JSON.stringify({ id: "nope", name: 42, extra: true }),
+  );
+
+  const schemaDocs = Array.from({ length: 100 }, (_, i) =>
+    encoder.encode(
+      JSON.stringify({
+        id: i,
+        name: `user_${i}`,
+        active: i % 2 === 0,
+        score: i * 1.25,
+        tags: ["alpha", "beta", "gamma"],
+        nested: { version: i % 10, createdAt: "2026-01-01T00:00:00Z" },
+      }),
+    ),
+  );
+
   return {
     jsonPayload,
     httpRaw,
@@ -216,6 +277,10 @@ export function createFixtures(): BenchFixtures {
     templateContext,
     wsPayload,
     sseData,
+    jsonSchema,
+    schemaDoc,
+    schemaBadDoc,
+    schemaDocs,
   };
 }
 

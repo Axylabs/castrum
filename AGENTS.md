@@ -25,6 +25,7 @@ HTTP **ingress pipeline** for Bun servers.
 | Rust unit tests | `cargo test` (~138 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
 | TS unit tests | `bun test` (~154 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
+| Proven-surface audit | `bun run check:proven` (report) / `bun run check:proven:fail` (CI gate) |
 | Startup / first-call benchmark | `bun run bench:startup` |
 | Typecheck | `bunx tsc --noEmit` — **note**: `tsconfig.json` `include` is only `["index.ts", "bench.ts", "src"]`; `bench/` and `test/` are NOT typechecked here |
 | HTTP bench (all servers) | `bun run bench:http` |
@@ -221,6 +222,13 @@ success and `error.code` / `error.message` on errors (path 2's format).
   sub-µs ops; default 64), `HTTP_NO_SHAPE=1` (load generator skips response-shape
   `JSON.parse` for pure-throughput runs). `bun run check` persists a
   machine-readable CPU report to `bench/results/cpu/` (gitignored).
+- **Performance-proven surface**: `src/shared/proven.ts` (`PROVEN_SURFACE`) is the
+  single source of truth for which `rust.*` functions are exported via `proven`
+  (only status === "proven"). The registry is PURE DATA (no addon imports) so
+  `scripts/check-proven.ts` can audit it without dlopening. When you add/change a
+  public function, update the registry and run `bun run check:proven:fail` on a
+  RELEASE build (debug builds inflate rust timings). Classifications must reflect
+  the shipped baseline-CPU release build, not the local SIMD `build:perf`.
 
 ## Testing
 

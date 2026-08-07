@@ -18,6 +18,18 @@ export function jsonTasks(f: BenchFixtures): BenchTask[] {
       warmup: 10,
     },
     {
+      name: "native:json_parse",
+      run: () => (native.nativeJsonParse(f.jsonPayload) as unknown[]).length,
+      iterations: 100,
+      warmup: 10,
+    },
+    {
+      name: "rust:json_parse",
+      run: () => (rust.jsonParse(f.jsonPayload) as unknown[]).length,
+      iterations: 100,
+      warmup: 10,
+    },
+    {
       name: "native:json_sum",
       run: () => native.nativeJsonSum(f.jsonPayload),
       iterations: 100,

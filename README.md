@@ -126,12 +126,52 @@ bun run bench:http:boundary # boundary conditions
 ### Core Exports
 
 ```ts
-import { rust, native, rustBatch } from "castrum";
+import { rust, proven, native, rustBatch } from "castrum";
 
 // `rust`      — All Rust FFI native implementations (flat, complete API)
+// `proven`    — ONLY the `rust.*` functions that prove performance in benchmarks
 // `native`    — JavaScript/Bun baseline implementations for benchmarking
 // `rustBatch` — Back-compat alias === rust.batch
 ```
+
+## Performance-proven surface
+
+Not every `rust.*` function beats its JavaScript baseline — e.g. `rust.jsonParse`
+loses ~5x to Bun's `JSON.parse` (DOM + napi marshaling), and the native schema
+validator is slower than `ajv` for small documents. The package exposes a
+**curated, performance-justified entry point** so consumers can opt into only
+the functions that prove performance:
+
+```ts
+import { proven, PROVEN_SURFACE } from "castrum";
+
+proven.jsonValid(bytes);   // ✓ proven — Rust wins vs the JS baseline
+proven.fnv1a64(bytes);     // ✓ proven — Rust wins ~9-16x
+proven.jsonParse(bytes);   // ✗ TS error — not in the proven surface (use `rust.jsonParse`)
+```
+
+- `proven` is a subset of `rust` restricted to functions whose status is
+  `proven` in `PROVEN_SURFACE` (the single source of truth in
+  `src/shared/proven.ts`). Statuses: `proven` / `parity` / `not-competitive` /
+  `unmeasured`.
+- The full surface is unchanged — `rust.jsonParse`, `rust.createSchemaValidator`,
+  etc. remain available for completeness; they just aren't advertised as
+  performance wins.
+- Classifications are based on the **release build on the shipped baseline CPU**
+  (published artifacts are baseline — not the local SIMD `build:perf`).
+
+Keep the registry honest with the audit:
+
+```bash
+bun run check                # writes bench/results/cpu/latest.json (release build)
+bun run check:proven         # report-only: proves vs loses per function
+bun run check:proven:fail    # CI gate: exits 1 if a "proven" function regresses
+```
+
+The audit compares each registry entry against the latest benchmark report and
+fails (with `--fail`) when a `proven` function loses to its baseline by more
+than the tolerance — catching real performance regressions (and wrong
+classifications) before they ship.
 
 ### Rust Utility API
 
@@ -156,8 +196,10 @@ string variants under `rust.text`.
 | `hmacSha256(key, data)` | `Uint8Array` — HMAC-SHA256 signature |
 | `hmacSha256Verify(key, data, sig)` | `boolean` |
 | `jsonValid(input)` | `boolean` — JSON validity check |
+| `jsonParse(input)` | `unknown` — JSON → JS value (native sonic-rs DOM; throws on invalid) |
 | `jsonSumIds(input)` | `bigint` — sum of numeric `id` fields |
 | `jsonPatch(doc, patch)` | `Uint8Array` — RFC 6902 result |
+| `createSchemaValidator(schema)` | `SchemaValidator` — compile a JSON Schema; `.validate(doc): boolean`, `.validateBatchPackedCount(packed): number`, … |
 | `mimeFromExtension(ext)` | `Uint8Array` — MIME type |
 | `randomToken(byteLen)` | `Uint8Array` — CSPRNG token |
 | `urlEncode(input)` / `urlDecode(input)` | `Uint8Array` — percent encode/decode |

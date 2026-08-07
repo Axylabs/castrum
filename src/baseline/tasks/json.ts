@@ -31,6 +31,11 @@ export function nativeJsonValid(bytes: Uint8Array): boolean {
   }
 }
 
+/** Baseline `JSON.parse` — returns the parsed value (or throws on invalid). */
+export function nativeJsonParse(bytes: Uint8Array): unknown {
+  return parseJsonBytes(bytes);
+}
+
 export function nativeJsonSum(bytes: Uint8Array): bigint {
   const parsed = parseJsonBytes(bytes);
 
