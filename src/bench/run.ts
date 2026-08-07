@@ -2,7 +2,13 @@ import { runCorrectnessChecks, runComplexCorrectnessChecks } from "./checks";
 import { comparisonReports } from "./comparisons";
 import { createFixtures, createComplexFixtures } from "./fixtures";
 import { bench, benchConcurrent, benchStress } from "./measure";
-import { printResults, printConcurrentResults, printStressResults, printSummary } from "./report";
+import {
+  printResults,
+  printConcurrentResults,
+  printStressResults,
+  printSummary,
+  writeCpuReport,
+} from "./report";
 import { createAllTasks, createComplexTasks, createConcurrentTasks, createStressTasks } from "./tasks";
 
 export async function runBenchmark(): Promise<void> {
@@ -50,8 +56,21 @@ export async function runBenchmark(): Promise<void> {
 
   // ── Combined summary ──
   console.log("\n═══ Practical Summary ═══");
-  printSummary(
-    [...results, ...complexResults, ...concurrentResults, ...stressResults],
-    comparisonReports,
-  );
+  const all = [
+    ...results,
+    ...complexResults,
+    ...concurrentResults,
+    ...stressResults,
+  ];
+  printSummary(all, comparisonReports);
+
+  // ── Persist a machine-readable report (for committed baselines) ──
+  const reportPath = await writeCpuReport({
+    standard: results,
+    complex: complexResults,
+    concurrent: concurrentResults,
+    stress: stressResults,
+    comparisons: comparisonReports,
+  });
+  console.log(`\nCPU report written to ${reportPath}`);
 }

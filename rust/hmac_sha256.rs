@@ -1,11 +1,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use aws_lc_rs::hmac;
-use crate::util::{hex_val, trim_ascii_whitespace};
-
-const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
-
-
+use crate::bytes::{hex_decode_32, hex_encode_32, trim_ascii_whitespace};
 
 #[napi]
 pub fn hmac_sha256(key: Uint8Array, data: Buffer) -> Buffer {
@@ -22,27 +18,9 @@ pub fn hmac_sha256(key: Uint8Array, data: Buffer) -> Buffer {
 pub fn hmac_sha256_verify(key: Uint8Array, data: Buffer, sig: Buffer) -> bool {
     let sig = trim_ascii_whitespace(sig.as_ref());
 
-    if sig.len() != 64 {
+    let Some(sig_bytes) = hex_decode_32(sig) else {
         return false;
-    }
-
-    let mut sig_bytes = [0u8; 32];
-
-    let mut i = 0;
-    while i < 32 {
-        let hi = match hex_val(sig[2 * i]) {
-            Some(v) => v,
-            None => return false,
-        };
-
-        let lo = match hex_val(sig[2 * i + 1]) {
-            Some(v) => v,
-            None => return false,
-        };
-
-        sig_bytes[i] = (hi << 4) | lo;
-        i += 1;
-    }
+    };
 
     let key = hmac::Key::new(hmac::HMAC_SHA256, key.as_ref());
     hmac::verify(&key, data.as_ref(), &sig_bytes).is_ok()
@@ -76,38 +54,33 @@ impl HmacSigner {
     pub fn verify(&self, data: Buffer, sig: Buffer) -> bool {
         let sig = trim_ascii_whitespace(sig.as_ref());
 
-        if sig.len() != 64 {
+        let Some(sig_bytes) = hex_decode_32(sig) else {
             return false;
-        }
-
-        let mut sig_bytes = [0u8; 32];
-
-        let mut i = 0;
-
-        while i < 32 {
-            let hi = match hex_val(sig[2 * i]) {
-                Some(v) => v,
-                None => return false,
-            };
-
-            let lo = match hex_val(sig[2 * i + 1]) {
-                Some(v) => v,
-                None => return false,
-            };
-
-            sig_bytes[i] = (hi << 4) | lo;
-            i += 1;
-        }
+        };
 
         hmac::verify(&self.key, data.as_ref(), &sig_bytes).is_ok()
     }
 }
 
-fn hex_encode_32(bytes: &[u8], out: &mut [u8; 64]) {
-    debug_assert_eq!(bytes.len(), 32);
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hmac_sign_then_verify_roundtrip() {
+        let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, b"secret-key");
+        let data = b"hello world";
+        let tag = aws_lc_rs::hmac::sign(&key, data);
 
-    for (i, b) in bytes.iter().enumerate() {
-        out[2 * i] = HEX_LOWER[(b >> 4) as usize];
-        out[2 * i + 1] = HEX_LOWER[(b & 0x0f) as usize];
+        let mut hex = [0u8; 64];
+        crate::bytes::hex_encode_32(tag.as_ref(), &mut hex);
+        let decoded = crate::bytes::hex_decode_32(&hex).expect("valid hex decodes");
+
+        assert!(aws_lc_rs::hmac::verify(&key, data, &decoded).is_ok());
+    }
+
+    #[test]
+    fn hex_decode_32_rejects_bad_length_and_digits() {
+        assert!(crate::bytes::hex_decode_32(b"abc").is_none());
+        assert!(crate::bytes::hex_decode_32(&[b'0'; 64]).is_some());
+        assert!(crate::bytes::hex_decode_32(&[b'g'; 64]).is_none());
     }
 }

@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Node.js backward compatibility (Bun remains the primary target).** A compiled ESM
+  entry (`dist/index.js` + bundled `dist/index.d.ts`) is built by `bun run build:js` and
+  shipped in the tarball; `package.json` `exports` now has `types` / `bun` / `node` /
+  `default` conditions so Bun keeps running raw TypeScript (zero startup cost) while Node
+  consumers get a ready-to-import ESM bundle. `engines` now requires `node >= 20.3`
+  alongside `bun >= 1.1.0`.
+- `createIngressServerNode` — a `node:http` adapter that serves the SAME pre-baked route
+  handlers as `createIngressServer` (Bun.serve). Returns a `NodeIngressServer` with an
+  async `ready` promise and graceful `stop()` (drain then close).
+- `gracefulShutdown(handles, { timeoutMs, signals })` — wires SIGTERM/SIGINT to a
+  soft-drain-then-force stop for both Bun and Node server handles.
+- New `src/shared/runtime.ts` (`isBun`/`isNode`) and `src/shared/log.ts`
+  (`createStructuredLogger`, gated by `CASTRUM_LOG_LEVEL`).
+- Observability hooks on the ingress paths: `onRequest` / `onError` on
+  `BakedIngressRuntime` (alongside the existing `onResponse`), an `onError` option on
+  `createIngressFast`, and an opt-in `structuredLog` runtime flag. Native failures are no
+  longer silent — they surface via `onError`.
+- Request-body hardening: `readBodyWithLimit` supports an overall deadline
+  (`bodyTimeoutMs`, REQUEST_TIMEOUT) and `jsonWriteHandler` now stream-reads with the
+  `maxBodyBytes` guard enforced BEFORE the body is fully buffered. `createIngressServer`
+  applies a server-level `maxRequestBodySize` default of 16 MiB.
+- Rust security hardening: AEAD batch APIs derive a unique per-item nonce (no more nonce
+  reuse), the rate-limiter config registry is bounded (LRU, capped at 16 distinct configs,
+  `max_entries` clamped), `jwt_verify` enforces an `alg` allowlist + `nbf`/`iat` checks,
+  and the multipart parser enforces part/count/byte limits (`MultipartLimitsInput`).
+- `trustProxy: true` (legacy boolean) now emits a one-time deprecation warning directing
+  users to the `trustedProxies` network-list API.
+- CI: new `node` job (Node 20 + 22) builds `dist/`, runs the Node smoke suite, and
+  validates the tarball.
+
+### Fixed
+
+- **Fast-path header corruption >8 KB** (`src/ingress/packing/header-packing.ts`):
+  `writeHeaderPair` grew the buffer locally and never returned it, silently dropping
+  headers on large requests. The grown buffer/view are now threaded back to the caller.
+- **JSON-escape length undercount** (`rust/json_ser.rs`): `\r`/`\t`/`\x08`/`\x0c` were
+  counted as +0 but written as 2-byte escapes, overflowing tightly-sized output buffers
+  (panic → 500). Length accounting now matches the writer.
+- `nativeWsAcceptKey` no longer uses `Bun.CryptoHasher` (works under Node), and
+  `resolveRayonThreads` no longer uses `navigator.hardwareConcurrency` (ReferenceError on
+  Node < 21).
+
+### Changed
+
+- The npm tarball no longer ships the `rust/` source tree or `Cargo.toml` (only prebuilt
+  `.node` artifacts + `src` + `dist`).
+- `prepublishOnly` now runs `bun run build:js` before staging native artifacts.
+
 ## [0.7.0] — 2026-08-04
 
 ### Changed
@@ -23,15 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/prepublish.mjs` guard that verifies every napi platform artifact is present
   before publish, and a CI publish workflow that uploads all platform artifacts and
   publishes to npm on `v*` tags.
-- Manual release command: `bun run publish:manual` builds the host addon, downloads the
-  CI-built multi-platform addons for the current `v<version>` tag via the GitHub CLI
-  (`gh`), verifies every `napi.targets` artifact is present, and publishes to npm.
-  `bun run publish:manual -- --increment <patch|minor|major|...>` also bumps the version
-  and creates + pushes the `v<version>` git tag automatically via `bun pm version`
-  (syncing `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`), then waits for the CI
-  `build` job before publishing. `--no-wait` pushes the tag and stops.
-  `bun run publish:manual:dry` (`--dry-run`) runs the same pipeline without publishing
-  or touching git.
+- Manual release command: `bun run publish:manual` — simple, no CI: bumps the version
+  (`--increment <patch|minor|major|...>` via `bun pm version`, syncing `Cargo.toml`,
+  `Cargo.lock`, `CHANGELOG.md`), creates + pushes the `v<version>` git tag (and the
+  current branch), builds the host addon, and publishes to npm. It sets
+  `CASTRUM_PUBLISH_ALLOW_PARTIAL=1` so `prepublishOnly` ships a single-platform
+  tarball locally instead of requiring every `napi.targets` artifact.
+  `bun run publish:manual:dry` (`--dry-run`) prints the plan without changing anything.
 
 ## [0.6.0] — 2026-07-31
 

@@ -44,7 +44,9 @@ rust/
 ├── lib.rs                 ── Crate root: module declarations, global allocator
 │
 ├── Core Pipeline:
-│   ├── ingress.rs         ── Main NAPI Ingress class, pipeline orchestration
+│   ├── ingress.rs         ── Main NAPI Ingress class + IngressInner pipeline
+│   │   └── ingress/       ── options.rs (napi option structs + Limits),
+│   │                        time.rs (clock helpers), packed.rs (packed readers + builder)
 │   ├── cors.rs            ── CORS engine (origin matching, preflight evaluation)
 │   ├── rate_limit.rs      ── Token-bucket rate limiter (per-IP keyed)
 │   ├── ip_trust.rs        ── IP resolution (X-Forwarded-For, X-Real-IP)
@@ -75,14 +77,17 @@ rust/
 │   └── websocket.rs       ── WebSocket accept key generation
 │
 ├── Batch:
-│   └── batch.rs           ── Batch processing engine
+│   ├── batch.rs           ── Batch processing engine
+│   └── batch_core.rs      ── Generic rayon-parallel batch helpers (bitset/count/sum)
 │
 ├── Utilities:
 │   ├── method.rs          ── HTTP method enum + kind mapping
 │   ├── headers.rs         ── Header pack/unpack with limits
 │   ├── output.rs          ── Output buffer layout constants & writers
 │   ├── terminal.rs        ── Terminal response builders (errors)
-│   └── util.rs            ── Core utilities (PackedIter, VecWriter, etc.)
+│   ├── threadpool.rs      ── Rayon pool init + parallelism heuristic
+│   ├── packed.rs          ── Zero-alloc packed iterators + byte writers
+│   └── util.rs            ── Re-export shim (threadpool/packed/batch_core) for back-compat
 │
 └── Constants:
     └── ingress_constants.rs ── NAPI-exported layout constants
@@ -92,18 +97,48 @@ rust/
 
 ```
 src/
-├── ingress/               ── HTTP ingress pipeline (TS layer)
-│   ├── index.ts           ── Public API + async factory
-│   ├── fast.ts            ── Fast synchronous handler (packed input)
-│   ├── handlers.ts        ── Pre-baked handlers + createIngressServer (full_sync)
+├── ingress/               ── HTTP ingress pipeline (TS layer), decomposed by task
+│   ├── index.ts           ── Public API barrel + async factory
+│   ├── fast.ts            ── Thin: createIngressFast (packed input) + re-exports
+│   ├── handlers.ts        ── Thin: createIngressHandler (full_sync) + response builders
+│   ├── server.ts          ── createIngressServer (Bun.serve builder) + buildRouteHandlers + gracefulShutdown
+│   ├── server-node.ts     ── createIngressServerNode (node:http adapter, same route handlers)
 │   ├── constants.ts       ── Layout constants (from Rust NAPI)
-│   └── packed-input.ts    ── Input buffer packing
+│   ├── shared.ts          ── JS constants shared by both paths
+│   ├── status.ts          ── Status normalization helpers (both paths)
+│   ├── errors.ts          ── Fast-path error-code name/message mapping
+│   ├── options.ts         ── IngressFast option types + validation + trustProxy warning
+│   ├── types.ts           ── Public API types
+│   ├── body.ts            ── Streaming request-body reader (size guard + bodyTimeoutMs)
+│   ├── context.ts         ── Result snapshot + synthetic/error context builders
+│   ├── packing/           ── header-packing, input-packer, gather-raw-headers
+│   ├── headers/           ── cors, hsts, fast-templates, baked-templates
+│   ├── decode/            ── fast-result, baked-result (two decoders, NOT unified)
+│   ├── response/          ── terminal (fast), error-bodies (pre-baked)
+│   └── routes/            ── read/head/json-write/echo/fallback factories
+│
+├── shared/
+│   ├── runtime.ts         ── isBun/isNode runtime detection (single seam)
+│   ├── log.ts             ── createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines)
+│   ├── request-id.ts      ── zero-alloc request ID generator
+│   ├── buffer-pool.ts     ── reusable output-buffer pool
+│   └── response.ts        ── pooledBodyResponse (zero-copy response)
 │
 ├── native/                ── Native addon loading
-│   └── index.ts           ── Module loader + type definitions
+│   ├── types.ts           ── NativeAddon interface + instance types
+│   ├── loader.ts          ── Path resolution (multi-root + env override) + getAddon/lazyAddon
+│   └── index.ts           ── Barrel
 │
 ├── rust-ffi/              ── Rust FFI bindings
-│   └── index.ts           ── Flat, complete FFI API
+│   ├── options.ts         ── RustOptions + input-normalization helpers
+│   ├── addon.ts           ── shared lazy addon proxy
+│   ├── context.ts         ── per-instance state + namespace helpers
+│   ├── text.ts            ── string namespace
+│   ├── batch.ts           ── array-of-bytes namespace
+│   ├── packed.ts          ── raw packed-wire namespace
+│   ├── scalar.ts          ── scalar/feature methods
+│   ├── client.ts          ── createRust factory + default `rust`
+│   └── index.ts           ── Barrel
 │
 ├── baseline/              ── JS baseline implementations
 │   ├── index.ts           ── Aggregator
@@ -173,6 +208,27 @@ src/
 >    `{"ok":false,"error":{code,message}}`, `ratelimit-*` headers. The
 >    benchmark server (`bench/servers/ingress-server.ts`) uses this path and
 >    re-exports the pre-baked functions.
+
+## Node.js Compatibility
+
+**Bun is the primary target.** Bun resolves the `bun` exports condition → raw
+`index.ts` (native TS execution, zero startup cost). For Node.js consumers, the
+package ships a compiled ESM bundle built by `bun run build:js`:
+
+- `package.json` `exports` → `{ types: ./dist/index.d.ts, bun: ./index.ts,
+  node: ./dist/index.js, default: ./dist/index.js }`.
+- `dist/index.js` is a single-file ESM bundle (all runtime deps inlined); Node
+  requires `>= 20.3` (N-API floor).
+- The addon loader (`src/native/loader.ts`) resolves `castrum.<platform>-<arch>.node`
+  from multiple candidate roots so the same loader works from `src/native/…`
+  (Bun, source layout) and `dist/…` (Node, bundled layout), plus the
+  `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH` override.
+- `src/shared/runtime.ts` is the single runtime-detection seam (`isBun`/`isNode`).
+- `createIngressServer` (Bun.serve) is Bun-only; `createIngressServerNode`
+  (`src/ingress/server-node.ts`) serves the SAME route handlers over `node:http`,
+  sharing `buildRouteHandlers` in `server.ts`. The `BakedServer.server` type is a
+  runtime-agnostic `ServerHandle` so Node TS consumers don't need `@types/bun`.
+- The benchmark tooling (`bench/`, `bun:test` suites) remains Bun-only by design.
 
 ---
 

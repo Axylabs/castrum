@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 path = "rust/lib.rs"
 
 [dependencies]
-napi = { version = "3", features = ["napi10"] }
+napi = { version = "3", features = ["napi10", "serde-json"] }
 napi-derive = "3"
 
 serde = { version = "1", features = ["derive"] }
@@ -46,6 +46,16 @@ parking_lot = "0.12"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 ipnet = "2"
 lru = "0.12"
+
+# Backend-framework feature additions (Phase A/B/C)
+# argon2id password hashing (password-hash/rand features are default-on).
+argon2 = "0.5"
+# HTML templating (fast, safe, no eval).
+minijinja = "2"
+# gzip via the memory-safe zlib-rs backend (pure Rust, no C).
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# brotli compression (pure Rust port).
+brotli = "8"
 
 [build-dependencies]
 napi-build = "2"

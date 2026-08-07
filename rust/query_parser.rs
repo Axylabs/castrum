@@ -2,10 +2,10 @@
 // Single _into_slice code path with _vec wrapper for callers needing Vec.
 // Returns Cow<[u8]> when no decoding is needed (zero allocation).
 
-use crate::util::{ensure_capacity, hex_val, write_bytes, write_u32_le};
+use crate::bytes::decode_percent_at;
+use crate::util::{ensure_capacity, write_bytes, write_u32_le};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use std::borrow::Cow;
 
 /// Write a single URL-decoded form component into the output slice.
 #[inline]
@@ -27,17 +27,13 @@ fn write_decoded_form_component(src: &[u8], out: &mut [u8], pos: &mut usize) -> 
                     i += 1;
                 }
                 b'%' => {
-                    if i + 2 >= src.len() {
-                        return Err(Error::from_reason("invalid %-encoding: missing bytes"));
-                    }
-                    let hi = hex_val(src[i + 1])
-                        .ok_or_else(|| Error::from_reason("invalid %-encoding: bad hi nibble"))?;
-                    let lo = hex_val(src[i + 2])
-                        .ok_or_else(|| Error::from_reason("invalid %-encoding: bad lo nibble"))?;
+                    let (byte, next) = decode_percent_at(src, i).ok_or_else(|| {
+                        Error::from_reason("invalid %-encoding: malformed %XX sequence")
+                    })?;
                     ensure_capacity(out, *pos, 1)?;
-                    out[*pos] = (hi << 4) | lo;
+                    out[*pos] = byte;
                     *pos += 1;
-                    i += 3;
+                    i = next;
                 }
                 b => {
                     ensure_capacity(out, *pos, 1)?;
@@ -75,42 +71,6 @@ pub fn query_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<usi
 
     out[0..4].copy_from_slice(&count.to_le_bytes());
     Ok(pos)
-}
-
-/// Allocating parser — conservative upper bound, no pre-scan.
-/// Returns `Cow::Owned(Vec<u8>)` when decoding is needed,
-/// `Cow::Borrowed(&[u8])` when input can be used as-is (no % or +).
-#[inline]
-pub fn query_parse_packed_cow(input: &[u8]) -> Result<Cow<'_, [u8]>> {
-    // Fast path: if no decoding is needed at all (no % or + anywhere),
-    // we can return the original input borrowed as a single-item packed result.
-    if memchr::memchr2(b'+', b'%', input).is_none() && memchr::memchr(b'&', input).is_none() {
-        // No special chars: encode as packed [1 item: input]
-        // Actually, query string might still have structure. Let's check if it's a single key=value
-        if input.is_empty() {
-            return Ok(Cow::Borrowed(b"\0\0\0\0")); // empty packed
-        }
-        // We still need to produce packed format, so we allocate a minimal buffer
-        let mut out = Vec::with_capacity(input.len() + 12);
-        out.extend_from_slice(&1u32.to_le_bytes()); // count = 1
-        // key
-        if let Some(eq) = input.iter().position(|&b| b == b'=') {
-            let key = &input[..eq];
-            out.extend_from_slice(&(key.len() as u32).to_le_bytes());
-            out.extend_from_slice(key);
-            let val = &input[eq + 1..];
-            out.extend_from_slice(&(val.len() as u32).to_le_bytes());
-            out.extend_from_slice(val);
-        } else {
-            out.extend_from_slice(&(input.len() as u32).to_le_bytes());
-            out.extend_from_slice(input);
-            out.extend_from_slice(&0u32.to_le_bytes()); // empty value
-        }
-        return Ok(Cow::Owned(out));
-    }
-
-    // Needs decoding — use the standard path with upper-bound allocation
-    query_parse_packed_vec(input).map(Cow::Owned)
 }
 
 /// Allocating parser — conservative upper bound, no pre-scan.

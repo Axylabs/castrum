@@ -18,10 +18,14 @@ HTTP **ingress pipeline** for Bun servers.
 |------|---------|
 | Install deps | `bun install` |
 | Build Rust addon (release) | `bun run build` (== `napi build --release --platform`) |
+| Build Rust addon (LOCAL max perf) | `bun run build:perf` (x86-64-v3 + AVX2/BMI2/FMA — never for publish) |
 | Build Rust addon (debug) | `bun run build:debug` |
-| Rust unit tests | `cargo test` (~60 tests, `rust/unit_tests.rs`) |
-| TS unit tests | `bun test` (~72 tests, `test/unit/**`) |
+| Build compiled JS entry (Node) | `bun run build:js` (bundle + types → `dist/`) |
+| Node smoke tests | `bun run test:node` (== `node --test test/integration/`) |
+| Rust unit tests | `cargo test` (~138 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
+| TS unit tests | `bun test` (~154 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
+| Startup / first-call benchmark | `bun run bench:startup` |
 | Typecheck | `bunx tsc --noEmit` — **note**: `tsconfig.json` `include` is only `["index.ts", "bench.ts", "src"]`; `bench/` and `test/` are NOT typechecked here |
 | HTTP bench (all servers) | `bun run bench:http` |
 | HTTP bench (ingress only) | `bun run bench:http:ingress` |
@@ -42,40 +46,76 @@ HTTP **ingress pipeline** for Bun servers.
   builds + uploads each platform artifact, then the `publish` job downloads them
   into `./artifacts`, stages them, and runs `npm publish --access public`
   (requires the `NPM_TOKEN` secret). Bump `version` in package.json (and
-  Cargo.toml) and add a CHANGELOG entry before tagging.
-- **Manual release (no tag-push dependency on CI's `publish` job):**
-  `bun run publish:manual` (`scripts/publish-manual.mjs`) — builds the host addon,
-  downloads the CI-built `addon-*` artifacts for the current `v<version>` tag via
-  the GitHub CLI (`gh`), verifies every target is present, and runs
-  `npm publish --access public`. It is NOT an escape hatch from the
-  all-platforms rule: it requires a successful CI `build` run for the tag and still
-  fails if any artifact is missing. Prereqs: `gh` authenticated, npm logged in; for
-  the no-`--increment` resume path, a clean checkout of the exact tag. Use
-  `bun run publish:manual -- --increment <patch|minor|major|...>` to bump the version
-  and create + push the `v<version>` tag automatically via `bun pm version` (syncing
-  `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`), wait for the CI `build` job, then
-  publish. `--no-wait` pushes the tag and stops; `bun run publish:manual:dry`
-  (`--dry-run`) runs the pipeline without publishing or touching git.
+  Cargo.toml) and add a CHANGELOG entry before tagging. The ONLY local-publish
+  exception is `bun run publish:manual`, which sets `CASTRUM_PUBLISH_ALLOW_PARTIAL=1`
+  to ship a single-platform tarball.
+- **Simple manual publish (no CI / GitHub dependency):**
+  `bun run publish:manual` (`scripts/publish-manual.mjs`) — bumps the version via
+  `bun pm version` (`--increment <patch|minor|major|...>`, syncing
+  `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`), creates + pushes the `v<version>` git
+  tag (and the current branch), builds the host addon (`bun run build`), and runs
+  `npm publish --access public`. It sets `CASTRUM_PUBLISH_ALLOW_PARTIAL=1` for the
+  publish, so `prepublishOnly` ships ONLY the platforms built locally (currently the
+  host platform) instead of failing on missing `napi.targets`. Full multi-platform
+  tarballs still come from CI on a v* tag push. Prereqs: npm logged in (or
+  `NPM_TOKEN` exported); a clean tree when using `--increment`. Without
+  `--increment`, HEAD must sit on the exact `v<version>` tag (`--allow-dirty` to
+  tolerate an uncommitted tree). `bun run publish:manual:dry` (`--dry-run`) prints
+  the plan without changing anything.
 
 ## Layout (quick map)
 
 ```
 index.ts                  package entry (re-exports src/rust-ffi, src/baseline, src/ingress, ...)
 bench.ts                  CPU benchmark entry -> src/bench
-src/ingress/              HTTP ingress pipeline (TS layer)
+dist/                     COMPILED ESM entry for Node (gitignored): dist/index.js + dist/index.d.ts
+                          built by `bun run build:js`; wired via exports conditions (`bun` -> index.ts)
+src/shared/runtime.ts     runtime detection (isBun/isNode) — the ONLY place `typeof Bun` is checked
+src/shared/log.ts         createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines)
+src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── constants.ts        binary-layout constants, read from Rust at runtime (SINGLE SOURCE OF TRUTH)
-  ├── fast.ts             createIngressFast — packed-input path (handleRequestPacked)
-  ├── handlers.ts         PRE-BAKED handlers — full_sync path (handleRequestFullSync); used by the bench server
-  └── index.ts            public API: re-exports fast + handlers + async createIngress
-src/native/index.ts       addon loader + IngressInstance type
-src/rust-ffi/index.ts     flat Rust FFI API (`rust`)
+  ├── shared.ts           JS constants shared by both paths (METHOD_KIND, DEFAULT_MAX_BODY_BYTES, HeaderPlan)
+  ├── status.ts           status normalization helpers (both paths)
+  ├── errors.ts           fast-path error-code name/message mapping
+  ├── options.ts          IngressFast option types + fail-fast validation + trustProxy deprecation warning
+  ├── types.ts            public API types (IngressOptions/Result/Context/...)
+  ├── body.ts             streaming request-body reader (async API; size guard + bodyTimeoutMs)
+  ├── context.ts          result snapshot + synthetic/internal context builders
+  ├── server.ts           createIngressServer (Bun.serve) + buildRouteHandlers (shared) + gracefulShutdown
+  ├── server-node.ts      createIngressServerNode (node:http adapter, same route handlers)
+  ├── packing/            header-packing.ts (fast, binary) + input-packer.ts + gather-raw-headers.ts (pre-baked)
+  ├── headers/            cors.ts + hsts.ts + fast-templates.ts + baked-templates.ts (two template builders, NOT unified)
+  ├── decode/             fast-result.ts + baked-result.ts (two decoders, NOT unified)
+  ├── response/           terminal.ts (fast) + error-bodies.ts (pre-baked)
+  ├── routes/             read/head/json-write/echo/fallback factories + common.ts
+  ├── fast.ts             thin: createIngressFast (packed-input path, handleRequestPacked) + re-exports
+  ├── handlers.ts         thin: createIngressHandler (full_sync path, handleRequestFullSyncInto, pooled output); used by the bench server
+  └── index.ts            barrel: public API + async createIngress + re-exports
+src/native/               addon layer: types.ts (NativeAddon + instance types) + loader.ts (getAddon/lazyAddon) + index.ts barrel
+src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts + text.ts + batch.ts + packed.ts + scalar.ts + client.ts + index.ts barrel
+src/shared/request-id.ts  shared zero-alloc request ID generator (both ingress paths) — aliased buffer hazard documented
+src/shared/buffer-pool.ts  generic reusable byte-buffer pool (pooled output buffers, zero-copy borrows)
+src/shared/response.ts     pooledBodyResponse: Response that returns a pooled buffer on body consumption
 src/baseline/             JS baseline implementations (benchmark reference, `native`)
 src/bench/                CPU benchmark framework (tasks, measure, report, ...)
 src/data, src/shared/     JSON rows + bytes/packed helpers
 bench/servers/            bun-server.ts, elysia-server.ts, ingress-server.ts (HTTP bench)
 bench/load.ts             HTTP load generator + scenarios; validates response SHAPE
-test/unit/                TS tests (ingress/fast, shared/packed, shared/bytes)
+bench/startup.ts          "instant execution" benchmark (import + first-call timing)
+scripts/build-perf.sh     LOCAL-only max-perf build (x86-64-v3 + SIMD)
+test/unit/                TS tests (ingress/fast, shared/packed, shared/bytes, features, ingress/body)
+test/integration/         Node smoke tests (node-smoke.test.mjs, run via node --test)
 rust/                     single cdylib crate, one module per area (lib.rs declares mods)
+  ├── bytes.rs            SHARED byte primitives: word-compare, hex, %XX decode, cookie_pairs
+  ├── output.rs           SINGLE NUMERIC SOURCE for the ingress binary layout
+  ├── ingress_constants.rs  NAPI projection of output.rs (single numeric source = output.rs)
+  ├── util.rs             re-export shim for the util split (threadpool/packed/batch_core); keeps initThreadPool napi
+  ├── threadpool.rs       rayon global pool init + parallelism heuristic
+  ├── packed.rs           zero-alloc packed iterators + byte writers (VecWriter, PackedIter, ...)
+  ├── batch_core.rs       generic rayon-parallel batch helpers (bitset/count/sum)
+  ├── ingress.rs          ingress pipeline (IngressInner + napi class), with submodules:
+  │   └── ingress/        options.rs (napi option structs + Limits), time.rs (clock), packed.rs (packed readers + builder)
+  └── test_support.rs     shared #[cfg(test)] helpers (pack_headers, decode_packed_pairs, Rng)
 ```
 
 ## Ingress: the two paths (do NOT conflate)
@@ -96,10 +136,42 @@ re-exports the pre-baked functions. **Do not unify the two formats** — the loa
 generator `bench/load.ts` requires `ok === true` + `requestId: string` on
 success and `error.code` / `error.message` on errors (path 2's format).
 
+> **Pooled output buffers (handlers.ts)**: `createIngressHandler` owns a
+> `BufferPool` (`src/shared/buffer-pool.ts`) sized by `runtime.outputBufferSize`.
+> `run()` writes into a pooled buffer via `handleRequestFullSyncInto` and passes
+> the exact written subarray to `BakedIngressResult.refresh`. In copy mode the
+> buffer is released at the end of `run()`; in zero-copy mode
+> `ingress.zeroCopyResponse()` serves a `pooledBodyResponse` that keeps the
+> buffer in flight until the body is consumed.
+
+> Why the result decoders and header-template builders are NOT shared: although
+> both paths decode the same Rust OUT_* layout, `FastIngressResult` and
+> `BakedIngressResult` use different status normalization and expose different
+> fields, and the two header-template builders emit different wire formats
+> (`x-ratelimit-*` vs `ratelimit-*`). This is intentional — see the constraint
+> above. What IS shared: `generateRequestId` (`src/shared/request-id.ts`).
+
 ## Hard constraints & gotchas
 
-- **Constants**: never hardcode binary-layout values. Source of truth is
-  `rust/ingress_constants.rs` → exported via NAPI → `src/ingress/constants.ts`.
+- **Node.js compatibility (Bun-first)**: `package.json` `exports` uses `types` /
+  `bun` / `node` / `default` conditions. Bun resolves the `bun` condition → raw
+  `index.ts` (zero startup cost — DO NOT point it at dist/). Node resolves `node` →
+  `dist/index.js` (compiled ESM, built by `bun run build:js`), with bundled
+  `dist/index.d.ts`. `dist/` is gitignored and NOT committed. Do NOT set
+  `sideEffects: false` — importing the package eagerly dlopens the addon via
+  `src/ingress/constants.ts`.
+- **Runtime seam**: runtime detection lives ONLY in `src/shared/runtime.ts`
+  (`isBun`/`isNode`). Do not sprinkle `typeof Bun` checks elsewhere. `createIngressServer`
+  is Bun-only (throws on Node); Node users use `createIngressServerNode` (same route
+  handlers via `buildRouteHandlers` in `server.ts`).
+- **Addon loader** (`src/native/loader.ts`): resolves the `.node` from multiple roots so
+  it works from BOTH the source layout (`src/native/…`) and the bundled layout
+  (`dist/…`). Honor `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`. Run
+  `bun run bench:startup` after touching it.
+- **Constants**: never hardcode binary-layout values. The single NUMERIC source is
+  `rust/output.rs`; `rust/ingress_constants.rs` re-exports those values to JS via
+  NAPI (`#[napi] pub const ... = crate::output::OUT_X as u32`), and
+  `src/ingress/constants.ts` reads them. They cannot drift.
 - **`tsconfig.json`** sets `noUncheckedIndexedAccess: true`. Indexed access on
   `Record<string, Uint8Array>` (e.g. `ERROR_BODIES.internal`) is
   `Uint8Array | undefined` — `handlers.ts` uses `!` where the key is guaranteed.
@@ -107,7 +179,9 @@ success and `error.code` / `error.message` on errors (path 2's format).
   bench files with the editor language server, and run `bun run bench:http:smoke`
   to confirm the servers still pass load checks.
 - **Hot-path APIs (do not remove)**: `ingress.rs::handle_request_packed`
-  (fast.ts) and `handle_request_full_sync` (handlers.ts), `ingress_constants.rs`,
+  (fast.ts), `handle_request_full_sync` AND `handle_request_full_sync_into`
+  (handlers.ts — the latter is the pooled/reusable-output variant; keep
+  `handleRequestFullSync` as the allocating compat wrapper), `ingress_constants.rs`,
   sync `batch.rs`, `util.rs::init_thread_pool`, and the scalar NAPI fns used by
   `src/bench/tasks/*`.
 - **Rust crate history**: it is ONE cdylib crate (Cargo `[lib]` → `rust/lib.rs`).
@@ -119,11 +193,16 @@ success and `error.code` / `error.message` on errors (path 2's format).
   libc `override` interposition feature (embedding hazard).
 - **jsonschema** dep uses `default-features = false, features = ["resolve-file"]`
   — keep the async HTTP/TLS stack out.
-- **`.cargo/config.toml`** hardcodes `-C target-cpu=x86-64-v3` + avx2/bmi2/fma/sse4.2
-  for x86_64 linux+darwin — machine-local; no aarch64 equivalent. Don't rely on it.
+- **`.cargo/config.toml`** has NO hardcoded target flags (it only documents them in a
+  comment). Published artifacts build for baseline x86-64 / aarch64. For LOCAL
+  benchmarking use `bun run build:perf` (`scripts/build-perf.sh`), which compiles
+  with `-C target-cpu=x86-64-v3` + avx2/bmi2/fma/sse4.2. Never commit those flags
+  as the default and never use `build:perf` for publish.
 - **Rate limiter**: 256 `Mutex<LruCache>` shards, `Arc<KeyedRateLimiter>` per
   ingress instance (NOT shared across routes), per-process (not distributed);
-  monotonic `Instant` + one-time wall offset via `OnceLock`.
+  monotonic `Instant` + one-time wall offset via `OnceLock`. Ingress stores it as
+  a `RateLimiterState` enum (`Disabled`/`Enabled`) so the code can't have a
+  "rate enabled but no limiter" state.
 - **XFF / proxy trust**: empty trusted networks → `ProxyTrustMode::All`
   (trust everything → spoofable). The bench server's `INGRESS_TRUST_PROXY`
   defaults OFF; only enable behind a trusted edge.
@@ -138,16 +217,24 @@ success and `error.code` / `error.message` on errors (path 2's format).
 - **Wire format is a contract**: changing success/error body shape or the
   `ratelimit-*` header names in `handlers.ts` breaks `bench/load.ts` checks and
   invalidates benchmark baselines.
+- **Benchmark controls**: `CASTRUM_BENCH_BATCH_SIZE` (CPU-bench batch size for
+  sub-µs ops; default 64), `HTTP_NO_SHAPE=1` (load generator skips response-shape
+  `JSON.parse` for pure-throughput runs). `bun run check` persists a
+  machine-readable CPU report to `bench/results/cpu/` (gitignored).
 
 ## Testing
 
 - **TS**: `bun test`. Add tests under `test/unit/<area>/`. Only `test/unit/*`
   currently has files (`ingress/fast`, `shared/packed`, `shared/bytes`).
-- **Rust**: `cargo test` — core logic in `rust/unit_tests.rs`, wired from
-  `lib.rs` via `#[cfg(test)] mod unit_tests;`.
+- **Rust**: `cargo test`. New logic ships with a `#[cfg(test)] mod tests` block in
+  the SAME module file (ingress.rs, url_codec.rs, validation.rs, proxy.rs,
+  hmac_sha256.rs already do). Cross-module suites live in `rust/unit_tests.rs`;
+  shared test helpers live in `rust/test_support.rs`.
 - **HTTP**: after touching any server or `handlers.ts`, run
   `bun run bench:http:smoke` (or `SERVER=ingress SCENARIO=01-smoke bun run bench:http:smoke`)
   and confirm no `shape_failure` / `unexpected_status` in the report.
+- **Startup**: after touching the addon loader (`src/native/index.ts`) or package
+  entry, run `bun run bench:startup` to confirm import / first-call timing.
 
 ## Do NOT
 

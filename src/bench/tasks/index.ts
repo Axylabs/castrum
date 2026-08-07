@@ -15,6 +15,14 @@ import { tokenTasks } from "./token";
 import { urlTasks } from "./url";
 import { validationTasks } from "./validation";
 import { websocketTasks } from "./websocket";
+// Backend-framework feature tasks
+import { aeadTasks } from "./aead";
+import { compressTasks } from "./compress";
+import { jwtTasks } from "./jwt";
+import { multipartTasks } from "./multipart";
+import { passwordTasks } from "./password";
+import { streamingTasks } from "./streaming";
+import { templateTasks } from "./template";
 
 export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
   return [
@@ -30,6 +38,14 @@ export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
     ...hashingTasks(fixtures),
     ...mimeTasks(fixtures),
     ...urlTasks(fixtures),
+    // Backend-framework feature tasks
+    ...jwtTasks(fixtures),
+    ...passwordTasks(fixtures),
+    ...aeadTasks(fixtures),
+    ...compressTasks(fixtures),
+    ...multipartTasks(fixtures),
+    ...templateTasks(fixtures),
+    ...streamingTasks(fixtures),
   ];
 }
 

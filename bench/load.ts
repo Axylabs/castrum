@@ -2,6 +2,10 @@
 // bench/load.ts
 import { mkdirSync } from "node:fs";
 
+// Global switch: set HTTP_NO_SHAPE=1 to skip response-shape validation (and
+// the per-response JSON.parse it implies) for pure-throughput soak runs.
+const NO_SHAPE = (process.env.HTTP_NO_SHAPE ?? "").trim().toLowerCase() === "1";
+
 type Outcome =
   | "success"
   | "expected_error"
@@ -937,7 +941,7 @@ async function send(
       } else {
         outcome = "success";
 
-        if (opts.requireShape !== false) {
+        if (opts.requireShape !== false && !NO_SHAPE) {
           const parsed = safeJson(text);
           const shapeOk =
             parsed != null &&

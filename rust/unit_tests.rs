@@ -17,45 +17,7 @@ use crate::output::{
     HV_CORS_PREFLIGHT, HV_CORS_SIMPLE, HV_JSON, HV_RATE_ACTIVE, HV_RATE_LIMITED,
 };
 use crate::rate_limit::KeyedRateLimiter;
-
-// ── Shared helpers ────────────────────────────────────────────────
-
-/// Build a packed header buffer: [u16 count] { [u16 name_len][name][u32 val_len][val] }.
-fn pack_headers<'a, I>(pairs: I) -> Vec<u8>
-where
-    I: IntoIterator<Item = (&'a str, &'a str)>,
-{
-    let pairs: Vec<(&str, &str)> = pairs.into_iter().collect();
-    let mut out = Vec::new();
-    out.extend_from_slice(&(pairs.len() as u16).to_le_bytes());
-    for (name, value) in pairs {
-        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-        out.extend_from_slice(name.as_bytes());
-        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
-        out.extend_from_slice(value.as_bytes());
-    }
-    out
-}
-
-/// Decode a packed pairs buffer: [u32 count] { [u32 key_len][key][u32 val_len][val] }.
-fn decode_packed_pairs(packed: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-    assert!(packed.len() >= 4, "packed buffer too short");
-    let count = u32::from_le_bytes([packed[0], packed[1], packed[2], packed[3]]) as usize;
-    let mut out = Vec::with_capacity(count);
-    let mut pos = 4usize;
-    for _ in 0..count {
-        let key_len = u32::from_le_bytes([packed[pos], packed[pos + 1], packed[pos + 2], packed[pos + 3]]) as usize;
-        pos += 4;
-        let key = packed[pos..pos + key_len].to_vec();
-        pos += key_len;
-        let val_len = u32::from_le_bytes([packed[pos], packed[pos + 1], packed[pos + 2], packed[pos + 3]]) as usize;
-        pos += 4;
-        let val = packed[pos..pos + val_len].to_vec();
-        pos += val_len;
-        out.push((key, val));
-    }
-    out
-}
+use crate::test_support::{decode_packed_pairs, pack_headers, Rng};
 
 // ── rate_limit ────────────────────────────────────────────────────
 
@@ -704,7 +666,7 @@ fn query_parse_empty_input() {
 
 #[test]
 fn cookie_parse_basic() {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"a=1; b=2");
+    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"a=1; b=2").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
@@ -713,7 +675,7 @@ fn cookie_parse_basic() {
 
 #[test]
 fn cookie_parse_trims_whitespace() {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(b" a = 1 ; b = hello world ");
+    let packed = crate::cookie_parser::cookie_parse_packed_vec(b" a = 1 ; b = hello world ").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
@@ -722,7 +684,7 @@ fn cookie_parse_trims_whitespace() {
 
 #[test]
 fn cookie_parse_skips_empty_name() {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"=1; =2; ok=3");
+    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"=1; =2; ok=3").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0], (b"ok".to_vec(), b"3".to_vec()));
@@ -730,7 +692,7 @@ fn cookie_parse_skips_empty_name() {
 
 #[test]
 fn cookie_parse_empty_value() {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"session=");
+    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"session=").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0], (b"session".to_vec(), b"".to_vec()));
@@ -760,6 +722,52 @@ fn json_escaped_len_newline() {
 fn json_escaped_len_control_char_wide() {
     // 0x01 must be escaped as \u0001 -> 6 bytes for 1 input byte.
     assert_eq!(crate::json_ser::json_escaped_len(&[b'a', 0x01, b'b']), 8);
+}
+
+#[test]
+fn json_escaped_len_short_control_escapes() {
+    // Regression: \r, \t, \x08, \x0c are written as 2-byte escapes but were
+    // counted as +0 by json_escaped_len (memchr3 only finds ", \, \n).
+    // Each must contribute +1.
+    assert_eq!(crate::json_ser::json_escaped_len(b"a\rb"), 4); // a, \r, b
+    assert_eq!(crate::json_ser::json_escaped_len(b"a\tb"), 4);
+    assert_eq!(crate::json_ser::json_escaped_len(&[b'a', 0x08, b'b']), 4);
+    assert_eq!(crate::json_ser::json_escaped_len(&[b'a', 0x0c, b'b']), 4);
+    // Mixed: newline (memchr3 path) + tab (trailing path).
+    assert_eq!(crate::json_ser::json_escaped_len(b"a\n\tb"), 6);
+}
+
+#[test]
+fn write_json_escaped_never_overflows_exact_buffer() {
+    // Regression: a buffer sized EXACTLY by json_escaped_len must never
+    // overflow. Before the fix, \r/\t/\x08/\x0c were undercounted → the write
+    // past the end panicked (caught by napi → 500) or corrupted memory.
+    let cases: &[&[u8]] = &[
+        b"a\rb",
+        b"a\tb",
+        &[b'a', 0x08, b'b'],
+        &[b'a', 0x0c, b'b'],
+        b"cookie=1; other=2\r\n\t",
+        b"\t\r\x08\x0c\"\\\n\x01\x1f",
+    ];
+
+    for input in cases {
+        let len = crate::json_ser::json_escaped_len(input);
+        let mut out = vec![0u8; len];
+        let mut pos = 0usize;
+        crate::json_ser::write_json_escaped(&mut out, &mut pos, input);
+        assert_eq!(pos, len, "must write exactly json_escaped_len bytes: {input:?}");
+    }
+}
+
+#[test]
+fn cookie_json_into_slice_short_control_escapes() {
+    // Cookie values containing \r/\t must serialize correctly into a buffer
+    // sized by the (fixed) length accounting.
+    let mut out = vec![0u8; 256];
+    let written =
+        crate::json_ser::cookie_json_into_slice(b"a=va\tl; b=x\ry", &mut out, 100).unwrap();
+    assert_eq!(&out[..written], b"{\"a\":\"va\\tl\",\"b\":\"x\\ry\"}");
 }
 
 #[test]
@@ -793,24 +801,6 @@ fn packed_pairs_to_json_into_slice_output() {
 }
 
 // ── Malformed-input panic safety ──────────────────────────────────
-
-// Deterministic xorshift PRNG so the fuzz-style tests are reproducible.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-
-    fn bytes(&mut self, len: usize) -> Vec<u8> {
-        (0..len).map(|_| self.next() as u8).collect()
-    }
-}
 
 #[test]
 fn parsers_do_not_panic_on_malformed_input() {

@@ -1,7 +1,6 @@
 use crate::hashing::fast_hash_bytes;
 use lru::LruCache;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -25,6 +24,29 @@ pub struct RateOutcome {
     pub reset_ms: u64,
 }
 
+/// Whether an ingress instance has rate limiting configured.
+///
+/// This enum replaces the old `bool` + `Option` pair so the code cannot
+/// accidentally have `rate_enabled = true` with no limiter (or vice versa).
+#[derive(Clone)]
+pub(crate) enum RateLimiterState {
+    /// Rate limiting is not configured.
+    Disabled,
+    /// Rate limiting is configured and ready to use.
+    Enabled(Arc<KeyedRateLimiter>),
+}
+
+impl RateLimiterState {
+    /// Returns the underlying limiter, or `None` when disabled.
+    #[inline(always)]
+    pub fn as_limiter(&self) -> Option<&KeyedRateLimiter> {
+        match self {
+            RateLimiterState::Disabled => None,
+            RateLimiterState::Enabled(limiter) => Some(limiter.as_ref()),
+        }
+    }
+}
+
 pub struct KeyedRateLimiter {
     shards: Box<[Shard]>,
     shard_mask: usize,
@@ -40,7 +62,7 @@ impl KeyedRateLimiter {
         let id = LIMITER_ID.fetch_add(1, Ordering::Relaxed);
         let seed = fast_hash_bytes(&id.to_le_bytes());
 
-        let max_entries = max_entries.unwrap_or(1_048_576);
+        let max_entries = max_entries.unwrap_or(DEFAULT_MAX_ENTRIES).min(MAX_ENTRIES_CAP);
         let max_per_shard = (max_entries / SHARD_COUNT).max(64);
 
         let cap = NonZeroUsize::new(max_per_shard)
@@ -166,6 +188,11 @@ fn advance_window(c: &mut Counter, now_ms: u64, window: u64) {
 // across endpoints (each route would get its own independent bucket). All
 // instances configured with the same (limit, window_ms, max_entries) share one
 // process-wide limiter.
+//
+// The registry is BOUNDED: each distinct config materializes a full 256-shard
+// limiter (~1M LRU nodes at the default max_entries, tens of MB), so an
+// unbounded map would let many slightly-different configs balloon memory. We
+// cap the number of retained configs (LRU eviction) and clamp max_entries.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct LimiterKey {
     limit: u32,
@@ -173,7 +200,14 @@ struct LimiterKey {
     max_entries: usize,
 }
 
-static SHARED_LIMITERS: OnceLock<Mutex<HashMap<LimiterKey, Arc<KeyedRateLimiter>>>> =
+/// Maximum number of distinct rate-limit configs retained process-wide.
+const MAX_SHARED_LIMITERS: usize = 16;
+/// Upper clamp for `max_entries` (prevents a ~4 GB allocation from a bad input).
+const MAX_ENTRIES_CAP: usize = 4_000_000;
+/// Default per-config entry budget (256 shards × 4096 nodes).
+const DEFAULT_MAX_ENTRIES: usize = 1_048_576;
+
+static SHARED_LIMITERS: OnceLock<Mutex<LruCache<LimiterKey, Arc<KeyedRateLimiter>>>> =
     OnceLock::new();
 
 /// Return the process-wide shared limiter for the given configuration.
@@ -183,14 +217,18 @@ pub fn shared_limiter(
     window_ms: u32,
     max_entries: Option<usize>,
 ) -> Arc<KeyedRateLimiter> {
-    let resolved = max_entries.unwrap_or(1_048_576);
+    let resolved = max_entries.unwrap_or(DEFAULT_MAX_ENTRIES).min(MAX_ENTRIES_CAP);
     let key = LimiterKey {
         limit,
         window_ms,
         max_entries: resolved,
     };
 
-    let map = SHARED_LIMITERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let map = SHARED_LIMITERS.get_or_init(|| {
+        Mutex::new(LruCache::new(
+            NonZeroUsize::new(MAX_SHARED_LIMITERS).expect("MAX_SHARED_LIMITERS is nonzero"),
+        ))
+    });
     let mut guard = map.lock();
 
     if let Some(existing) = guard.get(&key) {
@@ -198,6 +236,6 @@ pub fn shared_limiter(
     }
 
     let limiter = Arc::new(KeyedRateLimiter::new(limit, window_ms, Some(resolved)));
-    guard.insert(key, limiter.clone());
+    guard.put(key, limiter.clone());
     limiter
 }

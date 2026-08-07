@@ -1,13 +1,7 @@
-// rust/method.rs — Extracted HTTP method classification
-// Optimized for Bun 1.4: uses u64 word-at-a-time comparison with zero allocation
+// rust/method.rs — HTTP method classification
+// Uses the shared word-at-a-time byte helpers from `bytes.rs`.
 
-#[inline(always)]
-fn load_u64_padded(bytes: &[u8]) -> u64 {
-    let mut buf = [0u8; 8];
-    let len = bytes.len().min(8);
-    buf[..len].copy_from_slice(&bytes[..len]);
-    u64::from_le_bytes(buf)
-}
+use crate::bytes::{ascii_eq_ignore_case, load_u64_padded};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MethodKind {
@@ -30,7 +24,7 @@ const METHOD_DELETE: u64 = u64::from_le_bytes(*b"DELETE\0\0");
 const METHOD_OPTIONS: u64 = u64::from_le_bytes(*b"OPTIONS\0");
 
 impl MethodKind {
-    /// Classify HTTP method from a &str.
+    /// Classify HTTP method from a `&str` (case-sensitive, exact match).
     #[inline(always)]
     pub fn from_str(method: &str) -> Self {
         let bytes = method.as_bytes();
@@ -48,50 +42,29 @@ impl MethodKind {
         }
     }
 
-    /// Classify HTTP method from raw bytes with case-insensitive comparison.
-    /// Avoids heap allocation from to_ascii_uppercase().
+    /// Classify HTTP method from raw bytes, case-insensitively, with zero
+    /// allocation (delegates to the shared word-at-a-time comparator).
     #[inline(always)]
     pub fn from_bytes_ignore_case(bytes: &[u8]) -> Self {
-        let len = bytes.len();
-        if len > 7 {
+        if bytes.len() > 7 {
             return Self::Other;
         }
-
-        let loaded = load_u64_padded(bytes);
-
-        // Mask the 5th bit (0x20) of all alphabetic bytes for case-insensitive comparison.
-        let lower = loaded | 0x2020_2020_2020_2020;
-
-        // Zero the bytes beyond `len` on BOTH operands. The mask must be applied
-        // to the reference constants too, otherwise the padding bytes (0x20 after
-        // the OR above) never match and every method classifies as Other.
-        let mask = match len {
-            3 => 0x00FF_FFFF_FFFF_FFFFu64,
-            4 => 0x0000_FFFF_FFFF_FFFFu64,
-            5 => 0x0000_00FF_FFFF_FFFFu64,
-            6 => 0x0000_0000_FFFF_FFFFu64,
-            7 => 0x0000_0000_00FF_FFFFu64,
-            _ => 0,
-        };
-
-        let lower_masked = lower & mask;
-        let get = (METHOD_GET | 0x2020_2020_2020_2020) & mask;
-        let put = (METHOD_PUT | 0x2020_2020_2020_2020) & mask;
-        let post = (METHOD_POST | 0x2020_2020_2020_2020) & mask;
-        let head = (METHOD_HEAD | 0x2020_2020_2020_2020) & mask;
-        let patch = (METHOD_PATCH | 0x2020_2020_2020_2020) & mask;
-        let delete = (METHOD_DELETE | 0x2020_2020_2020_2020) & mask;
-        let options = (METHOD_OPTIONS | 0x2020_2020_2020_2020) & mask;
-
-        match len {
-            3 if lower_masked == get => Self::Get,
-            3 if lower_masked == put => Self::Put,
-            4 if lower_masked == post => Self::Post,
-            4 if lower_masked == head => Self::Head,
-            5 if lower_masked == patch => Self::Patch,
-            6 if lower_masked == delete => Self::Delete,
-            7 if lower_masked == options => Self::Options,
-            _ => Self::Other,
+        if ascii_eq_ignore_case(bytes, b"GET") {
+            Self::Get
+        } else if ascii_eq_ignore_case(bytes, b"HEAD") {
+            Self::Head
+        } else if ascii_eq_ignore_case(bytes, b"POST") {
+            Self::Post
+        } else if ascii_eq_ignore_case(bytes, b"PUT") {
+            Self::Put
+        } else if ascii_eq_ignore_case(bytes, b"PATCH") {
+            Self::Patch
+        } else if ascii_eq_ignore_case(bytes, b"DELETE") {
+            Self::Delete
+        } else if ascii_eq_ignore_case(bytes, b"OPTIONS") {
+            Self::Options
+        } else {
+            Self::Other
         }
     }
 

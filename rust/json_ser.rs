@@ -2,10 +2,8 @@
 // Zero-alloc JSON escaping, cookie→JSON and query→JSON conversion
 // Uses memchr-based skip for bulk unescaped bytes (~95% path)
 
-use crate::util::trim_ascii_whitespace;
+use crate::bytes::{cookie_pairs, HEX_LOWER as JSON_HEX_LOWER};
 use napi::{Error, Result};
-
-const JSON_HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
 /// Determine whether bytes are valid UTF-8 (cached via a bit check).
 #[inline(always)]
@@ -45,27 +43,25 @@ fn json_escaped_len_impl(bytes: &[u8]) -> usize {
         let b = bytes[abs];
         offset = abs + 1;
 
-        total += match b {
-            b'\\' | b'"' | b'\n' => 1, // 2 bytes instead of 1 → +1
-            _ => {
-                // \r, \t, \x08, \x0c: also 2 bytes
-                if b == b'\r' || b == b'\t' || b == 0x08 || b == 0x0c {
-                    1
-                } else if b < 0x20 {
-                    // \uXXXX → 6 bytes instead of 1 → +5
-                    5
-                } else {
-                    0
-                }
-            }
+        // memchr3 only matches ", \, \n — every hit is a 2-byte escape (+1).
+        total += if b == b'"' || b == b'\\' || b == b'\n' {
+            1
+        } else {
+            0
         };
     }
 
-    // Now check for remaining control characters (<0x20) that memchr3 missed
-    // (tab and \r are 0x09 and 0x0d which are < 0x20 but already handled above)
+    // Now check for remaining control characters (<0x20) that memchr3 missed.
+    // memchr3 only finds ", \, \n, so \r (0x0d), \t (0x09), 0x08 and 0x0c are
+    // counted HERE — they are written as 2-byte escapes (+1). Every other
+    // control char is written as \uXXXX (6 bytes instead of 1 → +5).
     for &b in &bytes[offset..] {
-        if b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t' && b != 0x08 && b != 0x0c {
-            total += 5; // \uXXXX
+        if b < 0x20 && b != b'\n' {
+            total += if b == b'\r' || b == b'\t' || b == 0x08 || b == 0x0c {
+                1
+            } else {
+                5
+            };
         }
     }
 
@@ -205,30 +201,8 @@ pub fn cookie_json_into_slice(input: &[u8], out: &mut [u8], max_pairs: usize) ->
 
     out[0] = b'{';
     let mut pos = 1usize;
-    let mut count = 0usize;
 
-    for pair in input.split(|&b| b == b';') {
-        let pair = trim_ascii_whitespace(pair);
-        if pair.is_empty() {
-            continue;
-        }
-
-        let (name, value) = match pair.iter().position(|&b| b == b'=') {
-            Some(eq) => (&pair[..eq], &pair[eq + 1..]),
-            None => (pair, &[][..]),
-        };
-
-        let name = trim_ascii_whitespace(name);
-        let value = trim_ascii_whitespace(value);
-
-        if name.is_empty() {
-            continue;
-        }
-
-        if count >= max_pairs {
-            break;
-        }
-
+    for (count, (name, value)) in cookie_pairs(input).take(max_pairs).enumerate() {
         let needed = (if count == 0 { 0 } else { 1 })
             + 5
             + json_escaped_len(name)
@@ -255,8 +229,6 @@ pub fn cookie_json_into_slice(input: &[u8], out: &mut [u8], max_pairs: usize) ->
         write_json_escaped(out, &mut pos, value);
         out[pos] = b'"';
         pos += 1;
-
-        count += 1;
     }
 
     if pos + 1 > out.len() {

@@ -1,4 +1,10 @@
 import { nativeHmacSha256 } from "../baseline/tasks/hmac";
+import { nativeJwtSign } from "../baseline/tasks/jwt";
+import { nativeAeadEncrypt } from "../baseline/tasks/aead";
+import {
+  nativeBrotliCompress,
+  nativeGzipCompress,
+} from "../baseline/tasks/compress";
 import { jsonRowsBytes } from "../data/json-rows";
 import { encoder } from "../shared/bytes";
 
@@ -22,6 +28,27 @@ export interface BenchFixtures {
   mimeExt: Uint8Array;
   urlEncodeInput: Uint8Array;
   urlDecodeInput: Uint8Array;
+
+  // ── Backend-framework features ──
+  jwtSecret: Uint8Array;
+  jwtClaims: Record<string, unknown>;
+  jwtToken: Uint8Array;
+  jwtNowSeconds: number;
+  passwordBytes: Uint8Array;
+  passwordSalt: Uint8Array;
+  aeadKey: Uint8Array;
+  aeadNonce: Uint8Array;
+  aeadPlaintext: Uint8Array;
+  aeadCiphertext: Uint8Array;
+  compressPayload: Uint8Array;
+  gzipCompressed: Uint8Array;
+  brotliCompressed: Uint8Array;
+  multipartBoundary: Uint8Array;
+  multipartBody: Uint8Array;
+  templateSource: string;
+  templateContext: Record<string, unknown>;
+  wsPayload: Uint8Array;
+  sseData: Uint8Array;
 }
 
 export interface ComplexFixtures {
@@ -38,6 +65,16 @@ export interface ComplexFixtures {
   batchUuids: Uint8Array[];
   batchIpv4s: Uint8Array[];
   batchQueries: Uint8Array[];
+
+  // ── Backend-framework feature batches ──
+  batchPasswords: Uint8Array[];
+  batchTokens: Uint8Array[];
+  batchCompressItems: Uint8Array[];
+  batchContexts: Uint8Array[];
+  passwordSalt: Uint8Array;
+  batchSecret: Uint8Array;
+  batchNow: number;
+  templateSource: string;
 }
 
 export function createFixtures(): BenchFixtures {
@@ -86,6 +123,60 @@ export function createFixtures(): BenchFixtures {
     "hello%20world%20%26%20foo%3Dbar",
   );
 
+  // ── Backend-framework features ──
+  const jwtSecret = encoder.encode("castrum-bench-jwt-secret");
+  const jwtClaims: Record<string, unknown> = {
+    sub: "1234567890",
+    name: "John Doe",
+    role: "admin",
+    iat: 1_516_239_022,
+  };
+  const jwtNowSeconds = 1_750_000_000;
+  const jwtToken = nativeJwtSign(jwtClaims, jwtSecret, null, jwtNowSeconds);
+
+  const passwordBytes = encoder.encode("correct horse battery staple");
+  const passwordSalt = encoder.encode("0123456789abcdef");
+
+  const aeadKey = encoder.encode("0123456789abcdef0123456789abcdef");
+  const aeadNonce = encoder.encode("0123456789ab");
+  const aeadPlaintext = encoder.encode(
+    "sensitive session payload for the encryption benchmark",
+  );
+  const aeadCiphertext = nativeAeadEncrypt(aeadKey, aeadNonce, aeadPlaintext);
+
+  const compressPayload = encoder.encode(
+    Array.from(
+      { length: 200 },
+      (_, i) => `row ${i}: the quick brown fox jumps over the lazy dog ${i}`,
+    ).join("\n"),
+  );
+  const gzipCompressed = nativeGzipCompress(compressPayload);
+  const brotliCompressed = nativeBrotliCompress(compressPayload);
+
+  const multipartBoundary = encoder.encode("FormBoundary1234");
+  const multipartBody = encoder.encode(
+    `--FormBoundary1234\r\n` +
+      `Content-Disposition: form-data; name="field1"\r\n\r\n` +
+      `hello world\r\n` +
+      `--FormBoundary1234\r\n` +
+      `Content-Disposition: form-data; name="upload"; filename="a.txt"\r\n` +
+      `Content-Type: text/plain\r\n\r\n` +
+      `file contents here\r\n` +
+      `--FormBoundary1234--\r\n`,
+  );
+
+  const templateSource =
+    "{% for u in users %}<li>{{ u.name }} ({{ u.id }})</li>\n{% endfor %}";
+  const templateContext: Record<string, unknown> = {
+    users: Array.from({ length: 200 }, (_, i) => ({
+      name: `User ${i}`,
+      id: i,
+    })),
+  };
+
+  const wsPayload = encoder.encode("Hello WebSocket! ".repeat(10));
+  const sseData = encoder.encode("line1\nline2\nline3");
+
   return {
     jsonPayload,
     httpRaw,
@@ -106,6 +197,25 @@ export function createFixtures(): BenchFixtures {
     mimeExt,
     urlEncodeInput,
     urlDecodeInput,
+    jwtSecret,
+    jwtClaims,
+    jwtToken,
+    jwtNowSeconds,
+    passwordBytes,
+    passwordSalt,
+    aeadKey,
+    aeadNonce,
+    aeadPlaintext,
+    aeadCiphertext,
+    compressPayload,
+    gzipCompressed,
+    brotliCompressed,
+    multipartBoundary,
+    multipartBody,
+    templateSource,
+    templateContext,
+    wsPayload,
+    sseData,
   };
 }
 
@@ -215,6 +325,51 @@ export function createComplexFixtures(): ComplexFixtures {
     ),
   );
 
+  // ── Backend-framework feature batches ──
+  // Small batch: the JS baseline (scrypt) is slow per item (~40ms), so 20 items
+  // keeps the complex benchmark tractable.
+  const batchPasswords = Array.from({ length: 20 }, (_, i) =>
+    encoder.encode(`password-${i}-correct-horse-battery-staple`),
+  );
+
+  const passwordSalt = encoder.encode("0123456789abcdef");
+
+  const batchSecret = encoder.encode("castrum-bench-jwt-secret");
+  const batchNow = 1_750_000_000;
+  const batchTokens = Array.from({ length: 100 }, (_, i) =>
+    nativeJwtSign(
+      { sub: String(i), name: `user${i}`, role: "admin" },
+      batchSecret,
+      3600,
+      batchNow,
+    ),
+  );
+
+  const batchCompressItems = Array.from({ length: 100 }, (_, i) =>
+    encoder.encode(
+      JSON.stringify({
+        id: i,
+        name: `item_${i}`,
+        description: "the quick brown fox jumps over the lazy dog ".repeat(3),
+        tags: ["alpha", "beta", "gamma"],
+      }),
+    ),
+  );
+
+  const batchContexts = Array.from({ length: 100 }, (_, i) =>
+    encoder.encode(
+      JSON.stringify({
+        users: Array.from({ length: 20 }, (_, j) => ({
+          name: `User ${i}-${j}`,
+          id: j,
+        })),
+      }),
+    ),
+  );
+
+  const templateSource =
+    "{% for u in users %}<li>{{ u.name }} ({{ u.id }})</li>\n{% endfor %}";
+
   return {
     jsonLarge,
     jsonHuge,
@@ -229,5 +384,13 @@ export function createComplexFixtures(): ComplexFixtures {
     batchUuids,
     batchIpv4s,
     batchQueries,
+    batchPasswords,
+    batchTokens,
+    batchCompressItems,
+    batchContexts,
+    passwordSalt,
+    batchSecret,
+    batchNow,
+    templateSource,
   };
 }

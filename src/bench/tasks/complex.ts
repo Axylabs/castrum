@@ -228,5 +228,99 @@ export function complexTasks(c: ComplexFixtures): BenchTask[] {
       iterations: 30,
       warmup: 5,
     },
+
+    // ── Backend-framework feature batches ──
+    {
+      name: "native:password_hash_batch",
+      run: () =>
+        c.batchPasswords.reduce(
+          (acc, p) =>
+            acc + native.nativePasswordHash(p, c.passwordSalt).byteLength,
+          0,
+        ),
+      iterations: 3,
+      warmup: 1,
+    },
+    {
+      name: "rust:password_hash_batch",
+      run: () =>
+        rustBatch
+          .passwordHash(c.batchPasswords, c.passwordSalt, {
+            mCost: 4096,
+            tCost: 1,
+            pCost: 1,
+          })
+          .reduce((acc, phc) => acc + phc.byteLength, 0),
+      iterations: 3,
+      warmup: 1,
+    },
+    {
+      name: "native:jwt_verify_batch",
+      run: () =>
+        c.batchTokens.reduce(
+          (acc, t) =>
+            acc +
+            (native.nativeJwtVerify(t, c.batchSecret, c.batchNow) ? 1 : 0),
+          0,
+        ),
+      iterations: 30,
+      warmup: 5,
+    },
+    {
+      name: "rust:jwt_verify_batch",
+      run: () =>
+        rustBatch
+          .jwtVerify(c.batchTokens, c.batchSecret, c.batchNow)
+          .reduce((acc, b) => acc + b, 0),
+      iterations: 30,
+      warmup: 5,
+    },
+    {
+      name: "native:gzip_compress_batch",
+      run: () =>
+        c.batchCompressItems.reduce(
+          (acc, item) => acc + native.nativeGzipCompress(item).byteLength,
+          0,
+        ),
+      iterations: 20,
+      warmup: 5,
+    },
+    {
+      name: "rust:gzip_compress_batch",
+      run: () =>
+        rustBatch
+          .gzipCompress(c.batchCompressItems)
+          .reduce((acc, bytes) => acc + bytes.byteLength, 0),
+      iterations: 20,
+      warmup: 5,
+    },
+    {
+      name: "native:template_render_batch",
+      run: () =>
+        c.batchContexts.reduce(
+          (acc, ctx) =>
+            acc +
+            native
+              .nativeTemplateRender(
+                c.templateSource,
+                JSON.parse(new TextDecoder().decode(ctx)) as Record<
+                  string,
+                  unknown
+                >,
+              ).length,
+          0,
+        ),
+      iterations: 30,
+      warmup: 5,
+    },
+    {
+      name: "rust:template_render_batch",
+      run: () =>
+        rustBatch
+          .templateRender(c.templateSource, c.batchContexts)
+          .reduce((acc, bytes) => acc + bytes.byteLength, 0),
+      iterations: 30,
+      warmup: 5,
+    },
   ];
 }

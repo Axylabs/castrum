@@ -1,6 +1,6 @@
 // rust/output.rs — Ingress output buffer layout and low-level write helpers
-// Extracted from ingress.rs for composability
-// Uses Buf as a lightweight slice cursor for zero-cost output serialization
+// The canonical numeric source for the ingress binary output layout.
+// `ingress_constants.rs` re-exports these values to JS via NAPI.
 
 use std::ptr;
 
@@ -37,6 +37,7 @@ pub const HV_CORS_SIMPLE: u8 = 1 << 1;
 pub const HV_CORS_PREFLIGHT: u8 = 1 << 2;
 pub const HV_RATE_ACTIVE: u8 = 1 << 3;
 pub const HV_RATE_LIMITED: u8 = 1 << 4;
+pub const HV_COUNT: u8 = 32;
 
 // ── Error codes ───────────────────────────────────────────────────
 pub const ERR_CODE_NONE: u8 = 0;
@@ -47,6 +48,7 @@ pub const ERR_CODE_INVALID_JSON: u8 = 4;
 pub const ERR_CODE_SCHEMA_VALIDATION: u8 = 5;
 pub const ERR_CODE_BAD_REQUEST: u8 = 6;
 pub const ERR_CODE_REQUEST_TOO_LARGE: u8 = 7;
+pub const ERR_CODE_INTERNAL: u8 = 8;
 
 // ── Unsafe output helpers ─────────────────────────────────────────
 
@@ -66,97 +68,6 @@ pub unsafe fn write_u32(out: &mut [u8], pos: usize, value: u32) {
 #[inline(always)]
 pub unsafe fn write_u64(out: &mut [u8], pos: usize, value: u64) {
     ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), out.as_mut_ptr().add(pos), 8);
-}
-
-// ── Slice cursor for sequential writing ───────────────────────────
-
-/// A lightweight zero-cost cursor over a mutable byte slice.
-/// Used for sequential writes without bounds checking (caller must ensure capacity).
-pub struct Buf<'a> {
-    slice: &'a mut [u8],
-    pos: usize,
-}
-
-impl<'a> Buf<'a> {
-    /// Create a new cursor starting at the beginning of the given slice.
-    #[inline(always)]
-    pub fn new(slice: &'a mut [u8]) -> Self {
-        Self { slice, pos: 0 }
-    }
-
-    /// The current write position.
-    #[inline(always)]
-    pub fn pos(&self) -> usize {
-        self.pos
-    }
-
-    /// Returns true if there is enough remaining capacity.
-    #[inline(always)]
-    pub fn can_write(&self, n: usize) -> bool {
-        self.pos + n <= self.slice.len()
-    }
-
-    /// Advance the cursor by `n` bytes (caller must have written to them).
-    #[inline(always)]
-    pub fn advance(&mut self, n: usize) {
-        self.pos += n;
-    }
-
-    /// Write a single byte.
-    #[inline(always)]
-    pub fn push(&mut self, b: u8) {
-        self.slice[self.pos] = b;
-        self.pos += 1;
-    }
-
-    /// Write a byte slice.
-    #[inline(always)]
-    pub fn write(&mut self, bytes: &[u8]) {
-        let end = self.pos + bytes.len();
-        self.slice[self.pos..end].copy_from_slice(bytes);
-        self.pos = end;
-    }
-
-    /// Write a u8 at the current position.
-    #[inline(always)]
-    pub fn write_u8(&mut self, value: u8) {
-        self.slice[self.pos] = value;
-        self.pos += 1;
-    }
-
-    /// Write a u16 in little-endian at the current position.
-    #[inline(always)]
-    pub fn write_u16(&mut self, value: u16) {
-        let end = self.pos + 2;
-        self.slice[self.pos..end].copy_from_slice(&value.to_le_bytes());
-        self.pos = end;
-    }
-
-    /// Write a u32 in little-endian at the current position.
-    #[inline(always)]
-    pub fn write_u32(&mut self, value: u32) {
-        let end = self.pos + 4;
-        self.slice[self.pos..end].copy_from_slice(&value.to_le_bytes());
-        self.pos = end;
-    }
-
-    /// Write a u32 at a specific position (patch).
-    #[inline(always)]
-    pub fn patch_u32(&mut self, pos: usize, value: u32) {
-        self.slice[pos..pos + 4].copy_from_slice(&value.to_le_bytes());
-    }
-
-    /// Get a mutable sub-slice starting at current position.
-    #[inline(always)]
-    pub fn remaining_mut(&mut self) -> &mut [u8] {
-        &mut self.slice[self.pos..]
-    }
-
-    /// Get a sub-slice of the written area.
-    #[inline(always)]
-    pub fn written(&self) -> &[u8] {
-        &self.slice[..self.pos]
-    }
 }
 
 // ── Output header writer ──────────────────────────────────────────
@@ -187,6 +98,103 @@ pub fn compute_header_variant(
         hv |= HV_RATE_LIMITED;
     }
     hv
+}
+
+// ── Aggregated header fields ──────────────────────────────────────
+
+/// Rate-limit metadata threaded through the pipeline and written into the
+/// output header. Bundled into one struct so call sites stay readable.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct RateInfo {
+    pub limit: u32,
+    pub remaining: u32,
+    pub reset_ms: u64,
+    pub retry_after_ms: u64,
+}
+
+/// The full set of fields written into the 48-byte ingress output header.
+///
+/// Using a struct (instead of 13 positional arguments) keeps call sites
+/// readable and prevents argument-order mistakes.
+#[derive(Clone, Copy)]
+pub(crate) struct HeaderFields {
+    pub verdict: u8,
+    pub error_code: u8,
+    pub status: u16,
+    pub flags: u32,
+    pub rate: RateInfo,
+    pub cookies_json_len: u32,
+    pub query_json_len: u32,
+    pub header_variant: u8,
+    pub body_json_len: u32,
+}
+
+impl HeaderFields {
+    /// Build a successful response (verdict 0, status 200).
+    #[inline(always)]
+    pub fn ok(
+        flags: u32,
+        rate: RateInfo,
+        cookies_json_len: u32,
+        query_json_len: u32,
+        header_variant: u8,
+        body_json_len: u32,
+    ) -> Self {
+        Self {
+            verdict: 0,
+            error_code: ERR_CODE_NONE,
+            status: 200,
+            flags,
+            rate,
+            cookies_json_len,
+            query_json_len,
+            header_variant,
+            body_json_len,
+        }
+    }
+
+    /// Build a terminal error response.
+    #[inline(always)]
+    pub fn terminal(
+        verdict: u8,
+        error_code: u8,
+        status: u16,
+        flags: u32,
+        rate: RateInfo,
+        header_variant: u8,
+    ) -> Self {
+        Self {
+            verdict,
+            error_code,
+            status,
+            flags,
+            rate,
+            cookies_json_len: 0,
+            query_json_len: 0,
+            header_variant,
+            body_json_len: 0,
+        }
+    }
+
+    /// Serialize into the output buffer. Returns the total bytes written.
+    #[inline(always)]
+    pub fn write(self, out: &mut [u8]) -> usize {
+        write_output_header(
+            out,
+            self.verdict,
+            self.error_code,
+            self.status,
+            self.flags,
+            self.rate.limit,
+            self.rate.remaining,
+            self.rate.reset_ms,
+            self.rate.retry_after_ms,
+            self.cookies_json_len,
+            self.query_json_len,
+            self.header_variant,
+            self.body_json_len,
+        )
+    }
 }
 
 /// Write the output header into the buffer. Returns the total written bytes 

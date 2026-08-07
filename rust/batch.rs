@@ -69,7 +69,7 @@ fn query_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[inline]
-fn cookie_parse_packed_vec(input: &[u8]) -> Vec<u8> {
+fn cookie_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
     crate::cookie_parser::cookie_parse_packed_vec(input)
 }
 
@@ -157,7 +157,7 @@ fn query_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
 fn cookie_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
     let items = unpack(data)?;
     let mut out = Vec::with_capacity(items.len() * 32);
-    parse_batch_direct(&items, &mut out, |i| Ok(cookie_parse_packed_vec(i)));
+    parse_batch_direct(&items, &mut out, cookie_parse_packed_vec);
     Ok(out)
 }
 
@@ -190,6 +190,6 @@ fn http_parse_request_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
 #[napi] pub fn validate_ipv6_batch_count_packed(input: Uint8Array) -> Result<u32> { count_batch_data(input.as_ref(), validate_ipv6_bytes, 4096) }
 #[napi] pub fn json_sum_batch_total_packed(input: Uint8Array) -> Result<i64> { sum_ids_batch_data(input.as_ref(), 512) }
 #[napi] pub fn query_parse_batch_total_len_packed(input: Uint8Array) -> Result<u32> { total_len_batch_data(input.as_ref(), query_parse_packed_vec, 256) }
-#[napi] pub fn cookie_parse_batch_total_len_packed(input: Uint8Array) -> Result<u32> { total_len_batch_data(input.as_ref(), |i| Ok(cookie_parse_packed_vec(i)), 256) }
+#[napi] pub fn cookie_parse_batch_total_len_packed(input: Uint8Array) -> Result<u32> { total_len_batch_data(input.as_ref(), cookie_parse_packed_vec, 256) }
 #[napi] pub fn http_parse_request_batch_total_len_packed(input: Uint8Array) -> Result<u32> { total_len_batch_data(input.as_ref(), http_parse_request_packed_vec, 256) }
 

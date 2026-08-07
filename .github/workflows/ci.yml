@@ -54,6 +54,36 @@ jobs:
       - name: Correctness checks (native vs baseline)
         run: bun run check
 
+  # ── Node.js compatibility ────────────────────────────────────────
+  # Builds the compiled ESM entry (dist/) and runs the Node smoke suite on the
+  # supported Node versions. Bun stays the primary target; this job guards the
+  # Node.js backward-compat contract.
+  node:
+    name: Node ${{ matrix.node }} (dist + smoke)
+    runs-on: ubuntu-latest
+    needs: [typescript]
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+      - name: Build native addon (host)
+        run: bun run build:debug
+      - name: Build compiled ESM entry (dist)
+        run: bun run build:js
+      - name: Node smoke tests
+        run: node --test test/integration/node-smoke.test.mjs
+      - name: Validate npm tarball (dist + native binaries)
+        run: npm pack --dry-run 2>&1 | grep -E "dist/index|\.node" | head -20
+
   # ── Multi-platform addon artifacts ───────────────────────────────
   # Produces portable (baseline CPU) artifacts for every napi target.
   build:

@@ -2,7 +2,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::util::should_parallelize;
-use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed, Xxh3};
+use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
 
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -36,36 +36,6 @@ pub fn fast_hash_bytes(input: &[u8]) -> u64 {
 #[inline]
 pub fn fast_hash_seeded(input: &[u8], seed: u64) -> u64 {
     xxh3_64_with_seed(input, seed)
-}
-
-/// Compute a composite cache key from method+path+query.
-#[inline]
-pub fn fast_hash_cache_key(method: &[u8], path: &[u8], query: &[u8]) -> u64 {
-    let mut h = Xxh3::with_seed(0x9E37_79B9_7F4A_7C15);
-    h.update(method);
-    h.update(&[0]);
-    h.update(path);
-    h.update(&[0]);
-    h.update(query);
-    h.digest()
-}
-
-// ── Cow helpers for lazy / cached hashing ──────────────────────────
-
-/// A lazy hash value that can be computed once and cached.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct LazyHash(u64);
-
-impl LazyHash {
-    #[inline(always)]
-    pub fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    #[inline(always)]
-    pub fn get(&self) -> u64 {
-        self.0
-    }
 }
 
 // ── Napi exports ───────────────────────────────────────────────────

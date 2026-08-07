@@ -27,51 +27,61 @@
 // This module deliberately keeps the benchmark's wire format ({"ok":false,
 // "error":{...}} bodies, `ratelimit-*` headers). It does NOT reuse fast.ts's
 // response builders because those emit a different payload shape.
+//
+// The pre-baked pipeline is decomposed into task-focused submodules:
+//   - decode/baked-result.ts       BakedIngressResult (zero-alloc decode)
+//   - response/error-bodies.ts     pre-encoded error bodies
+//   - headers/baked-templates.ts   ratelimit-* header templates
+//   - packing/gather-raw-headers.ts raw header gathering
+//   - routes/*                     route factories
+//   - server.ts                    Bun.serve builder
 
-import addon from "../native";
+import { getAddon } from "../native";
+import { BufferPool, type PooledBuffer } from "../shared/buffer-pool";
+import { pooledBodyResponse } from "../shared/response";
+import { generateRequestId } from "../shared/request-id";
+import { createStructuredLogger } from "../shared/log";
+import { decoder } from "../shared/bytes";
 import {
-  OUT_VERDICT,
-  OUT_FLAGS,
-  OUT_RATE_LIMIT,
-  OUT_RATE_REMAINING,
-  OUT_RATE_RESET,
-  OUT_RETRY_AFTER,
-  OUT_COOKIES_JSON_LEN,
-  OUT_QUERY_JSON_LEN,
-  OUT_HEADER_VARIANT,
-  OUT_BODY_JSON_LEN,
-  OUT_DATA_START,
-  FLAG_BODY_VALID_JSON,
-  FLAG_SCHEMA_VALID,
-  FLAG_CORS_ALLOWED,
-  FLAG_IS_PREFLIGHT,
-  FLAG_RATE_LIMITED,
-  FLAG_TRUSTED_PROXY,
-  FLAG_BODY_TRUNCATED,
   HV_JSON,
   HV_CORS_SIMPLE,
   HV_CORS_PREFLIGHT,
   HV_RATE_ACTIVE,
   HV_RATE_LIMITED,
-  ERR_CODE_CORS_PREFLIGHT as ERROR_CODE_CORS_PREFLIGHT,
   ERR_CODE_RATE_LIMITED as ERROR_CODE_RATE_LIMITED,
-  ERR_CODE_BODY_TOO_LARGE as ERROR_CODE_BODY_TOO_LARGE,
-  ERR_CODE_INVALID_JSON as ERROR_CODE_INVALID_JSON,
-  ERR_CODE_SCHEMA_VALIDATION as ERROR_CODE_SCHEMA_VALIDATION,
-  ERR_CODE_BAD_REQUEST as ERROR_CODE_BAD_REQUEST,
-  ERR_CODE_REQUEST_TOO_LARGE as ERROR_CODE_REQUEST_TOO_LARGE,
-  ERR_CODE_INTERNAL as ERROR_CODE_INTERNAL,
 } from "./constants";
-import {
-  METHOD_KIND,
-  generateRequestId,
-  safeTerminalStatus,
-  DEFAULT_MAX_BODY_BYTES,
-  type HeaderPlan,
-} from "./fast";
+import { safeTerminalStatus } from "./status";
+import { warnTrustProxyDeprecated } from "./options";
+import { METHOD_KIND, type HeaderPlan } from "./shared";
+import { BakedIngressResult } from "./decode/baked-result";
+import { ERROR_BODIES, rateLimitedBody, ERROR_CODE_BODIES } from "./response/error-bodies";
+import { buildBakedHeaderTemplates } from "./headers/baked-templates";
+import { gatherRawHeaders } from "./packing/gather-raw-headers";
+
+// ── Re-exports (back-compat: preserve handlers.ts's original public surface) ──
+export { BakedIngressResult } from "./decode/baked-result";
+export { ERROR_BODIES } from "./response/error-bodies";
+export {
+  readHandler,
+  headHandler,
+  jsonWriteHandler,
+  echoHandler,
+  fallbackHandler,
+} from "./routes";
+export type { BakedHandlerOptions } from "./routes";
+export { createIngressServer, gracefulShutdown } from "./server";
+export type {
+  BakedRoute,
+  CreateIngressServerOptions,
+  BakedServer,
+  ServerHandle,
+  GracefulShutdownOptions,
+} from "./server";
+// Node.js HTTP adapter (same pre-baked route handlers, node:http backend).
+export { createIngressServerNode } from "./server-node";
+export type { RouteHandler as IngressNodeRouteHandler } from "./server-node";
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const EMPTY_BODY = new Uint8Array(0);
 const EMPTY_IP = "0.0.0.0";
 
@@ -79,215 +89,6 @@ const EMPTY_IP = "0.0.0.0";
 export const RATE_LIMIT_U32_MAX = 4_294_967_295;
 
 const DEFAULT_OUTPUT_BUF_SIZE = 131_072;
-
-const MAX_COOKIE_HEADER_BYTES = 8192;
-const MAX_SMALL_HEADER_BYTES = 2048;
-const MAX_XFF_HEADER_BYTES = 8192;
-
-// ── Static error bodies ──
-function staticErrorBody(code: string, message: string): Uint8Array {
-  return encoder.encode(
-    `{"ok":false,"error":{"code":"${code}","message":"${message}"}}`,
-  );
-}
-
-export const ERROR_BODIES: Record<string, Uint8Array> = {
-  not_found: staticErrorBody("not_found", "Not found"),
-  unsupported_media_type: staticErrorBody(
-    "unsupported_media_type",
-    "Content-Type must be application/json",
-  ),
-  body_too_large: staticErrorBody("body_too_large", "Request body is too large"),
-  invalid_json: staticErrorBody("invalid_json", "Invalid JSON body"),
-  schema_validation_failed: staticErrorBody(
-    "schema_validation_failed",
-    "Request body failed schema validation",
-  ),
-  cors_preflight_not_allowed: staticErrorBody(
-    "cors_preflight_not_allowed",
-    "CORS preflight not allowed",
-  ),
-  bad_request: staticErrorBody("bad_request", "Bad request"),
-  request_too_large: staticErrorBody("request_too_large", "Request too large"),
-  rate_limited: staticErrorBody("rate_limited", "Too Many Requests"),
-  internal: staticErrorBody("internal_error", "Internal server error"),
-};
-
-const ERROR_CODE_BODIES: (Uint8Array | undefined)[] = [];
-ERROR_CODE_BODIES[ERROR_CODE_CORS_PREFLIGHT] =
-  ERROR_BODIES.cors_preflight_not_allowed;
-ERROR_CODE_BODIES[ERROR_CODE_RATE_LIMITED] = ERROR_BODIES.rate_limited;
-ERROR_CODE_BODIES[ERROR_CODE_BODY_TOO_LARGE] = ERROR_BODIES.body_too_large;
-ERROR_CODE_BODIES[ERROR_CODE_INVALID_JSON] = ERROR_BODIES.invalid_json;
-ERROR_CODE_BODIES[ERROR_CODE_SCHEMA_VALIDATION] =
-  ERROR_BODIES.schema_validation_failed;
-ERROR_CODE_BODIES[ERROR_CODE_BAD_REQUEST] = ERROR_BODIES.bad_request;
-ERROR_CODE_BODIES[ERROR_CODE_REQUEST_TOO_LARGE] =
-  ERROR_BODIES.request_too_large;
-ERROR_CODE_BODIES[ERROR_CODE_INTERNAL] = ERROR_BODIES.internal;
-
-const RATE_LIMIT_BODY_PREFIX = encoder.encode(
-  '{"ok":false,"error":{"code":"rate_limited","message":"Too Many Requests","retry_after_ms":',
-);
-const RATE_LIMIT_BODY_SUFFIX = encoder.encode("}}");
-
-function rateLimitedBody(retryAfterMs: number): Uint8Array {
-  const digits = encoder.encode(String(Math.max(0, Math.floor(retryAfterMs))));
-  const out = new Uint8Array(
-    RATE_LIMIT_BODY_PREFIX.byteLength +
-      digits.byteLength +
-      RATE_LIMIT_BODY_SUFFIX.byteLength,
-  );
-  out.set(RATE_LIMIT_BODY_PREFIX, 0);
-  out.set(digits, RATE_LIMIT_BODY_PREFIX.byteLength);
-  out.set(
-    RATE_LIMIT_BODY_SUFFIX,
-    RATE_LIMIT_BODY_PREFIX.byteLength + digits.byteLength,
-  );
-  return out;
-}
-
-// ── Zero-alloc result wrapper ──
-export class BakedIngressResult {
-  status = 0;
-  verdict = 0;
-  errorCode = 0;
-  headerVariant = 0;
-  rateRemaining = 0;
-  rateResetMs = 0;
-  retryAfterMs = 0;
-  terminal = true;
-  ok = false;
-  isPreflight = false;
-  corsAllowed = false;
-  rateLimited = false;
-  trustedProxy = false;
-  bodyValidJson = false;
-  schemaValid = false;
-  bodyTruncated = false;
-  body: Uint8Array = EMPTY_BODY;
-
-  private _buf: Uint8Array = EMPTY_BODY;
-  private _bodyJsonStart = OUT_DATA_START;
-  private _bodyJsonLen = 0;
-
-  refresh(buf: Uint8Array, body: Uint8Array, view: DataView): void {
-    this._buf = buf;
-    this.body = body;
-
-    const h0 = view.getUint32(OUT_VERDICT, true);
-    const h1 = view.getUint32(OUT_FLAGS, true);
-    const h2 = view.getUint32(OUT_RATE_LIMIT, true);
-    const h3 = view.getUint32(OUT_RATE_REMAINING, true);
-
-    const cookiesLenRaw = view.getUint32(OUT_COOKIES_JSON_LEN, true);
-    const queryLenRaw = view.getUint32(OUT_QUERY_JSON_LEN, true);
-    const headerVariant = view.getUint8(OUT_HEADER_VARIANT);
-    const bodyJsonLenRaw = view.getUint32(OUT_BODY_JSON_LEN, true);
-
-    const safeCookiesLen =
-      OUT_DATA_START + cookiesLenRaw <= buf.byteLength ? cookiesLenRaw : 0;
-    const queryStart = OUT_DATA_START + safeCookiesLen;
-    const safeQueryLen =
-      queryStart + queryLenRaw <= buf.byteLength ? queryLenRaw : 0;
-    const bodyJsonStart = queryStart + safeQueryLen;
-    const safeBodyJsonLen =
-      bodyJsonStart + bodyJsonLenRaw <= buf.byteLength ? bodyJsonLenRaw : 0;
-
-    if (h0 === 0 && h1 === 0) {
-      this.verdict = 1;
-      this.errorCode = ERROR_CODE_INTERNAL;
-      this.status = 500;
-    } else {
-      this.verdict = h0 & 0xff;
-      this.errorCode = (h0 >>> 8) & 0xff;
-
-      const rawStatus = (h0 >>> 16) & 0xffff;
-      const validStatus =
-        rawStatus === 101 || (rawStatus >= 200 && rawStatus <= 599);
-      this.status = validStatus ? rawStatus : 500;
-    }
-
-    const flags = h1;
-
-    this.rateRemaining = h3;
-
-    if (h2 > 0 || (flags & FLAG_RATE_LIMITED) !== 0) {
-      this.rateResetMs = Number(view.getBigUint64(OUT_RATE_RESET, true));
-      this.retryAfterMs = Number(view.getBigUint64(OUT_RETRY_AFTER, true));
-    } else {
-      this.rateResetMs = 0;
-      this.retryAfterMs = 0;
-    }
-
-    this.headerVariant = headerVariant;
-    this._bodyJsonStart = bodyJsonStart;
-    this._bodyJsonLen = safeBodyJsonLen;
-
-    this.terminal = this.verdict !== 0 || this.status >= 400;
-    this.ok = this.verdict === 0 && this.status >= 200 && this.status < 400;
-
-    this.isPreflight = (flags & FLAG_IS_PREFLIGHT) !== 0;
-    this.corsAllowed = (flags & FLAG_CORS_ALLOWED) !== 0;
-    this.rateLimited = (flags & FLAG_RATE_LIMITED) !== 0;
-    this.trustedProxy = (flags & FLAG_TRUSTED_PROXY) !== 0;
-    this.bodyValidJson = (flags & FLAG_BODY_VALID_JSON) !== 0;
-    this.schemaValid = (flags & FLAG_SCHEMA_VALID) !== 0;
-
-    this.bodyTruncated =
-      (flags & FLAG_BODY_TRUNCATED) !== 0 ||
-      safeCookiesLen !== cookiesLenRaw ||
-      safeQueryLen !== queryLenRaw ||
-      safeBodyJsonLen !== bodyJsonLenRaw;
-  }
-
-  invalidate(): void {
-    this.status = 0;
-    this.verdict = 0;
-    this.errorCode = 0;
-    this.headerVariant = 0;
-    this.rateRemaining = 0;
-    this.rateResetMs = 0;
-    this.retryAfterMs = 0;
-    this.terminal = true;
-    this.ok = false;
-    this.isPreflight = false;
-    this.corsAllowed = false;
-    this.rateLimited = false;
-    this.trustedProxy = false;
-    this.bodyValidJson = false;
-    this.schemaValid = false;
-    this.bodyTruncated = false;
-    this.body = EMPTY_BODY;
-    this._buf = EMPTY_BODY;
-    this._bodyJsonStart = OUT_DATA_START;
-    this._bodyJsonLen = 0;
-  }
-
-  setInternalError(): void {
-    this.invalidate();
-    this.status = 500;
-    this.verdict = 1;
-    this.errorCode = ERROR_CODE_INTERNAL;
-    this.headerVariant = HV_JSON;
-    this.terminal = true;
-    this.ok = false;
-  }
-
-  bodyJson(copy: boolean): Uint8Array {
-    if (this._bodyJsonLen === 0) {
-      return EMPTY_BODY;
-    }
-
-    const end = this._bodyJsonStart + this._bodyJsonLen;
-    if (end > this._buf.byteLength) {
-      return EMPTY_BODY;
-    }
-
-    const slice = this._buf.subarray(this._bodyJsonStart, end);
-    return (copy ? slice.slice() : slice) as Uint8Array;
-  }
-}
 
 // ── Types ────────────────────────────────────────────────────────
 export interface BakedContext {
@@ -304,6 +105,8 @@ export interface BakedIngressRuntime {
   securityHeaders?: ReadonlyArray<[string, string]>;
   /** Native output buffer size in bytes. Default: 131072. */
   outputBufferSize?: number;
+  /** Invoked before a request is processed (for tracing/context hooks). */
+  onRequest?: (req: Request, requestId: string, ip: string | undefined) => void;
   /** Invoked after a Response is produced (for metrics/logging hooks). */
   onResponse?: (
     req: Request,
@@ -311,6 +114,16 @@ export interface BakedIngressRuntime {
     status: number,
     requestId: string,
   ) => void;
+  /**
+   * Invoked when the native pipeline fails (the request becomes a 500).
+   * Native failures are otherwise silent — wire this to your error tracker.
+   */
+  onError?: (req: Request, requestId: string, error: Error) => void;
+  /**
+   * Emit one structured JSON line per request/error via the built-in logger
+   * (gated by `CASTRUM_LOG_LEVEL`). Default: false.
+   */
+  structuredLog?: boolean;
 }
 
 /**
@@ -363,6 +176,18 @@ export interface OptimizedIngressHandler {
     headers: ReadonlyArray<[string, string]>,
     contentType: string,
   ): [string, string][];
+
+  /**
+   * Build a zero-copy `Response` whose body is the request's pooled output
+   * slice. The pooled buffer is returned to its pool once the body has been
+   * consumed (stream closed) or the request aborted. Use when `copyBody` is
+   * `false`; otherwise a copied body is released eagerly at the end of `run()`.
+   */
+  zeroCopyResponse(
+    result: BakedIngressResult,
+    ctx: BakedContext,
+    init: ResponseInit,
+  ): Response;
 }
 
 // ── Optimized ingress factory ─────────────────────────────────────
@@ -370,6 +195,11 @@ export function createIngressHandler(
   options: Record<string, unknown>,
   runtime: BakedIngressRuntime = {},
 ): OptimizedIngressHandler {
+  if (options.trustProxy === true) {
+    warnTrustProxyDeprecated();
+  }
+  // Lazy: the native addon is only needed once a handler is created.
+  const addon = getAddon();
   const NativeIngress = (addon as any).Ingress;
   if (typeof NativeIngress !== "function") {
     throw new Error("Native Ingress class missing. Rebuild the Rust addon.");
@@ -398,6 +228,19 @@ export function createIngressHandler(
   const emitRequestIdHeader = runtime.emitRequestIdHeader === true;
   const outputBufferSize = runtime.outputBufferSize ?? DEFAULT_OUTPUT_BUF_SIZE;
 
+  // Built-in structured logger (opt-in; gated by CASTRUM_LOG_LEVEL).
+  const logger = runtime.structuredLog === true ? createStructuredLogger() : null;
+
+  // Reusable output-buffer pool: eliminates the per-request output-buffer
+  // allocation in handleRequestFullSync by reusing buffers across requests.
+  const outputPool = new BufferPool({ initialSize: outputBufferSize });
+
+  // Per-call state: the output handle backing the current `run()`'s result,
+  // and whether a zero-copy Response claimed it (so `run()` must not release
+  // it back to the pool before the body is consumed).
+  let currentHandle: PooledBuffer | null = null;
+  let responseBorrowsBuffer = false;
+
   // ── Variant-indexed header templates (precomputed once) ──
   const cors = options.cors as
     | {
@@ -425,45 +268,15 @@ export function createIngressHandler(
   const corsMaxAge = cors?.maxAge != null ? String(cors.maxAge) : "";
   const rateLimitStr = rateEnabled ? String(limit) : "";
 
-  const headerTemplates: ReadonlyArray<ReadonlyArray<[string, string]>> =
-    Object.freeze(
-      Array.from({ length: 32 }, (_, variant) => {
-        const entries: [string, string][] = [...securityEntries];
-
-        if ((variant & HV_JSON) !== 0) {
-          entries.push(["content-type", "application/json"]);
-        }
-
-        if ((variant & HV_CORS_SIMPLE) !== 0) {
-          entries.push(["vary", "Origin"]);
-          if (cors?.allowCredentials) {
-            entries.push(["access-control-allow-credentials", "true"]);
-          }
-          if (corsExposeHeaders.length > 0) {
-            entries.push(["access-control-expose-headers", corsExposeHeaders]);
-          }
-        }
-
-        if ((variant & HV_CORS_PREFLIGHT) !== 0) {
-          entries.push([
-            "vary",
-            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
-          ]);
-          if (cors?.allowCredentials) {
-            entries.push(["access-control-allow-credentials", "true"]);
-          }
-          entries.push(["access-control-allow-methods", corsAllowMethods]);
-          entries.push(["access-control-allow-headers", corsAllowHeaders]);
-          entries.push(["access-control-max-age", corsMaxAge]);
-        }
-
-        if ((variant & HV_RATE_ACTIVE) !== 0) {
-          entries.push(["ratelimit-limit", rateLimitStr]);
-        }
-
-        return Object.freeze(entries);
-      }),
-    );
+  const headerTemplates = buildBakedHeaderTemplates({
+    securityEntries,
+    cors,
+    corsAllowMethods,
+    corsAllowHeaders,
+    corsExposeHeaders,
+    corsMaxAge,
+    rateLimitStr,
+  });
 
   function responseHeaders(
     variant: number,
@@ -633,6 +446,19 @@ export function createIngressHandler(
     return out;
   }
 
+  function zeroCopyResponse(
+    result: BakedIngressResult,
+    _ctx: BakedContext,
+    init: ResponseInit,
+  ): Response {
+    if (currentHandle === null) {
+      // Defensive: no pooled handle available — serve the slice directly.
+      return new Response(result.bodyJson(false), init);
+    }
+    responseBorrowsBuffer = true;
+    return pooledBodyResponse(currentHandle, result.bodyJson(false), init);
+  }
+
   const result = new BakedIngressResult();
   const ctx: BakedContext = {
     requestIdHeader: null,
@@ -645,6 +471,7 @@ export function createIngressHandler(
     body: Uint8Array | null,
     fn: (result: BakedIngressResult, ctx: BakedContext) => T,
   ): T {
+    const startedAt = logger ? performance.now() : 0;
     const methodKind = METHOD_KIND[req.method] ?? 7;
     const ridBytes = generateRequestId();
     const requestIdStr = decoder.decode(ridBytes);
@@ -652,91 +479,83 @@ export function createIngressHandler(
     ctx.requestIdHeader = emitRequestIdHeader ? requestIdStr : null;
     ctx.origin = headerPlan.cors ? req.headers.get("origin") : null;
 
+    runtime.onRequest?.(req, requestIdStr, ip);
+
     // Gather raw headers as [name, value][] — no binary packing in JS.
     // handleRequestFullSync packs them internally in Rust synchronously,
     // eliminating both JS-side encoding and async overhead.
-    const headers: [string, string][] = [];
-    const h = req.headers;
-
-    if (headerPlan.cookie) {
-      const v = h.get("cookie");
-      if (v !== null && v.length <= MAX_COOKIE_HEADER_BYTES) {
-        headers.push(["cookie", v]);
-      }
-    }
-
-    if (headerPlan.cors) {
-      const originV = h.get("origin");
-      if (originV !== null && originV.length <= MAX_SMALL_HEADER_BYTES) {
-        headers.push(["origin", originV]);
-      }
-
-      if (methodKind === 6) {
-        const acrm = h.get("access-control-request-method");
-        if (acrm !== null && acrm.length <= MAX_SMALL_HEADER_BYTES) {
-          headers.push(["access-control-request-method", acrm]);
-        }
-
-        const acrh = h.get("access-control-request-headers");
-        if (acrh !== null && acrh.length <= MAX_SMALL_HEADER_BYTES) {
-          headers.push(["access-control-request-headers", acrh]);
-        }
-      }
-    }
-
-    if (headerPlan.proxy) {
-      const xff = h.get("x-forwarded-for");
-      if (xff !== null && xff.length <= MAX_XFF_HEADER_BYTES) {
-        headers.push(["x-forwarded-for", xff]);
-      }
-
-      const xri = h.get("x-real-ip");
-      if (xri !== null && xri.length <= MAX_SMALL_HEADER_BYTES) {
-        headers.push(["x-real-ip", xri]);
-      }
-    }
-
-    if (headerPlan.proto) {
-      const xfp = h.get("x-forwarded-proto");
-      if (xfp !== null && xfp.length <= MAX_SMALL_HEADER_BYTES) {
-        headers.push(["x-forwarded-proto", xfp]);
-      }
-    }
+    const headers = gatherRawHeaders(req, headerPlan, methodKind);
 
     const ipStr = ip ?? EMPTY_IP;
 
-    try {
-      const outputBuf = handler.handleRequestFullSync(
-        methodKind,
-        req.url,
-        ipStr,
-        requestIdStr,
-        headers,
-        body,
-        outputBufferSize,
-      );
-
-      const outputView = new DataView(
-        outputBuf.buffer,
-        outputBuf.byteOffset,
-        outputBuf.byteLength,
-      );
-
-      result.refresh(outputBuf, body ?? EMPTY_BODY, outputView);
-    } catch (err) {
-      result.setInternalError();
-    }
+    const handle = outputPool.acquire(outputBufferSize);
+    currentHandle = handle;
+    responseBorrowsBuffer = false;
 
     try {
-      const out = fn(result, ctx);
-      if (out instanceof Response) {
-        runtime.onResponse?.(req, result, out.status, requestIdStr);
+      try {
+        // Write into the pooled buffer — no per-request allocation.
+        const written = handler.handleRequestFullSyncInto(
+          methodKind,
+          req.url,
+          ipStr,
+          requestIdStr,
+          headers,
+          body,
+          handle.buffer,
+        );
+
+        const used = handle.buffer.subarray(0, written);
+        const outputView = new DataView(
+          used.buffer,
+          used.byteOffset,
+          used.byteLength,
+        );
+
+        result.refresh(used, body ?? EMPTY_BODY, outputView);
+      } catch (err) {
+        result.setInternalError();
+        const error = err instanceof Error ? err : new Error(String(err));
+        runtime.onError?.(req, requestIdStr, error);
+        logger?.error({
+          requestId: requestIdStr,
+          method: req.method,
+          path: new URL(req.url).pathname,
+          code: "internal",
+          message: error.message,
+        });
       }
-      return out;
+
+      try {
+        const out = fn(result, ctx);
+        if (out instanceof Response) {
+          const status = out.status;
+          runtime.onResponse?.(req, result, status, requestIdStr);
+          if (logger) {
+            logger.request({
+              requestId: requestIdStr,
+              method: req.method,
+              path: new URL(req.url).pathname,
+              status,
+              durationMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
+              ip: ipStr,
+            });
+          }
+        }
+        return out;
+      } finally {
+        result.invalidate();
+        ctx.requestIdHeader = null;
+        ctx.origin = null;
+      }
     } finally {
-      result.invalidate();
-      ctx.requestIdHeader = null;
-      ctx.origin = null;
+      // A zero-copy Response owns the handle until its body is consumed; in
+      // every other case (copy mode, terminal/error responses) the buffer is
+      // safe to return to the pool immediately.
+      if (!responseBorrowsBuffer) {
+        handle.release();
+      }
+      currentHandle = null;
     }
   }
 
@@ -748,455 +567,6 @@ export function createIngressHandler(
     errorResponse,
     internalErrorResponse,
     withContentType,
-  };
-}
-
-// ── Route-handler factories ───────────────────────────────────────
-export interface BakedHandlerOptions {
-  /** Resolve the client IP from the server object (e.g. `srv.requestIP`). */
-  getIp?: (req: Request, srv: unknown) => string | undefined;
-  /** Copy body slices instead of sharing the native buffer. Default: true (safe). */
-  copyBody?: boolean;
-  /** Maximum request body bytes for write/echo handlers. Default: 1 MiB. */
-  maxBodyBytes?: number;
-  /** Fallback handler used for write error paths. Defaults to the write ingress. */
-  fallback?: OptimizedIngressHandler;
-}
-
-function resolveIp(
-  req: Request,
-  srv: unknown,
-  opts: BakedHandlerOptions,
-): string | undefined {
-  return opts.getIp ? opts.getIp(req, srv) : undefined;
-}
-
-/** Pre-baked GET read handler: returns the ingress body JSON on success. */
-export function readHandler(
-  ingress: OptimizedIngressHandler,
-  opts: BakedHandlerOptions = {},
-): (req: Request, srv?: unknown) => Response {
-  const copyBody = opts.copyBody !== false;
-
-  return (req, srv) =>
-    ingress.run<Response>(req, resolveIp(req, srv, opts), null, (result, ctx) => {
-      const terminal = ingress.terminalResponse(req, result, ctx);
-      if (terminal) return terminal;
-
-      if (result.bodyTruncated) {
-        return ingress.internalErrorResponse(ctx, result);
-      }
-
-      return new Response(result.bodyJson(copyBody), {
-        status: 200,
-        headers: ingress.responseHeaders(
-          result.headerVariant,
-          ctx.requestIdHeader,
-          ctx.origin,
-          result.rateRemaining,
-          result.rateResetMs > 0
-            ? Math.ceil(result.rateResetMs / 1000)
-            : undefined,
-        ),
-      });
-    });
-}
-
-/** Pre-baked HEAD read handler: headers only, no body. */
-export function headHandler(
-  ingress: OptimizedIngressHandler,
-  opts: BakedHandlerOptions = {},
-): (req: Request, srv?: unknown) => Response {
-  return (req, srv) =>
-    ingress.run<Response>(req, resolveIp(req, srv, opts), null, (result, ctx) => {
-      const terminal = ingress.terminalResponse(req, result, ctx);
-      if (terminal) return terminal;
-
-      if (result.bodyTruncated) {
-        return ingress.internalErrorResponse(ctx, result);
-      }
-
-      return new Response(null, {
-        status: 200,
-        headers: ingress.responseHeaders(
-          result.headerVariant,
-          ctx.requestIdHeader,
-          ctx.origin,
-          result.rateRemaining,
-          result.rateResetMs > 0
-            ? Math.ceil(result.rateResetMs / 1000)
-            : undefined,
-        ),
-      });
-    });
-}
-
-/**
- * Pre-baked JSON-write handler (POST/PUT/PATCH): enforces Content-Type,
- * content-length/body-size limits, JSON validity and (optionally) schema
- * validation, then returns the ingress body JSON on success.
- */
-export function jsonWriteHandler(
-  ingress: OptimizedIngressHandler,
-  opts: BakedHandlerOptions = {},
-): (req: Request, srv?: unknown) => Promise<Response> {
-  const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
-  const fallback = opts.fallback ?? ingress;
-  const copyBody = opts.copyBody !== false;
-
-  return async (req, srv) => {
-    const ip = resolveIp(req, srv, opts);
-
-    const contentType = req.headers.get("content-type") ?? "";
-    if (!contentType.includes("application/json")) {
-      return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx);
-        if (terminal) return terminal;
-
-        return fallback.errorResponse(
-          req,
-          result,
-          415,
-          "unsupported_media_type",
-          "Content-Type must be application/json",
-          ctx,
-        );
-      });
-    }
-
-    const contentLengthHeader = req.headers.get("content-length");
-    const contentLength =
-      contentLengthHeader === null ? NaN : Number(contentLengthHeader);
-
-    if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
-      return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx);
-        if (terminal) return terminal;
-
-        return fallback.errorResponse(
-          req,
-          result,
-          413,
-          "body_too_large",
-          "Request body is too large",
-          ctx,
-        );
-      });
-    }
-
-    let bodyBytes: Uint8Array;
-    try {
-      bodyBytes = new Uint8Array(await req.arrayBuffer());
-    } catch {
-      return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx);
-        if (terminal) return terminal;
-
-        return fallback.errorResponse(
-          req,
-          result,
-          400,
-          "bad_request",
-          "Unable to read request body",
-          ctx,
-        );
-      });
-    }
-
-    if (bodyBytes.byteLength > maxBodyBytes) {
-      return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx);
-        if (terminal) return terminal;
-
-        return fallback.errorResponse(
-          req,
-          result,
-          413,
-          "body_too_large",
-          "Request body is too large",
-          ctx,
-        );
-      });
-    }
-
-    return ingress.run(req, ip, bodyBytes, (result, ctx) => {
-      const terminal = ingress.terminalResponse(req, result, ctx);
-      if (terminal) return terminal;
-
-      if (result.bodyTruncated) {
-        return ingress.internalErrorResponse(ctx, result);
-      }
-
-      if (!result.bodyValidJson) {
-        return ingress.errorResponse(
-          req,
-          result,
-          400,
-          "invalid_json",
-          "Invalid JSON body",
-          ctx,
-        );
-      }
-
-      if (!result.schemaValid) {
-        return ingress.errorResponse(
-          req,
-          result,
-          422,
-          "schema_validation_failed",
-          "Request body failed schema validation",
-          ctx,
-        );
-      }
-
-      return new Response(result.bodyJson(copyBody), {
-        status: 200,
-        headers: ingress.responseHeaders(
-          result.headerVariant,
-          ctx.requestIdHeader,
-          ctx.origin,
-          result.rateRemaining,
-          result.rateResetMs > 0
-            ? Math.ceil(result.rateResetMs / 1000)
-            : undefined,
-        ),
-      });
-    });
-  };
-}
-
-/**
- * Pre-baked echo handler: streams the request body back with the client's
- * Content-Type, bounded by `maxBodyBytes`.
- */
-export function echoHandler(
-  ingress: OptimizedIngressHandler,
-  opts: BakedHandlerOptions = {},
-): (req: Request, srv?: unknown) => Promise<Response> {
-  const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
-
-  return async (req, srv) => {
-    const ip = resolveIp(req, srv, opts);
-
-    const prep = ingress.run<{
-      terminal?: Response;
-      headers?: ReadonlyArray<[string, string]>;
-    }>(req, ip, null, (result, ctx) => {
-      const terminal = ingress.terminalResponse(req, result, ctx);
-      if (terminal) return { terminal };
-
-      if (result.bodyTruncated) {
-        return { terminal: ingress.internalErrorResponse(ctx, result) };
-      }
-
-      const hv = result.headerVariant & ~HV_JSON;
-
-      return {
-        headers: ingress.responseHeaders(
-          hv,
-          ctx.requestIdHeader,
-          ctx.origin,
-          result.rateRemaining,
-          result.rateResetMs > 0
-            ? Math.ceil(result.rateResetMs / 1000)
-            : undefined,
-        ),
-      };
-    });
-
-    if (prep.terminal) return prep.terminal;
-
-    const baseHeaders: ReadonlyArray<[string, string]> = prep.headers ?? [];
-
-    const requestedContentType =
-      req.headers.get("content-type") ?? "application/octet-stream";
-
-    const contentLengthHeader = req.headers.get("content-length");
-    const contentLength =
-      contentLengthHeader === null ? NaN : Number(contentLengthHeader);
-
-    if (Number.isFinite(contentLength)) {
-      if (contentLength > maxBodyBytes) {
-        return new Response(ERROR_BODIES.body_too_large, {
-          status: 413,
-          headers: ingress.withContentType(baseHeaders, "application/json"),
-        });
-      }
-
-      if (contentLength <= 0 || req.body === null) {
-        return new Response(null, {
-          status: 200,
-          headers: ingress.withContentType(baseHeaders, requestedContentType),
-        });
-      }
-
-      return new Response(req.body, {
-        status: 200,
-        headers: ingress.withContentType(baseHeaders, requestedContentType),
-      });
-    }
-
-    try {
-      const bodyBytes = new Uint8Array(await req.arrayBuffer());
-
-      if (bodyBytes.byteLength > maxBodyBytes) {
-        return new Response(ERROR_BODIES.body_too_large, {
-          status: 413,
-          headers: ingress.withContentType(baseHeaders, "application/json"),
-        });
-      }
-
-      return new Response(bodyBytes.byteLength > 0 ? bodyBytes : null, {
-        status: 200,
-        headers: ingress.withContentType(baseHeaders, requestedContentType),
-      });
-    } catch {
-      return new Response(ERROR_BODIES.bad_request, {
-        status: 400,
-        headers: ingress.withContentType(baseHeaders, "application/json"),
-      });
-    }
-  };
-}
-
-/** Pre-baked fallback handler: 404 for unmatched routes / OPTIONS. */
-export function fallbackHandler(
-  ingress: OptimizedIngressHandler,
-  opts: BakedHandlerOptions = {},
-): (req: Request, srv?: unknown) => Response {
-  return (req, srv) =>
-    ingress.run<Response>(req, resolveIp(req, srv, opts), null, (result, ctx) => {
-      const terminal = ingress.terminalResponse(req, result, ctx);
-      if (terminal) return terminal;
-
-      return ingress.errorResponse(
-        req,
-        result,
-        404,
-        "not_found",
-        "Not found",
-        ctx,
-      );
-    });
-}
-
-// ── Bun.serve builder ─────────────────────────────────────────────
-export interface BakedRoute {
-  /** Wires GET + HEAD read handlers. */
-  read?: OptimizedIngressHandler;
-  /** Wires POST/PUT/PATCH JSON-write handlers (and OPTIONS fallback). */
-  write?: OptimizedIngressHandler;
-  /** Wires a POST echo handler. */
-  echo?: OptimizedIngressHandler;
-  /** Wires a GET read handler (cookies-style route). */
-  cookies?: OptimizedIngressHandler;
-  /** Overrides `maxBodyBytes` for this route's write/echo handlers. */
-  maxBodyBytes?: number;
-}
-
-export interface CreateIngressServerOptions {
-  port: number;
-  hostname?: string;
-  idleTimeout?: number;
-  maxRequestBodySize?: number;
-  reusePort?: boolean;
-  copyBody?: boolean;
-  getIp?: (req: Request, srv: unknown) => string | undefined;
-  routes: Record<string, BakedRoute>;
-  fallback?: OptimizedIngressHandler;
-}
-
-export interface BakedServer {
-  server: ReturnType<typeof Bun.serve>;
-  stop(): void;
-  port: number;
-}
-
-/** Build a Bun.serve config from pre-baked route handlers. */
-export function createIngressServer(
-  options: CreateIngressServerOptions,
-): BakedServer {
-  const baseOpts: BakedHandlerOptions = {
-    getIp: options.getIp,
-    copyBody: options.copyBody,
-  };
-
-  const serverRoutes: Record<string, Record<string, unknown>> = {};
-
-  for (const [path, spec] of Object.entries(options.routes)) {
-    const routeOpts: BakedHandlerOptions = {
-      ...baseOpts,
-      maxBodyBytes: spec.maxBodyBytes,
-    };
-    const methods: Record<string, unknown> = {};
-
-    if (spec.read) {
-      methods.GET = readHandler(spec.read, routeOpts);
-      methods.HEAD = headHandler(spec.read, routeOpts);
-    }
-
-    if (spec.write) {
-      const writeOpts: BakedHandlerOptions = {
-        ...routeOpts,
-        fallback: options.fallback ?? spec.write,
-      };
-      methods.POST = jsonWriteHandler(spec.write, writeOpts);
-      methods.PUT = jsonWriteHandler(spec.write, writeOpts);
-      methods.PATCH = jsonWriteHandler(spec.write, writeOpts);
-      if (options.fallback) {
-        methods.OPTIONS = fallbackHandler(options.fallback, routeOpts);
-      }
-    }
-
-    if (spec.echo) {
-      methods.POST = echoHandler(spec.echo, routeOpts);
-    }
-
-    if (spec.cookies) {
-      methods.GET = readHandler(spec.cookies, routeOpts);
-    }
-
-    serverRoutes[path] = methods;
-  }
-
-  const serverOptions: Record<string, unknown> = {
-    hostname: options.hostname ?? "0.0.0.0",
-    port: options.port,
-    idleTimeout: options.idleTimeout ?? 30,
-    routes: serverRoutes,
-  };
-
-  if (options.maxRequestBodySize !== undefined) {
-    serverOptions.maxRequestBodySize = options.maxRequestBodySize;
-  }
-  if (options.reusePort) {
-    serverOptions.reusePort = true;
-  }
-  if (options.fallback) {
-    serverOptions.fetch = fallbackHandler(options.fallback, baseOpts);
-  }
-
-  let server: ReturnType<typeof Bun.serve>;
-  try {
-    server = Bun.serve(serverOptions as any);
-  } catch (err) {
-    if (options.reusePort) {
-      delete serverOptions.reusePort;
-      server = Bun.serve(serverOptions as any);
-    } else {
-      throw err;
-    }
-  }
-
-  return {
-    server,
-    stop: () => {
-      try {
-        server.stop(true);
-      } catch {
-        // already stopped
-      }
-    },
-    port: options.port,
+    zeroCopyResponse,
   };
 }

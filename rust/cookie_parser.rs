@@ -2,7 +2,8 @@
 // Eliminated the _vec variant; all callers use the single _into_slice path.
 // Upper-bound pre-allocation for callers that need a Vec.
 
-use crate::util::{trim_ascii_whitespace, write_bytes, write_u32_le};
+use crate::bytes::cookie_pairs;
+use crate::util::{write_bytes, write_u32_le};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -15,20 +16,7 @@ pub fn cookie_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<us
 
     let mut count = 0u32;
 
-    for pair in input.split(|&b| b == b';') {
-        let pair = trim_ascii_whitespace(pair);
-        if pair.is_empty() { continue; }
-
-        let (name, value) = match pair.iter().position(|&b| b == b'=') {
-            Some(eq) => (&pair[..eq], &pair[eq + 1..]),
-            None => (pair, &[][..]),
-        };
-
-        let name = trim_ascii_whitespace(name);
-        let value = trim_ascii_whitespace(value);
-
-        if name.is_empty() { continue; }
-
+    for (name, value) in cookie_pairs(input) {
         write_u32_le(out, &mut pos, name.len() as u32)?;
         write_bytes(out, &mut pos, name)?;
 
@@ -44,24 +32,17 @@ pub fn cookie_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<us
 
 /// Allocate and parse cookies. Uses conservative upper bound to avoid a pre-scan.
 #[inline]
-pub fn cookie_parse_packed_vec(input: &[u8]) -> Vec<u8> {
+pub fn cookie_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
     let upper_bound = input.len().saturating_mul(9).saturating_add(16);
     let mut out = vec![0u8; upper_bound];
-    match cookie_parse_packed_into_slice(input, &mut out) {
-        Ok(written) => {
-            out.truncate(written);
-            out
-        }
-        Err(_) => {
-            // Fall back to VecWriter if slice is too small (rare).
-            vec![0u8; 4] // empty result
-        }
-    }
+    let written = cookie_parse_packed_into_slice(input, &mut out)?;
+    out.truncate(written);
+    Ok(out)
 }
 
 #[napi]
 pub fn cookie_parse_packed(input: Uint8Array) -> Result<Buffer> {
-    Ok(Buffer::from(cookie_parse_packed_vec(input.as_ref())))
+    cookie_parse_packed_vec(input.as_ref()).map(Buffer::from)
 }
 
 #[napi]

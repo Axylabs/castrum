@@ -22,6 +22,22 @@ export const comparisonReports: ComparisonReport[] = [
   { label: "URL encode", nativeName: "native:url_encode", rustName: "rust:url_encode" },
   { label: "URL decode", nativeName: "native:url_decode", rustName: "rust:url_decode" },
 
+  // ── Backend-framework features (sequential) ──
+  { label: "JWT sign", nativeName: "native:jwt_sign", rustName: "rust:jwt_sign" },
+  { label: "JWT verify", nativeName: "native:jwt_verify", rustName: "rust:jwt_verify" },
+  { label: "Password hash (argon2id vs scrypt)", nativeName: "native:password_hash", rustName: "rust:password_hash" },
+  { label: "AEAD encrypt", nativeName: "native:aead_encrypt", rustName: "rust:aead_encrypt" },
+  { label: "AEAD decrypt", nativeName: "native:aead_decrypt", rustName: "rust:aead_decrypt" },
+  { label: "Gzip compress", nativeName: "native:gzip_compress", rustName: "rust:gzip_compress" },
+  { label: "Gzip decompress", nativeName: "native:gzip_decompress", rustName: "rust:gzip_decompress" },
+  { label: "Brotli compress", nativeName: "native:brotli_compress", rustName: "rust:brotli_compress" },
+  { label: "Brotli decompress", nativeName: "native:brotli_decompress", rustName: "rust:brotli_decompress" },
+  { label: "Multipart parse", nativeName: "native:multipart_parse", rustName: "rust:multipart_parse" },
+  { label: "Template render", nativeName: "native:template_render", rustName: "rust:template_render" },
+  { label: "WS frame encode", nativeName: "native:ws_frame_encode", rustName: "rust:ws_frame_encode" },
+  { label: "WS frame decode", nativeName: "native:ws_frame_decode", rustName: "rust:ws_frame_decode" },
+  { label: "SSE encode", nativeName: "native:sse_encode", rustName: "rust:sse_encode" },
+
   // ── Complex payload benchmarks ──
   { label: "JSON valid (50k rows)", nativeName: "native:json_valid_large", rustName: "rust:json_valid_large" },
   { label: "JSON valid (100k rows)", nativeName: "native:json_valid_huge", rustName: "rust:json_valid_huge" },
@@ -38,6 +54,12 @@ export const comparisonReports: ComparisonReport[] = [
   { label: "UUID validate (batch 100)", nativeName: "native:validate_uuid_batch", rustName: "rust:validate_uuid_batch" },
   { label: "IPv4 validate (batch 100)", nativeName: "native:validate_ipv4_batch", rustName: "rust:validate_ipv4_batch" },
   { label: "Query parse (batch 100)", nativeName: "native:query_parse_batch", rustName: "rust:query_parse_batch" },
+
+  // ── Backend-framework features (batch) ──
+  { label: "Password hash (batch 20)", nativeName: "native:password_hash_batch", rustName: "rust:password_hash_batch" },
+  { label: "JWT verify (batch 100)", nativeName: "native:jwt_verify_batch", rustName: "rust:jwt_verify_batch" },
+  { label: "Gzip compress (batch 100)", nativeName: "native:gzip_compress_batch", rustName: "rust:gzip_compress_batch" },
+  { label: "Template render (batch 100)", nativeName: "native:template_render_batch", rustName: "rust:template_render_batch" },
 
   // ── Concurrent burst benchmarks ──
   { label: "JSON valid concurrent (10x50)", nativeName: "native:json_valid_concurrent_10", rustName: "rust:json_valid_concurrent_10" },

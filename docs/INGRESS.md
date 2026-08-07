@@ -105,7 +105,10 @@ are the same native options as `createIngressFast` (`trustProxy`, `https`,
 | `enableSecurityHeaders` | `boolean` | `true` | Emit the configured security headers |
 | `securityHeaders` | `[string,string][]` | — | Ordered security header pairs (names lowercased) |
 | `outputBufferSize` | `number` | `131072` | Native output buffer size |
+| `onRequest` | `(req, requestId, ip) => void` | — | Hook invoked before a request is processed |
 | `onResponse` | `(req, result, status, requestId) => void` | — | Hook invoked after a `Response` is produced (metrics/logging) |
+| `onError` | `(req, requestId, error) => void` | — | Hook invoked when the native pipeline fails (silent 500s are otherwise invisible) |
+| `structuredLog` | `boolean` | `false` | Emit one JSON line per request/error (gated by `CASTRUM_LOG_LEVEL`) |
 
 Returns an `OptimizedIngressHandler`:
 
@@ -156,12 +159,13 @@ interface CreateIngressServerOptions {
   port: number;
   hostname?: string;            // default "0.0.0.0"
   idleTimeout?: number;         // default 30
-  maxRequestBodySize?: number;
+  maxRequestBodySize?: number;  // socket-level cap, default 16 MiB
   reusePort?: boolean;          // SO_REUSEPORT (with automatic retry on failure)
   copyBody?: boolean;           // default true
   getIp?: (req, srv) => string | undefined;
   routes: Record<string, BakedRoute>;
   fallback?: OptimizedIngressHandler;  // unmatched routes + OPTIONS fallback
+  onError?: (info: { error: Error; request?: Request }) => void; // Node adapter
 }
 
 interface BakedRoute {
@@ -170,13 +174,40 @@ interface BakedRoute {
   echo?: OptimizedIngressHandler;      // -> POST
   cookies?: OptimizedIngressHandler;   // -> GET
   maxBodyBytes?: number;               // override for this route's write/echo
+  bodyTimeoutMs?: number;              // overall body-read deadline (0 = disabled)
 }
 
 interface BakedServer {
-  server: Server;   // the Bun.serve result
-  stop(): void;     // stop(true), closes active connections
+  server: ServerHandle; // runtime-agnostic handle (stop(force?)); Bun exposes the full server via the same object
+  stop(): void;         // stop accepting; on Bun force-closes, on Node drains then closes
   port: number;
 }
+```
+
+### `createIngressServerNode(options)` — Node.js adapter
+
+Bun remains the primary server target; `createIngressServer` is Bun-only. For
+Node.js consumers, `createIngressServerNode` serves the SAME pre-baked route
+handlers over `node:http` (sharing `buildRouteHandlers`). It returns a
+`NodeIngressServer` (`BakedServer` plus an async `ready: Promise<number>` that
+resolves to the bound port — use it with `port: 0`).
+
+```ts
+import { createIngressServerNode } from "castrum";
+const srv = createIngressServerNode({ port: 3000, routes: { "/health": { read: ingress } } });
+await srv.ready;         // listening
+srv.server.stop(true);   // force-stop; srv.stop() drains then closes
+```
+
+### `gracefulShutdown(handles, options)`
+
+Wires SIGTERM/SIGINT to a soft-drain-then-force stop for both Bun and Node
+server handles:
+
+```ts
+import { gracefulShutdown } from "castrum";
+const cleanup = gracefulShutdown([srv.server], { timeoutMs: 5_000 });
+// cleanup() removes the signal listeners
 ```
 
 ### `BakedIngressResult`

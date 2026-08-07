@@ -1,3 +1,6 @@
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeFile } from "node:fs/promises";
 import type { BenchResult, ComparisonReport, ConcurrentBenchResult, StressBenchResult } from "./types";
 
 export function printResults(results: BenchResult[]): void {
@@ -76,4 +79,135 @@ export function printSummary(
   for (const report of reports) {
     printComparison(results, report);
   }
+}
+
+// ── Machine-readable CPU report ───────────────────────────────────
+// Serializes a benchmark run to JSON so results can be committed and diffed
+// across changes (bench/results/cpu/latest.json + a timestamped snapshot).
+// The HTTP benchmarks already persist reports; this gives the CPU micro-bench
+// suite the same property.
+
+export interface CpuEnvironment {
+  platform: string;
+  arch: string;
+  cpuModel?: string;
+  bun: string;
+  node: string;
+  rayonThreads?: string;
+  buildFlavor?: string;
+}
+
+export interface CpuComparisonSummary {
+  label: string;
+  nativeName: string;
+  rustName: string;
+  nativeAvgMs: number;
+  rustAvgMs: number;
+  ratio: number;
+  faster: "rust" | "native";
+}
+
+export interface CpuReport {
+  kind: "cpu-benchmark";
+  generatedAt: string;
+  environment: CpuEnvironment;
+  standard: BenchResult[];
+  complex: BenchResult[];
+  concurrent: ConcurrentBenchResult[];
+  stress: StressBenchResult[];
+  comparisons: CpuComparisonSummary[];
+}
+
+/** Structured Rust-vs-native comparison summaries (shared with printing). */
+export function computeComparisons(
+  results: (BenchResult | ConcurrentBenchResult | StressBenchResult)[],
+  reports: ComparisonReport[],
+): CpuComparisonSummary[] {
+  const out: CpuComparisonSummary[] = [];
+  for (const report of reports) {
+    const native = results.find((x) => x.name === report.nativeName);
+    const rust = results.find((x) => x.name === report.rustName);
+    if (!native || !rust) {
+      continue;
+    }
+    const ratio = native.avgMs / Math.max(rust.avgMs, 1e-9);
+    out.push({
+      label: report.label,
+      nativeName: report.nativeName,
+      rustName: report.rustName,
+      nativeAvgMs: native.avgMs,
+      rustAvgMs: rust.avgMs,
+      ratio,
+      faster: ratio >= 1 ? "rust" : "native",
+    });
+  }
+  return out;
+}
+
+/** Best-effort CPU model name (Linux only). */
+function cpuModelName(): string | undefined {
+  try {
+    const info = readFileSync("/proc/cpuinfo", "utf8");
+    for (const line of info.split("\n")) {
+      if (line.startsWith("model name")) {
+        return line.split(":")[1]?.trim() || undefined;
+      }
+    }
+  } catch {
+    // /proc/cpuinfo is not available on every platform.
+  }
+  return undefined;
+}
+
+/**
+ * Persist the CPU benchmark results as JSON and return the path written.
+ * Writes both a stable `latest.json` and a timestamped snapshot.
+ */
+export async function writeCpuReport(options: {
+  standard: BenchResult[];
+  complex: BenchResult[];
+  concurrent: ConcurrentBenchResult[];
+  stress: StressBenchResult[];
+  comparisons: ComparisonReport[];
+  outDir?: string;
+  buildFlavor?: string;
+}): Promise<string> {
+  const outDir = options.outDir ?? "bench/results/cpu";
+  mkdirSync(outDir, { recursive: true });
+
+  const report: CpuReport = {
+    kind: "cpu-benchmark",
+    generatedAt: new Date().toISOString(),
+    environment: {
+      platform: process.platform,
+      arch: process.arch,
+      cpuModel: cpuModelName(),
+      bun: process.versions.bun ?? "",
+      node: process.versions.node ?? "",
+      rayonThreads: process.env.CASTRUM_RAYON_THREADS,
+      buildFlavor: options.buildFlavor,
+    },
+    standard: options.standard,
+    complex: options.complex,
+    concurrent: options.concurrent,
+    stress: options.stress,
+    comparisons: computeComparisons(
+      [
+        ...options.standard,
+        ...options.complex,
+        ...options.concurrent,
+        ...options.stress,
+      ],
+      options.comparisons,
+    ),
+  };
+
+  const json = JSON.stringify(report, null, 2);
+  const latestPath = join(outDir, "latest.json");
+  const stamp = report.generatedAt.replace(/[:.]/g, "-");
+  const stampedPath = join(outDir, `${stamp}.json`);
+
+  await writeFile(latestPath, json, "utf8");
+  await writeFile(stampedPath, json, "utf8");
+  return latestPath;
 }

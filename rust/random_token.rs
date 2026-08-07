@@ -1,16 +1,7 @@
-// rust/random_token.rs — v2: prefer stack buffer for common sizes
+// rust/random_token.rs — random hex tokens (16/32/64 bytes use stack buffers)
+use crate::bytes::hex_encode;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-
-const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
-
-#[inline(always)]
-fn hex_encode(bytes: &[u8], out: &mut [u8]) {
-    for (i, &b) in bytes.iter().enumerate() {
-        out[2 * i] = HEX_LOWER[(b >> 4) as usize];
-        out[2 * i + 1] = HEX_LOWER[(b & 0x0f) as usize];
-    }
-}
 
 #[napi]
 pub fn random_token(byte_len: u32) -> Result<Buffer> {

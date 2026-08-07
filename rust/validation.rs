@@ -105,3 +105,39 @@ pub fn validate_ipv6_bytes(input: &[u8]) -> bool {
 #[napi] pub fn validate_uuid(input: Uint8Array) -> bool { validate_uuid_bytes(input.as_ref()) }
 #[napi] pub fn validate_ipv4(input: Uint8Array) -> bool { validate_ipv4_bytes(input.as_ref()) }
 #[napi] pub fn validate_ipv6(input: Uint8Array) -> bool { validate_ipv6_bytes(input.as_ref()) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_email_cases() {
+        assert!(validate_email_bytes(b"a@b.com"));
+        assert!(!validate_email_bytes(b"not-an-email"));
+        assert!(!validate_email_bytes(b""));
+    }
+
+    #[test]
+    fn validate_uuid_v4_cases() {
+        assert!(validate_uuid_bytes(b"550e8400-e29b-41d4-a716-446655440000"));
+        assert!(!validate_uuid_bytes(b"550e8400e29b41d4a716446655440000")); // no dashes
+        assert!(!validate_uuid_bytes(b"not-a-uuid"));
+    }
+
+    #[test]
+    fn validate_ipv4_cases() {
+        assert!(validate_ipv4_bytes(b"192.168.0.1"));
+        assert!(validate_ipv4_bytes(b"1.2.3.4"));
+        assert!(!validate_ipv4_bytes(b"999.1.1.1"));
+        assert!(!validate_ipv4_bytes(b"1.2.3"));
+        assert!(!validate_ipv4_bytes(b""));
+    }
+
+    #[test]
+    fn validate_ipv6_cases() {
+        assert!(validate_ipv6_bytes(b"::1"));
+        assert!(validate_ipv6_bytes(b"2001:db8::1"));
+        assert!(!validate_ipv6_bytes(b"not-an-ip"));
+        assert!(!validate_ipv6_bytes(b""));
+    }
+}

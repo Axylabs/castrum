@@ -1,5 +1,4 @@
 // rust/proxy.rs — Proxy trust, IP resolution, and HTTPS detection
-// Extracted from ingress.rs for composability
 
 use crate::headers::HeaderRefs;
 use crate::ip_trust::ProxyTrustMode;
@@ -29,12 +28,6 @@ pub fn detect_https(
     }
 
     false
-}
-
-/// Compute a rate-limiting key from the resolved IP.
-#[inline]
-pub fn rate_key_from_ip(ip: &crate::ip_trust::ResolvedIp, seed: u64) -> u64 {
-    ip.rate_key(seed)
 }
 
 // ── URL helpers ───────────────────────────────────────────────────
@@ -86,5 +79,36 @@ pub fn extract_query(url: &[u8]) -> &[u8] {
         }
     } else {
         &[]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::headers::HeaderRefs;
+    use crate::ip_trust::ProxyTrustMode;
+
+    #[test]
+    fn extract_path_variants() {
+        assert_eq!(extract_path(b"/api/users"), b"/api/users");
+        assert_eq!(extract_path(b"/api/users?page=2"), b"/api/users");
+        assert_eq!(extract_path(b"https://example.com/api?x=1"), b"/api");
+        assert_eq!(extract_path(b"http://example.com"), b"/");
+    }
+
+    #[test]
+    fn extract_query_variants() {
+        assert_eq!(extract_query(b"/api?page=2#frag"), b"page=2");
+        assert_eq!(extract_query(b"https://x.com/a?b=c"), b"b=c");
+        assert_eq!(extract_query(b"/no-query"), b"");
+    }
+
+    #[test]
+    fn detect_https_fixed_and_url() {
+        let h = HeaderRefs::empty();
+        assert!(detect_https(Some(true), &ProxyTrustMode::None, b"/x", &h, false));
+        assert!(!detect_https(Some(false), &ProxyTrustMode::None, b"/x", &h, false));
+        assert!(detect_https(None, &ProxyTrustMode::None, b"https://x.com", &h, false));
+        assert!(!detect_https(None, &ProxyTrustMode::None, b"http://x.com", &h, false));
     }
 }

@@ -7,7 +7,11 @@
 // IMPORTANT: Do NOT hardcode these values. They come from Rust's ingress_constants.rs
 // and are typed on the NativeAddon interface (src/native/index.ts).
 
-import addon from "../native";
+import { getAddon } from "../native";
+
+// Read eagerly at module load: these constants are the ingress layout source
+// of truth and are needed as soon as the ingress API is used.
+const addon = getAddon();
 
 // ── Output buffer layout ───────────────────────────────────
 export const OUT_VERDICT: number = addon.INGRESS_OUT_VERDICT;

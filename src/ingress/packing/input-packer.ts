@@ -1,3 +1,10 @@
+// src/ingress/packing/input-packer.ts — Binary-packed ingress input builder.
+//
+// Packs the per-request inputs (method kind + url + ip + request id + packed
+// headers) into a single growable Uint8Array in the layout the native
+// `Ingress.handleRequestPacked` expects.
+
+/** Growable packer for the fast-path packed input buffer. */
 export class IngressInputPacker {
   private buf: Uint8Array;
   private view: DataView;
@@ -39,6 +46,7 @@ export class IngressInputPacker {
     this.pos += bytes.byteLength;
   }
 
+  /** Pack the request inputs; the returned view is valid until the next pack. */
   pack(
     methodKind: number,
     urlBytes: Uint8Array,

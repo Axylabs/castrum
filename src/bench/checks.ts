@@ -1,6 +1,6 @@
 import * as native from "../baseline";
 import { rust, rustBatch } from "../rust-ffi";
-import { decoder } from "../shared/bytes";
+import { decoder, encoder } from "../shared/bytes";
 import { pairsToObject, readHttpPacked, readPairsPacked } from "../shared/packed";
 import { assertDeepEqual, assertEqual, parseJsonBytes } from "./assert";
 import type { BenchFixtures, ComplexFixtures } from "./fixtures";
@@ -117,6 +117,156 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     "url decode",
   );
 
+  // ── Backend-framework feature checks ──
+
+  // JWT: cross-impl verify + tamper rejection.
+  const rustToken = rust.jwtSign(f.jwtClaims, f.jwtSecret, 3600, f.jwtNowSeconds);
+  const nativeToken = native.nativeJwtSign(
+    f.jwtClaims,
+    f.jwtSecret,
+    3600,
+    f.jwtNowSeconds,
+  );
+  assertEqual(
+    rust.jwtVerify(rustToken, f.jwtSecret, f.jwtNowSeconds) !== null,
+    true,
+    "jwt rust self-verify",
+  );
+  assertEqual(
+    rust.jwtVerify(nativeToken, f.jwtSecret, f.jwtNowSeconds) !== null,
+    true,
+    "jwt rust verifies native token",
+  );
+  assertEqual(
+    native.nativeJwtVerify(rustToken, f.jwtSecret, f.jwtNowSeconds),
+    true,
+    "jwt native verifies rust token",
+  );
+  assertEqual(
+    native.nativeJwtVerify(nativeToken, f.jwtSecret, f.jwtNowSeconds),
+    true,
+    "jwt native self-verify",
+  );
+  const tamperedToken = rustToken.slice();
+  tamperedToken[tamperedToken.length - 1] =
+    (tamperedToken[tamperedToken.length - 1] ?? 0) ^ 0x01;
+  assertEqual(
+    rust.jwtVerify(tamperedToken, f.jwtSecret, f.jwtNowSeconds) !== null,
+    false,
+    "jwt rejects tampered (rust)",
+  );
+  assertEqual(
+    native.nativeJwtVerify(tamperedToken, f.jwtSecret, f.jwtNowSeconds),
+    false,
+    "jwt rejects tampered (native)",
+  );
+
+  // AEAD: byte parity with the JS baseline + roundtrip + tamper rejection.
+  const rustCt = rust.aeadEncrypt(f.aeadKey, f.aeadNonce, f.aeadPlaintext);
+  assertDeepEqual(rustCt, f.aeadCiphertext, "aead encrypt bytes match native");
+  const aeadDec = rust.aeadDecrypt(f.aeadKey, f.aeadNonce, rustCt);
+  assertEqual(aeadDec !== null, true, "aead decrypt returns plaintext");
+  if (aeadDec) {
+    assertDeepEqual(aeadDec, f.aeadPlaintext, "aead plaintext matches");
+  }
+  const tamperedCt = rustCt.slice();
+  tamperedCt[0] = (tamperedCt[0] ?? 0) ^ 0xff;
+  assertEqual(
+    rust.aeadDecrypt(f.aeadKey, f.aeadNonce, tamperedCt) !== null,
+    false,
+    "aead rejects tampered",
+  );
+
+  // Compression: rust/native roundtrips + cross-impl decompress.
+  assertDeepEqual(
+    rust.gzipDecompress(rust.gzipCompress(f.compressPayload)),
+    f.compressPayload,
+    "gzip rust roundtrip",
+  );
+  assertDeepEqual(
+    rust.gzipDecompress(f.gzipCompressed),
+    f.compressPayload,
+    "gzip rust decompresses native",
+  );
+  assertDeepEqual(
+    native.nativeGzipDecompress(rust.gzipCompress(f.compressPayload)),
+    f.compressPayload,
+    "gzip native decompresses rust",
+  );
+  assertDeepEqual(
+    rust.brotliDecompress(rust.brotliCompress(f.compressPayload)),
+    f.compressPayload,
+    "brotli rust roundtrip",
+  );
+  assertDeepEqual(
+    rust.brotliDecompress(f.brotliCompressed),
+    f.compressPayload,
+    "brotli rust decompresses native",
+  );
+  assertDeepEqual(
+    native.nativeBrotliDecompress(rust.brotliCompress(f.compressPayload)),
+    f.compressPayload,
+    "brotli native decompresses rust",
+  );
+
+  // Multipart: parsed parts match the JS baseline.
+  const nativeParts = native.nativeMultipartParse(
+    f.multipartBody,
+    f.multipartBoundary,
+  );
+  const rustParts = rust.multipartParse(f.multipartBody, f.multipartBoundary);
+  assertEqual(rustParts.length, nativeParts.length, "multipart part count");
+  assertEqual(rustParts[0]?.name, nativeParts[0]?.name, "multipart first name");
+  assertEqual(
+    rustParts[1]?.filename,
+    nativeParts[1]?.filename,
+    "multipart filename",
+  );
+  assertDeepEqual(
+    rustParts[1]?.data,
+    nativeParts[1]?.data,
+    "multipart file data",
+  );
+
+  // Template: rendered bytes match the JS mini-renderer.
+  const renderer = rust.createTemplateRenderer(f.templateSource);
+  assertEqual(
+    decoder.decode(renderer.render(f.templateContext)),
+    native.nativeTemplateRender(f.templateSource, f.templateContext),
+    "template render bytes match",
+  );
+
+  // WS frames: byte parity + decode roundtrip.
+  const nativeWs = native.nativeWsFrameEncode(0x2, f.wsPayload, true, true);
+  const rustWs = rust.wsFrameEncode(0x2, f.wsPayload, true, true);
+  assertDeepEqual(rustWs, nativeWs, "ws frame encode bytes match");
+  assertDeepEqual(
+    rust.wsFrameDecode(rustWs)?.payload,
+    f.wsPayload,
+    "ws frame decode roundtrip",
+  );
+
+  // SSE: byte parity.
+  assertDeepEqual(
+    rust.sseEncodeEvent("update", f.sseData, "42", 3000),
+    native.nativeSseEncodeEvent("update", f.sseData, "42", 3000),
+    "sse encode bytes match",
+  );
+
+  // Password hashing: argon2id hash → verify roundtrip (no byte parity — the
+  // baseline uses scrypt, a different KDF).
+  const phc = rust.passwordHash(f.passwordBytes, f.passwordSalt, {
+    mCost: 4096,
+    tCost: 1,
+    pCost: 1,
+  });
+  assertEqual(rust.passwordVerify(f.passwordBytes, phc), true, "argon2 hash then verify");
+  assertEqual(
+    rust.passwordVerify(encoder.encode("wrong password"), phc),
+    false,
+    "argon2 rejects wrong password",
+  );
+
   console.log("Practical correctness checks passed. ✓");
 }
 
@@ -130,7 +280,7 @@ export function runComplexCorrectnessChecks(
     0,
   );
   const rustBatchTest = c.batchJsonDocs.reduce(
-    (acc, doc) => acc + rust.jsonValid(doc),
+    (acc, doc) => acc + (rust.jsonValid(doc) ? 1 : 0),
     0,
   );
   assertEqual(nativeBatch, rustBatchTest, "batch json valid");
@@ -141,7 +291,7 @@ export function runComplexCorrectnessChecks(
     0,
   );
   const rustEmails = c.batchEmails.reduce(
-    (acc, e) => acc + rust.validateEmail(e),
+    (acc, e) => acc + (rust.validateEmail(e) ? 1 : 0),
     0,
   );
   assertEqual(nativeEmails, rustEmails, "batch email valid");
@@ -152,7 +302,7 @@ export function runComplexCorrectnessChecks(
     0,
   );
   const rustUuids = c.batchUuids.reduce(
-    (acc, u) => acc + rust.validateUuid(u),
+    (acc, u) => acc + (rust.validateUuid(u) ? 1 : 0),
     0,
   );
   assertEqual(nativeUuids, rustUuids, "batch uuid valid");
@@ -163,7 +313,7 @@ export function runComplexCorrectnessChecks(
     0,
   );
   const rustIps = c.batchIpv4s.reduce(
-    (acc, ip) => acc + rust.validateIpv4(ip),
+    (acc, ip) => acc + (rust.validateIpv4(ip) ? 1 : 0),
     0,
   );
   assertEqual(nativeIps, rustIps, "batch ipv4 valid");

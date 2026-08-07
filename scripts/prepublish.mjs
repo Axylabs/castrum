@@ -15,7 +15,9 @@
 // per-platform addons built by the "build" job into ./artifacts and calls
 // `npm publish`; this script stages those files into the package root before
 // verifying. Locally, `npm publish` without all artifacts will fail with
-// instructions — push a v* tag and let CI build + publish instead.
+// instructions — unless CASTRUM_PUBLISH_ALLOW_PARTIAL=1 is set (bun run
+// publish:manual), in which case it ships only the platforms that are present
+// and warns instead of failing.
 
 import {
   copyFileSync,
@@ -26,6 +28,9 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Set by `bun run publish:manual` to allow a single-platform local publish.
+const allowPartial = process.env.CASTRUM_PUBLISH_ALLOW_PARTIAL === "1";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -99,24 +104,46 @@ for (const target of targets) {
 }
 
 if (missing.length > 0) {
-  console.error(
-    "prepublish: MISSING native addon artifact(s):\n" +
-      missing.map((m) => `  - ${m}`).join("\n") +
-      "\n\n" +
-      "Every platform in package.json \"napi.targets\" must ship in the tarball.\n" +
-      "These are built per-platform by the CI \"build\" job and uploaded as\n" +
-      "workflow artifacts; the CI \"publish\" job downloads them into ./artifacts\n" +
-      "and this script stages + verifies them before publishing.\n" +
-      "  - Build only the current platform locally:  bun run build\n" +
-      "  - Manual release (downloads CI artifacts): bun run publish:manual\n" +
-      "  - Publish all platforms via CI: push a v* tag and let the workflow do it.",
-  );
-  process.exit(1);
+  if (allowPartial) {
+    // Local manual publish (bun run publish:manual): ship only what's built.
+    console.warn(
+      "prepublish: WARNING — publishing with MISSING platform addon(s):\n" +
+        missing.map((m) => `  - ${m}`).join("\n") +
+        "\n" +
+        "CASTRUM_PUBLISH_ALLOW_PARTIAL=1: the tarball only supports the platforms\n" +
+        "listed above. Push a v* tag to publish a full multi-platform tarball.",
+    );
+  } else {
+    console.error(
+      "prepublish: MISSING native addon artifact(s):\n" +
+        missing.map((m) => `  - ${m}`).join("\n") +
+        "\n\n" +
+        "Every platform in package.json \"napi.targets\" must ship in the tarball.\n" +
+        "These are built per-platform by the CI \"build\" job and uploaded as\n" +
+        "workflow artifacts; the CI \"publish\" job downloads them into ./artifacts\n" +
+        "and this script stages + verifies them before publishing.\n" +
+        "  - Build only the current platform locally:  bun run build\n" +
+        "  - Simple single-platform local publish:   bun run publish:manual\n" +
+        "  - Full multi-platform publish: push a v* tag and let the workflow do it.",
+    );
+    process.exit(1);
+  }
 }
 
-console.log(
-  `prepublish: OK — all ${targets.length} platform artifact(s) present:\n` +
-    targets
-      .map((t) => `  - ${binaryName}.${tripleToNapiSuffix(t)}.node`)
-      .join("\n"),
-);
+if (missing.length === 0) {
+  console.log(
+    `prepublish: OK — all ${targets.length} platform artifact(s) present:\n` +
+      targets
+        .map((t) => `  - ${binaryName}.${tripleToNapiSuffix(t)}.node`)
+        .join("\n"),
+  );
+} else {
+  const present = targets.filter((t) => {
+    const file = `${binaryName}.${tripleToNapiSuffix(t)}.node`;
+    return existsSync(join(root, file)) && statSync(join(root, file)).size > 0;
+  });
+  console.log(
+    `prepublish: OK — ${present.length}/${targets.length} platform artifact(s) present (partial):\n` +
+      present.map((t) => `  - ${binaryName}.${tripleToNapiSuffix(t)}.node`).join("\n"),
+  );
+}

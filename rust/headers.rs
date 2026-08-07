@@ -1,7 +1,7 @@
 // rust/headers.rs — HeaderRefs: zero-alloc packed header parser
-// Extracted from ingress.rs for composability
-// Uses u64 word-at-a-time comparison for header name matching
+// Uses the shared word-at-a-time comparator from `bytes.rs`.
 
+use crate::bytes::ascii_eq_ignore_case;
 use napi::{Error, Result};
 
 // ── Header presence flags ─────────────────────────────────────────
@@ -24,43 +24,6 @@ pub struct HeaderRefs<'a> {
     acrm: Option<&'a [u8]>,
     acrh: Option<&'a [u8]>,
     flags: u8,
-}
-
-/// Load a u64 from the first N bytes of a byte slice, zero-padded.
-#[inline(always)]
-fn load_u64_padded(bytes: &[u8]) -> u64 {
-    let mut buf = [0u8; 8];
-    let len = bytes.len().min(8);
-    buf[..len].copy_from_slice(&bytes[..len]);
-    u64::from_le_bytes(buf)
-}
-
-/// Compare two byte slices using u64 word comparison for case-insensitive matching.
-/// Both inputs should be lowercase already (or we compute lowercase u64).
-#[inline(always)]
-fn byte_slice_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    // For short names (up to 8 bytes) use single u64 comparison
-    if a.len() <= 8 {
-        let wa = load_u64_padded(a) | 0x2020_2020_2020_2020;
-        let wb = load_u64_padded(b) | 0x2020_2020_2020_2020;
-        return wa == wb;
-    }
-    // For longer names: compare first 8 bytes, then remaining
-    if a.len() <= 16 {
-        let wa = load_u64_padded(a) | 0x2020_2020_2020_2020;
-        let wb = load_u64_padded(b) | 0x2020_2020_2020_2020;
-        if wa != wb {
-            return false;
-        }
-        let wa2 = load_u64_padded(&a[8..]) | 0x2020_2020_2020_2020;
-        let wb2 = load_u64_padded(&b[8..]) | 0x2020_2020_2020_2020;
-        return wa2 == wb2;
-    }
-    // Fallback
-    a.eq_ignore_ascii_case(b)
 }
 
 impl<'a> HeaderRefs<'a> {
@@ -137,32 +100,32 @@ impl<'a> HeaderRefs<'a> {
 
             // Fast path: dispatch based on first character + name length
             if first == b'o' && name.len() == 6 {
-                if byte_slice_eq_ignore_case(name, b"origin") {
+                if ascii_eq_ignore_case(name, b"origin") {
                     h.flags |= HAS_ORIGIN;
                     h.origin = Some(value);
                 }
             } else if first == b'c' && name.len() == 6 {
-                if byte_slice_eq_ignore_case(name, b"cookie") {
+                if ascii_eq_ignore_case(name, b"cookie") {
                     h.flags |= HAS_COOKIE;
                     h.cookie = Some(value);
                 }
             } else if first == b'x' {
                 let name_len = name.len();
-                if name_len == 15 && byte_slice_eq_ignore_case(name, b"x-forwarded-for") {
+                if name_len == 15 && ascii_eq_ignore_case(name, b"x-forwarded-for") {
                     h.flags |= HAS_XFF;
                     h.xff = Some(value);
-                } else if name_len == 9 && byte_slice_eq_ignore_case(name, b"x-real-ip") {
+                } else if name_len == 9 && ascii_eq_ignore_case(name, b"x-real-ip") {
                     h.flags |= HAS_X_REAL_IP;
                     h.x_real_ip = Some(value);
-                } else if name_len == 17 && byte_slice_eq_ignore_case(name, b"x-forwarded-proto") {
+                } else if name_len == 17 && ascii_eq_ignore_case(name, b"x-forwarded-proto") {
                     h.flags |= HAS_XFP;
                     h.x_forwarded_proto = Some(value);
                 }
             } else if first == b'a' && is_options {
-                if name.len() == 29 && byte_slice_eq_ignore_case(name, b"access-control-request-method") {
+                if name.len() == 29 && ascii_eq_ignore_case(name, b"access-control-request-method") {
                     h.flags |= HAS_ACRM;
                     h.acrm = Some(value);
-                } else if name.len() == 30 && byte_slice_eq_ignore_case(name, b"access-control-request-headers") {
+                } else if name.len() == 30 && ascii_eq_ignore_case(name, b"access-control-request-headers") {
                     h.flags |= HAS_ACRH;
                     h.acrh = Some(value);
                 }

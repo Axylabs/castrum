@@ -1,10 +1,9 @@
-// rust/url_codec.rs — v2: batch 3-byte %XX writes
+// rust/url_codec.rs — URL percent-encoding
+use crate::bytes::{decode_percent_at, HEX_UPPER};
+use crate::util::{ensure_capacity, write_bytes};
+use memchr::memchr;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use memchr::memchr;
-use crate::util::{ensure_capacity, hex_val, write_bytes};
-
-const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
 #[inline(always)]
 fn is_unreserved(b: u8) -> bool {
@@ -80,16 +79,11 @@ fn url_decode_bytes_vec(input: &[u8]) -> Result<Vec<u8>> {
         let i = pos + rel;
         out.extend_from_slice(&input[pos..i]);
 
-        if i + 2 >= input.len() {
-            return Err(Error::from_reason("invalid %-encoding: missing bytes"));
-        }
-        let hi = hex_val(input[i + 1])
-            .ok_or_else(|| Error::from_reason("invalid %-encoding: bad hi nibble"))?;
-        let lo = hex_val(input[i + 2])
-            .ok_or_else(|| Error::from_reason("invalid %-encoding: bad lo nibble"))?;
+        let (byte, next) = decode_percent_at(input, i)
+            .ok_or_else(|| Error::from_reason("invalid %-encoding: malformed %XX sequence"))?;
 
-        out.push((hi << 4) | lo);
-        pos = i + 3;
+        out.push(byte);
+        pos = next;
     }
 
     out.extend_from_slice(&input[pos..]);
@@ -109,18 +103,13 @@ pub fn url_decode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
         let i = src_pos + rel;
         write_bytes(out, &mut pos, &input[src_pos..i])?;
 
-        if i + 2 >= input.len() {
-            return Err(Error::from_reason("invalid %-encoding: missing bytes"));
-        }
-        let hi = hex_val(input[i + 1])
-            .ok_or_else(|| Error::from_reason("invalid %-encoding: bad hi nibble"))?;
-        let lo = hex_val(input[i + 2])
-            .ok_or_else(|| Error::from_reason("invalid %-encoding: bad lo nibble"))?;
+        let (byte, next) = decode_percent_at(input, i)
+            .ok_or_else(|| Error::from_reason("invalid %-encoding: malformed %XX sequence"))?;
 
         ensure_capacity(out, pos, 1)?;
-        out[pos] = (hi << 4) | lo;
+        out[pos] = byte;
         pos += 1;
-        src_pos = i + 3;
+        src_pos = next;
     }
 
     write_bytes(out, &mut pos, &input[src_pos..])?;
@@ -130,4 +119,31 @@ pub fn url_decode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
 #[napi]
 pub fn url_decode_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
     crate::util::run_packed_into(&input, &mut output, url_decode_into_slice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_encode_reserved_and_unreserved() {
+        let mut out = vec![0u8; 64];
+        let n = url_encode_into_slice(b"/a b?c=d", &mut out).unwrap();
+        // '/', space, '?', '=' are all percent-encoded; alphanumerics are not.
+        assert_eq!(&out[..n], b"%2Fa%20b%3Fc%3Dd");
+    }
+
+    #[test]
+    fn url_decode_roundtrip() {
+        let mut out = vec![0u8; 64];
+        let n = url_decode_into_slice(b"%2Fa%20b%3Fc%3Dd", &mut out).unwrap();
+        assert_eq!(&out[..n], b"/a b?c=d");
+    }
+
+    #[test]
+    fn url_decode_rejects_malformed_percent() {
+        let mut out = vec![0u8; 64];
+        assert!(url_decode_into_slice(b"%ZZ", &mut out).is_err());
+        assert!(url_decode_into_slice(b"%2", &mut out).is_err());
+    }
 }

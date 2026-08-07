@@ -1,6 +1,7 @@
 // rust/cors.rs — CORS engine extracted from ingress.rs
 // Pre-computes method bitmask for O(1) method matching
 
+use crate::bytes::ascii_eq_ignore_case;
 use crate::headers::HeaderRefs;
 use crate::method::MethodKind;
 use crate::util::trim_ascii_whitespace;
@@ -171,16 +172,14 @@ impl CorsEngine {
                 continue;
             }
 
-            let lower = name.to_ascii_lowercase();
-
             if self.headers.is_empty() {
-                if !is_cors_safelisted_request_header(lower.as_slice()) {
+                if !is_cors_safelisted_request_header(name) {
                     return false;
                 }
             } else if !self
                 .headers
                 .iter()
-                .any(|allowed| allowed.as_ref() == lower.as_slice())
+                .any(|allowed| ascii_eq_ignore_case(name, allowed.as_ref()))
             {
                 return false;
             }
@@ -191,10 +190,10 @@ impl CorsEngine {
 }
 
 fn is_cors_safelisted_request_header(name: &[u8]) -> bool {
-    matches!(
-        name,
-        b"accept" | b"accept-language" | b"content-language" | b"content-type"
-    )
+    ascii_eq_ignore_case(name, b"accept")
+        || ascii_eq_ignore_case(name, b"accept-language")
+        || ascii_eq_ignore_case(name, b"content-language")
+        || ascii_eq_ignore_case(name, b"content-type")
 }
 
 fn parse_allowed_methods_bitset(list: Option<Vec<String>>) -> (bool, u16) {

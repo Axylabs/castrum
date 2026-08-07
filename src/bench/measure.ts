@@ -9,6 +9,16 @@ import type {
 
 const concurrentWorkerUrl = new URL("./concurrent-worker.ts", import.meta.url);
 
+// Very fast (sub-µs) ops are dominated by per-iteration timer overhead. When
+// the per-op time is below this threshold (ms), ops are measured in batches to
+// reduce that overhead and report a stable avg / ops-per-second. Batch size is
+// overridable via CASTRUM_BENCH_BATCH_SIZE for methodology experiments.
+const FAST_OP_THRESHOLD_MS = 0.01;
+const FAST_OP_BATCH_SIZE = Math.max(
+  1,
+  Number(process.env.CASTRUM_BENCH_BATCH_SIZE) || 64,
+);
+
 export function bench(
   name: string,
   fn: () => unknown,
@@ -24,12 +34,49 @@ export function bench(
     checksum += checksumValue(fn());
   }
 
+  // Probe a single op after warmup to decide whether batched measurement is
+  // warranted (the probe result is not folded into the checksum).
+  const probeStart = nowMs();
+  void checksumValue(fn());
+  const probeMs = nowMs() - probeStart;
+
   const samples: number[] = new Array(safeIterations);
 
-  for (let i = 0; i < safeIterations; i++) {
-    const start = nowMs();
-    checksum += checksumValue(fn());
-    samples[i] = nowMs() - start;
+  if (probeMs < FAST_OP_THRESHOLD_MS) {
+    // Batched: run FAST_OP_BATCH_SIZE ops between timer reads and attribute
+    // the batch duration equally to each op. This preserves avg/ops-per-sec;
+    // per-op percentiles are not meaningful at this scale anyway.
+    const batch = FAST_OP_BATCH_SIZE;
+    const fullBatches = Math.floor(safeIterations / batch);
+    const remainder = safeIterations % batch;
+    let idx = 0;
+
+    for (let b = 0; b < fullBatches; b++) {
+      const start = nowMs();
+      for (let i = 0; i < batch; i++) {
+        checksum += checksumValue(fn());
+      }
+      const perOpMs = (nowMs() - start) / batch;
+      for (let i = 0; i < batch; i++) {
+        samples[idx++] = perOpMs;
+      }
+    }
+    if (remainder > 0) {
+      const start = nowMs();
+      for (let i = 0; i < remainder; i++) {
+        checksum += checksumValue(fn());
+      }
+      const perOpMs = (nowMs() - start) / remainder;
+      for (let i = 0; i < remainder; i++) {
+        samples[idx++] = perOpMs;
+      }
+    }
+  } else {
+    for (let i = 0; i < safeIterations; i++) {
+      const start = nowMs();
+      checksum += checksumValue(fn());
+      samples[i] = nowMs() - start;
+    }
   }
 
   samples.sort((a, b) => a - b);

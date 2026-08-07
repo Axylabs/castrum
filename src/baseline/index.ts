@@ -10,3 +10,11 @@ export * from "./tasks/validation";
 export * from "./tasks/hashing";
 export * from "./tasks/mime";
 export * from "./tasks/url";
+// Backend-framework feature baselines
+export * from "./tasks/jwt";
+export * from "./tasks/password";
+export * from "./tasks/aead";
+export * from "./tasks/compress";
+export * from "./tasks/multipart";
+export * from "./tasks/template";
+export * from "./tasks/streaming";

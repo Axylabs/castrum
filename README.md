@@ -46,21 +46,55 @@ bun install
 # Build Rust native addon (release)
 bun run build
 
+# Build the compiled ESM entry for Node.js consumers (dist/)
+bun run build:js
+
 # Run benchmarks
 bun bench.ts
 
 # Run tests
 bun test
+
+# Run the Node.js smoke suite (requires `bun run build:js` first)
+bun run test:node
 ```
+
+## Node.js Support
+
+**Bun is the primary target** (raw TypeScript, zero startup cost). The package is
+*also* consumable from Node.js via a compiled ESM entry:
+
+- Bun resolves the `bun` exports condition → `index.ts` (native TS execution).
+- Node.js resolves the `node`/`default` condition → `dist/index.js` (compiled ESM,
+  requires Node.js >= 20.3). The bundled `dist/index.d.ts` covers the full API.
+- The native addon is a standard N-API binary — the same `.node` file is loaded by both
+  runtimes through `src/native/loader.ts`.
+
+```ts
+// Node.js (ESM)
+import { rust, createIngressHandler, readHandler, createIngressServerNode } from "castrum";
+
+rust.crc32(new Uint8Array([104, 105])); // native FFI works identically
+
+// Serve the SAME pre-baked ingress handlers over node:http
+const srv = createIngressServerNode({ port: 3000, routes: { "/health": { read: handler } } });
+await srv.ready; // resolves once the server is listening
+```
+
+`createIngressServer` (Bun.serve) is Bun-only; Node users use `createIngressServerNode`
+with the same route handlers.
 
 ## Build
 
 ```bash
-# Production build
+# Production build (native addon)
 bun run build
 
 # Debug build
 bun run build:debug
+
+# Compiled JS entry for Node (bundle + bundled types -> dist/)
+bun run build:js
 ```
 
 ## Benchmarks
@@ -301,7 +335,8 @@ castrum/
 │
 ├── rust/                    # Rust source (cdylib)
 │   ├── lib.rs               # Crate root, module declarations
-│   ├── ingress.rs           # NAPI ingress class
+│   ├── ingress.rs           # NAPI ingress class + pipeline
+│   │   └── ingress/         # options.rs, time.rs, packed.rs (ingress submodules)
 │   ├── cors.rs              # CORS engine
 │   ├── rate_limit.rs        # Keyed rate limiter
 │   ├── ip_trust.rs          # IP trust & proxy resolution
@@ -320,25 +355,50 @@ castrum/
 │   ├── websocket.rs         # WebSocket utilities
 │   ├── random_token.rs      # Secure random token generation
 │   ├── batch.rs             # Batch processing
+│   ├── batch_core.rs        # Generic rayon-parallel batch helpers
 │   ├── method.rs            # HTTP method enum
 │   ├── headers.rs           # Header packing
 │   ├── output.rs            # Output buffer layout
 │   ├── terminal.rs          # Terminal response writers
 │   ├── proxy.rs             # Proxy detection utilities
-│   ├── util.rs              # Core utilities
+│   ├── threadpool.rs        # Rayon pool init + parallelism heuristic
+│   ├── packed.rs            # Zero-alloc packed iterators + byte writers
+│   ├── util.rs              # Re-export shim (threadpool/packed/batch_core)
 │   └── ingress_constants.rs # NAPI-exported constants
 │
 ├── src/                     # TypeScript source
-│   ├── ingress/             # Ingress pipeline (TS layer)
-│   │   ├── index.ts         # Public API + async factory
-│   │   ├── fast.ts          # Fast synchronous handler (packed input)
-│   │   ├── handlers.ts      # PRE-BAKED handlers + createIngressServer
+│   ├── ingress/             # Ingress pipeline (TS layer), decomposed by task
+│   │   ├── index.ts         # Public API barrel + async factory
+│   │   ├── fast.ts          # Thin: createIngressFast (packed input)
+│   │   ├── handlers.ts      # Thin: createIngressHandler (full_sync, pre-baked)
+│   │   ├── server.ts        # createIngressServer (Bun.serve builder)
 │   │   ├── constants.ts     # Layout constants (from Rust)
-│   │   └── packed-input.ts  # Input buffer packing
+│   │   ├── shared.ts        # JS constants shared by both paths
+│   │   ├── status.ts        # Status normalization helpers
+│   │   ├── errors.ts        # Fast-path error-code mapping
+│   │   ├── options.ts       # IngressFast option types + validation
+│   │   ├── types.ts         # Public API types
+│   │   ├── body.ts          # Streaming request-body reader
+│   │   ├── context.ts       # Result snapshot + synthetic contexts
+│   │   ├── packing/         # header-packing, input-packer, gather-raw-headers
+│   │   ├── headers/         # cors, hsts, fast-templates, baked-templates
+│   │   ├── decode/          # fast-result, baked-result
+│   │   ├── response/        # terminal, error-bodies
+│   │   └── routes/          # read/head/json-write/echo/fallback factories
 │   ├── native/              # Native addon loader
-│   │   └── index.ts         # Module loading + type definitions
+│   │   ├── types.ts         # NativeAddon interface + instance types
+│   │   ├── loader.ts        # getAddon/lazyAddon path resolution
+│   │   └── index.ts         # Barrel
 │   ├── rust-ffi/            # Rust FFI bindings
-│   │   └── index.ts         # Flat, complete FFI API
+│   │   ├── options.ts       # RustOptions + input-normalization helpers
+│   │   ├── addon.ts         # shared lazy addon proxy
+│   │   ├── context.ts       # per-instance state + namespace helpers
+│   │   ├── text.ts          # string namespace
+│   │   ├── batch.ts         # array-of-bytes namespace
+│   │   ├── packed.ts        # raw packed-wire namespace
+│   │   ├── scalar.ts        # scalar/feature methods
+│   │   ├── client.ts        # createRust factory + default `rust`
+│   │   └── index.ts         # Barrel
 │   ├── baseline/            # JS baseline implementations
 │   │   ├── index.ts         # Aggregator
 │   │   └── tasks/           # Individual baseline implementations
@@ -402,25 +462,24 @@ git tag v0.6.0 && git push origin v0.6.0
 
 ### Manual
 
-To build and publish a release by hand (GitHub CLI `gh` installed/authenticated and
-npm logged in):
+To build and publish a release by hand (no CI needed; npm logged in or `NPM_TOKEN`
+exported):
 
 ```bash
-bun run publish:manual                            # build, download CI addons, publish
+bun run publish:manual                            # build + publish current version
 bun run publish:manual -- --increment minor       # bump version + tag + push + publish
-bun run publish:manual:dry                        # same, but verify only (no publish)
+bun run publish:manual:dry                        # print the plan, change nothing
 ```
 
-`publish:manual` builds the host addon locally, downloads the CI-built `addon-*`
-artifacts for the current `v<version>` tag, verifies every platform is present, and
-runs `npm publish --access public`.
+`publish:manual` bumps the version (`--increment`), creates + pushes the `v<version>`
+git tag via `bun pm version` (keeping `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`
+in sync), builds the host addon locally, and runs `npm publish --access public`.
 
-With `--increment <patch|minor|major|...>`, it first bumps the version and creates the
-`v<version>` git tag via `bun pm version` (keeping `Cargo.toml`, `Cargo.lock`, and
-`CHANGELOG.md` in sync), pushes the tag to trigger the CI addon build, waits for the
-`build` job, then publishes. Pass `--no-wait` to push the tag and stop (re-run
-`bun run publish:manual` once CI finishes). It still requires the CI `build` job to
-succeed for the tag.
+> **Platform note:** because only the current platform can be built locally, the
+> manual publish ships a **single-platform tarball** (it sets
+> `CASTRUM_PUBLISH_ALLOW_PARTIAL=1` so `prepublishOnly` doesn't fail on the missing
+> platforms). For a full multi-platform tarball, push a `v*` tag and let the CI
+> workflow build + publish.
 
 ---
 

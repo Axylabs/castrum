@@ -1,6 +1,8 @@
 import { decoder, encoder } from "./bytes";
-import addon from "../native";
-import type { SchemaValidatorInstance } from "../native";
+import { getAddon, lazyAddon, type SchemaValidatorInstance } from "../native";
+
+// Lazy: importing this module does not dlopen the addon until first use.
+const addon = lazyAddon(getAddon);
 
 export type SchemaValidator = SchemaValidatorInstance;
 
