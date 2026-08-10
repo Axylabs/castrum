@@ -51,11 +51,16 @@ bun run check
 
 ```
 /
-├── rust/          # Rust source (NAPI cdylib)
-│   ├── lib.rs     # Crate root — module declarations
+├── rust/          # Rust source (one NAPI cdylib, domain folders)
+│   ├── lib.rs     # Crate root — folder declarations + module map
+│   ├── util/      # Shared infra (bytes, packed, batch, batch_core, threadpool, validation)
+│   ├── http/      # Wire formats & parsing (headers, method, parsers, form, media_type, ...)
+│   ├── crypto/    # Auth & hashing (jwt, aead, argon2, base64, hmac, ...)
+│   ├── json/      # JSON & schema (json_ops, json_ser, json_schema, fast_schema/)
+│   ├── payload/   # Output & streaming (compress, sse, ws_frames, template)
+│   ├── ingress/   # The ingress pipeline (mod.rs napi boundary + pipeline.rs core + tests)
 │   ├── unit_tests.rs # Rust unit tests (run with `cargo test`)
-│   ├── *.rs       # One module per functional area
-│   └── ...
+│   └── test_support.rs # shared test helpers
 ├── src/           # TypeScript source
 │   ├── ingress/   # HTTP ingress pipeline (fast.ts = packed, handlers.ts = pre-baked)
 │   ├── native/    # Native addon loader

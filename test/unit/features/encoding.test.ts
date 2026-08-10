@@ -70,3 +70,125 @@ describe("hex", () => {
     expect(() => rust.hexDecode(encoder.encode("zz"))).toThrow();
   });
 });
+
+describe("rust.batch hex/base64 (packed batch)", () => {
+  test("hexEncode batch matches the scalar per item", () => {
+    const items = [DATA, encoder.encode("abc")];
+    const results = rust.batch.hexEncode(items);
+    expect(results.length).toBe(2);
+    expect(Array.from(results[0])).toEqual(Array.from(rust.hexEncode(DATA)));
+    expect(Array.from(results[1])).toEqual(
+      Array.from(rust.hexEncode(encoder.encode("abc"))),
+    );
+  });
+
+  test("hexDecode batch roundtrips byte-for-byte", () => {
+    const items = [rust.hexEncode(DATA), rust.hexEncode(encoder.encode("xyz"))];
+    const results = rust.batch.hexDecode(items);
+    expect(Array.from(results[0])).toEqual(Array.from(DATA));
+    expect(Array.from(results[1])).toEqual(Array.from(encoder.encode("xyz")));
+  });
+
+  test("base64Encode batch matches the scalar per item", () => {
+    const items = [DATA, encoder.encode("abc")];
+    const results = rust.batch.base64Encode(items);
+    expect(results.length).toBe(2);
+    expect(Array.from(results[0])).toEqual(Array.from(rust.base64Encode(DATA)));
+    expect(Array.from(results[1])).toEqual(
+      Array.from(rust.base64Encode(encoder.encode("abc"))),
+    );
+  });
+
+  test("base64Decode batch roundtrips byte-for-byte", () => {
+    const items = [rust.base64Encode(DATA), rust.base64Encode(encoder.encode("xyz"))];
+    const results = rust.batch.base64Decode(items);
+    expect(Array.from(results[0])).toEqual(Array.from(DATA));
+    expect(Array.from(results[1])).toEqual(Array.from(encoder.encode("xyz")));
+  });
+
+  test("base64 batch respects url-safe / no-padding config", () => {
+    const items = [new Uint8Array([0xfb])];
+    const std = rust.batch.base64Encode(items, false, true);
+    const url = rust.batch.base64Encode(items, true, false);
+    expect(Array.from(url[0])).toEqual(Array.from(encoder.encode("-w")));
+    expect(Array.from(std[0])).toEqual(Array.from(rust.base64Encode(new Uint8Array([0xfb]))));
+  });
+});
+
+describe("reusable-output (_into) variants", () => {
+  test("hexEncodeInto matches hexEncode byte-for-byte", () => {
+    const out = new Uint8Array(DATA.length * 2);
+    const written = rust.hexEncodeInto(DATA, out);
+    const expected = rust.hexEncode(DATA);
+    expect(written).toBe(expected.length);
+    expect(out.slice(0, written)).toEqual(expected);
+  });
+
+  test("hexDecodeInto roundtrips byte-for-byte", () => {
+    const enc = rust.hexEncode(DATA);
+    const out = new Uint8Array(DATA.length);
+    const written = rust.hexDecodeInto(enc, out);
+    expect(written).toBe(DATA.length);
+    expect(out.slice(0, written)).toEqual(DATA);
+  });
+
+  test("hexDecodeInto throws on odd length and bad digits", () => {
+    expect(() =>
+      rust.hexDecodeInto(encoder.encode("abc"), new Uint8Array(4)),
+    ).toThrow();
+    expect(() =>
+      rust.hexDecodeInto(encoder.encode("zz"), new Uint8Array(4)),
+    ).toThrow();
+  });
+
+  test("base64EncodeInto matches base64Encode", () => {
+    const out = new Uint8Array(64);
+    const written = rust.base64EncodeInto(DATA, out);
+    const expected = rust.base64Encode(DATA);
+    expect(written).toBe(expected.length);
+    expect(out.slice(0, written)).toEqual(expected);
+  });
+
+  test("base64DecodeInto roundtrips byte-for-byte", () => {
+    const enc = rust.base64Encode(DATA);
+    const out = new Uint8Array(DATA.length);
+    const written = rust.base64DecodeInto(enc, out);
+    expect(written).toBe(DATA.length);
+    expect(out.slice(0, written)).toEqual(DATA);
+  });
+
+  test("base64DecodeInto throws on invalid input", () => {
+    expect(() =>
+      rust.base64DecodeInto(encoder.encode("!!!"), new Uint8Array(16)),
+    ).toThrow();
+  });
+
+  test("too-small output buffer throws", () => {
+    expect(() => rust.hexEncodeInto(DATA, new Uint8Array(2))).toThrow();
+    expect(() =>
+      rust.hexDecodeInto(rust.hexEncode(DATA), new Uint8Array(1)),
+    ).toThrow();
+    expect(() => rust.base64EncodeInto(DATA, new Uint8Array(2))).toThrow();
+    expect(() =>
+      rust.base64DecodeInto(rust.base64Encode(DATA), new Uint8Array(1)),
+    ).toThrow();
+  });
+
+  test("urlEncodeInto matches urlEncode", () => {
+    const src = encoder.encode("a b&c=d");
+    const out = new Uint8Array(32);
+    const written = rust.urlEncodeInto(src, out);
+    const expected = rust.urlEncode(src);
+    expect(written).toBe(expected.length);
+    expect(out.slice(0, written)).toEqual(expected);
+  });
+
+  test("urlDecodeInto matches urlDecode", () => {
+    const src = encoder.encode("a%20b%26c%3Dd");
+    const out = new Uint8Array(16);
+    const written = rust.urlDecodeInto(src, out);
+    const expected = rust.urlDecode(src);
+    expect(written).toBe(expected.length);
+    expect(out.slice(0, written)).toEqual(expected);
+  });
+});

@@ -6,17 +6,17 @@
 
 #![cfg(test)]
 
-use crate::cors::{CorsEngine, CorsOptions};
-use crate::headers::HeaderRefs;
-use crate::ip_trust::{resolve_client_ip, ProxyTrustMode};
-use crate::method::MethodKind;
-use crate::output::{
+use crate::ingress::cors::{CorsEngine, CorsOptions};
+use crate::http::headers::HeaderRefs;
+use crate::ingress::ip_trust::{resolve_client_ip, ProxyTrustMode};
+use crate::http::method::MethodKind;
+use crate::ingress::output::{
     compute_header_variant, write_output_header, OUT_BODY_JSON_LEN, OUT_COOKIES_JSON_LEN,
     OUT_DATA_START, OUT_ERROR_CODE, OUT_FLAGS, OUT_HEADER_VARIANT, OUT_QUERY_JSON_LEN,
     OUT_RATE_LIMIT, OUT_RATE_REMAINING, OUT_RATE_RESET, OUT_RETRY_AFTER, OUT_STATUS, OUT_VERDICT,
     HV_CORS_PREFLIGHT, HV_CORS_SIMPLE, HV_JSON, HV_RATE_ACTIVE, HV_RATE_LIMITED,
 };
-use crate::rate_limit::KeyedRateLimiter;
+use crate::ingress::rate_limit::KeyedRateLimiter;
 use crate::test_support::{decode_packed_pairs, pack_headers, Rng};
 
 // ── rate_limit ────────────────────────────────────────────────────
@@ -106,20 +106,20 @@ fn rate_limit_seed_is_stable_per_instance() {
 fn rate_limit_shared_limiter_is_shared_by_config() {
     use std::sync::Arc;
 
-    let a = crate::rate_limit::shared_limiter(100, 60_000, None);
-    let b = crate::rate_limit::shared_limiter(100, 60_000, None);
+    let a = crate::ingress::rate_limit::shared_limiter(100, 60_000, None);
+    let b = crate::ingress::rate_limit::shared_limiter(100, 60_000, None);
     assert!(
         Arc::ptr_eq(&a, &b),
         "identical config must share one process-wide limiter"
     );
 
-    let c = crate::rate_limit::shared_limiter(100, 60_000, Some(10_000));
+    let c = crate::ingress::rate_limit::shared_limiter(100, 60_000, Some(10_000));
     assert!(
         !Arc::ptr_eq(&a, &c),
         "different max_entries must not share a limiter"
     );
 
-    let d = crate::rate_limit::shared_limiter(200, 60_000, None);
+    let d = crate::ingress::rate_limit::shared_limiter(200, 60_000, None);
     assert!(
         !Arc::ptr_eq(&a, &d),
         "different limit must not share a limiter"
@@ -131,8 +131,8 @@ fn rate_limit_shared_limiter_shares_budget() {
     // Two instances with the same config share one bucket — a request consumed
     // via one instance must count against the other (prevents route-splitting
     // bypass).
-    let a = crate::rate_limit::shared_limiter(2, 60_000, None);
-    let b = crate::rate_limit::shared_limiter(2, 60_000, None);
+    let a = crate::ingress::rate_limit::shared_limiter(2, 60_000, None);
+    let b = crate::ingress::rate_limit::shared_limiter(2, 60_000, None);
     let key = 1234u64;
 
     assert!(a.check_key(key, 0).allowed);
@@ -198,7 +198,7 @@ fn ip_trust_resolves_socket_ip_when_not_trusting_proxy() {
     assert!(!peer_trusted);
     // Socket IP must win; XFF must be ignored.
     match resolved {
-        crate::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [203, 0, 113, 5]),
+        crate::ingress::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [203, 0, 113, 5]),
         _ => panic!("expected V4 socket IP"),
     }
 }
@@ -215,7 +215,7 @@ fn ip_trust_untrusted_socket_ignores_xff() {
     );
     assert!(!peer_trusted);
     match resolved {
-        crate::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [203, 0, 113, 9]),
+        crate::ingress::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [203, 0, 113, 9]),
         _ => panic!("expected V4 socket IP"),
     }
 }
@@ -232,7 +232,7 @@ fn ip_trust_trusted_socket_uses_leftmost_untrusted_xff() {
     assert!(peer_trusted);
     // Right-to-left: 10.0.0.2 trusted, 10.0.0.1 trusted, 8.8.8.8 NOT trusted -> client = 8.8.8.8.
     match resolved {
-        crate::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [8, 8, 8, 8]),
+        crate::ingress::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [8, 8, 8, 8]),
         _ => panic!("expected V4 8.8.8.8"),
     }
 }
@@ -248,7 +248,7 @@ fn ip_trust_all_trusted_xff_returns_last_entry() {
     );
     assert!(peer_trusted);
     match resolved {
-        crate::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [10, 0, 0, 1]),
+        crate::ingress::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [10, 0, 0, 1]),
         _ => panic!("expected V4 10.0.0.1"),
     }
 }
@@ -386,7 +386,7 @@ fn output_write_u32_panics_on_undersized() {
     // a silent OOB write.
     let mut out = vec![0u8; 3];
     unsafe {
-        crate::output::write_u32(&mut out, 0, 0xDEADBEEF);
+        crate::ingress::output::write_u32(&mut out, 0, 0xDEADBEEF);
     }
 }
 
@@ -394,11 +394,11 @@ fn output_write_u32_panics_on_undersized() {
 fn random_token_rejects_huge_len() {
     // A u32 byte_len must not be able to trigger a ~4 GiB single allocation.
     assert!(
-        crate::random_token::random_token(16 * 1024 * 1024 + 1).is_err(),
+        crate::crypto::random_token::random_token(16 * 1024 * 1024 + 1).is_err(),
         "huge byte_len must error"
     );
     // A normal size still works.
-    assert!(crate::random_token::random_token(32).is_ok());
+    assert!(crate::crypto::random_token::random_token(32).is_ok());
 }
 
 #[test]
@@ -406,8 +406,8 @@ fn init_thread_pool_is_idempotent() {
     // The rayon global pool is process-wide and first-call-wins. A second
     // init_thread_pool (after a prior init OR after a direct par_iter
     // auto-initialized rayon) must return Ok — never a poisoned error.
-    let first = crate::threadpool::init_thread_pool(Some(2));
-    let second = crate::threadpool::init_thread_pool(Some(2));
+    let first = crate::util::threadpool::init_thread_pool(Some(2));
+    let second = crate::util::threadpool::init_thread_pool(Some(2));
     assert!(
         first.is_ok(),
         "first init must succeed (got {first:?})"
@@ -422,7 +422,7 @@ fn init_thread_pool_is_idempotent() {
 #[should_panic(expected = "hex_encode: output buffer too small")]
 fn hex_encode_panics_on_undersized() {
     let mut out = [0u8; 4];
-    crate::bytes::hex_encode(b"abcd", &mut out);
+    crate::util::bytes::hex_encode(b"abcd", &mut out);
 }
 
 // ── headers ───────────────────────────────────────────────────────
@@ -673,7 +673,7 @@ fn cors_preflight_disallowed_header() {
 
 #[test]
 fn query_parse_basic_pairs() {
-    let packed = crate::query_parser::query_parse_packed_vec(b"a=1&b=2").unwrap();
+    let packed = crate::http::query_parser::query_parse_packed_vec(b"a=1&b=2").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
@@ -682,7 +682,7 @@ fn query_parse_basic_pairs() {
 
 #[test]
 fn query_parse_percent_and_plus_decoding() {
-    let packed = crate::query_parser::query_parse_packed_vec(b"name=John%20Doe&q=a+b").unwrap();
+    let packed = crate::http::query_parser::query_parse_packed_vec(b"name=John%20Doe&q=a+b").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0], (b"name".to_vec(), b"John Doe".to_vec()));
@@ -691,7 +691,7 @@ fn query_parse_percent_and_plus_decoding() {
 
 #[test]
 fn query_parse_empty_value() {
-    let packed = crate::query_parser::query_parse_packed_vec(b"flag").unwrap();
+    let packed = crate::http::query_parser::query_parse_packed_vec(b"flag").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0], (b"flag".to_vec(), b"".to_vec()));
@@ -699,12 +699,12 @@ fn query_parse_empty_value() {
 
 #[test]
 fn query_parse_invalid_percent_rejected() {
-    assert!(crate::query_parser::query_parse_packed_vec(b"a=%ZZ").is_err());
+    assert!(crate::http::query_parser::query_parse_packed_vec(b"a=%ZZ").is_err());
 }
 
 #[test]
 fn query_parse_empty_input() {
-    let packed = crate::query_parser::query_parse_packed_vec(b"").unwrap();
+    let packed = crate::http::query_parser::query_parse_packed_vec(b"").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert!(pairs.is_empty());
 }
@@ -713,7 +713,7 @@ fn query_parse_empty_input() {
 
 #[test]
 fn cookie_parse_basic() {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"a=1; b=2").unwrap();
+    let packed = crate::http::cookie_parser::cookie_parse_packed_vec(b"a=1; b=2").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
@@ -722,7 +722,7 @@ fn cookie_parse_basic() {
 
 #[test]
 fn cookie_parse_trims_whitespace() {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(b" a = 1 ; b = hello world ").unwrap();
+    let packed = crate::http::cookie_parser::cookie_parse_packed_vec(b" a = 1 ; b = hello world ").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
@@ -731,7 +731,7 @@ fn cookie_parse_trims_whitespace() {
 
 #[test]
 fn cookie_parse_skips_empty_name() {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"=1; =2; ok=3").unwrap();
+    let packed = crate::http::cookie_parser::cookie_parse_packed_vec(b"=1; =2; ok=3").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0], (b"ok".to_vec(), b"3".to_vec()));
@@ -739,7 +739,7 @@ fn cookie_parse_skips_empty_name() {
 
 #[test]
 fn cookie_parse_empty_value() {
-    let packed = crate::cookie_parser::cookie_parse_packed_vec(b"session=").unwrap();
+    let packed = crate::http::cookie_parser::cookie_parse_packed_vec(b"session=").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0], (b"session".to_vec(), b"".to_vec()));
@@ -749,38 +749,38 @@ fn cookie_parse_empty_value() {
 
 #[test]
 fn json_escaped_len_plain_ascii() {
-    assert_eq!(crate::json_ser::json_escaped_len(b"hello world"), 11);
+    assert_eq!(crate::json::json_ser::json_escaped_len(b"hello world"), 11);
 }
 
 #[test]
 fn json_escaped_len_quotes_and_backslash() {
     // "a\"b" -> a, \", b = 3 chars + 1 extra for the escaped quote.
-    assert_eq!(crate::json_ser::json_escaped_len(b"a\"b"), 4);
+    assert_eq!(crate::json::json_ser::json_escaped_len(b"a\"b"), 4);
     // backslash doubles: bytes a, \, b = 3 -> 4 escaped.
-    assert_eq!(crate::json_ser::json_escaped_len(b"a\\b"), 4);
+    assert_eq!(crate::json::json_ser::json_escaped_len(b"a\\b"), 4);
 }
 
 #[test]
 fn json_escaped_len_newline() {
-    assert_eq!(crate::json_ser::json_escaped_len(b"a\nb"), 4);
+    assert_eq!(crate::json::json_ser::json_escaped_len(b"a\nb"), 4);
 }
 
 #[test]
 fn json_escaped_len_control_char_wide() {
     // 0x01 must be escaped as \u0001 -> 6 bytes for 1 input byte.
-    assert_eq!(crate::json_ser::json_escaped_len(&[b'a', 0x01, b'b']), 8);
+    assert_eq!(crate::json::json_ser::json_escaped_len(&[b'a', 0x01, b'b']), 8);
 }
 
 #[test]
 fn json_escaped_len_short_control_escapes() {
     // \r, \t, \x08, \x0c are written as 2-byte escapes, each contributing
     // +1. (memchr3 only finds ", \, \n; the run scanner handles these.)
-    assert_eq!(crate::json_ser::json_escaped_len(b"a\rb"), 4); // a, \r, b
-    assert_eq!(crate::json_ser::json_escaped_len(b"a\tb"), 4);
-    assert_eq!(crate::json_ser::json_escaped_len(&[b'a', 0x08, b'b']), 4);
-    assert_eq!(crate::json_ser::json_escaped_len(&[b'a', 0x0c, b'b']), 4);
+    assert_eq!(crate::json::json_ser::json_escaped_len(b"a\rb"), 4); // a, \r, b
+    assert_eq!(crate::json::json_ser::json_escaped_len(b"a\tb"), 4);
+    assert_eq!(crate::json::json_ser::json_escaped_len(&[b'a', 0x08, b'b']), 4);
+    assert_eq!(crate::json::json_ser::json_escaped_len(&[b'a', 0x0c, b'b']), 4);
     // Mixed: newline (memchr3 path) + tab (trailing path).
-    assert_eq!(crate::json_ser::json_escaped_len(b"a\n\tb"), 6);
+    assert_eq!(crate::json::json_ser::json_escaped_len(b"a\n\tb"), 6);
 }
 
 #[test]
@@ -798,10 +798,10 @@ fn write_json_escaped_never_overflows_exact_buffer() {
     ];
 
     for input in cases {
-        let len = crate::json_ser::json_escaped_len(input);
+        let len = crate::json::json_ser::json_escaped_len(input);
         let mut out = vec![0u8; len];
         let mut pos = 0usize;
-        crate::json_ser::write_json_escaped(&mut out, &mut pos, input);
+        crate::json::json_ser::write_json_escaped(&mut out, &mut pos, input);
         assert_eq!(pos, len, "must write exactly json_escaped_len bytes: {input:?}");
     }
 }
@@ -842,10 +842,10 @@ fn write_json_escaped_escapes_control_before_special() {
     ];
 
     for (input, expected) in cases {
-        let len = crate::json_ser::json_escaped_len(input);
+        let len = crate::json::json_ser::json_escaped_len(input);
         let mut out = vec![0u8; len];
         let mut pos = 0usize;
-        crate::json_ser::write_json_escaped(&mut out, &mut pos, input);
+        crate::json::json_ser::write_json_escaped(&mut out, &mut pos, input);
         assert_eq!(pos, len, "accounting must be exact for {input:?}");
         assert_eq!(&out[..pos], *expected, "output must be valid JSON for {input:?}");
     }
@@ -857,38 +857,85 @@ fn cookie_json_into_slice_short_control_escapes() {
     // sized by the (fixed) length accounting.
     let mut out = vec![0u8; 256];
     let written =
-        crate::json_ser::cookie_json_into_slice(b"a=va\tl; b=x\ry", &mut out, 100).unwrap();
+        crate::json::json_ser::cookie_json_into_slice(b"a=va\tl; b=x\ry", &mut out, 100).unwrap();
     assert_eq!(&out[..written], b"{\"a\":\"va\\tl\",\"b\":\"x\\ry\"}");
 }
 
 #[test]
 fn cookie_json_into_slice_output() {
     let mut out = vec![0u8; 256];
-    let written = crate::json_ser::cookie_json_into_slice(b"a=1; b=hello world", &mut out, 100).unwrap();
+    let written = crate::json::json_ser::cookie_json_into_slice(b"a=1; b=hello world", &mut out, 100).unwrap();
     assert_eq!(&out[..written], b"{\"a\":\"1\",\"b\":\"hello world\"}");
 }
 
 #[test]
 fn cookie_json_into_slice_escapes() {
     let mut out = vec![0u8; 256];
-    let written = crate::json_ser::cookie_json_into_slice(b"k=\"v\"", &mut out, 100).unwrap();
+    let written = crate::json::json_ser::cookie_json_into_slice(b"k=\"v\"", &mut out, 100).unwrap();
     assert_eq!(&out[..written], b"{\"k\":\"\\\"v\\\"\"}");
 }
 
 #[test]
 fn cookie_json_into_slice_small_buffer_errors() {
     let mut out = vec![0u8; 8];
-    let res = crate::json_ser::cookie_json_into_slice(b"a=1; b=2; c=3; d=4", &mut out, 100);
+    let res = crate::json::json_ser::cookie_json_into_slice(b"a=1; b=2; c=3; d=4", &mut out, 100);
     assert!(res.is_err(), "truncation must surface as an error, not silent data loss");
 }
 
 #[test]
 fn packed_pairs_to_json_into_slice_output() {
     // Build packed query pairs for a=1 & b=2 via the query parser, then serialize.
-    let packed = crate::query_parser::query_parse_packed_vec(b"a=1&b=2").unwrap();
+    let packed = crate::http::query_parser::query_parse_packed_vec(b"a=1&b=2").unwrap();
     let mut out = vec![0u8; 256];
-    let written = crate::json_ser::packed_pairs_to_json_into_slice(&packed, &mut out, 100).unwrap();
+    let written = crate::json::json_ser::packed_pairs_to_json_into_slice(&packed, &mut out, 100).unwrap();
     assert_eq!(&out[..written], b"{\"a\":\"1\",\"b\":\"2\"}");
+}
+
+#[test]
+fn query_to_json_into_slice_matches_packed_pipeline() {
+    // The direct writer must produce byte-identical output to the two-step
+    // query_parse_packed_vec + packed_pairs_to_json_into_slice pipeline it
+    // replaces on the ingress hot path.
+    use crate::json::json_ser::{query_to_json_into_slice, QueryJsonError};
+    let cases: &[&[u8]] = &[
+        b"a=1&b=2",
+        b"name=John%20Doe&q=a+b",
+        b"flag",
+        b"",
+        b"x=%41%42",
+        b"a=%ZZ",
+        b"k=%E2%82%AC", // euro (valid UTF-8 after decode)
+        b"weird=%FF",   // invalid UTF-8 after decode (binary escape path)
+        b"a=1&a=2&a=3",
+        b"spaces=+a+b+c+",
+    ];
+    for &raw in cases {
+        let packed = crate::http::query_parser::query_parse_packed_vec(raw);
+        let mut direct_out = vec![0u8; 512];
+        let direct = query_to_json_into_slice(raw, &mut direct_out, 100);
+        match (&packed, &direct) {
+            (Ok(packed), Ok(written)) => {
+                let mut ref_out = vec![0u8; 512];
+                let ref_written =
+                    crate::json::json_ser::packed_pairs_to_json_into_slice(packed, &mut ref_out, 100)
+                        .unwrap();
+                assert_eq!(
+                    &direct_out[..*written],
+                    &ref_out[..ref_written],
+                    "query={raw:?}"
+                );
+            }
+            (Err(_), Err(QueryJsonError::Malformed)) => {} // both reject malformed %XX
+            (other, _) => panic!("mismatched outcome for query={raw:?}: {other:?} vs {direct:?}"),
+        }
+    }
+
+    // Buffer-too-small must surface as BufferTooSmall (→ truncated), not Malformed.
+    let mut tiny = vec![0u8; 2];
+    assert!(matches!(
+        query_to_json_into_slice(b"a=1", &mut tiny, 100),
+        Err(QueryJsonError::BufferTooSmall)
+    ));
 }
 
 // ── Malformed-input panic safety ──────────────────────────────────
@@ -902,11 +949,11 @@ fn parsers_do_not_panic_on_malformed_input() {
         let data = rng.bytes(len);
 
         // Every reachable parser must return Ok/Err, never panic.
-        let _ = crate::query_parser::query_parse_packed_vec(&data);
-        let _ = crate::cookie_parser::cookie_parse_packed_vec(&data);
+        let _ = crate::http::query_parser::query_parse_packed_vec(&data);
+        let _ = crate::http::cookie_parser::cookie_parse_packed_vec(&data);
         let _ = HeaderRefs::parse(&data, (rng.next() & 1) == 1, 100);
-        let _ = crate::json_ser::cookie_json_into_slice(&data, &mut vec![0u8; 64], 100);
-        let _ = crate::json_ser::json_escaped_len(&data);
+        let _ = crate::json::json_ser::cookie_json_into_slice(&data, &mut vec![0u8; 64], 100);
+        let _ = crate::json::json_ser::json_escaped_len(&data);
     }
 }
 

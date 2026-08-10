@@ -7,7 +7,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::cors::CorsOptions;
+use crate::ingress::cors::CorsOptions;
 
 #[napi(object)]
 pub struct RateLimitOptions {

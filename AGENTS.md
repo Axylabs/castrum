@@ -23,7 +23,7 @@ HTTP **ingress pipeline** for Bun servers.
 | Build compiled JS entry (Node) | `bun run build:js` (bundle + types → `dist/`) |
 | Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
-| Rust unit tests | `cargo test` (~138 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
+| Rust unit tests | `cargo test` (~214 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
 | TS unit tests | `bun test` (~154 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Proven-surface audit | `bun run check:proven` (report) / `bun run check:proven:fail` (CI gate) |
@@ -107,36 +107,58 @@ bench/startup.ts          "instant execution" benchmark (import + first-call tim
 scripts/build-perf.sh     LOCAL-only max-perf build (x86-64-v3 + SIMD)
 test/unit/                TS tests (ingress/fast, shared/packed, shared/bytes, features, ingress/body)
 test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test.mjs, run via node --test; the enterprise file adds Buffer interop, the precompiled instances, node:crypto cross-checks, keep-alive/413/clientError/slowloris)
-rust/                     single cdylib crate, one module per area (lib.rs declares mods)
-  ├── bytes.rs            SHARED byte primitives: word-compare, hex, %XX decode, cookie_pairs
-  ├── output.rs           SINGLE NUMERIC SOURCE for the ingress binary layout
-  ├── ingress_constants.rs  NAPI projection of output.rs (single numeric source = output.rs)
-  ├── util.rs             re-export shim for the util split (threadpool/packed/batch_core); keeps initThreadPool napi
-  ├── threadpool.rs       rayon global pool init + parallelism heuristic
-  ├── packed.rs           zero-alloc packed iterators + byte writers (VecWriter, PackedIter, ...)
-  ├── batch_core.rs       generic rayon-parallel batch helpers (bitset/count/sum)
-  ├── fast_schema.rs      zero-DOM JSON Schema fast path: compiles the common keyword subset
-  │                       (type/required/properties/additionalProperties/items/min-max/…)
-  │                       into an AST and validates raw bytes in one allocation-free pass.
-  │                       `json_schema.rs` (SchemaValidator) uses it automatically; schemas
-  │                       with unsupported keywords (pattern/format/anyOf/$ref/enum/…) fall
-  │                       back to the jsonschema crate DOM path. Both paths must stay.
-  ├── json_schema.rs      SchemaValidator napi class (fast path + jsonschema-crate fallback)
-  ├── ingress.rs          ingress pipeline (IngressInner + napi class), with submodules:
-  │   └── ingress/        options.rs (napi option structs + Limits), time.rs (clock), packed.rs (packed readers + builder)
-  ├── form.rs             x-www-form-urlencoded body parser (reuses query_parser core) + FormParser instance
-  ├── media_type.rs       Content-Type parser (type/subtype + params) + MediaTypeParser (wildcard matches)
-  ├── etag.rs             HTTP cache semantics: etag(), http_date, parse_http_date + ConditionalRequest (304)
-  ├── accept.rs           Accept-Encoding parse + AcceptNegotiator (q-values, wildcard, specificity-first; allocation-free stack path)
-  ├── base64.rs           base64/base64url/hex encode-decode + Base64Codec instance (concrete engine stored once)
-  ├── jwt.rs              HS256 JWT sign/verify + JwtSigner instance (HMAC key + ttl compiled once)
-  ├── aead.rs             AES-256-GCM / chacha20-poly1305 + AeadCipher instance (LessSafeKey compiled once)
-  ├── argon2.rs           argon2id password hashing + Argon2Hasher instance (params compiled once)
-  ├── base64.rs           base64/base64url/hex encode-decode + Base64Codec instance
-  ├── cookie_sign.rs      signed cookies (value.signature, HMAC-SHA256) + CookieSigner instance
-  ├── csrf.rs             CSRF tokens (random hex + HMAC) + CsrfProtector instance
-  ├── url_join.rs         RFC 3986 url_resolve + url_encode_query + UrlBuilder instance
-  └── test_support.rs     shared #[cfg(test)] helpers (pack_headers, decode_packed_pairs, Rng)
+rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
+                          DOMAIN FOLDERS (lib.rs declares the folders + a module map):
+  ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
+  ├── util/               SHARED INFRASTRUCTURE (mod.rs re-exports keep `crate::util::*`)
+  │   ├── bytes.rs        byte primitives: word-compare, hex, %XX decode, cookie_pairs
+  │   ├── packed.rs       zero-alloc packed iterators + byte writers (VecWriter, PackedIter)
+  │   ├── batch.rs        aggregate packed batch napi APIs (bitset/count/sum/direct)
+  │   ├── batch_core.rs   generic rayon-parallel batch helpers (bitset/count/sum)
+  │   ├── threadpool.rs   rayon global pool init + parallelism heuristic
+  │   └── validation.rs   email / UUID / IPv4 / IPv6 validators
+  ├── http/               HTTP WIRE FORMATS & PARSING
+  │   ├── headers.rs      zero-alloc packed-header parser (HeaderRefs)
+  │   ├── method.rs       HTTP method classification
+  │   ├── http_parser.rs  httparse → packed request
+  │   ├── cookie_parser.rs / query_parser.rs   zero-alloc packed pairs parsers
+  │   ├── form.rs         x-www-form-urlencoded parser + FormParser instance
+  │   ├── media_type.rs   Content-Type parser + MediaTypeParser / MediaTypeMatcher
+  │   ├── url_codec.rs / url_join.rs   percent-encoding + RFC 3986 resolve (UrlBuilder)
+  │   ├── etag.rs         etag / http_date / parse_http_date + ConditionalRequest (304)
+  │   ├── accept.rs       Accept-Encoding + AcceptNegotiator (q-values, specificity-first)
+  │   ├── mime_lookup.rs  extension → MIME (phf table)
+  │   └── multipart.rs    multipart/form-data parser (+ limits)
+  ├── crypto/             AUTH & HASHING (compiled-once instances; keys compiled at construction)
+  │   ├── hmac_sha256.rs / cookie_sign.rs / csrf.rs   HMAC, signed cookies, CSRF
+  │   ├── jwt.rs          HS256 JWT sign/verify + JwtSigner (precomputed header)
+  │   ├── aead.rs         AES-256-GCM / chacha20-poly1305 + AeadCipher
+  │   ├── argon2.rs       argon2id + Argon2Hasher
+  │   ├── base64.rs       base64/base64url/hex + Base64Codec
+  │   ├── hashing.rs      FNV-1a / XXH3 / crc32
+  │   └── random_token.rs random hex tokens
+  ├── json/               JSON & SCHEMA
+  │   ├── json_ops.rs     zero-DOM validate/sum + DOM parse
+  │   ├── json_ser.rs     zero-alloc JSON escaping + cookie/query → JSON writers
+  │   ├── json_patch_ops.rs  RFC 6902 JSON patch
+  │   ├── json_schema.rs  SchemaValidator napi class (fast path + jsonschema-crate fallback)
+  │   └── fast_schema/    zero-DOM JSON Schema fast path: mod.rs (re-exports compile/FastNode)
+  │       └── types.rs / cursor.rs / compile.rs / validate.rs / tests.rs
+  ├── payload/            OUTPUT & STREAMING
+  │   ├── compress.rs     gzip (zlib-rs) + brotli + batch
+  │   ├── sse.rs / ws_frames.rs / websocket.rs   SSE framing, RFC 6455 codec, accept-key
+  │   └── template.rs     minijinja TemplateRenderer + batch
+  ├── ingress/            THE INGRESS PIPELINE
+  │   ├── mod.rs          thin napi boundary: Ingress class + entry points
+  │   ├── pipeline.rs     core 8-stage pipeline (IngressInner::handle_packed,
+  │   │                   write_body_sections, BodySections, IngressSchema)
+  │   ├── tests.rs        ingress unit tests
+  │   ├── options.rs / time.rs / packed.rs   option structs, clock, packed readers/builder
+  │   ├── cors.rs / proxy.rs / ip_trust.rs / rate_limit.rs / terminal.rs
+  │   ├── output.rs       SINGLE NUMERIC SOURCE for the ingress binary layout
+  │   └── ingress_constants.rs  NAPI projection of output.rs (single numeric source = output.rs)
+  ├── test_support.rs     shared #[cfg(test)] helpers (pack_headers, decode_packed_pairs, Rng)
+  └── unit_tests.rs       cross-module test suite
 ```
 
 ## Ingress: the two paths (do NOT conflate)
@@ -190,20 +212,28 @@ success and `error.code` / `error.message` on errors (path 2's format).
   (`dist/…`). Honor `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`. Run
   `bun run bench:startup` after touching it.
 - **Constants**: never hardcode binary-layout values. The single NUMERIC source is
-  `rust/output.rs`; `rust/ingress_constants.rs` re-exports those values to JS via
-  NAPI (`#[napi] pub const ... = crate::output::OUT_X as u32`), and
-  `src/ingress/constants.ts` reads them. They cannot drift.
+  `rust/ingress/output.rs`; `rust/ingress/ingress_constants.rs` re-exports those
+  values to JS via NAPI (`#[napi] pub const ... = crate::ingress::output::OUT_X
+  as u32`), and `src/ingress/constants.ts` reads them. They cannot drift.
+- **Ingress schema (fast path)**: `IngressInner.schema` is an `Option<Arc<IngressSchema>>`
+  (rust/ingress/pipeline.rs) that precompiles BOTH the authoritative `jsonschema`
+  validator AND the zero-DOM `fast_schema::FastNode` once at construction.
+  `handle_packed` gates the body with `json_valid_bytes` (→ 400) then runs
+  `IngressSchema::validate` (fast path; jsonschema DOM fallback for unsupported
+  keywords) → 422. The fast_schema fast path MUST stay byte-parity with the
+  jsonschema crate for supported keywords (see rust/json/fast_schema/tests.rs).
 - **`tsconfig.json`** sets `noUncheckedIndexedAccess: true`. Indexed access on
   `Record<string, Uint8Array>` (e.g. `ERROR_BODIES.internal`) is
   `Uint8Array | undefined` — `handlers.ts` uses `!` where the key is guaranteed.
 - **`bench/` is not typechecked by `tsc`** (not in tsconfig `include`). Validate
   bench files with the editor language server, and run `bun run bench:http:smoke`
   to confirm the servers still pass load checks.
-- **Hot-path APIs (do not remove)**: `ingress.rs::handle_request_packed`
-  (fast.ts), `handle_request_full_sync` AND `handle_request_full_sync_into`
-  (handlers.ts — the latter is the pooled/reusable-output variant; keep
-  `handleRequestFullSync` as the allocating compat wrapper), `ingress_constants.rs`,
-  sync `batch.rs`, `util.rs::init_thread_pool`, and the scalar NAPI fns used by
+- **Hot-path APIs (do not remove)**: `rust/ingress/mod.rs` (`Ingress`)::
+  `handle_request_packed` (fast.ts), `handle_request_full_sync` AND
+  `handle_request_full_sync_into` (handlers.ts — the latter is the
+  pooled/reusable-output variant; keep `handleRequestFullSync` as the allocating
+  compat wrapper), `rust/ingress/ingress_constants.rs`, sync `util/batch.rs`,
+  `util/mod.rs::init_thread_pool`, and the scalar NAPI fns used by
   `src/bench/tasks/*`.
 - **Rust crate history**: it is ONE cdylib crate (Cargo `[lib]` → `rust/lib.rs`).
   `rust/core/`, `export.rs`, `async_tasks.rs`, `ingress_async.rs` and the direct

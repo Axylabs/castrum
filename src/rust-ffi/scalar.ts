@@ -51,6 +51,10 @@ export interface RustScalar {
   urlDecode(input: Uint8Array): Uint8Array;
   /** Strict percent-decode without UTF-8 validation. */
   urlDecodeBytes(input: Uint8Array): Uint8Array;
+  /** Reusable-output percent-encode; returns bytes written. */
+  urlEncodeInto(input: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output percent-decode; returns bytes written. */
+  urlDecodeInto(input: Uint8Array, output: Uint8Array): number;
   validateEmail(input: Uint8Array): boolean;
   validateUuid(input: Uint8Array): boolean;
   validateIpv4(input: Uint8Array): boolean;
@@ -61,12 +65,20 @@ export interface RustScalar {
   httpParseRequestPacked(input: Uint8Array): Uint8Array;
   queryParsePacked(input: Uint8Array): Uint8Array;
   cookieParsePacked(input: Uint8Array): Uint8Array;
+  /** Reusable-output packed HTTP parse; returns bytes written. */
+  httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output packed query parse; returns bytes written. */
+  queryParsePackedInto(input: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output packed cookie parse; returns bytes written. */
+  cookieParsePackedInto(input: Uint8Array, output: Uint8Array): number;
   /** Parse an application/x-www-form-urlencoded body into packed pairs. */
   formParsePacked(input: Uint8Array): Uint8Array;
   /** Parse a Content-Type header into a structured media type. */
   parseMediaType(input: Uint8Array): MediaTypeResult;
   /** Generate a strong/weak ETag (crc32-based). */
   etag(data: Uint8Array, weak?: boolean): Uint8Array;
+  /** Reusable-output etag; returns bytes written (10 strong / 12 weak). */
+  etagInto(data: Uint8Array, output: Uint8Array, weak?: boolean): number;
   /** Format a unix timestamp as an IMF-fixdate HTTP-date. */
   httpDate(secs?: number): Uint8Array;
   /** Parse an IMF-fixdate HTTP-date back to unix seconds. */
@@ -77,12 +89,20 @@ export interface RustScalar {
   base64Encode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
   /** Base64 decode (standard); throws on invalid input. */
   base64Decode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
+  /** Reusable-output base64 encode; returns bytes written. */
+  base64EncodeInto(input: Uint8Array, output: Uint8Array, urlSafe?: boolean, padding?: boolean): number;
+  /** Reusable-output base64 decode; returns bytes written. Throws on invalid input. */
+  base64DecodeInto(input: Uint8Array, output: Uint8Array, urlSafe?: boolean, padding?: boolean): number;
   base64UrlEncode(input: Uint8Array): Uint8Array;
   base64UrlDecode(input: Uint8Array): Uint8Array;
   /** Lowercase hex encode. */
   hexEncode(input: Uint8Array): Uint8Array;
   /** Hex decode; throws on odd length or invalid digits. */
   hexDecode(input: Uint8Array): Uint8Array;
+  /** Reusable-output lowercase-hex encode; returns bytes written. */
+  hexEncodeInto(input: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output hex decode; returns bytes written. Throws on bad input. */
+  hexDecodeInto(input: Uint8Array, output: Uint8Array): number;
   /** Sign a cookie value as `value.signature` (HMAC-SHA256 hex). */
   signCookie(value: Uint8Array, secret: Uint8Array): Uint8Array;
   /** Verify a signed cookie; returns the value or null. */
@@ -219,8 +239,14 @@ export function buildScalar(ctx: RustClientContext): RustScalar {
     urlEncode(bytes) {
       return addon.urlEncode(bytes);
     },
+    urlEncodeInto(input, output) {
+      return addon.urlEncodeInto(input, output);
+    },
     urlDecode(bytes) {
       return addon.urlDecode(bytes);
+    },
+    urlDecodeInto(input, output) {
+      return addon.urlDecodeInto(input, output);
     },
     urlDecodeBytes(bytes) {
       return addon.urlDecodeBytes(bytes);
@@ -245,11 +271,20 @@ export function buildScalar(ctx: RustClientContext): RustScalar {
     httpParseRequestPacked(bytes) {
       return addon.httpParseRequestPacked(bytes);
     },
+    httpParseRequestPackedInto(input, output) {
+      return addon.httpParseRequestPackedInto(input, output);
+    },
     queryParsePacked(bytes) {
       return addon.queryParsePacked(bytes);
     },
+    queryParsePackedInto(input, output) {
+      return addon.queryParsePackedInto(input, output);
+    },
     cookieParsePacked(bytes) {
       return addon.cookieParsePacked(bytes);
+    },
+    cookieParsePackedInto(input, output) {
+      return addon.cookieParsePackedInto(input, output);
     },
     formParsePacked(bytes) {
       return addon.formParsePacked(bytes);
@@ -268,6 +303,9 @@ export function buildScalar(ctx: RustClientContext): RustScalar {
     etag(data, weak) {
       return addon.etag(data, weak ?? undefined);
     },
+    etagInto(data, output, weak) {
+      return addon.etagInto(data, output, weak ?? undefined);
+    },
     httpDate(secs) {
       return addon.httpDate(secs ?? undefined);
     },
@@ -280,8 +318,14 @@ export function buildScalar(ctx: RustClientContext): RustScalar {
     base64Encode(input, urlSafe, padding) {
       return addon.base64Encode(input, urlSafe ?? undefined, padding ?? undefined);
     },
+    base64EncodeInto(input, output, urlSafe, padding) {
+      return addon.base64EncodeInto(input, output, urlSafe ?? undefined, padding ?? undefined);
+    },
     base64Decode(input, urlSafe, padding) {
       return addon.base64Decode(input, urlSafe ?? undefined, padding ?? undefined);
+    },
+    base64DecodeInto(input, output, urlSafe, padding) {
+      return addon.base64DecodeInto(input, output, urlSafe ?? undefined, padding ?? undefined);
     },
     base64UrlEncode(input) {
       return addon.base64UrlEncode(input);
@@ -292,8 +336,14 @@ export function buildScalar(ctx: RustClientContext): RustScalar {
     hexEncode(input) {
       return addon.hexEncode(input);
     },
+    hexEncodeInto(input, output) {
+      return addon.hexEncodeInto(input, output);
+    },
     hexDecode(input) {
       return addon.hexDecode(input);
+    },
+    hexDecodeInto(input, output) {
+      return addon.hexDecodeInto(input, output);
     },
     signCookie(value, secret) {
       return addon.signCookie(value, secret);

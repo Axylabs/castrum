@@ -39,68 +39,80 @@ The bridge between TypeScript and Rust is provided by [napi-rs](https://napi.rs/
 
 ### Rust Modules
 
+One cdylib crate (`Cargo [lib] → rust/lib.rs`) decomposed into domain folders.
+`lib.rs` is a declaration hub with a module map; `util/mod.rs` re-exports the
+shared-infra names so legacy `crate::util::*` call sites keep working.
+
 ```
 rust/
-├── lib.rs                 ── Crate root: module declarations, global allocator
+├── lib.rs                 ── Crate root: folder declarations + module map, global allocator
+├── test_support.rs        ── shared #[cfg(test)] helpers (pack_headers, decode_packed_pairs, Rng)
+├── unit_tests.rs          ── cross-module test suite
 │
-├── Core Pipeline:
-│   ├── ingress.rs         ── Main NAPI Ingress class + IngressInner pipeline
-│   │   └── ingress/       ── options.rs (napi option structs + Limits),
-│   │                        time.rs (clock helpers), packed.rs (packed readers + builder)
-│   ├── cors.rs            ── CORS engine (origin matching, preflight evaluation)
-│   ├── rate_limit.rs      ── Token-bucket rate limiter (per-IP keyed)
-│   ├── ip_trust.rs        ── IP resolution (X-Forwarded-For, X-Real-IP)
-│   └── proxy.rs           ── HTTPS detection, URL extraction
+├── util/                  ── Shared infrastructure (mod.rs re-exports crate::util::*)
+│   ├── bytes.rs           ── byte primitives (word-compare, hex, %XX decode, cookie_pairs)
+│   ├── packed.rs          ── zero-alloc packed iterators + byte writers (VecWriter, PackedIter)
+│   ├── batch.rs           ── aggregate packed batch napi APIs (bitset/count/sum/direct)
+│   ├── batch_core.rs      ── generic rayon-parallel batch helpers
+│   ├── threadpool.rs      ── rayon pool init + parallelism heuristic
+│   └── validation.rs      ── email / UUID / IPv4 / IPv6 validators
 │
-├── Parsers:
-│   ├── http_parser.rs     ── HTTP request header parsing (via httparse)
-│   ├── query_parser.rs    ── Query string → key-value pairs
-│   └── cookie_parser.rs   ── Cookie header → key-value pairs
+├── http/                  ── HTTP wire formats & parsing
+│   ├── headers.rs         ── zero-alloc packed-header parser (HeaderRefs)
+│   ├── method.rs          ── HTTP method classification
+│   ├── http_parser.rs     ── HTTP request line + headers → packed request (httparse)
+│   ├── query_parser.rs    ── query/form string → packed pairs
+│   ├── cookie_parser.rs   ── cookie header → packed pairs
+│   ├── form.rs            ── x-www-form-urlencoded parser + FormParser instance
+│   ├── media_type.rs      ── Content-Type parser + MediaTypeParser / MediaTypeMatcher
+│   ├── url_codec.rs       ── percent-encoding encode/decode
+│   ├── url_join.rs        ── RFC 3986 url_resolve + query builder (UrlBuilder)
+│   ├── etag.rs            ── etag / http_date + ConditionalRequest (304)
+│   ├── accept.rs          ── Accept-Encoding negotiation (AcceptNegotiator)
+│   ├── mime_lookup.rs     ── extension → MIME (phf table)
+│   └── multipart.rs       ── multipart/form-data parser (+ limits)
 │
-├── Validation:
-│   └── validation.rs      ── Email, UUID, IPv4, IPv6 validation
+├── crypto/                ── Auth & hashing (compiled-once instances)
+│   ├── hmac_sha256.rs     ── HMAC-SHA256 (+ HmacSigner)
+│   ├── cookie_sign.rs     ── signed cookies (CookieSigner)
+│   ├── csrf.rs            ── CSRF tokens (CsrfProtector)
+│   ├── jwt.rs             ── HS256 JWT sign/verify (+ JwtSigner, precomputed header)
+│   ├── aead.rs            ── AES-256-GCM / chacha20-poly1305 (+ AeadCipher)
+│   ├── argon2.rs          ── argon2id password hashing (+ Argon2Hasher)
+│   ├── base64.rs          ── base64/base64url/hex codecs (+ Base64Codec)
+│   ├── hashing.rs         ── FNV-1a / XXH3 / crc32
+│   └── random_token.rs    ── random hex tokens
 │
-├── JSON:
-│   ├── json_ops.rs        ── JSON validity check, sum-by-keys
-│   ├── json_patch_ops.rs  ── JSON Patch (RFC 6902) operations
-│   ├── json_schema.rs     ── JSON Schema validation (via jsonschema crate)
-│   └── json_ser.rs        ── JSON serialization helpers (cookies, query, body)
+├── json/                  ── JSON & schema
+│   ├── json_ops.rs        ── zero-DOM validate/sum + DOM parse
+│   ├── json_ser.rs        ── zero-alloc JSON escaping + cookie/query → JSON writers
+│   ├── json_patch_ops.rs  ── RFC 6902 JSON patch
+│   ├── json_schema.rs     ── SchemaValidator napi class (fast + jsonschema fallback)
+│   └── fast_schema/       ── zero-DOM JSON Schema fast path
+│       └── mod.rs + types.rs / cursor.rs / compile.rs / validate.rs / tests.rs
 │
-├── Crypto:
-│   ├── hashing.rs         ── FNV-1a, fast hashing (xxhash)
-│   ├── hmac_sha256.rs     ── HMAC-SHA256 sign & verify (via aws-lc-rs)
-│   └── random_token.rs    ── Cryptographically secure random tokens
+├── payload/               ── Output & streaming
+│   ├── compress.rs        ── gzip (zlib-rs) + brotli + batch
+│   ├── sse.rs             ── SSE event framing + batch
+│   ├── ws_frames.rs       ── RFC 6455 frame codec + batch
+│   ├── websocket.rs       ── WebSocket accept-key
+│   └── template.rs        ── minijinja rendering (TemplateRenderer) + batch
 │
-├── Data:
-│   ├── url_codec.rs       ── URL percent-encode/decode
-│   ├── mime_lookup.rs     ── MIME type from file extension
-│   └── websocket.rs       ── WebSocket accept key generation
-│
-├── Batch:
-│   ├── batch.rs           ── Batch processing engine
-│   └── batch_core.rs      ── Generic rayon-parallel batch helpers (bitset/count/sum)
-│
-├── Utilities:
-│   ├── method.rs          ── HTTP method enum + kind mapping
-│   ├── headers.rs         ── Header pack/unpack with limits
-│   ├── output.rs          ── Output buffer layout constants & writers
-│   ├── terminal.rs        ── Terminal response builders (errors)
-│   ├── threadpool.rs      ── Rayon pool init + parallelism heuristic
-│   ├── packed.rs          ── Zero-alloc packed iterators + byte writers
-│   └── util.rs            ── Re-export shim (threadpool/packed/batch_core) for back-compat
-│
-├── Framework Actions (2026-08-07) — compiled-once higher-order instances:
-│   ├── form.rs            ── x-www-form-urlencoded body parser + FormParser instance
-│   ├── media_type.rs      ── Content-Type parser (type/subtype + params) + MediaTypeParser
-│   ├── etag.rs            ── ETag + IMF-fixdate HTTP-date + ConditionalRequest (304)
-│   ├── accept.rs          ── Accept-Encoding q-value parse + AcceptNegotiator
-│   ├── base64.rs          ── base64/base64url/hex encode-decode + Base64Codec instance
-│   ├── cookie_sign.rs     ── Signed cookies (value.signature, HMAC-SHA256) + CookieSigner
-│   ├── csrf.rs            ── CSRF tokens (random hex + HMAC) + CsrfProtector
-│   └── url_join.rs        ── RFC 3986 url_resolve + url_encode_query + UrlBuilder instance
-│
-└── Constants:
-    └── ingress_constants.rs ── NAPI-exported layout constants
+└── ingress/               ── The ingress pipeline
+    ├── mod.rs             ── thin napi boundary: Ingress class + entry points
+    ├── pipeline.rs        ── core 8-stage pipeline (IngressInner::handle_packed,
+    │                        write_body_sections, BodySections, IngressSchema)
+    ├── tests.rs           ── ingress unit tests
+    ├── options.rs         ── napi option structs + Limits
+    ├── time.rs            ── monotonic/wall-clock helpers
+    ├── packed.rs          ── packed-input readers + builder
+    ├── cors.rs            ── CORS engine (origin matching, preflight evaluation)
+    ├── proxy.rs           ── HTTPS detection, URL extraction
+    ├── ip_trust.rs        ── IP resolution (X-Forwarded-For, X-Real-IP)
+    ├── rate_limit.rs      ── token-bucket rate limiter (per-IP keyed)
+    ├── terminal.rs        ── terminal response builders (errors)
+    ├── output.rs          ── SINGLE NUMERIC SOURCE for the output-buffer layout
+    └── ingress_constants.rs ── NAPI projection of output.rs (no drift)
 ```
 
 ### TypeScript Modules
@@ -315,7 +327,7 @@ Multiple Inputs
 
 ## Output Buffer Layout
 
-The output buffer is a binary format shared between Rust and TypeScript. All offsets are defined in `rust/output.rs` and exported via `rust/ingress_constants.rs` to `src/ingress/constants.ts`.
+The output buffer is a binary format shared between Rust and TypeScript. All offsets are defined in `rust/ingress/output.rs` and exported via `rust/ingress/ingress_constants.rs` to `src/ingress/constants.ts`.
 
 ```
 Offset (bytes)

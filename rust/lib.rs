@@ -5,71 +5,36 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-// ── napi-rs addon modules ─────────────────────────────────────────
-// Each module is exported to JS via #[napi]. Modules keep a pure-Rust
-// core (no napi types in signatures) so they stay testable and
+// ── Module map ────────────────────────────────────────────────────
+// rust/ is ONE cdylib crate, decomposed into domain folders. Modules keep a
+// pure-Rust core (no napi types in signatures) so they stay testable and
 // composable; only the entry points use napi types.
-pub mod bytes;
-pub mod output;
-pub mod method;
-pub mod headers;
-pub mod json_ser;
-pub mod cors;
-pub mod proxy;
-pub mod terminal;
-
+//
+//   util/      shared infrastructure: bytes, packed iterators/writers,
+//              batch (napi) + batch_core (rayon helpers), threadpool,
+//              validation. The `util::*` re-exports keep legacy call sites.
+//   http/      HTTP wire formats & parsing: headers, method, http/cookie/
+//              query parsers, form, media_type, url_codec, url_join, etag,
+//              accept, mime_lookup, multipart.
+//   crypto/    auth & hashing: hmac_sha256, cookie_sign, csrf, jwt, aead,
+//              argon2, base64, hashing (fnv/crc32/xxh3), random_token.
+//   json/      JSON & schema: json_ops, json_ser, json_patch_ops,
+//              json_schema (napi) + fast_schema (zero-DOM engine).
+//   payload/   output & streaming: compress, sse, ws_frames, websocket,
+//              template.
+//   ingress/   the ingress pipeline: mod.rs (Ingress + entry points),
+//              options/time/packed submodules, cors, proxy, ip_trust,
+//              rate_limit, terminal, output (single numeric layout source),
+//              ingress_constants (napi projection of output).
+//
+// Hot-path napi APIs (do not remove): ingress::handle_request_packed,
+// ingress::handle_request_full_sync{,_into}, util::init_thread_pool,
+// util::batch, ingress::ingress_constants.
 pub mod util;
-
-// util.rs decomposition (task-focused modules; util.rs re-exports them)
-pub mod threadpool;
-pub mod packed;
-pub mod batch_core;
-
-pub mod ip_trust;
-pub mod rate_limit;
-
-pub mod json_schema;
-pub mod fast_schema;
-
-pub mod cookie_parser;
-pub mod form;
-pub mod media_type;
-pub mod etag;
-pub mod accept;
-pub mod base64;
-pub mod cookie_sign;
-pub mod csrf;
-pub mod url_join;
-pub mod hashing;
-pub mod hmac_sha256;
-pub mod http_parser;
-pub mod json_ops;
-pub mod json_patch_ops;
-pub mod mime_lookup;
-pub mod query_parser;
-pub mod random_token;
-pub mod url_codec;
-pub mod validation;
-pub mod websocket;
-
-// Backend-framework feature modules (Phase A: auth & crypto)
-pub mod jwt;
-pub mod argon2;
-pub mod aead;
-
-// Backend-framework feature modules (Phase B: payload I/O)
-pub mod compress;
-pub mod multipart;
-
-// Backend-framework feature modules (Phase C: output & streaming)
-pub mod template;
-pub mod ws_frames;
-pub mod sse;
-
-pub mod batch;
-
-pub mod ingress_constants;
-
+pub mod http;
+pub mod crypto;
+pub mod json;
+pub mod payload;
 pub mod ingress;
 
 // ── Unit tests (cargo test) ───────────────────────────────────────

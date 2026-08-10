@@ -71,3 +71,25 @@ describe("ConditionalRequest (higher-order instance)", () => {
     }
   });
 });
+
+describe("rust.etagInto (reusable output)", () => {
+  test("matches rust.etag byte-for-byte", () => {
+    const out = new Uint8Array(16);
+    const written = rust.etagInto(DATA, out);
+    const expected = rust.etag(DATA);
+    expect(written).toBe(expected.length);
+    expect(out.slice(0, written)).toEqual(expected);
+  });
+
+  test("weak variant matches rust.etag(data, true)", () => {
+    const out = new Uint8Array(16);
+    const written = rust.etagInto(DATA, out, true);
+    const expected = rust.etag(DATA, true);
+    expect(written).toBe(expected.length);
+    expect(out.slice(0, written)).toEqual(expected);
+  });
+
+  test("too-small output throws", () => {
+    expect(() => rust.etagInto(DATA, new Uint8Array(4))).toThrow();
+  });
+});

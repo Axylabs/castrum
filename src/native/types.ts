@@ -245,6 +245,10 @@ export interface NativeAddon {
   urlEncode(input: Uint8Array): Uint8Array;
   urlDecode(input: Uint8Array): Uint8Array;
   urlDecodeBytes(input: Uint8Array): Uint8Array;
+  /** Reusable-output percent-encode; returns bytes written. Throws if `output` is too small. */
+  urlEncodeInto(input: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output percent-decode; returns bytes written. Throws if `output` is too small. */
+  urlDecodeInto(input: Uint8Array, output: Uint8Array): number;
 
   validateEmail(input: Uint8Array): boolean;
   validateUuid(input: Uint8Array): boolean;
@@ -393,12 +397,22 @@ export interface NativeAddon {
   verifyCookieBatchPacked(data: Uint8Array, secret: Uint8Array): Uint8Array;
   base64Encode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
   base64Decode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
+  /** Reusable-output base64 encode; returns bytes written. Throws if `output` is too small. */
+  base64EncodeInto(input: Uint8Array, output: Uint8Array, urlSafe?: boolean, padding?: boolean): number;
+  /** Reusable-output base64 decode; returns bytes written. Throws on invalid input or if `output` is too small. */
+  base64DecodeInto(input: Uint8Array, output: Uint8Array, urlSafe?: boolean, padding?: boolean): number;
   base64UrlEncode(input: Uint8Array): Uint8Array;
   base64UrlDecode(input: Uint8Array): Uint8Array;
   hexEncode(input: Uint8Array): Uint8Array;
   hexDecode(input: Uint8Array): Uint8Array;
+  /** Reusable-output lowercase-hex encode; returns bytes written. Throws if `output` is too small. */
+  hexEncodeInto(input: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output hex decode; returns bytes written. Throws on bad input or if `output` is too small. */
+  hexDecodeInto(input: Uint8Array, output: Uint8Array): number;
   parseMediaType(input: Uint8Array): MediaTypeResult;
   etag(input: Uint8Array, weak?: boolean): Uint8Array;
+  /** Reusable-output etag; returns bytes written (10 strong / 12 weak). Throws if `output` is too small. */
+  etagInto(input: Uint8Array, output: Uint8Array, weak?: boolean): number;
   httpDate(secs?: number): Uint8Array;
   parseHttpDate(input: Uint8Array): bigint | null;
 
@@ -416,12 +430,30 @@ export interface NativeAddon {
   cookieParseBatchPacked(input: Uint8Array): Uint8Array;
   formParseBatchPacked(input: Uint8Array): Uint8Array;
   httpParseRequestBatchPacked(input: Uint8Array): Uint8Array;
+  hexEncodeBatchPacked(input: Uint8Array): Uint8Array;
+  hexDecodeBatchPacked(input: Uint8Array): Uint8Array;
+  base64EncodeBatchPacked(
+    input: Uint8Array,
+    urlSafe?: boolean | null,
+    padding?: boolean | null,
+  ): Uint8Array;
+  base64DecodeBatchPacked(
+    input: Uint8Array,
+    urlSafe?: boolean | null,
+    padding?: boolean | null,
+  ): Uint8Array;
 
   httpParseRequestPacked(input: Uint8Array): Uint8Array;
+  /** Reusable-output packed HTTP parse; returns bytes written. Throws if `output` is too small. */
+  httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number;
 
   queryParsePacked(input: Uint8Array): Uint8Array;
+  /** Reusable-output packed query parse; returns bytes written. Throws if `output` is too small. */
+  queryParsePackedInto(input: Uint8Array, output: Uint8Array): number;
 
   cookieParsePacked(input: Uint8Array): Uint8Array;
+  /** Reusable-output packed cookie parse; returns bytes written. Throws if `output` is too small. */
+  cookieParsePackedInto(input: Uint8Array, output: Uint8Array): number;
 
   formParsePacked(input: Uint8Array): Uint8Array;
 

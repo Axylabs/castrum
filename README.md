@@ -407,38 +407,21 @@ castrum/
 ├── package.json             # Node/Bun package config
 ├── tsconfig.json            # TypeScript config
 │
-├── rust/                    # Rust source (cdylib)
-│   ├── lib.rs               # Crate root, module declarations
-│   ├── ingress.rs           # NAPI ingress class + pipeline
-│   │   └── ingress/         # options.rs, time.rs, packed.rs (ingress submodules)
-│   ├── cors.rs              # CORS engine
-│   ├── rate_limit.rs        # Keyed rate limiter
-│   ├── ip_trust.rs          # IP trust & proxy resolution
-│   ├── http_parser.rs       # HTTP request parser
-│   ├── query_parser.rs      # Query string parser
-│   ├── cookie_parser.rs     # Cookie header parser
-│   ├── validation.rs        # Email/UUID/IP validation
-│   ├── hashing.rs           # FNV-1a & fast hashing
-│   ├── hmac_sha256.rs       # HMAC-SHA256
-│   ├── json_ops.rs          # JSON operations
-│   ├── json_patch_ops.rs    # JSON Patch operations
-│   ├── json_schema.rs       # JSON Schema validation
-│   ├── json_ser.rs          # JSON serialization utilities
-│   ├── url_codec.rs         # URL encode/decode
-│   ├── mime_lookup.rs       # MIME type lookup
-│   ├── websocket.rs         # WebSocket utilities
-│   ├── random_token.rs      # Secure random token generation
-│   ├── batch.rs             # Batch processing
-│   ├── batch_core.rs        # Generic rayon-parallel batch helpers
-│   ├── method.rs            # HTTP method enum
-│   ├── headers.rs           # Header packing
-│   ├── output.rs            # Output buffer layout
-│   ├── terminal.rs          # Terminal response writers
-│   ├── proxy.rs             # Proxy detection utilities
-│   ├── threadpool.rs        # Rayon pool init + parallelism heuristic
-│   ├── packed.rs            # Zero-alloc packed iterators + byte writers
-│   ├── util.rs              # Re-export shim (threadpool/packed/batch_core)
-│   └── ingress_constants.rs # NAPI-exported constants
+├── rust/                    # Rust source (one cdylib, domain folders)
+│   ├── lib.rs               # Crate root: folder declarations + module map
+│   ├── util/                # Shared infra: bytes, packed, batch(+core), threadpool, validation
+│   ├── http/                # Wire formats: headers, method, http/query/cookie parsers,
+│   │                        #   form, media_type, url_codec/join, etag, accept, mime_lookup, multipart
+│   ├── crypto/              # Auth & hashing: hmac, cookie_sign, csrf, jwt, aead, argon2,
+│   │                        #   base64, hashing, random_token
+│   ├── json/                # JSON & schema: json_ops, json_ser, json_patch_ops, json_schema,
+│   │                        #   fast_schema/ (zero-DOM engine: types/cursor/compile/validate)
+│   ├── payload/             # Output & streaming: compress, sse, ws_frames, websocket, template
+│   ├── ingress/             # The ingress pipeline: mod.rs (napi boundary), pipeline.rs (core),
+│   │                        #   tests.rs, options/time/packed, cors, proxy, ip_trust,
+│   │                        #   rate_limit, terminal, output, ingress_constants
+│   ├── test_support.rs      # Shared test helpers
+│   └── unit_tests.rs        # Cross-module test suite
 │
 ├── src/                     # TypeScript source
 │   ├── ingress/             # Ingress pipeline (TS layer), decomposed by task

@@ -7,8 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`ws_frames` masking is now word-at-a-time** (u32 XOR over the RFC 6455 §5.3
+  4-byte mask, with a byte tail for the last 1–3 bytes) in `encode_frame` /
+  `decode_frame`, replacing the per-byte `b ^ mask[i & 3]` loop. Byte-parity is
+  preserved (new property tests for every length 0–64 + a 10 KiB payload, and
+  `bun run check` ws-frame checksums still match). Measured ~1.8 GiB/s masked
+  decode on 1 MiB payloads; scalar single-call timings are unchanged because the
+  single-call bottleneck is the NAPI crossing, not the mask loop.
+- **Rust source restructure + hardening (behavior-preserving):**
+  - **Domain folders**: the flat `rust/` module list is now grouped into
+    `util/` (bytes/packed/batch/batch_core/threadpool/validation),
+    `http/` (headers/method/parsers/form/media_type/url/etag/accept/mime/multipart),
+    `crypto/` (hmac/cookie_sign/csrf/jwt/aead/argon2/base64/hashing/random_token),
+    `json/` (json_ops/json_ser/json_patch_ops/json_schema/fast_schema),
+    `payload/` (compress/sse/ws_frames/websocket/template), and the expanded
+    `ingress/` (mod.rs napi boundary + pipeline.rs core + tests.rs +
+    options/time/packed + cors/proxy/ip_trust/rate_limit/terminal/output/ingress_constants).
+    `lib.rs` is now a declaration hub with a module map; the `util` barrel keeps
+    legacy `crate::util::*` call sites working.
+  - **Monolith splits**: `fast_schema.rs` → `json/fast_schema/`
+    (`mod.rs`/`types.rs`/`cursor.rs`/`compile.rs`/`validate.rs`/`tests.rs`);
+    `ingress.rs` → `ingress/{mod,pipeline,tests}.rs`.
+  - **Memory / precompute (hot path)**:
+    - Ingress schema validation now precompiles the zero-DOM `fast_schema`
+      engine alongside the jsonschema validator **once at construction**
+      (`IngressSchema`), removing the per-request `serde_json::Value` DOM build
+      (~95% of validation cost) — DOM fallback preserved for unsupported keywords.
+    - Query→JSON serialization is now a direct single-pass writer
+      (`json_ser::query_to_json_into_slice`), eliminating the per-request
+      9× intermediate packed buffer and the second parse on the ingress path
+      (malformed `%XX` → 400 and buffer-too-small → truncated are preserved).
+    - `JwtSigner`/`jwt_sign`/batch sign reuse one lazily-precomputed HS256
+      header segment; `jwt_verify` fast-paths the canonical header without a DOM.
+    - `AeadCipher` decrypt returns the in-place truncated buffer (one copy
+      instead of two); `fast_schema` distinct-key tracking uses an inline Vec;
+    - `multipart` field counting is O(1) per part (was O(n²)); media-type
+      parse lowercases in a single pass; `http_parser` header lowercase is
+      one pass; hex encode uses the shared `HEX_LOWER` table.
+  - No public API / wire-format / benchmark-surface changes. Verified:
+    `cargo test` 214, `bun test` 223, `tsc` clean, `check:proven:fail` OK,
+    HTTP smoke 0 shape failures, startup unchanged.
+
 ### Added
 
+- **Reusable-output (`*_into`) scalar APIs restored** (blocked by a Bun N-API bug
+  that silently dropped in-place writes to `<1024`-byte buffers — now fixed in Bun;
+  the 0.6.0 removal rationale is obsolete). New `rust.*` methods write into a
+  caller-provided (poolable) `Uint8Array` and return the number of bytes written:
+  `hexEncodeInto` / `hexDecodeInto`, `base64EncodeInto` / `base64DecodeInto`,
+  `etagInto`, `urlEncodeInto` / `urlDecodeInto`, and packed
+  `httpParseRequestPackedInto` / `queryParsePackedInto` / `cookieParsePackedInto`.
+  They throw when the output buffer is too small, and are safe against input/output
+  buffer aliasing. Measured vs the allocating scalars on 10 KiB payloads: hexEncode
+  1.42x, hexDecode 1.88x, base64Encode 1.68x (parity at sub-µs scale, where the
+  NAPI crossing dominates). Complements the batch APIs for pooled hot loops.
+- **Packed batch byte-codec APIs** (`rust.batch`): `hexEncode`, `hexDecode`,
+  `base64Encode` (url-safe/padding configurable), and `base64Decode` — pack N
+  items into one buffer, cross the NAPI boundary once, and return per-item byte
+  results. Measured on a 100-item batch: hexEncode 2.1x, base64Encode 3.1x,
+  hexDecode 1.5x vs a scalar loop.
 - **Production-hardening pass (instance-time precompute, correctness, Node compat):**
   - **New precompiled higher-order instances** (key/params compiled ONCE at construction,
     no per-call derivation): `createJwtSigner(secret, ttlSeconds?)` (HS256),

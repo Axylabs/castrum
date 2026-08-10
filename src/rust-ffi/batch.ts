@@ -29,6 +29,14 @@ export interface RustBatch {
   queryParse(items: Uint8Array[]): Uint8Array[];
   cookieParse(items: Uint8Array[]): Uint8Array[];
   httpParseRequest(items: Uint8Array[]): Uint8Array[];
+  /** Encode N items to lowercase hex (packed in → byte results). */
+  hexEncode(items: Uint8Array[]): Uint8Array[];
+  /** Decode N lowercase/uppercase hex strings to bytes. */
+  hexDecode(items: Uint8Array[]): Uint8Array[];
+  /** Base64-encode N items (standard by default; url-safe/padding configurable). */
+  base64Encode(items: Uint8Array[], urlSafe?: boolean, padding?: boolean): Uint8Array[];
+  /** Base64-decode N items (standard by default; url-safe/padding configurable). */
+  base64Decode(items: Uint8Array[], urlSafe?: boolean, padding?: boolean): Uint8Array[];
   formParse(items: Uint8Array[]): Uint8Array[];
   /** Sign N cookie values (packed → byte results). */
   signCookie(items: Uint8Array[], secret: Uint8Array): Uint8Array[];
@@ -122,6 +130,30 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
     httpParseRequest(items) {
       return unpackByteResults(
         addon.httpParseRequestBatchPacked(packBatch(items)),
+      );
+    },
+    hexEncode(items) {
+      return unpackByteResults(addon.hexEncodeBatchPacked(packBatch(items)));
+    },
+    hexDecode(items) {
+      return unpackByteResults(addon.hexDecodeBatchPacked(packBatch(items)));
+    },
+    base64Encode(items, urlSafe, padding) {
+      return unpackByteResults(
+        addon.base64EncodeBatchPacked(
+          packBatch(items),
+          urlSafe ?? null,
+          padding ?? null,
+        ),
+      );
+    },
+    base64Decode(items, urlSafe, padding) {
+      return unpackByteResults(
+        addon.base64DecodeBatchPacked(
+          packBatch(items),
+          urlSafe ?? null,
+          padding ?? null,
+        ),
       );
     },
     schemaValidate(validator, items) {
