@@ -1,4 +1,4 @@
-// rust/ingress_constants.rs — NAPI exports for the ingress binary layout
+// rust/ingress/ingress_constants.rs — NAPI exports for the ingress binary layout
 //
 // The NUMERIC values live in `output.rs` (the single source of truth). This
 // module re-exports them to JavaScript via NAPI so TypeScript (via

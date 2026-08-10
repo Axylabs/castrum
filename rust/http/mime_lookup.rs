@@ -74,3 +74,43 @@ pub fn mime_from_extension(ext: Uint8Array) -> Buffer {
     let guessed = mime_guess::from_ext(lower).first_or_octet_stream();
     Buffer::from(guessed.essence_str().as_bytes().to_vec())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mime(input: &str) -> String {
+        let out = mime_from_extension(Uint8Array::new(input.as_bytes().to_vec()));
+        String::from_utf8_lossy(out.as_ref()).into_owned()
+    }
+
+    #[test]
+    fn known_extensions() {
+        assert_eq!(mime(".js"), "text/javascript");
+        assert_eq!(mime("json"), "application/json");
+        assert_eq!(mime(".html"), "text/html");
+        assert_eq!(mime(".png"), "image/png");
+        assert_eq!(mime(".pdf"), "application/pdf");
+    }
+
+    #[test]
+    fn case_insensitive() {
+        assert_eq!(mime(".JS"), "text/javascript");
+        assert_eq!(mime(".Jpg"), "image/jpeg");
+    }
+
+    #[test]
+    fn unknown_and_empty_fall_back_to_octet_stream() {
+        assert_eq!(mime(".xkrq"), "application/octet-stream");
+        assert_eq!(mime(""), "application/octet-stream");
+    }
+
+    #[test]
+    fn non_utf8_falls_back_to_octet_stream() {
+        let out = mime_from_extension(Uint8Array::new(vec![0xff, 0xfe, 0xfd]));
+        assert_eq!(
+            String::from_utf8_lossy(out.as_ref()),
+            "application/octet-stream"
+        );
+    }
+}

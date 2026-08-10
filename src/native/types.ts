@@ -238,6 +238,8 @@ export interface NativeAddon {
   jsonSumIds(input: Uint8Array): bigint;
 
   jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array;
+  /** Batch RFC 6902 JSON Patch (two packed lists, zipped) → packed results. */
+  jsonPatchBatchPacked(docs: Uint8Array, patches: Uint8Array): Uint8Array;
 
   mimeFromExtension(ext: Uint8Array): Uint8Array;
   randomToken(byteLen: number): Uint8Array;

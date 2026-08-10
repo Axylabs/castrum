@@ -1,6 +1,6 @@
 // src/ingress/routes/fallback.ts — Pre-baked fallback handler.
 
-import type { OptimizedIngressHandler } from "../handlers";
+import type { OptimizedIngressHandler } from "../types";
 import { resolveIp, type BakedHandlerOptions } from "./common";
 
 /**

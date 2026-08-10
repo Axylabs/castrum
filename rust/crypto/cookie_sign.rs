@@ -1,4 +1,4 @@
-// rust/cookie_sign.rs — signed cookies (`value.signature`, HMAC-SHA256).
+// rust/crypto/cookie_sign.rs — signed cookies (`value.signature`, HMAC-SHA256).
 //
 // Composes the existing HMAC core + hex tables. The `CookieSigner`
 // higher-order instance precomputes the HMAC key once in its constructor and

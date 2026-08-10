@@ -38,7 +38,7 @@ impl ProxyTrustMode {
             }
 
             if let Ok(ip) = raw.parse::<IpAddr>() {
-                out.push(ip_to_net(ip));
+                out.push(ip_to_net(ip)?);
             } else {
                 let net: IpNet = raw.parse().map_err(|_| {
                     Error::new(
@@ -106,10 +106,17 @@ impl ResolvedIp<'_> {
     }
 }
 
-fn ip_to_net(ip: IpAddr) -> IpNet {
+fn ip_to_net(ip: IpAddr) -> Result<IpNet> {
     match ip {
-        IpAddr::V4(v4) => IpNet::V4(Ipv4Net::new(v4, 32).expect("valid /32")),
-        IpAddr::V6(v6) => IpNet::V6(Ipv6Net::new(v6, 128).expect("valid /128")),
+        // Prefix 32 (v4) / 128 (v6) is always valid, but return a proper error
+        // instead of panicking so a failed conversion surfaces as a JS error
+        // rather than unwinding through the constructor.
+        IpAddr::V4(v4) => Ipv4Net::new(v4, 32)
+            .map(IpNet::V4)
+            .map_err(|_| Error::from_reason("invalid IPv4 /32 trusted network")),
+        IpAddr::V6(v6) => Ipv6Net::new(v6, 128)
+            .map(IpNet::V6)
+            .map_err(|_| Error::from_reason("invalid IPv6 /128 trusted network")),
     }
 }
 
@@ -127,9 +134,7 @@ pub fn resolve_client_ip<'a>(
     let socket_trim = trim_ascii_whitespace(socket_ip);
     let socket_parsed = parse_ip_bytes(socket_trim);
 
-    let peer_trusted = socket_parsed
-        .map(|ip| mode.is_trusted(ip))
-        .unwrap_or(false);
+    let peer_trusted = socket_parsed.map(|ip| mode.is_trusted(ip)).unwrap_or(false);
 
     if mode.is_none() || !peer_trusted {
         return (

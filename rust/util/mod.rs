@@ -1,4 +1,4 @@
-// rust/util/mod.rs — Shared infrastructure.
+//! Shared infrastructure (no napi types in core signatures).
 //
 // Task-focused modules (no napi types in core signatures):
 //   - bytes.rs        byte primitives (word-compare, hex, %XX decode, trim, cookie_pairs)

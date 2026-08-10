@@ -1,4 +1,4 @@
-// rust/media_type.rs — Content-Type / media type parser.
+// rust/http/media_type.rs — Content-Type / media type parser.
 //
 // Parses `type/subtype; param=value; ...` per RFC 7231 §3.1.1.1: lowercased
 // type/subtype, token + quoted-string params (charset, boundary). Pure-Rust
@@ -66,9 +66,7 @@ fn parse_quoted(raw: &[u8]) -> std::result::Result<String, &'static str> {
 }
 
 /// Parse `type/subtype; param=value` (params may be quoted or token values).
-pub fn parse_media_type_core(
-    input: &[u8],
-) -> std::result::Result<ParsedMediaType, &'static str> {
+pub fn parse_media_type_core(input: &[u8]) -> std::result::Result<ParsedMediaType, &'static str> {
     let semi = input.iter().position(|&b| b == b';');
     let (main, rest) = match semi {
         Some(i) => (&input[..i], &input[i + 1..]),
@@ -124,7 +122,11 @@ pub fn parse_media_type_core(
         params.push((name, value));
     }
 
-    Ok(ParsedMediaType { ty, subtype, params })
+    Ok(ParsedMediaType {
+        ty,
+        subtype,
+        params,
+    })
 }
 
 /// napi-projected structured result (snake_case → camelCase in JS).
@@ -157,6 +159,12 @@ pub fn parse_media_type(input: Uint8Array) -> Result<MediaTypeResult> {
 /// helper and a consistent instance-based API for content-type handling.
 #[napi]
 pub struct MediaTypeParser;
+
+impl Default for MediaTypeParser {
+    fn default() -> Self {
+        Self
+    }
+}
 
 #[napi]
 impl MediaTypeParser {
@@ -253,7 +261,10 @@ mod tests {
     #[test]
     fn parses_quoted_param_with_escape() {
         let m = parse("text/plain; filename=\"a\\\"b.txt\"");
-        assert_eq!(m.params[0], ("filename".to_string(), "a\"b.txt".to_string()));
+        assert_eq!(
+            m.params[0],
+            ("filename".to_string(), "a\"b.txt".to_string())
+        );
     }
 
     #[test]

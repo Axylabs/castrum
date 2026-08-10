@@ -9,7 +9,11 @@
 
 import { describe, test, expect } from "bun:test";
 import { packHeaders } from "../../../src/ingress/packing/header-packing";
-import type { HeaderPlan } from "../../../src/ingress/shared";
+import {
+  gatherRawHeaders,
+  gatherRawHeadersPacked,
+} from "../../../src/ingress/packing/gather-raw-headers";
+import { METHOD_KIND, type HeaderPlan } from "../../../src/ingress/shared";
 
 const FULL_PLAN: HeaderPlan = {
   cookie: true,
@@ -129,5 +133,40 @@ describe("packHeaders", () => {
     const largePacked = packHeaders(large, FULL_PLAN);
     const largePairs = decodePacked(largePacked);
     expect(largePairs).toEqual([["cookie", "big=" + "x".repeat(10_000)]]);
+  });
+});
+
+describe("gatherRawHeaders vs gatherRawHeadersPacked parity", () => {
+  const req = new Request("http://example.com/api?x=1", {
+    method: "GET",
+    headers: {
+      cookie: "session=abc123; theme=dark",
+      origin: "https://app.example.com",
+      "x-forwarded-for": "1.2.3.4",
+      "x-real-ip": "5.6.7.8",
+      "x-forwarded-proto": "https",
+    },
+  });
+
+  test("packed gathering selects the same headers as the string-array path", () => {
+    const raw = gatherRawHeaders(req, FULL_PLAN, METHOD_KIND.GET);
+    const packed = decodePacked(
+      gatherRawHeadersPacked(req, FULL_PLAN, METHOD_KIND.GET),
+    );
+    expect(packed).toEqual(raw);
+  });
+
+  test("oversized headers are dropped by BOTH paths (same size guards)", () => {
+    const big = new Request("http://example.com/", {
+      headers: {
+        cookie: "c=" + "x".repeat(9000),
+        origin: "https://app.example.com",
+      },
+    });
+    const raw = gatherRawHeaders(big, FULL_PLAN, METHOD_KIND.GET);
+    const packed = decodePacked(gatherRawHeadersPacked(big, FULL_PLAN, METHOD_KIND.GET));
+    expect(packed).toEqual(raw);
+    // The 9000-byte cookie exceeds MAX_COOKIE_HEADER_BYTES → dropped in both.
+    expect(packed.find(([n]) => n === "cookie")).toBeUndefined();
   });
 });

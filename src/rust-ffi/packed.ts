@@ -20,6 +20,8 @@ export interface RustPacked {
   queryParseBatchPacked(input: Uint8Array): Uint8Array;
   cookieParseBatchPacked(input: Uint8Array): Uint8Array;
   httpParseRequestBatchPacked(input: Uint8Array): Uint8Array;
+  /** Batch RFC 6902 JSON Patch (two packed lists, zipped) → packed results. */
+  jsonPatchBatchPacked(docs: Uint8Array, patches: Uint8Array): Uint8Array;
 
   // ── Batch metadata / counts ──
   jsonValidBatchCountPacked(input: Uint8Array): number;
@@ -116,6 +118,9 @@ export function buildPacked(ctx: RustClientContext): RustPacked {
     },
     httpParseRequestBatchPacked(input) {
       return addon.httpParseRequestBatchPacked(input);
+    },
+    jsonPatchBatchPacked(docs, patches) {
+      return addon.jsonPatchBatchPacked(docs, patches);
     },
 
     jsonValidBatchCountPacked(input) {

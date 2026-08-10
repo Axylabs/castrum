@@ -27,10 +27,59 @@ export const METHOD_KIND: Record<string, number> = {
   OPTIONS: 6,
 };
 
+/** Method-kind value for methods not present in {@link METHOD_KIND}. */
+export const METHOD_KIND_UNKNOWN = 7;
+
 /** Which request headers to extract into the packed input. */
 export interface HeaderPlan {
   cookie: boolean;
   cors: boolean;
   proxy: boolean;
   proto: boolean;
+}
+
+/**
+ * Build the `HeaderPlan` for an ingress options object. Shared by BOTH ingress
+ * paths (`createIngressFast` and `createIngressHandler`) so the cookie/cors/
+ * proxy/proto extraction decisions can never silently diverge between them.
+ *
+ * Proxy headers (X-Forwarded-For / X-Real-IP) are requested when either
+ * `trustProxy` is true or `trustedProxies.enabled` is true — this is driven by
+ * the trust configuration alone, NOT by whether rate limiting is enabled.
+ * `proto` (https detection) follows the same trust rule and only applies when
+ * `https` is not pinned explicitly.
+ */
+export function buildHeaderPlan(options: {
+  parseCookies?: boolean;
+  cors?: unknown;
+  trustProxy?: boolean;
+  trustedProxies?: { enabled?: boolean };
+  https?: boolean;
+}): HeaderPlan {
+  const trust =
+    options.trustProxy === true || options.trustedProxies?.enabled === true;
+  return {
+    cookie: options.parseCookies === true,
+    cors: options.cors != null,
+    proxy: trust,
+    proto: trust && options.https === undefined,
+  };
+}
+
+/**
+ * Assert that a handler callback returned a synchronous (non-thenable) value.
+ *
+ * The ingress result objects are invalidated once `run()` returns, so an async
+ * callback would observe a stale/zeroed result. Throw instead of silently
+ * returning a broken value. `label` is used in the error message, e.g.
+ * `"createIngressFast().run()"`.
+ */
+export function assertSyncCallback<T>(out: T, label: string): void {
+  if (
+    out !== null &&
+    (typeof out === "object" || typeof out === "function") &&
+    typeof (out as { then?: unknown }).then === "function"
+  ) {
+    throw new Error(`${label} callback must be synchronous.`);
+  }
 }

@@ -6,15 +6,15 @@
 
 #![cfg(test)]
 
-use crate::ingress::cors::{CorsEngine, CorsOptions};
 use crate::http::headers::HeaderRefs;
-use crate::ingress::ip_trust::{resolve_client_ip, ProxyTrustMode};
 use crate::http::method::MethodKind;
+use crate::ingress::cors::{CorsEngine, CorsOptions};
+use crate::ingress::ip_trust::{resolve_client_ip, ProxyTrustMode};
 use crate::ingress::output::{
-    compute_header_variant, write_output_header, OUT_BODY_JSON_LEN, OUT_COOKIES_JSON_LEN,
-    OUT_DATA_START, OUT_ERROR_CODE, OUT_FLAGS, OUT_HEADER_VARIANT, OUT_QUERY_JSON_LEN,
-    OUT_RATE_LIMIT, OUT_RATE_REMAINING, OUT_RATE_RESET, OUT_RETRY_AFTER, OUT_STATUS, OUT_VERDICT,
-    HV_CORS_PREFLIGHT, HV_CORS_SIMPLE, HV_JSON, HV_RATE_ACTIVE, HV_RATE_LIMITED,
+    compute_header_variant, write_output_header, HV_CORS_PREFLIGHT, HV_CORS_SIMPLE, HV_JSON,
+    HV_RATE_ACTIVE, HV_RATE_LIMITED, OUT_BODY_JSON_LEN, OUT_COOKIES_JSON_LEN, OUT_DATA_START,
+    OUT_ERROR_CODE, OUT_FLAGS, OUT_HEADER_VARIANT, OUT_QUERY_JSON_LEN, OUT_RATE_LIMIT,
+    OUT_RATE_REMAINING, OUT_RATE_RESET, OUT_RETRY_AFTER, OUT_STATUS, OUT_VERDICT,
 };
 use crate::ingress::rate_limit::KeyedRateLimiter;
 use crate::test_support::{decode_packed_pairs, pack_headers, Rng};
@@ -34,7 +34,10 @@ fn rate_limit_allows_up_to_limit_within_window() {
     }
 
     let denied = rl.check_key(key, 105);
-    assert!(!denied.allowed, "6th request within window should be denied");
+    assert!(
+        !denied.allowed,
+        "6th request within window should be denied"
+    );
     assert_eq!(denied.remaining, 0);
 }
 
@@ -90,7 +93,10 @@ fn rate_limit_keys_are_independent() {
     let rl = KeyedRateLimiter::new(1, 1000, None);
     assert!(rl.check_key(1, 0).allowed);
     assert!(!rl.check_key(1, 1).allowed);
-    assert!(rl.check_key(2, 1).allowed, "different key should have its own bucket");
+    assert!(
+        rl.check_key(2, 1).allowed,
+        "different key should have its own bucket"
+    );
 }
 
 #[test]
@@ -189,12 +195,7 @@ fn ip_trust_invalid_network_is_error() {
 #[test]
 fn ip_trust_resolves_socket_ip_when_not_trusting_proxy() {
     let mode = ProxyTrustMode::from_config(false, None).unwrap();
-    let (resolved, peer_trusted) = resolve_client_ip(
-        &mode,
-        b"203.0.113.5",
-        Some(b"6.6.6.6"),
-        None,
-    );
+    let (resolved, peer_trusted) = resolve_client_ip(&mode, b"203.0.113.5", Some(b"6.6.6.6"), None);
     assert!(!peer_trusted);
     // Socket IP must win; XFF must be ignored.
     match resolved {
@@ -207,12 +208,7 @@ fn ip_trust_resolves_socket_ip_when_not_trusting_proxy() {
 fn ip_trust_untrusted_socket_ignores_xff() {
     // Socket is NOT in the trusted networks -> XFF cannot spoof the client IP.
     let mode = ProxyTrustMode::from_config(true, Some(vec!["10.0.0.0/8".to_string()])).unwrap();
-    let (resolved, peer_trusted) = resolve_client_ip(
-        &mode,
-        b"203.0.113.9",
-        Some(b"6.6.6.6"),
-        None,
-    );
+    let (resolved, peer_trusted) = resolve_client_ip(&mode, b"203.0.113.9", Some(b"6.6.6.6"), None);
     assert!(!peer_trusted);
     match resolved {
         crate::ingress::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [203, 0, 113, 9]),
@@ -240,12 +236,8 @@ fn ip_trust_trusted_socket_uses_leftmost_untrusted_xff() {
 #[test]
 fn ip_trust_all_trusted_xff_returns_last_entry() {
     let mode = ProxyTrustMode::from_config(true, Some(vec!["10.0.0.0/8".to_string()])).unwrap();
-    let (resolved, peer_trusted) = resolve_client_ip(
-        &mode,
-        b"10.0.0.5",
-        Some(b"10.0.0.1, 10.0.0.2"),
-        None,
-    );
+    let (resolved, peer_trusted) =
+        resolve_client_ip(&mode, b"10.0.0.5", Some(b"10.0.0.1, 10.0.0.2"), None);
     assert!(peer_trusted);
     match resolved {
         crate::ingress::ip_trust::ResolvedIp::V4(o) => assert_eq!(o, [10, 0, 0, 1]),
@@ -257,7 +249,10 @@ fn ip_trust_all_trusted_xff_returns_last_entry() {
 
 #[test]
 fn output_compute_header_variant_bits() {
-    assert_eq!(compute_header_variant(false, false, false, false, true), HV_JSON);
+    assert_eq!(
+        compute_header_variant(false, false, false, false, true),
+        HV_JSON
+    );
     assert_eq!(
         compute_header_variant(true, false, false, false, true),
         HV_JSON | HV_CORS_SIMPLE
@@ -281,18 +276,18 @@ fn output_write_header_layout() {
     let mut out = vec![0u8; 1024];
     let written = write_output_header(
         &mut out,
-        0,      // verdict
-        3,      // error_code
-        200,    // status
-        0x1F,   // flags
-        100,    // rate_limit
-        50,     // rate_remaining
+        0,       // verdict
+        3,       // error_code
+        200,     // status
+        0x1F,    // flags
+        100,     // rate_limit
+        50,      // rate_remaining
         123_456, // rate_reset_ms
-        5,      // retry_after_ms
-        10,     // cookies_json_len
-        20,     // query_json_len
+        5,       // retry_after_ms
+        10,      // cookies_json_len
+        20,      // query_json_len
         HV_JSON | HV_RATE_ACTIVE,
-        30,     // body_json_len
+        30, // body_json_len
     );
 
     assert_eq!(out[OUT_VERDICT], 0);
@@ -302,7 +297,12 @@ fn output_write_header_layout() {
         200
     );
     assert_eq!(
-        u32::from_le_bytes([out[OUT_FLAGS], out[OUT_FLAGS + 1], out[OUT_FLAGS + 2], out[OUT_FLAGS + 3]]),
+        u32::from_le_bytes([
+            out[OUT_FLAGS],
+            out[OUT_FLAGS + 1],
+            out[OUT_FLAGS + 2],
+            out[OUT_FLAGS + 3]
+        ]),
         0x1F
     );
     assert_eq!(
@@ -325,7 +325,11 @@ fn output_write_header_layout() {
     );
     let reset = u64::from_le_bytes(out[OUT_RATE_RESET..OUT_RATE_RESET + 8].try_into().unwrap());
     assert_eq!(reset, 123_456);
-    let retry = u64::from_le_bytes(out[OUT_RETRY_AFTER..OUT_RETRY_AFTER + 8].try_into().unwrap());
+    let retry = u64::from_le_bytes(
+        out[OUT_RETRY_AFTER..OUT_RETRY_AFTER + 8]
+            .try_into()
+            .unwrap(),
+    );
     assert_eq!(retry, 5);
     assert_eq!(
         u32::from_le_bytes([
@@ -362,9 +366,7 @@ fn output_write_header_layout() {
 #[test]
 fn output_write_header_normalizes_invalid_status() {
     let mut out = vec![0u8; 128];
-    let written = write_output_header(
-        &mut out, 1, 6, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    );
+    let written = write_output_header(&mut out, 1, 6, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     let status = u16::from_le_bytes([out[OUT_STATUS], out[OUT_STATUS + 1]]);
     assert_eq!(status, 500, "invalid status must be coerced to 500");
     assert_eq!(written, OUT_DATA_START);
@@ -408,10 +410,7 @@ fn init_thread_pool_is_idempotent() {
     // auto-initialized rayon) must return Ok — never a poisoned error.
     let first = crate::util::threadpool::init_thread_pool(Some(2));
     let second = crate::util::threadpool::init_thread_pool(Some(2));
-    assert!(
-        first.is_ok(),
-        "first init must succeed (got {first:?})"
-    );
+    assert!(first.is_ok(), "first init must succeed (got {first:?})");
     assert!(
         second.is_ok(),
         "second init must be a no-op, not an error (got {second:?})"
@@ -500,27 +499,57 @@ fn headers_parse_malformed_rejected() {
 #[test]
 fn method_from_bytes_ignore_case_upper() {
     assert_eq!(MethodKind::from_bytes_ignore_case(b"GET"), MethodKind::Get);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"HEAD"), MethodKind::Head);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"POST"), MethodKind::Post);
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"HEAD"),
+        MethodKind::Head
+    );
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"POST"),
+        MethodKind::Post
+    );
     assert_eq!(MethodKind::from_bytes_ignore_case(b"PUT"), MethodKind::Put);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"PATCH"), MethodKind::Patch);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"DELETE"), MethodKind::Delete);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"OPTIONS"), MethodKind::Options);
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"PATCH"),
+        MethodKind::Patch
+    );
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"DELETE"),
+        MethodKind::Delete
+    );
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"OPTIONS"),
+        MethodKind::Options
+    );
 }
 
 #[test]
 fn method_from_bytes_ignore_case_lower() {
     assert_eq!(MethodKind::from_bytes_ignore_case(b"get"), MethodKind::Get);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"post"), MethodKind::Post);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"options"), MethodKind::Options);
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"post"),
+        MethodKind::Post
+    );
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"options"),
+        MethodKind::Options
+    );
 }
 
 #[test]
 fn method_from_bytes_ignore_case_unknown() {
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"FETCH"), MethodKind::Other);
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"FETCH"),
+        MethodKind::Other
+    );
     assert_eq!(MethodKind::from_bytes_ignore_case(b""), MethodKind::Other);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"GETX"), MethodKind::Other);
-    assert_eq!(MethodKind::from_bytes_ignore_case(b"POSTING"), MethodKind::Other);
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"GETX"),
+        MethodKind::Other
+    );
+    assert_eq!(
+        MethodKind::from_bytes_ignore_case(b"POSTING"),
+        MethodKind::Other
+    );
 }
 
 #[test]
@@ -532,17 +561,29 @@ fn method_from_str_upper() {
 
 #[test]
 fn method_bits_are_distinct() {
-    let bits: std::collections::HashSet<u16> =
-        [MethodKind::Get, MethodKind::Head, MethodKind::Post, MethodKind::Put, MethodKind::Patch, MethodKind::Delete, MethodKind::Options]
-            .iter()
-            .map(|m| m.bit())
-            .collect();
+    let bits: std::collections::HashSet<u16> = [
+        MethodKind::Get,
+        MethodKind::Head,
+        MethodKind::Post,
+        MethodKind::Put,
+        MethodKind::Patch,
+        MethodKind::Delete,
+        MethodKind::Options,
+    ]
+    .iter()
+    .map(|m| m.bit())
+    .collect();
     assert_eq!(bits.len(), 7, "each method must have a unique bit");
 }
 
 // ── cors ──────────────────────────────────────────────────────────
 
-fn cors_options(origin: Vec<String>, methods: Vec<String>, headers: Vec<String>, creds: bool) -> CorsOptions {
+fn cors_options(
+    origin: Vec<String>,
+    methods: Vec<String>,
+    headers: Vec<String>,
+    creds: bool,
+) -> CorsOptions {
     CorsOptions {
         allow_origin: Some(origin),
         allow_methods: Some(methods),
@@ -682,7 +723,8 @@ fn query_parse_basic_pairs() {
 
 #[test]
 fn query_parse_percent_and_plus_decoding() {
-    let packed = crate::http::query_parser::query_parse_packed_vec(b"name=John%20Doe&q=a+b").unwrap();
+    let packed =
+        crate::http::query_parser::query_parse_packed_vec(b"name=John%20Doe&q=a+b").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0], (b"name".to_vec(), b"John Doe".to_vec()));
@@ -722,7 +764,8 @@ fn cookie_parse_basic() {
 
 #[test]
 fn cookie_parse_trims_whitespace() {
-    let packed = crate::http::cookie_parser::cookie_parse_packed_vec(b" a = 1 ; b = hello world ").unwrap();
+    let packed =
+        crate::http::cookie_parser::cookie_parse_packed_vec(b" a = 1 ; b = hello world ").unwrap();
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
@@ -743,6 +786,68 @@ fn cookie_parse_empty_value() {
     let pairs = decode_packed_pairs(&packed);
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0], (b"session".to_vec(), b"".to_vec()));
+}
+
+#[test]
+fn query_parse_null_byte_preserved() {
+    // `%00` decodes to a NUL byte inside the value (byte-oriented parser).
+    let packed = crate::http::query_parser::query_parse_packed_vec(b"a=%00b").unwrap();
+    let pairs = decode_packed_pairs(&packed);
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0], (b"a".to_vec(), b"\x00b".to_vec()));
+}
+
+#[test]
+fn query_parse_semicolon_is_data() {
+    // In a query string `&` separates pairs; `;` is ordinary data.
+    let packed = crate::http::query_parser::query_parse_packed_vec(b"a=1;b=2").unwrap();
+    let pairs = decode_packed_pairs(&packed);
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0], (b"a".to_vec(), b"1;b=2".to_vec()));
+}
+
+#[test]
+fn query_parse_non_utf8_byte_passthrough() {
+    // `%FF` decodes to a raw 0xFF byte; the parser does not require valid
+    // UTF-8 in query values (callers must handle it when they do).
+    let packed = crate::http::query_parser::query_parse_packed_vec(b"a=%FF").unwrap();
+    let pairs = decode_packed_pairs(&packed);
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0], (b"a".to_vec(), vec![0xFF]));
+}
+
+#[test]
+fn cookie_parse_equals_in_value() {
+    // Only the first `=` separates name from value.
+    let packed = crate::http::cookie_parser::cookie_parse_packed_vec(b"a=b=c").unwrap();
+    let pairs = decode_packed_pairs(&packed);
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0], (b"a".to_vec(), b"b=c".to_vec()));
+}
+
+#[test]
+fn cookie_parse_expires_value_with_commas() {
+    let packed = crate::http::cookie_parser::cookie_parse_packed_vec(
+        b"session=abc; expires=Wed, 21 Oct 2015 07:28:00 GMT",
+    )
+    .unwrap();
+    let pairs = decode_packed_pairs(&packed);
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(
+        pairs[1],
+        (b"expires".to_vec(), b"Wed, 21 Oct 2015 07:28:00 GMT".to_vec())
+    );
+}
+
+#[test]
+fn cookie_parse_quotes_are_not_special() {
+    // Cookies split on `;` unconditionally — quotes are ordinary data, and a
+    // token without `=` becomes a pair with an empty value.
+    let packed = crate::http::cookie_parser::cookie_parse_packed_vec(b"a=\"x;y\"").unwrap();
+    let pairs = decode_packed_pairs(&packed);
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(pairs[0], (b"a".to_vec(), b"\"x".to_vec()));
+    assert_eq!(pairs[1], (b"y\"".to_vec(), b"".to_vec()));
 }
 
 // ── json_ser ──────────────────────────────────────────────────────
@@ -768,7 +873,10 @@ fn json_escaped_len_newline() {
 #[test]
 fn json_escaped_len_control_char_wide() {
     // 0x01 must be escaped as \u0001 -> 6 bytes for 1 input byte.
-    assert_eq!(crate::json::json_ser::json_escaped_len(&[b'a', 0x01, b'b']), 8);
+    assert_eq!(
+        crate::json::json_ser::json_escaped_len(&[b'a', 0x01, b'b']),
+        8
+    );
 }
 
 #[test]
@@ -777,8 +885,14 @@ fn json_escaped_len_short_control_escapes() {
     // +1. (memchr3 only finds ", \, \n; the run scanner handles these.)
     assert_eq!(crate::json::json_ser::json_escaped_len(b"a\rb"), 4); // a, \r, b
     assert_eq!(crate::json::json_ser::json_escaped_len(b"a\tb"), 4);
-    assert_eq!(crate::json::json_ser::json_escaped_len(&[b'a', 0x08, b'b']), 4);
-    assert_eq!(crate::json::json_ser::json_escaped_len(&[b'a', 0x0c, b'b']), 4);
+    assert_eq!(
+        crate::json::json_ser::json_escaped_len(&[b'a', 0x08, b'b']),
+        4
+    );
+    assert_eq!(
+        crate::json::json_ser::json_escaped_len(&[b'a', 0x0c, b'b']),
+        4
+    );
     // Mixed: newline (memchr3 path) + tab (trailing path).
     assert_eq!(crate::json::json_ser::json_escaped_len(b"a\n\tb"), 6);
 }
@@ -802,7 +916,10 @@ fn write_json_escaped_never_overflows_exact_buffer() {
         let mut out = vec![0u8; len];
         let mut pos = 0usize;
         crate::json::json_ser::write_json_escaped(&mut out, &mut pos, input);
-        assert_eq!(pos, len, "must write exactly json_escaped_len bytes: {input:?}");
+        assert_eq!(
+            pos, len,
+            "must write exactly json_escaped_len bytes: {input:?}"
+        );
     }
 }
 
@@ -818,7 +935,7 @@ fn write_json_escaped_escapes_control_before_special() {
             b"a\rb\"c",
             &[
                 b'a', b'\\', b'r', b'b', // \r → \\r
-                b'\\', b'"',             // " → \"
+                b'\\', b'"', // " → \"
                 b'c',
             ],
         ),
@@ -827,7 +944,7 @@ fn write_json_escaped_escapes_control_before_special() {
             b"a\tb\\c",
             &[
                 b'a', b'\\', b't', b'b', // \t → \\t
-                b'\\', b'\\',            // \ → \\
+                b'\\', b'\\', // \ → \\
                 b'c',
             ],
         ),
@@ -847,7 +964,11 @@ fn write_json_escaped_escapes_control_before_special() {
         let mut pos = 0usize;
         crate::json::json_ser::write_json_escaped(&mut out, &mut pos, input);
         assert_eq!(pos, len, "accounting must be exact for {input:?}");
-        assert_eq!(&out[..pos], *expected, "output must be valid JSON for {input:?}");
+        assert_eq!(
+            &out[..pos],
+            *expected,
+            "output must be valid JSON for {input:?}"
+        );
     }
 }
 
@@ -864,7 +985,9 @@ fn cookie_json_into_slice_short_control_escapes() {
 #[test]
 fn cookie_json_into_slice_output() {
     let mut out = vec![0u8; 256];
-    let written = crate::json::json_ser::cookie_json_into_slice(b"a=1; b=hello world", &mut out, 100).unwrap();
+    let written =
+        crate::json::json_ser::cookie_json_into_slice(b"a=1; b=hello world", &mut out, 100)
+            .unwrap();
     assert_eq!(&out[..written], b"{\"a\":\"1\",\"b\":\"hello world\"}");
 }
 
@@ -879,7 +1002,10 @@ fn cookie_json_into_slice_escapes() {
 fn cookie_json_into_slice_small_buffer_errors() {
     let mut out = vec![0u8; 8];
     let res = crate::json::json_ser::cookie_json_into_slice(b"a=1; b=2; c=3; d=4", &mut out, 100);
-    assert!(res.is_err(), "truncation must surface as an error, not silent data loss");
+    assert!(
+        res.is_err(),
+        "truncation must surface as an error, not silent data loss"
+    );
 }
 
 #[test]
@@ -887,7 +1013,8 @@ fn packed_pairs_to_json_into_slice_output() {
     // Build packed query pairs for a=1 & b=2 via the query parser, then serialize.
     let packed = crate::http::query_parser::query_parse_packed_vec(b"a=1&b=2").unwrap();
     let mut out = vec![0u8; 256];
-    let written = crate::json::json_ser::packed_pairs_to_json_into_slice(&packed, &mut out, 100).unwrap();
+    let written =
+        crate::json::json_ser::packed_pairs_to_json_into_slice(&packed, &mut out, 100).unwrap();
     assert_eq!(&out[..written], b"{\"a\":\"1\",\"b\":\"2\"}");
 }
 
@@ -916,9 +1043,12 @@ fn query_to_json_into_slice_matches_packed_pipeline() {
         match (&packed, &direct) {
             (Ok(packed), Ok(written)) => {
                 let mut ref_out = vec![0u8; 512];
-                let ref_written =
-                    crate::json::json_ser::packed_pairs_to_json_into_slice(packed, &mut ref_out, 100)
-                        .unwrap();
+                let ref_written = crate::json::json_ser::packed_pairs_to_json_into_slice(
+                    packed,
+                    &mut ref_out,
+                    100,
+                )
+                .unwrap();
                 assert_eq!(
                     &direct_out[..*written],
                     &ref_out[..ref_written],
@@ -952,7 +1082,7 @@ fn parsers_do_not_panic_on_malformed_input() {
         let _ = crate::http::query_parser::query_parse_packed_vec(&data);
         let _ = crate::http::cookie_parser::cookie_parse_packed_vec(&data);
         let _ = HeaderRefs::parse(&data, (rng.next() & 1) == 1, 100);
-        let _ = crate::json::json_ser::cookie_json_into_slice(&data, &mut vec![0u8; 64], 100);
+        let _ = crate::json::json_ser::cookie_json_into_slice(&data, &mut [0u8; 64], 100);
         let _ = crate::json::json_ser::json_escaped_len(&data);
     }
 }

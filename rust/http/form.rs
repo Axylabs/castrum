@@ -1,4 +1,4 @@
-// rust/form.rs — application/x-www-form-urlencoded body parser.
+// rust/http/form.rs — application/x-www-form-urlencoded body parser.
 //
 // Reuses the zero-alloc query-parser core (`query_parse_packed_into_slice`):
 // it already splits on '&', decodes '+'→space and %XX, which is exactly the
@@ -46,7 +46,9 @@ impl FormParser {
         // force a multi-GiB single allocation; parse() still grows on demand.
         const MAX_CAPACITY: usize = 16 * 1024 * 1024;
         let cap = (capacity.unwrap_or(4096).max(256) as usize).min(MAX_CAPACITY);
-        Self { buf: vec![0u8; cap] }
+        Self {
+            buf: vec![0u8; cap],
+        }
     }
 
     /// Parse into the instance's reusable buffer and return the packed pairs.
@@ -116,7 +118,10 @@ mod tests {
         let a = parser.parse(Uint8Array::new(b"x=1&y=2".to_vec())).unwrap();
         assert_eq!(
             decode_packed_pairs(a.as_ref()),
-            vec![(b"x".to_vec(), b"1".to_vec()), (b"y".to_vec(), b"2".to_vec())]
+            vec![
+                (b"x".to_vec(), b"1".to_vec()),
+                (b"y".to_vec(), b"2".to_vec())
+            ]
         );
         // A larger input grows the reusable buffer and still parses.
         let big = format!("k={}", "a".repeat(200));

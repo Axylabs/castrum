@@ -354,3 +354,118 @@ test("slowloris body read hits the route bodyTimeoutMs → 408", async () => {
     srv.stop(true);
   }
 });
+
+test("adapter serves HTTP/1.0 requests and closes the connection", async () => {
+  const { srv, port } = startServer({});
+  const p = await port;
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const sock = net.connect(p, "127.0.0.1", () => {
+        // HTTP/1.0 has no keep-alive by default — the server must respond and
+        // close the socket (which is exactly what "end" below observes).
+        sock.write("GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n");
+      });
+      let data = "";
+      sock.on("data", (c) => (data += c.toString()));
+      sock.on("end", () => resolve(data));
+      sock.on("error", reject);
+      setTimeout(() => {
+        sock.destroy();
+        resolve(data);
+      }, 2000);
+    });
+    assert.match(response, /200/);
+    assert.match(response, /"ok":true/);
+  } finally {
+    srv.stop(true);
+  }
+});
+
+test("adapter 413 response honors Connection: close", async () => {
+  const { srv, port } = startServer({});
+  const p = await port;
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const body = "x".repeat(4096); // > maxRequestBodySize (1024)
+      const sock = net.connect(p, "127.0.0.1", () => {
+        sock.write(
+          "POST /health HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Content-Type: application/json\r\n" +
+            `Content-Length: ${body.length}\r\n` +
+            "Connection: close\r\n\r\n" +
+            body,
+        );
+      });
+      let data = "";
+      sock.on("data", (c) => (data += c.toString()));
+      sock.on("end", () => resolve(data));
+      sock.on("error", reject);
+      setTimeout(() => {
+        sock.destroy();
+        resolve(data);
+      }, 2000);
+    });
+    assert.match(response, /413/);
+    assert.match(response, /body_too_large/);
+  } finally {
+    srv.stop(true);
+  }
+});
+
+test("adapter handles concurrent requests across many sockets", async () => {
+  const { srv, port } = startServer({});
+  const p = await port;
+  try {
+    const http = await import("node:http");
+    const N = 8;
+    const statuses = await Promise.all(
+      Array.from({ length: N }, () =>
+        new Promise((resolve, reject) => {
+          const req = http.request(
+            { host: "127.0.0.1", port: p, path: "/health", method: "GET" },
+            (res) => {
+              res.resume();
+              res.on("end", () => resolve(res.statusCode));
+            },
+          );
+          req.on("error", reject);
+          req.end();
+        }),
+      ),
+    );
+    assert.deepEqual(statuses, Array(N).fill(200));
+  } finally {
+    srv.stop(true);
+  }
+});
+
+test("adapter closes idle keep-alive sockets per idleTimeout", async () => {
+  const { srv, port } = startServer({ extra: { idleTimeout: 2 } });
+  const p = await port;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const sock = net.connect(p, "127.0.0.1", () => {
+        sock.write("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+      });
+      let data = "";
+      let timedOut = false;
+      sock.on("data", (c) => (data += c.toString()));
+      // The server must close the idle keep-alive socket on its own.
+      sock.on("close", () => resolve({ data, timedOut }));
+      sock.on("error", reject);
+      setTimeout(() => {
+        timedOut = true;
+        sock.destroy();
+      }, 6000);
+    });
+    assert.match(result.data, /200/);
+    assert.equal(
+      result.timedOut,
+      false,
+      "server must close the idle socket before our watchdog fires",
+    );
+  } finally {
+    srv.stop(true);
+  }
+});

@@ -1,4 +1,4 @@
-// rust/threadpool.rs — Rayon global thread-pool initialization + parallelism.
+// rust/util/threadpool.rs — Rayon global thread-pool initialization + parallelism.
 //
 // The rayon pool is process-wide and initialized exactly once (OnceLock). This
 // module owns the pool lifecycle and the "should we parallelize?" heuristic;
@@ -41,7 +41,7 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
             .num_threads(threads as usize)
             .stack_size(512 * 1024)
             .thread_name(|i| format!("castrum-rayon-{}", i))
-            .start_handler(move |id| pin_rayon_thread(id))
+            .start_handler(pin_rayon_thread)
             .build_global();
         match built {
             Ok(()) => Ok(()),

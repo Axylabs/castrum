@@ -62,7 +62,9 @@ impl KeyedRateLimiter {
         let id = LIMITER_ID.fetch_add(1, Ordering::Relaxed);
         let seed = fast_hash_bytes(&id.to_le_bytes());
 
-        let max_entries = max_entries.unwrap_or(DEFAULT_MAX_ENTRIES).min(MAX_ENTRIES_CAP);
+        let max_entries = max_entries
+            .unwrap_or(DEFAULT_MAX_ENTRIES)
+            .min(MAX_ENTRIES_CAP);
         let max_per_shard = (max_entries / SHARD_COUNT).max(64);
 
         let cap = NonZeroUsize::new(max_per_shard)
@@ -115,37 +117,25 @@ impl KeyedRateLimiter {
 
         let window = self.window_ms.max(1);
 
-        let c = match map.get_mut(&key) {
-            Some(c) => c,
-            None => {
-                map.put(
-                    key,
-                    Counter {
-                        window_start: now_ms,
-                        prev: 0,
-                        curr: 0,
-                    },
-                );
-
-                map.get_mut(&key).expect("rate limiter counter must exist after insert")
-            }
-        };
+        let c = map.get_or_insert_mut(key, || Counter {
+            window_start: now_ms,
+            prev: 0,
+            curr: 0,
+        });
 
         advance_window(c, now_ms, window);
 
         let elapsed = now_ms.saturating_sub(c.window_start);
         let overlap = window.saturating_sub(elapsed.min(window));
 
-        let weighted =
-            ((c.prev as u128) * (overlap as u128) / (window as u128)) + (c.curr as u128);
+        let weighted = ((c.prev as u128) * (overlap as u128) / (window as u128)) + (c.curr as u128);
 
         let reset = c.window_start.saturating_add(window);
 
         if weighted < self.limit as u128 {
             c.curr = c.curr.saturating_add(1);
 
-            let remaining = (self.limit as u128)
-                .saturating_sub(weighted.saturating_add(1)) as u32;
+            let remaining = (self.limit as u128).saturating_sub(weighted.saturating_add(1)) as u32;
 
             RateOutcome {
                 allowed: true,
@@ -217,7 +207,9 @@ pub fn shared_limiter(
     window_ms: u32,
     max_entries: Option<usize>,
 ) -> Arc<KeyedRateLimiter> {
-    let resolved = max_entries.unwrap_or(DEFAULT_MAX_ENTRIES).min(MAX_ENTRIES_CAP);
+    let resolved = max_entries
+        .unwrap_or(DEFAULT_MAX_ENTRIES)
+        .min(MAX_ENTRIES_CAP);
     let key = LimiterKey {
         limit,
         window_ms,

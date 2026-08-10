@@ -1,5 +1,30 @@
 import { decoder } from "../shared/bytes";
-import { sortKeys } from "../shared/json";
+
+/**
+ * Recursively sort object keys. Bench-local helper used by `assertDeepEqual`
+ * to make key order irrelevant when comparing parsed JSON (serde_json /
+ * sonic_rs may return a different key order than the JS baseline). It lives in
+ * `src/bench/` (not `src/shared/`) because it exists solely for the benchmark
+ * correctness checks.
+ */
+function sortKeys(value: unknown): unknown {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(sortKeys);
+  }
+
+  const record = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+
+  for (const key of Object.keys(record).sort()) {
+    sorted[key] = sortKeys(record[key]);
+  }
+
+  return sorted;
+}
 
 export function parseJsonBytes(bytes: Uint8Array): unknown {
   return JSON.parse(decoder.decode(bytes));

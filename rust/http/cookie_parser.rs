@@ -1,4 +1,4 @@
-// rust/cookie_parser.rs — Unified zero-alloc cookie parser
+// rust/http/cookie_parser.rs — Unified zero-alloc cookie parser
 // Eliminated the _vec variant; all callers use the single _into_slice path.
 // Upper-bound pre-allocation for callers that need a Vec.
 

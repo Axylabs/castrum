@@ -6,8 +6,8 @@
 
 use super::cursor::{count_chars, decode_string, Cursor};
 use super::types::{
-    Additional, FastArray, FastNode, FastObject, Kind, T_ARR, T_BOOL, T_INT, T_NULL, T_NUM,
-    T_OBJ, T_STR, kind_of,
+    kind_of, Additional, FastArray, FastNode, FastObject, Kind, T_ARR, T_BOOL, T_INT, T_NULL,
+    T_NUM, T_OBJ, T_STR,
 };
 
 impl FastNode {
@@ -130,6 +130,78 @@ impl FastNode {
     }
 }
 
+/// Exact distinct-key tracking for `minProperties`/`maxProperties`, WITHOUT a
+/// per-document heap allocation in the common case.
+///
+/// The common case (objects with a modest number of short keys) is tracked in
+/// a fixed stack array; only pathological objects (many distinct keys or long
+/// keys) migrate to a heap `Vec`. Keeps the otherwise zero-alloc schema fast
+/// path heap-light even when the schema uses these keywords.
+const INLINE_DISTINCT: usize = 16;
+const INLINE_KEY_BYTES: usize = 48;
+
+// The Inline variant is intentionally much larger than Heap (a stack-resident
+// array for the common case); the enum lives on the stack, so this is fine.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum DistinctKeys {
+    Inline {
+        keys: [([u8; INLINE_KEY_BYTES], usize); INLINE_DISTINCT],
+        len: usize,
+    },
+    Heap(Vec<Box<[u8]>>),
+}
+
+impl DistinctKeys {
+    fn new() -> Self {
+        DistinctKeys::Inline {
+            keys: [([0u8; INLINE_KEY_BYTES], 0); INLINE_DISTINCT],
+            len: 0,
+        }
+    }
+
+    /// Record `key` as seen (exact byte comparison); returns whether it was new.
+    fn insert(&mut self, key: &[u8]) -> bool {
+        match self {
+            DistinctKeys::Inline { keys, len } => {
+                for (k, klen) in keys[..*len].iter() {
+                    if *klen == key.len() && &k[..*klen] == key {
+                        return false;
+                    }
+                }
+                if *len < INLINE_DISTINCT && key.len() <= INLINE_KEY_BYTES {
+                    let (k, klen) = &mut keys[*len];
+                    k[..key.len()].copy_from_slice(key);
+                    *klen = key.len();
+                    *len += 1;
+                    return true;
+                }
+                // Inline capacity exhausted: migrate to the heap tracker.
+                let mut v = Vec::with_capacity(*len + 1);
+                for (k, klen) in keys[..*len].iter() {
+                    v.push(k[..*klen].to_vec().into_boxed_slice());
+                }
+                v.push(key.to_vec().into_boxed_slice());
+                *self = DistinctKeys::Heap(v);
+                true
+            }
+            DistinctKeys::Heap(v) => {
+                if v.iter().any(|k| k.as_ref() == key) {
+                    return false;
+                }
+                v.push(key.to_vec().into_boxed_slice());
+                true
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            DistinctKeys::Inline { len, .. } => *len,
+            DistinctKeys::Heap(v) => v.len(),
+        }
+    }
+}
+
 pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor) -> bool {
     if !c.eat(b'{') {
         return false;
@@ -138,11 +210,8 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor) -> bool {
     let need_distinct = o.min_props.is_some() || o.max_props.is_some();
     let mut count: usize = 0;
     let mut seen_required: u64 = 0;
-    // Distinct-key tracking for min/maxProperties: an inline Vec + linear scan
-    // (object key counts are typically small) instead of a per-document
-    // HashSet, which keeps this otherwise allocation-free path heap-light.
-    let mut distinct: Option<Vec<Box<[u8]>>> = if need_distinct {
-        Some(Vec::new())
+    let mut distinct: Option<DistinctKeys> = if need_distinct {
+        Some(DistinctKeys::new())
     } else {
         None
     };
@@ -164,9 +233,7 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor) -> bool {
         };
         count += 1;
         if let Some(d) = &mut distinct {
-            if !d.iter().any(|k| k.as_ref() == key) {
-                d.push(key.to_vec().into_boxed_slice());
-            }
+            d.insert(key);
         }
         if let Some(&bit) = o.required.get(key) {
             seen_required |= 1u64 << bit;
@@ -200,9 +267,9 @@ pub(crate) fn finish_object(
     o: &FastObject,
     count: usize,
     seen_required: u64,
-    distinct: &Option<Vec<Box<[u8]>>>,
+    distinct: &Option<DistinctKeys>,
 ) -> bool {
-    let total = distinct.as_ref().map(|d| d.len()).unwrap_or(count);
+    let total = distinct.as_ref().map(DistinctKeys::len).unwrap_or(count);
     if let Some(min) = o.min_props {
         if total < min {
             return false;

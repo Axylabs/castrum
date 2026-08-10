@@ -29,15 +29,21 @@ pub(crate) fn decode_packed_pairs(packed: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = Vec::with_capacity(count);
     let mut pos = 4usize;
     for _ in 0..count {
-        let key_len =
-            u32::from_le_bytes([packed[pos], packed[pos + 1], packed[pos + 2], packed[pos + 3]])
-                as usize;
+        let key_len = u32::from_le_bytes([
+            packed[pos],
+            packed[pos + 1],
+            packed[pos + 2],
+            packed[pos + 3],
+        ]) as usize;
         pos += 4;
         let key = packed[pos..pos + key_len].to_vec();
         pos += key_len;
-        let val_len =
-            u32::from_le_bytes([packed[pos], packed[pos + 1], packed[pos + 2], packed[pos + 3]])
-                as usize;
+        let val_len = u32::from_le_bytes([
+            packed[pos],
+            packed[pos + 1],
+            packed[pos + 2],
+            packed[pos + 3],
+        ]) as usize;
         pos += 4;
         let val = packed[pos..pos + val_len].to_vec();
         pos += val_len;

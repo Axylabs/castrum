@@ -1,6 +1,6 @@
 // src/ingress/routes/read.ts — Pre-baked GET read handler.
 
-import type { OptimizedIngressHandler } from "../handlers";
+import type { OptimizedIngressHandler } from "../types";
 import { resolveIp, type BakedHandlerOptions } from "./common";
 
 /**

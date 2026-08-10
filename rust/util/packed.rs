@@ -1,4 +1,4 @@
-// rust/packed.rs — Zero-alloc packed-wire iterators + byte writers.
+// rust/util/packed.rs — Zero-alloc packed-wire iterators + byte writers.
 //
 // The canonical implementation of the packed batch format
 // (`[u32 count] { [u32 len] [bytes] }`) and the low-level byte writers used by
@@ -23,18 +23,8 @@ impl VecWriter {
     }
 
     #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.buf.len()
-    }
-
-    #[inline(always)]
     pub fn into_bytes(self) -> Vec<u8> {
         self.buf
-    }
-
-    #[inline(always)]
-    pub fn push(&mut self, byte: u8) {
-        self.buf.push(byte);
     }
 
     #[inline(always)]
@@ -189,7 +179,7 @@ impl<'a> ExactSizeIterator for PackedIter<'a> {}
 ///     [u32 byte_length]
 ///     [bytes]
 #[inline]
-pub fn unpack<'a>(data: &'a [u8]) -> Result<Vec<&'a [u8]>> {
+pub fn unpack(data: &[u8]) -> Result<Vec<&[u8]>> {
     PackedIter::new(data)?.collect_vec()
 }
 
@@ -266,10 +256,131 @@ where
 
     let written = if overlaps {
         let owned_input = input_bytes.to_vec();
+        // SAFETY: `output.as_mut()` yields a mutable slice over the napi
+        // Uint8Array's backing store. This is sound because (1) no other
+        // reference to `output` is live while `f` runs, (2) the input was
+        // copied to `owned_input` when it could alias `output` (checked by
+        // `slices_overlap` above), and (3) `f`'s writers are capacity-checked
+        // (`ingress/output.rs` `write_*` panic instead of writing OOB).
         unsafe { f(&owned_input, output.as_mut())? }
     } else {
+        // SAFETY: as above — `input_bytes` is a shared borrow that does not
+        // alias `output` (verified by `slices_overlap`), so taking a mutable
+        // slice of `output` cannot create aliasing UB.
         unsafe { f(input_bytes, output.as_mut())? }
     };
 
     Ok(written as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn packed_from(items: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+        for item in items {
+            out.extend_from_slice(&(item.len() as u32).to_le_bytes());
+            out.extend_from_slice(item);
+        }
+        out
+    }
+
+    #[test]
+    fn vec_writer_layout() {
+        let mut w = VecWriter::with_capacity(0);
+        w.write_u32(0x0102_0304);
+        w.write_bytes(b"hi");
+        w.write_bytes_ascii_lowercase(b"MiXeD");
+        assert_eq!(w.into_bytes(), b"\x04\x03\x02\x01himixed");
+    }
+
+    #[test]
+    fn read_u32_le_cases() {
+        assert_eq!(read_u32_le(b"\x2a\x00\x00\x00", 0).unwrap(), 42);
+        // Truncated slice.
+        assert!(read_u32_le(b"\x01\x02", 0).is_err());
+        assert!(read_u32_le(b"\x01\x02\x03", 0).is_err());
+        // Offset runs off the end.
+        assert!(read_u32_le(b"\x01\x02\x03\x04", 1).is_err());
+    }
+
+    #[test]
+    fn packed_iter_roundtrip() {
+        let buf = packed_from(&[b"a", b"", b"hello", b"w\x00\xff"]);
+        let iter = PackedIter::new(&buf).unwrap();
+        assert_eq!(iter.len(), 4);
+        let items: Vec<&[u8]> = iter.collect();
+        assert_eq!(
+            items,
+            vec![&b"a"[..], &b""[..], &b"hello"[..], &b"w\x00\xff"[..]]
+        );
+    }
+
+    #[test]
+    fn packed_iter_empty() {
+        let buf = packed_from(&[]);
+        let iter = PackedIter::new(&buf).unwrap();
+        assert!(iter.is_empty());
+        assert_eq!(iter.len(), 0);
+        assert!(iter.collect_vec().unwrap().is_empty());
+        assert!(unpack(&buf).unwrap().is_empty());
+    }
+
+    #[test]
+    fn packed_iter_missing_count_is_error() {
+        assert!(PackedIter::new(b"").is_err());
+        assert!(PackedIter::new(b"\x01\x02").is_err());
+        // Claimed count is impossible for a 4-byte-only buffer.
+        assert!(PackedIter::new(&[1, 0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn packed_iter_truncated_item() {
+        let mut buf = packed_from(&[b"abc", b"defg"]);
+        buf.truncate(buf.len() - 1); // cut into the last item
+        // The Iterator stops silently on a malformed tail…
+        let iter = PackedIter::new(&buf).unwrap();
+        let items: Vec<&[u8]> = iter.collect();
+        assert_eq!(items, vec![b"abc"]);
+        // …while the validating collect_vec/unpack report it.
+        assert!(unpack(&buf).is_err());
+    }
+
+    #[test]
+    fn write_helpers_capacity_checks() {
+        let mut out = [0u8; 8];
+        let mut pos = 0usize;
+        write_u32_le(&mut out, &mut pos, 7).unwrap();
+        write_bytes(&mut out, &mut pos, b"abcd").unwrap();
+        assert_eq!(pos, 8);
+        // One byte over the end → error, position unchanged.
+        assert!(write_bytes(&mut out, &mut pos, b"e").is_err());
+        assert_eq!(pos, 8);
+        // Overflow path.
+        assert!(ensure_capacity(&out, usize::MAX, 4).is_err());
+        // Lowercase writer is one-pass and capacity-checked.
+        let mut small = [0u8; 2];
+        assert!(write_bytes_lowercase(&mut small, &mut 0usize, b"abc").is_err());
+        let mut out2 = [0u8; 3];
+        let mut p2 = 0usize;
+        write_bytes_lowercase(&mut out2, &mut p2, b"AbC").unwrap();
+        assert_eq!(&out2, b"abc");
+        assert_eq!(p2, 3);
+    }
+
+    #[test]
+    fn slices_overlap_cases() {
+        let a = [1u8, 2, 3, 4];
+        let b = [5u8, 6];
+        assert!(!slices_overlap(&a, &b));
+        // Overlapping views of one backing buffer.
+        assert!(slices_overlap(&a[0..3], &a[2..4]));
+        assert!(slices_overlap(&a, &a[1..2]));
+        assert!(slices_overlap(&a[2..], &a[0..3]));
+        // Empty slices never overlap.
+        assert!(!slices_overlap(&a[0..0], &a));
+        assert!(!slices_overlap(&a, &b[0..0]));
+    }
 }

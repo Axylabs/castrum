@@ -1,9 +1,8 @@
-// rust/query_parser.rs — Unified zero-alloc query string parser
+// rust/http/query_parser.rs — Unified zero-alloc query string parser
 // Single _into_slice code path with _vec wrapper for callers needing Vec.
 // Returns Cow<[u8]> when no decoding is needed (zero allocation).
 
-use crate::util::bytes::decode_percent_at;
-use crate::util::{ensure_capacity, write_bytes, write_u32_le};
+use crate::util::write_u32_le;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -12,40 +11,22 @@ use napi_derive::napi;
 fn write_decoded_form_component(src: &[u8], out: &mut [u8], pos: &mut usize) -> Result<()> {
     let len_pos = *pos;
     write_u32_le(out, pos, 0)?;
-    let start = *pos;
-
-    if memchr::memchr2(b'+', b'%', src).is_none() {
-        write_bytes(out, pos, src)?;
-    } else {
-        let mut i = 0usize;
-        while i < src.len() {
-            match src[i] {
-                b'+' => {
-                    ensure_capacity(out, *pos, 1)?;
-                    out[*pos] = b' ';
-                    *pos += 1;
-                    i += 1;
-                }
-                b'%' => {
-                    let (byte, next) = decode_percent_at(src, i).ok_or_else(|| {
-                        Error::from_reason("invalid %-encoding: malformed %XX sequence")
-                    })?;
-                    ensure_capacity(out, *pos, 1)?;
-                    out[*pos] = byte;
-                    *pos += 1;
-                    i = next;
-                }
-                b => {
-                    ensure_capacity(out, *pos, 1)?;
-                    out[*pos] = b;
-                    *pos += 1;
-                    i += 1;
-                }
+    // The decoded length never exceeds `src.len()`; the shared decoder checks
+    // the remaining buffer against the ACTUAL decoded length (so a `%XX`-heavy
+    // component only needs room for its decoded form, matching the pre-refactor
+    // behavior where a buffer sized to the decoded length succeeds).
+    let written = crate::util::bytes::decode_form_component_into(src, &mut out[*pos..]).map_err(
+        |e| match e {
+            crate::util::bytes::FormDecodeError::Malformed => {
+                Error::from_reason("invalid %-encoding: malformed %XX sequence")
             }
-        }
-    }
-
-    let decoded_len = (*pos - start) as u32;
+            crate::util::bytes::FormDecodeError::BufferTooSmall => {
+                Error::from_reason("packed output: buffer too small")
+            }
+        },
+    )?;
+    *pos += written;
+    let decoded_len = written as u32;
     out[len_pos..len_pos + 4].copy_from_slice(&decoded_len.to_le_bytes());
     Ok(())
 }
@@ -59,7 +40,9 @@ pub fn query_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<usi
     let mut count = 0u32;
 
     for pair in input.split(|&b| b == b'&') {
-        if pair.is_empty() { continue; }
+        if pair.is_empty() {
+            continue;
+        }
         let (key, value) = match pair.iter().position(|&b| b == b'=') {
             Some(eq) => (&pair[..eq], &pair[eq + 1..]),
             None => (pair, &[][..]),

@@ -1,6 +1,9 @@
 import * as native from "../baseline";
 import { Buffer } from "node:buffer";
-import { rust, rustBatch } from "../rust-ffi";
+import { rust } from "../rust-ffi";
+// The public `rustBatch` alias was removed in 0.8.0 — keep a bench-local
+// shorthand for `rust.batch` so the checks below stay readable.
+const rustBatch = rust.batch;
 import { decoder, encoder } from "../shared/bytes";
 import { pairsToObject, readHttpPacked, readPairsPacked } from "../shared/packed";
 import {

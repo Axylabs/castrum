@@ -1,4 +1,4 @@
-// rust/batch_core.rs — Generic rayon-parallel batch helpers.
+// rust/util/batch_core.rs — Generic rayon-parallel batch helpers.
 //
 // The shared patterns for "run a predicate/map over many byte items" with an
 // automatic serial-vs-parallel decision. Feature modules keep their own
@@ -91,9 +91,14 @@ pub fn sum_batch_i64<T: AsRef<[u8]> + Sync>(
 
         items
             .par_chunks(chunk_items)
-            .fold(|| 0i64, |acc, chunk| {
-                chunk.iter().fold(acc, |a, item| a.saturating_add(f(item.as_ref())))
-            })
+            .fold(
+                || 0i64,
+                |acc, chunk| {
+                    chunk
+                        .iter()
+                        .fold(acc, |a, item| a.saturating_add(f(item.as_ref())))
+                },
+            )
             .reduce(|| 0i64, |a, b| a.saturating_add(b))
     } else {
         items
@@ -106,4 +111,74 @@ pub fn sum_batch_i64<T: AsRef<[u8]> + Sync>(
 #[inline(always)]
 fn total_bytes_ref<T: AsRef<[u8]>>(items: &[T]) -> usize {
     items.iter().map(|x| x.as_ref().len()).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Item count that reliably crosses `should_parallelize`'s item threshold
+    /// regardless of the ambient rayon pool size, forcing the parallel branch.
+    fn parallel_len() -> usize {
+        rayon::current_num_threads().max(1).saturating_mul(2048) + 64
+    }
+
+    #[test]
+    fn count_batch_matches_manual() {
+        let items: Vec<&[u8]> = vec![b"a", b"bb", b"c", b"dd", b""];
+        assert_eq!(count_batch(&items, |x| x.len() == 1, 64), 2);
+        assert_eq!(count_batch(&items, |x| x.is_empty(), 64), 1);
+        assert_eq!(count_batch(&items, |_| true, 64), 5);
+        assert_eq!(count_batch(&items, |_| false, 64), 0);
+    }
+
+    #[test]
+    fn count_batch_parallel_matches_expected() {
+        let n = parallel_len();
+        let items: Vec<Vec<u8>> = (0..n).map(|_| vec![b'x']).collect();
+        let refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+        assert_eq!(count_batch(&refs, |x| x[0] == b'x', 64), n);
+        assert_eq!(count_batch(&refs, |x| x[0] == b'y', 64), 0);
+    }
+
+    #[test]
+    fn validation_bitset_layout() {
+        let items: Vec<&[u8]> = vec![b"a", b"bb", b"c", b"dd", b""];
+        // Predicate len==1 → items 0 and 2 → bits 0b0000_0101.
+        let bits = validation_bitset_chunked(&items, |x| x.len() == 1, 64);
+        assert_eq!(&bits[..4], &5u32.to_le_bytes());
+        assert_eq!(bits[4], 0b0000_0101);
+        assert_eq!(bits.len(), 4 + 1);
+    }
+
+    #[test]
+    fn validation_bitset_parallel_all_set() {
+        let n = parallel_len();
+        let items: Vec<Vec<u8>> = (0..n).map(|_| vec![b'x']).collect();
+        let refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+        let bits = validation_bitset_chunked(&refs, |x| x[0] == b'x', 64);
+        assert_eq!(&bits[..4], &(n as u32).to_le_bytes());
+        let set: usize = bits[4..].iter().map(|b| b.count_ones() as usize).sum();
+        assert_eq!(set, n);
+    }
+
+    #[test]
+    fn validation_bitset_empty() {
+        let bits = validation_bitset_chunked::<&[u8]>(&[], |_| true, 64);
+        assert_eq!(bits, vec![0u8; 4]);
+    }
+
+    #[test]
+    fn sum_batch_matches_manual() {
+        let items: Vec<&[u8]> = vec![b"a", b"bb", b"ccc"];
+        assert_eq!(sum_batch_i64(&items, |x| x.len() as i64, 64), 6);
+    }
+
+    #[test]
+    fn sum_batch_saturates() {
+        let items: Vec<Vec<u8>> = vec![vec![0u8; 8], vec![0u8; 8]];
+        let refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+        assert_eq!(sum_batch_i64(&refs, |_| i64::MAX, 64), i64::MAX);
+        assert_eq!(sum_batch_i64(&refs, |_| i64::MIN, 64), i64::MIN);
+    }
 }

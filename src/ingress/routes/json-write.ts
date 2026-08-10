@@ -1,7 +1,7 @@
 // src/ingress/routes/json-write.ts — Pre-baked JSON-write handler
 // (POST/PUT/PATCH).
 
-import type { OptimizedIngressHandler } from "../handlers";
+import type { OptimizedIngressHandler } from "../types";
 import { resolveIp, type BakedHandlerOptions } from "./common";
 import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from "../shared";
 import { readBodyWithLimit } from "../body";

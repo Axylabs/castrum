@@ -2,7 +2,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::util::should_parallelize;
-use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
+use xxhash_rust::xxh3::xxh3_64;
 
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -31,11 +31,6 @@ pub fn fnv1a64_bytes(input: &[u8]) -> u64 {
 #[inline]
 pub fn fast_hash_bytes(input: &[u8]) -> u64 {
     xxh3_64(input)
-}
-
-#[inline]
-pub fn fast_hash_seeded(input: &[u8], seed: u64) -> u64 {
-    xxh3_64_with_seed(input, seed)
 }
 
 // ── Napi exports ───────────────────────────────────────────────────
@@ -84,7 +79,10 @@ pub fn crc32_batch_packed(input: Uint8Array) -> Result<Buffer> {
                     return Err(Error::from_reason("packed buffer: truncated length"));
                 }
                 let len = u32::from_le_bytes([
-                    data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
                 ]) as usize;
                 offset += 4;
                 let end = offset + len;
@@ -117,7 +115,10 @@ pub fn crc32_batch_packed(input: Uint8Array) -> Result<Buffer> {
                 return Err(Error::from_reason("packed buffer: truncated length"));
             }
             let len = u32::from_le_bytes([
-                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]) as usize;
             offset += 4;
             let end = offset + len;
@@ -131,4 +132,45 @@ pub fn crc32_batch_packed(input: Uint8Array) -> Result<Buffer> {
     }
 
     Ok(Buffer::from(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fnv1a_known_vectors() {
+        // Standard FNV-1a 64-bit test vectors.
+        assert_eq!(fnv1a64_bytes(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a64_bytes(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a64_bytes(b"foobar"), 0x8594_4171_f739_67e8);
+        // Continue-style matches one-shot.
+        let h = fnv1a64_continue(fnv1a64_bytes(b"foo"), b"bar");
+        assert_eq!(h, fnv1a64_bytes(b"foobar"));
+    }
+
+    #[test]
+    fn crc32_known_vector() {
+        assert_eq!(crc32fast::hash(b""), 0);
+        // Standard CRC-32 check value.
+        assert_eq!(crc32fast::hash(b"123456789"), 0xcbf4_3926);
+        // The napi wrapper agrees.
+        assert_eq!(crc32(Uint8Array::new(b"123456789".to_vec())), 0xcbf4_3926);
+    }
+
+    #[test]
+    fn fnv1a_napi_agrees_with_core() {
+        assert_eq!(
+            fnv1a64(Uint8Array::new(b"foobar".to_vec())),
+            fnv1a64_bytes(b"foobar")
+        );
+    }
+
+    #[test]
+    fn xxh3_stable_and_distinct() {
+        let empty = fast_hash_bytes(b"");
+        assert_eq!(empty, fast_hash_bytes(b""));
+        assert_ne!(empty, fast_hash_bytes(b"a"));
+        assert_eq!(fast_hash_bytes(b"castrum"), fast_hash_bytes(b"castrum"));
+    }
 }

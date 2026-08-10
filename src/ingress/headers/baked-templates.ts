@@ -34,10 +34,22 @@ export interface BakedTemplateParams {
   rateLimitStr: string;
 }
 
-/** Build the frozen, variant-indexed header templates. */
+/**
+ * Build the frozen, variant-indexed header templates.
+ *
+ * Returns two 32-entry sets:
+ * - `regular`: the base templates.
+ * - `terminal`: every regular template with `cache-control: no-store` appended
+ *   (the header set used for terminal/error responses). Baking it in means the
+ *   steady-state error path can return a frozen array with no per-response
+ *   allocation or copy.
+ */
 export function buildBakedHeaderTemplates(
   params: BakedTemplateParams,
-): ReadonlyArray<ReadonlyArray<[string, string]>> {
+): {
+  regular: ReadonlyArray<ReadonlyArray<[string, string]>>;
+  terminal: ReadonlyArray<ReadonlyArray<[string, string]>>;
+} {
   const {
     securityEntries,
     cors,
@@ -48,7 +60,7 @@ export function buildBakedHeaderTemplates(
     rateLimitStr,
   } = params;
 
-  return Object.freeze(
+  const regular = Object.freeze(
     Array.from({ length: 32 }, (_, variant) => {
       const entries: [string, string][] = [...securityEntries];
 
@@ -86,4 +98,16 @@ export function buildBakedHeaderTemplates(
       return Object.freeze(entries);
     }),
   );
+
+  const terminal = Object.freeze(
+    regular.map((t) => {
+      const entries: [string, string][] = [
+        ...t,
+        ["cache-control", "no-store"],
+      ];
+      return Object.freeze(entries);
+    }),
+  );
+
+  return { regular, terminal };
 }

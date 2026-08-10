@@ -5,6 +5,7 @@
 // the public barrel.
 
 import type { IngressFastOptions } from "./options";
+import type { BakedIngressResult } from "./decode/baked-result";
 
 /** Public ingress options (extends the fast-path options). */
 export interface IngressOptions extends IngressFastOptions {
@@ -73,4 +74,81 @@ export interface SyncIngressHandler {
 /** Async ingress handler (wraps {@link SyncIngressHandler} with body reading). */
 export interface IngressHandler {
   (req: Request, ip?: string): Promise<IngressContext>;
+}
+
+// ── Pre-baked (handlers.ts) shared types ────────────────────────────
+// These live here (not in ./handlers.ts) so the route factories in
+// ./routes/* can import them without a type-only cycle back into the factory
+// module that aggregates them. `handlers.ts` re-exports them for back-compat.
+
+/** Mutable per-request context threaded through the pre-baked handler run. */
+export interface BakedContext {
+  /** The request-id string (null when `emitRequestIdHeader` is off). */
+  requestIdHeader: string | null;
+  /** The `Origin` request header when CORS extraction is enabled. */
+  origin: string | null;
+}
+
+/**
+ * An optimized ingress handler. `run()` is the zero-alloc pipeline entry
+ * point; the response-builder methods are pre-baked and bound to this
+ * handler's configuration, so consumers can build custom routes without
+ * touching header templates or error bodies.
+ */
+export interface OptimizedIngressHandler {
+  run<T>(
+    req: Request,
+    ip: string | undefined,
+    body: Uint8Array | null,
+    fn: (result: BakedIngressResult, ctx: BakedContext) => T,
+  ): T;
+
+  responseHeaders(
+    variant: number,
+    requestIdHeader: string | null,
+    origin: string | null,
+    rateRemaining?: number,
+    rateResetSecs?: number,
+    retryAfterSecs?: number,
+  ): [string, string][];
+
+  terminalHeaders(
+    variant: number,
+    ctx: BakedContext,
+    result: BakedIngressResult | null,
+  ): [string, string][];
+
+  terminalResponse(
+    req: Request,
+    result: BakedIngressResult,
+    ctx: BakedContext,
+  ): Response | null;
+
+  errorResponse(
+    req: Request,
+    result: BakedIngressResult | null,
+    status: number,
+    code: string,
+    message: string,
+    ctx: BakedContext,
+  ): Response;
+
+  internalErrorResponse(ctx: BakedContext, result?: BakedIngressResult): Response;
+
+  withContentType(
+    headers: ReadonlyArray<[string, string]>,
+    contentType: string,
+  ): [string, string][];
+
+  /**
+   * Build a zero-copy `Response` whose body is the request's pooled output
+   * slice. The pooled buffer is returned to its pool once the body has been
+   * consumed (stream closed) or the request aborted. Use when `copyBody` is
+   * `false`; otherwise a copied body is released eagerly at the end of `run()`.
+   */
+  zeroCopyResponse(
+    result: BakedIngressResult,
+    ctx: BakedContext,
+    init: ResponseInit,
+  ): Response;
 }

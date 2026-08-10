@@ -1,6 +1,6 @@
 // src/ingress/routes/echo.ts — Pre-baked echo handler.
 
-import type { OptimizedIngressHandler } from "../handlers";
+import type { OptimizedIngressHandler } from "../types";
 import { resolveIp, type BakedHandlerOptions } from "./common";
 import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from "../shared";
 import { HV_JSON } from "../constants";

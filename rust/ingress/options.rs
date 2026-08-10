@@ -79,12 +79,87 @@ impl Limits {
         let Some(o) = opts else { return d };
 
         Self {
-            max_url_bytes: o.max_url_bytes.map(|v| v as usize).unwrap_or(d.max_url_bytes),
-            max_query_bytes: o.max_query_bytes.map(|v| v as usize).unwrap_or(d.max_query_bytes),
-            max_cookie_bytes: o.max_cookie_bytes.map(|v| v as usize).unwrap_or(d.max_cookie_bytes),
-            max_headers_bytes: o.max_headers_bytes.map(|v| v as usize).unwrap_or(d.max_headers_bytes),
+            max_url_bytes: o
+                .max_url_bytes
+                .map(|v| v as usize)
+                .unwrap_or(d.max_url_bytes),
+            max_query_bytes: o
+                .max_query_bytes
+                .map(|v| v as usize)
+                .unwrap_or(d.max_query_bytes),
+            max_cookie_bytes: o
+                .max_cookie_bytes
+                .map(|v| v as usize)
+                .unwrap_or(d.max_cookie_bytes),
+            max_headers_bytes: o
+                .max_headers_bytes
+                .map(|v| v as usize)
+                .unwrap_or(d.max_headers_bytes),
             max_headers: o.max_headers.map(|v| v as usize).unwrap_or(d.max_headers),
             max_pairs: o.max_pairs.map(|v| v as usize).unwrap_or(d.max_pairs),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_defaults() {
+        let d = Limits::default();
+        assert_eq!(d.max_url_bytes, 65536);
+        assert_eq!(d.max_query_bytes, 16384);
+        assert_eq!(d.max_cookie_bytes, 8192);
+        assert_eq!(d.max_headers_bytes, 65536);
+        assert_eq!(d.max_headers, 100);
+        assert_eq!(d.max_pairs, 1024);
+    }
+
+    #[test]
+    fn limits_none_keeps_defaults() {
+        let l = Limits::from_options(None);
+        assert_eq!(l.max_url_bytes, 65536);
+        assert_eq!(l.max_pairs, 1024);
+        assert_eq!(l.max_headers, 100);
+    }
+
+    #[test]
+    fn limits_partial_override_merges() {
+        let opts = IngressLimitsOptions {
+            max_url_bytes: Some(4096),
+            max_query_bytes: None,
+            max_cookie_bytes: None,
+            max_headers_bytes: None,
+            max_headers: None,
+            max_pairs: None,
+        };
+        let l = Limits::from_options(Some(opts));
+        // Overridden field wins; untouched fields keep their defaults.
+        assert_eq!(l.max_url_bytes, 4096);
+        assert_eq!(l.max_query_bytes, 16384);
+        assert_eq!(l.max_cookie_bytes, 8192);
+        assert_eq!(l.max_headers_bytes, 65536);
+        assert_eq!(l.max_headers, 100);
+        assert_eq!(l.max_pairs, 1024);
+    }
+
+    #[test]
+    fn limits_full_override() {
+        let opts = IngressLimitsOptions {
+            max_url_bytes: Some(1),
+            max_query_bytes: Some(2),
+            max_cookie_bytes: Some(3),
+            max_headers_bytes: Some(4),
+            max_headers: Some(5),
+            max_pairs: Some(6),
+        };
+        let l = Limits::from_options(Some(opts));
+        assert_eq!(l.max_url_bytes, 1);
+        assert_eq!(l.max_query_bytes, 2);
+        assert_eq!(l.max_cookie_bytes, 3);
+        assert_eq!(l.max_headers_bytes, 4);
+        assert_eq!(l.max_headers, 5);
+        assert_eq!(l.max_pairs, 6);
     }
 }

@@ -15,6 +15,10 @@ use super::types::{
 
 /// Compile a schema into the zero-DOM fast representation, or `Err(())` if the
 /// schema uses a keyword outside the supported subset (caller falls back).
+///
+/// `Err(())` is a deliberate, internal-only signal (no user-facing error
+/// payload); the caller maps it to the DOM fallback path.
+#[allow(clippy::result_unit_err)]
 pub fn compile(schema: &Value) -> Result<FastNode, ()> {
     match schema {
         Value::Bool(true) => Ok(FastNode::any()),
@@ -28,12 +32,33 @@ fn compile_object(map: &serde_json::Map<String, Value>) -> Result<FastNode, ()> 
     // Reject unsupported keywords up front (versatility fallback).
     for key in map.keys() {
         match key.as_str() {
-            "$ref" | "$dynamicRef" | "$recursiveRef" | "pattern" | "format" | "anyOf"
-            | "oneOf" | "allOf" | "not" | "patternProperties" | "propertyNames"
-            | "contains" | "minContains" | "maxContains" | "uniqueItems" | "enum"
-            | "const" | "multipleOf" | "dependencies" | "dependentRequired"
-            | "dependentSchemas" | "if" | "then" | "else" | "unevaluatedProperties"
-            | "unevaluatedItems" | "prefixItems" => return Err(()),
+            "$ref"
+            | "$dynamicRef"
+            | "$recursiveRef"
+            | "pattern"
+            | "format"
+            | "anyOf"
+            | "oneOf"
+            | "allOf"
+            | "not"
+            | "patternProperties"
+            | "propertyNames"
+            | "contains"
+            | "minContains"
+            | "maxContains"
+            | "uniqueItems"
+            | "enum"
+            | "const"
+            | "multipleOf"
+            | "dependencies"
+            | "dependentRequired"
+            | "dependentSchemas"
+            | "if"
+            | "then"
+            | "else"
+            | "unevaluatedProperties"
+            | "unevaluatedItems"
+            | "prefixItems" => return Err(()),
             _ => {}
         }
     }
@@ -44,9 +69,15 @@ fn compile_object(map: &serde_json::Map<String, Value>) -> Result<FastNode, ()> 
         node.types = compile_type(t)?;
     }
 
-    if ["required", "properties", "additionalProperties", "minProperties", "maxProperties"]
-        .iter()
-        .any(|k| map.contains_key(*k))
+    if [
+        "required",
+        "properties",
+        "additionalProperties",
+        "minProperties",
+        "maxProperties",
+    ]
+    .iter()
+    .any(|k| map.contains_key(*k))
     {
         node.obj = Some(Arc::new(compile_object_constraints(map)?));
     }
@@ -131,8 +162,8 @@ fn compile_object_constraints(map: &serde_json::Map<String, Value>) -> Result<Fa
         for item in arr {
             let s = item.as_str().ok_or(())?;
             let key: Box<[u8]> = s.as_bytes().to_vec().into_boxed_slice();
-            if !o.required.contains_key(&key) {
-                o.required.insert(key, idx);
+            if let std::collections::hash_map::Entry::Vacant(e) = o.required.entry(key) {
+                e.insert(idx);
                 idx += 1;
                 if idx > 64 {
                     return Err(());

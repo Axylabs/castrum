@@ -1,5 +1,7 @@
 import * as native from "../../baseline";
-import { rust, rustBatch } from "../../rust-ffi";
+import { rust } from "../../rust-ffi";
+// Public `rustBatch` alias removed in 0.8.0 — bench-local shorthand.
+const rustBatch = rust.batch;
 import type { ComplexFixtures } from "../fixtures";
 import type { BenchTask } from "../types";
 

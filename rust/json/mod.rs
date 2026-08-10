@@ -1,4 +1,4 @@
-// rust/json/mod.rs — JSON & schema.
+//! JSON & schema (zero-DOM validate/sum + DOM parse + fast schema engine).
 //
 //   - json_ops.rs       zero-DOM validate/sum + DOM parse
 //   - json_ser.rs       zero-alloc JSON escaping + cookie/query → JSON writers

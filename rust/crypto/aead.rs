@@ -1,4 +1,4 @@
-// rust/aead.rs — authenticated encryption (AES-256-GCM, ChaCha20-Poly1305).
+// rust/crypto/aead.rs — authenticated encryption (AES-256-GCM, ChaCha20-Poly1305).
 //
 // Backend-framework feature: symmetric encryption for cookies / session
 // payloads / at-rest secrets. Uses aws-lc-rs's `aead` module (already a
@@ -334,10 +334,7 @@ mod tests {
 
         // Malformed nonce length → error.
         assert!(cipher
-            .encrypt(
-                Uint8Array::new(vec![0u8; 8]),
-                Uint8Array::new(pt.to_vec())
-            )
+            .encrypt(Uint8Array::new(vec![0u8; 8]), Uint8Array::new(pt.to_vec()))
             .is_err());
 
         // Unsupported algorithm → construction error.
@@ -361,7 +358,10 @@ mod tests {
         // Uniqueness for a full large batch too.
         let mut seen = std::collections::HashSet::new();
         for i in 0..1024 {
-            assert!(seen.insert(batch_nonce(&base, i)), "nonce reused at item {i}");
+            assert!(
+                seen.insert(batch_nonce(&base, i)),
+                "nonce reused at item {i}"
+            );
         }
     }
 

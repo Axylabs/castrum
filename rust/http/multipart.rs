@@ -1,4 +1,4 @@
-// rust/multipart.rs — multipart/form-data parser (hand-rolled).
+// rust/http/multipart.rs — multipart/form-data parser (hand-rolled).
 //
 // Backend-framework feature: upload / form body parsing. Deliberately hand-rolled
 // (memchr-based boundary + header splitting) instead of pulling in `multer` and
@@ -44,29 +44,60 @@ fn next_delimiter(body: &[u8], boundary: &[u8], from: usize) -> Option<usize> {
 
 /// Parse `Content-Disposition: form-data; name="..."; filename="..."` →
 /// (name, filename).
+///
+/// Quote-aware: `;` inside a double-quoted value (e.g. a filename containing a
+/// semicolon) is NOT a parameter separator. `\"` inside a value is skipped for
+/// quote-tracking (the backslash itself is preserved in the value — this
+/// parser does not unescape, matching most server parsers' tolerant handling).
 fn parse_disposition(value: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
     let mut name = None;
     let mut filename = None;
-    for attr in value.split(|&b| b == b';') {
-        let attr = trim_ascii_whitespace(attr);
-        if attr.is_empty() {
-            continue;
+    let mut start = 0usize;
+    let mut in_quotes = false;
+    let mut i = 0usize;
+    while i < value.len() {
+        match value[i] {
+            // Skip an escaped quote so it does not toggle `in_quotes`.
+            b'\\' if i + 1 < value.len() && value[i + 1] == b'"' => {
+                i += 2;
+                continue;
+            }
+            b'"' => in_quotes = !in_quotes,
+            b';' if !in_quotes => {
+                parse_disposition_attr(&value[start..i], &mut name, &mut filename);
+                start = i + 1;
+            }
+            _ => {}
         }
-        let Some(eq) = memchr::memchr(b'=', attr) else {
-            continue;
-        };
-        let key = trim_ascii_whitespace(&attr[..eq]);
-        let mut val = trim_ascii_whitespace(&attr[eq + 1..]);
-        if val.len() >= 2 && val[0] == b'"' && val[val.len() - 1] == b'"' {
-            val = &val[1..val.len() - 1];
-        }
-        if key.eq_ignore_ascii_case(b"name") {
-            name = Some(val);
-        } else if key.eq_ignore_ascii_case(b"filename") {
-            filename = Some(val);
-        }
+        i += 1;
     }
+    parse_disposition_attr(&value[start..], &mut name, &mut filename);
     (name, filename)
+}
+
+/// Parse one `key=value` attribute of a Content-Disposition value.
+fn parse_disposition_attr<'a>(
+    attr: &'a [u8],
+    name: &mut Option<&'a [u8]>,
+    filename: &mut Option<&'a [u8]>,
+) {
+    let attr = trim_ascii_whitespace(attr);
+    if attr.is_empty() {
+        return;
+    }
+    let Some(eq) = memchr::memchr(b'=', attr) else {
+        return;
+    };
+    let key = trim_ascii_whitespace(&attr[..eq]);
+    let mut val = trim_ascii_whitespace(&attr[eq + 1..]);
+    if val.len() >= 2 && val[0] == b'"' && val[val.len() - 1] == b'"' {
+        val = &val[1..val.len() - 1];
+    }
+    if key.eq_ignore_ascii_case(b"name") {
+        *name = Some(val);
+    } else if key.eq_ignore_ascii_case(b"filename") {
+        *filename = Some(val);
+    }
 }
 
 /// Parse a `multipart/form-data` body given the raw boundary token (no
@@ -94,7 +125,7 @@ impl Default for Limits {
         Self {
             max_parts: 1_000,
             max_field_count: 1_000,
-            max_part_bytes: 10 * 1024 * 1024, // 10 MiB
+            max_part_bytes: 10 * 1024 * 1024,  // 10 MiB
             max_total_bytes: 64 * 1024 * 1024, // 64 MiB
         }
     }
@@ -311,10 +342,7 @@ pub fn parts_to_packed(parts: &[Part<'_>], out: &mut Vec<u8>) {
 /// Parallel multipart parse batch: packed `[u32 count]{[u32 len][body]}` in →
 /// packed `[u32 count]{[u32 len][parts_packed]}` out (same boundary for all).
 #[napi]
-pub fn multipart_parse_batch_packed(
-    data: Uint8Array,
-    boundary: Uint8Array,
-) -> Result<Buffer> {
+pub fn multipart_parse_batch_packed(data: Uint8Array, boundary: Uint8Array) -> Result<Buffer> {
     let items = unpack(data.as_ref())?;
 
     let mut out = Vec::with_capacity(4 + items.len() * 32);
@@ -390,7 +418,9 @@ mod tests {
     #[test]
     fn parses_multiple_parts() {
         let mut b = body("field1", None, None, b"alpha");
-        b.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"field2\"\r\n\r\nbeta\r\n--");
+        b.extend_from_slice(
+            b"\r\nContent-Disposition: form-data; name=\"field2\"\r\n\r\nbeta\r\n--",
+        );
         b.extend_from_slice(BOUNDARY);
         b.extend_from_slice(b"--\r\n");
         let parts = parse_multipart(&b, BOUNDARY);
@@ -403,7 +433,12 @@ mod tests {
 
     #[test]
     fn parses_file_with_filename_and_type() {
-        let mut b = body("upload", Some("a.txt"), Some("text/plain"), b"file contents");
+        let mut b = body(
+            "upload",
+            Some("a.txt"),
+            Some("text/plain"),
+            b"file contents",
+        );
         b.extend_from_slice(b"--\r\n");
         let parts = parse_multipart(&b, BOUNDARY);
         assert_eq!(parts.len(), 1);
@@ -432,7 +467,9 @@ mod tests {
     fn limits_cap_part_count() {
         // Regression: the parser must bound work when limits are set.
         let mut b = body("field1", None, None, b"alpha");
-        b.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"field2\"\r\n\r\nbeta\r\n--");
+        b.extend_from_slice(
+            b"\r\nContent-Disposition: form-data; name=\"field2\"\r\n\r\nbeta\r\n--",
+        );
         b.extend_from_slice(BOUNDARY);
         b.extend_from_slice(b"--\r\n");
 
@@ -470,7 +507,9 @@ mod tests {
     #[test]
     fn limits_cap_total_bytes() {
         let mut b = body("field1", None, None, b"alpha");
-        b.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"field2\"\r\n\r\nbeta\r\n--");
+        b.extend_from_slice(
+            b"\r\nContent-Disposition: form-data; name=\"field2\"\r\n\r\nbeta\r\n--",
+        );
         b.extend_from_slice(BOUNDARY);
         b.extend_from_slice(b"--\r\n");
 
@@ -496,5 +535,124 @@ mod tests {
         b.extend_from_slice(b"--\r\n");
         let parts = parse_multipart(&b, BOUNDARY);
         assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn quoted_semicolon_in_filename_preserved() {
+        // A `;` inside the quoted filename is data, not a separator.
+        let mut b = body("up", Some("b;c.txt"), None, b"data");
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].filename.unwrap(), b"b;c.txt");
+    }
+
+    #[test]
+    fn quoted_value_with_spaces_preserved() {
+        let mut b = body("up", Some("my file.txt"), None, b"data");
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts[0].filename.unwrap(), b"my file.txt");
+    }
+
+    #[test]
+    fn escaped_quote_in_value_preserved() {
+        // The `\"` must not break quote tracking (the backslash itself is kept).
+        let mut b = Vec::new();
+        b.extend_from_slice(b"--");
+        b.extend_from_slice(BOUNDARY);
+        b.extend_from_slice(b"\r\n");
+        b.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"up\"; filename=\"a\\\"b.txt\"\r\n\r\n",
+        );
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(b"\r\n--");
+        b.extend_from_slice(BOUNDARY);
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].name, b"up");
+        assert_eq!(parts[0].filename.unwrap(), b"a\\\"b.txt");
+    }
+
+    #[test]
+    fn boundary_like_data_mid_part() {
+        // A bare `--{boundary}` inside data (no leading CRLF) is NOT a
+        // delimiter; only `\r\n--{boundary}` is.
+        let mut b = body("f", None, None, b"abc --WebKitFormBoundary7MA4YWxkTrZu0gW def");
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0].data,
+            b"abc --WebKitFormBoundary7MA4YWxkTrZu0gW def"
+        );
+    }
+
+    #[test]
+    fn epilogue_after_closing_delimiter_ignored() {
+        let mut b = body("f", None, None, b"data");
+        b.extend_from_slice(b"--\r\n\r\nignored epilogue trailing garbage");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].name, b"f");
+        assert_eq!(parts[0].data, b"data");
+    }
+
+    #[test]
+    fn missing_name_attr_parses_empty() {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"--");
+        b.extend_from_slice(BOUNDARY);
+        b.extend_from_slice(b"\r\nContent-Disposition: form-data\r\n\r\ndata\r\n--");
+        b.extend_from_slice(BOUNDARY);
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].name.is_empty());
+        assert_eq!(parts[0].data, b"data");
+    }
+
+    #[test]
+    fn empty_filename() {
+        let mut b = body("up", Some(""), None, b"data");
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].filename.unwrap(), b"");
+    }
+
+    #[test]
+    fn max_field_count_limit() {
+        let mut b = body("f1", None, None, b"a");
+        b.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"f2\"\r\n\r\nb\r\n--");
+        b.extend_from_slice(BOUNDARY);
+        b.extend_from_slice(b"--\r\n");
+
+        let capped = parse_multipart_limited(
+            &b,
+            BOUNDARY,
+            &Limits {
+                max_field_count: 1,
+                ..Limits::default()
+            },
+        );
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].name, b"f1");
+    }
+
+    #[test]
+    fn crlf_only_part_headers() {
+        // A part whose header block is empty: `\r\n` then `\r\n\r\n` then data.
+        let mut b = Vec::new();
+        b.extend_from_slice(b"--");
+        b.extend_from_slice(BOUNDARY);
+        b.extend_from_slice(b"\r\n\r\n\r\nbare data\r\n--");
+        b.extend_from_slice(BOUNDARY);
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].data, b"bare data");
+        assert!(parts[0].name.is_empty());
     }
 }

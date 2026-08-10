@@ -73,6 +73,7 @@ pub(crate) struct FastObject {
 }
 
 /// One compiled schema node. `types` is a bitmask of allowed kinds (0 = any).
+#[derive(Default)]
 pub struct FastNode {
     pub(crate) never: bool,
     pub(crate) types: u8,
@@ -80,17 +81,4 @@ pub struct FastNode {
     pub(crate) arr: Option<Arc<FastArray>>,
     pub(crate) str: Option<Arc<FastString>>,
     pub(crate) num: Option<Arc<FastNumber>>,
-}
-
-impl Default for FastNode {
-    fn default() -> Self {
-        Self {
-            never: false,
-            types: 0,
-            obj: None,
-            arr: None,
-            str: None,
-            num: None,
-        }
-    }
 }

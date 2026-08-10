@@ -112,13 +112,15 @@ bun run bench:http:ingress  # vs Ingress (native)
 bun run bench:http:bun-only # vs raw Bun
 
 # Load patterns
-bun run bench:http:smoke    # smoke test
+bun run bench:http:smoke    # smoke test (CI wire-format guard)
 bun run bench:http:stress   # stress test
 bun run bench:http:heavy    # heavy JSON
 bun run bench:http:crud     # CRUD operations
+bun run bench:http:spike    # spike test
 bun run bench:http:soak     # soak (endurance) test
 bun run bench:http:storm    # storm (burst) test
 bun run bench:http:boundary # boundary conditions
+bun run bench:http:all-heavy # all heavy-JSON scenarios (01-11 + heavy)
 ```
 
 ## API Reference
@@ -126,12 +128,10 @@ bun run bench:http:boundary # boundary conditions
 ### Core Exports
 
 ```ts
-import { rust, proven, native, rustBatch } from "castrum";
+import { rust, proven } from "castrum";
 
-// `rust`      — All Rust FFI native implementations (flat, complete API)
-// `proven`    — ONLY the `rust.*` functions that prove performance in benchmarks
-// `native`    — JavaScript/Bun baseline implementations for benchmarking
-// `rustBatch` — Back-compat alias === rust.batch
+// `rust`    — All Rust FFI native implementations (flat, complete API)
+// `proven`  — ONLY the `rust.*` functions that prove performance in benchmarks
 ```
 
 ## Performance-proven surface
@@ -306,7 +306,6 @@ const myRust = createRust({ mimeCache: false });
 | `import { packBatch, packPairs, unpackBitset, unpackByteResults, unpackI64ArrayAsBigInt, unpackU32Array } from "castrum"` | Batch/pair packing + unpacking utilities |
 | `import { readPairsPacked, pairsToObject, readHttpPacked } from "castrum"` | Decode packed pairs / parsed HTTP buffers |
 | `import { parseQueryString, parseCookieHeader, parseFormBody } from "castrum"` | High-level parsers (no hand-packing) |
-| `import { jsonRowsBytes, createJsonRows } from "castrum"` | JSON row serialization |
 | `import { createIngress, createIngressSync, createIngressFast } from "castrum"` | HTTP ingress pipeline (low-level) |
 | `import { createIngressHandler, createIngressServer, readHandler, jsonWriteHandler, echoHandler, fallbackHandler } from "castrum"` | **Pre-baked** ingress handlers — route factories + Bun.serve builder |
 
@@ -429,6 +428,7 @@ castrum/
 │   │   ├── fast.ts          # Thin: createIngressFast (packed input)
 │   │   ├── handlers.ts      # Thin: createIngressHandler (full_sync, pre-baked)
 │   │   ├── server.ts        # createIngressServer (Bun.serve builder)
+│   │   ├── server-node.ts   # createIngressServerNode (node:http adapter)
 │   │   ├── constants.ts     # Layout constants (from Rust)
 │   │   ├── shared.ts        # JS constants shared by both paths
 │   │   ├── status.ts        # Status normalization helpers
@@ -455,6 +455,7 @@ castrum/
 │   │   ├── packed.ts        # raw packed-wire namespace
 │   │   ├── scalar.ts        # scalar/feature methods
 │   │   ├── client.ts        # createRust factory + default `rust`
+│   │   ├── proven.ts        # `proven` client (derived from PROVEN_SURFACE)
 │   │   └── index.ts         # Barrel
 │   ├── baseline/            # JS baseline implementations
 │   │   ├── index.ts         # Aggregator
@@ -470,6 +471,12 @@ castrum/
 │
 ├── test/                    # Tests (see CONTRIBUTING.md → Testing Requirements)
 ├── docs/                    # Documentation
+│   ├── REPO_MAP.md          # ← START HERE: what is where & why
+│   ├── GETTING_STARTED.md   # Intern-friendly tutorial
+│   ├── ARCHITECTURE.md      # Deep-dive internals
+│   ├── INGRESS.md           # Pre-baked ingress API
+│   ├── BENCHMARKS.md        # Benchmark scenarios
+│   └── ENVIRONMENT.md       # Env vars
 └── scripts/                 # Build/utility scripts
 ```
 
@@ -514,8 +521,11 @@ Bump `version` in `package.json` (and `Cargo.toml`), add a `CHANGELOG.md` entry,
 then:
 
 ```bash
-git tag v0.6.0 && git push origin v0.6.0
+git tag v<version> && git push origin v<version>
 ```
+
+> Run `bun run check:version` first — it verifies `package.json`, `Cargo.toml`,
+> and `CHANGELOG.md` agree. See [docs/REPO_MAP.md](./docs/REPO_MAP.md) §6.
 
 ### Manual
 

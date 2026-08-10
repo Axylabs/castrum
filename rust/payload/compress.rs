@@ -1,4 +1,4 @@
-// rust/compress.rs — gzip + brotli compression.
+// rust/payload/compress.rs — gzip + brotli compression.
 //
 // Backend-framework feature: response/body compression. gzip uses the
 // memory-safe zlib-rs backend of flate2 (pure Rust, no C); brotli uses the pure
@@ -17,8 +17,7 @@ use crate::util::{should_parallelize, total_bytes, unpack};
 
 /// gzip-compress `data` at the given level (0–9; default 6).
 pub fn gzip_compress_bytes(data: &[u8], level: u32) -> std::io::Result<Vec<u8>> {
-    let mut enc =
-        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
     enc.write_all(data)?;
     enc.finish()
 }
@@ -86,10 +85,7 @@ pub fn brotli_decompress(data: Uint8Array) -> Result<Buffer> {
 /// Parallel gzip batch: packed `[u32 count]{[u32 len][data]}` in → packed
 /// `[u32 count]{[u32 len][gzip]}` out (same level for all items).
 #[napi]
-pub fn gzip_compress_batch_packed(
-    data: Uint8Array,
-    level: Option<u32>,
-) -> Result<Buffer> {
+pub fn gzip_compress_batch_packed(data: Uint8Array, level: Option<u32>) -> Result<Buffer> {
     let items = unpack(data.as_ref())?;
     let level = level.unwrap_or(6).min(9);
     packed_batch(items, |chunk| gzip_compress_bytes(chunk, level))
@@ -104,10 +100,7 @@ pub fn gzip_decompress_batch_packed(data: Uint8Array) -> Result<Buffer> {
 
 /// Parallel brotli batch: packed data in → packed brotli streams out.
 #[napi]
-pub fn brotli_compress_batch_packed(
-    data: Uint8Array,
-    quality: Option<u32>,
-) -> Result<Buffer> {
+pub fn brotli_compress_batch_packed(data: Uint8Array, quality: Option<u32>) -> Result<Buffer> {
     let items = unpack(data.as_ref())?;
     let quality = quality.unwrap_or(5).min(11);
     packed_batch(items, |chunk| brotli_compress_bytes(chunk, quality))
@@ -131,10 +124,7 @@ fn packed_batch(
 
     if should_parallelize(items.len(), total_bytes(&items)) {
         use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items
-            .par_iter()
-            .map(|c| f(c).unwrap_or_default())
-            .collect();
+        let results: Vec<Vec<u8>> = items.par_iter().map(|c| f(c).unwrap_or_default()).collect();
         for r in results {
             out.extend_from_slice(&(r.len() as u32).to_le_bytes());
             out.extend_from_slice(&r);

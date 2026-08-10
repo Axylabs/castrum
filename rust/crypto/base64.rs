@@ -1,4 +1,4 @@
-// rust/base64.rs — base64 (standard/url-safe) + hex encode/decode.
+// rust/crypto/base64.rs — base64 (standard/url-safe) + hex encode/decode.
 //
 // Uses the `base64` crate engines (Cargo dep already present). The
 // `Base64Codec` higher-order instance precompiles the alphabet/decoding
@@ -7,8 +7,8 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use base64::Engine as _;
 use crate::util::bytes::{hex_val, HEX_LOWER};
+use base64::Engine as _;
 
 fn engine(url_safe: bool, padding: bool) -> base64::engine::general_purpose::GeneralPurpose {
     use base64::engine::general_purpose::*;
@@ -21,11 +21,7 @@ fn engine(url_safe: bool, padding: bool) -> base64::engine::general_purpose::Gen
 }
 
 #[napi]
-pub fn base64_encode(
-    input: Uint8Array,
-    url_safe: Option<bool>,
-    padding: Option<bool>,
-) -> Buffer {
+pub fn base64_encode(input: Uint8Array, url_safe: Option<bool>, padding: Option<bool>) -> Buffer {
     let out = engine(url_safe.unwrap_or(false), padding.unwrap_or(true)).encode(input.as_ref());
     Buffer::from(out.into_bytes())
 }
@@ -88,7 +84,7 @@ pub fn hex_encode_bytes(input: &[u8]) -> String {
 
 /// Decode lowercase/uppercase hex to bytes.
 pub fn hex_decode_bytes(input: &[u8]) -> std::result::Result<Vec<u8>, &'static str> {
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return Err("odd hex length");
     }
     let mut out = Vec::with_capacity(input.len() / 2);
@@ -148,7 +144,7 @@ pub fn hex_encode_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32>
 /// Errors on odd length, invalid digits, or an output buffer that is too small.
 #[inline]
 pub fn hex_decode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return Err(Error::from_reason("odd hex length"));
     }
     let needed = input.len() / 2;

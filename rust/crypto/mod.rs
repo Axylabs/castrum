@@ -1,4 +1,4 @@
-// rust/crypto/mod.rs — Auth & hashing.
+//! Auth & hashing (pure-Rust primitives + compiled-once napi instances).
 //
 // Pure-Rust crypto primitives + compiled-once napi instances (each instance
 // precompiles its key/engine/params once at construction):

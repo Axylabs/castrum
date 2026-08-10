@@ -1,4 +1,4 @@
-// rust/payload/mod.rs — Output & streaming.
+//! Output & streaming (compress, SSE, WebSocket, templating).
 //
 //   - compress.rs   gzip (zlib-rs) + brotli compress/decompress + batch
 //   - sse.rs        SSE event framing + batch

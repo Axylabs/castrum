@@ -1,8 +1,8 @@
+use aws_lc_rs::digest;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use aws_lc_rs::digest;
 
 const WS_MAGIC: &[u8] = b"258EAFA5-E914-47DA-95CA-5AB5DC11BE85";
 
@@ -20,4 +20,26 @@ pub fn ws_accept_key(key: Uint8Array) -> Result<Buffer> {
         .map_err(|e| Error::from_reason(e.to_string()))?;
 
     Ok(Buffer::from(out[..n].to_vec()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rfc6455_accept_key_vector() {
+        // RFC 6455 §1.3: accept = base64(SHA1(key + magic GUID)) where `key` is
+        // the Sec-WebSocket-Key header value (the base64 string) concatenated
+        // with the magic GUID. Verified against node:crypto.
+        let key = b"dGhlIHNhbXBsZSBub25jZQ==";
+        let out = ws_accept_key(Uint8Array::new(key.to_vec())).unwrap();
+        assert_eq!(out.as_ref(), b"mjqt7n322xkUQqCX5NPZbkSHHuk=");
+    }
+
+    #[test]
+    fn different_keys_differ() {
+        let a = ws_accept_key(Uint8Array::new(b"AAAA".to_vec())).unwrap();
+        let b = ws_accept_key(Uint8Array::new(b"BBBB".to_vec())).unwrap();
+        assert_ne!(a.as_ref(), b.as_ref());
+    }
 }

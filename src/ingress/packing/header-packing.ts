@@ -10,13 +10,13 @@ import type { HeaderPlan } from "../shared";
 const encoder = new TextEncoder();
 
 // ── Header name constants (pre-encoded) ────────────────────────
-const HDR_COOKIE = encoder.encode("cookie");
-const HDR_ORIGIN = encoder.encode("origin");
-const HDR_ACRM = encoder.encode("access-control-request-method");
-const HDR_ACRH = encoder.encode("access-control-request-headers");
-const HDR_XFF = encoder.encode("x-forwarded-for");
-const HDR_XRI = encoder.encode("x-real-ip");
-const HDR_XFP = encoder.encode("x-forwarded-proto");
+export const HDR_COOKIE = encoder.encode("cookie");
+export const HDR_ORIGIN = encoder.encode("origin");
+export const HDR_ACRM = encoder.encode("access-control-request-method");
+export const HDR_ACRH = encoder.encode("access-control-request-headers");
+export const HDR_XFF = encoder.encode("x-forwarded-for");
+export const HDR_XRI = encoder.encode("x-real-ip");
+export const HDR_XFP = encoder.encode("x-forwarded-proto");
 
 const HEADER_BUF_SIZE = 8192;
 
@@ -51,7 +51,7 @@ const [getHeaderBuf] = (() => {
  * subsequent writes — otherwise the grown bytes are written into a discarded
  * array and the packed output is silently corrupted.
  */
-function writeHeaderPair(
+export function writeHeaderPair(
   buf: Uint8Array,
   view: DataView,
   pos: number,
@@ -59,7 +59,6 @@ function writeHeaderPair(
   value: string,
 ): [pos: number, buf: Uint8Array, view: DataView] {
   const needed = 2 + name.length + 4 + value.length * 3;
-
   if (pos + needed > buf.length) {
     const next = new Uint8Array(Math.max(buf.length * 2, pos + needed));
     next.set(buf.subarray(0, pos));

@@ -1,4 +1,4 @@
-// rust/proxy.rs — Proxy trust, IP resolution, and HTTPS detection
+// rust/ingress/proxy.rs — Proxy trust, IP resolution, and HTTPS detection
 
 use crate::http::headers::HeaderRefs;
 use crate::ingress::ip_trust::ProxyTrustMode;
@@ -106,9 +106,33 @@ mod tests {
     #[test]
     fn detect_https_fixed_and_url() {
         let h = HeaderRefs::empty();
-        assert!(detect_https(Some(true), &ProxyTrustMode::None, b"/x", &h, false));
-        assert!(!detect_https(Some(false), &ProxyTrustMode::None, b"/x", &h, false));
-        assert!(detect_https(None, &ProxyTrustMode::None, b"https://x.com", &h, false));
-        assert!(!detect_https(None, &ProxyTrustMode::None, b"http://x.com", &h, false));
+        assert!(detect_https(
+            Some(true),
+            &ProxyTrustMode::None,
+            b"/x",
+            &h,
+            false
+        ));
+        assert!(!detect_https(
+            Some(false),
+            &ProxyTrustMode::None,
+            b"/x",
+            &h,
+            false
+        ));
+        assert!(detect_https(
+            None,
+            &ProxyTrustMode::None,
+            b"https://x.com",
+            &h,
+            false
+        ));
+        assert!(!detect_https(
+            None,
+            &ProxyTrustMode::None,
+            b"http://x.com",
+            &h,
+            false
+        ));
     }
 }

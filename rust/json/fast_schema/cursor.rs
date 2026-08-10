@@ -69,7 +69,10 @@ impl<'a> Cursor<'a> {
                 }
                 b'\\' => {
                     let e = *self.data.get(i + 1)?;
-                    if !matches!(e, b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u') {
+                    if !matches!(
+                        e,
+                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u'
+                    ) {
                         return None;
                     }
                     i += 2;
@@ -204,7 +207,8 @@ pub(crate) fn count_chars(inner: &[u8]) -> usize {
                 if i + 6 <= inner.len()
                     && inner.get(i..i + 2) == Some(b"\\u")
                     && hex4(inner.get(i - 4..i)).is_some_and(|hi| (0xD800..=0xDBFF).contains(&hi))
-                    && hex4(inner.get(i + 2..i + 6)).is_some_and(|lo| (0xDC00..=0xDFFF).contains(&lo))
+                    && hex4(inner.get(i + 2..i + 6))
+                        .is_some_and(|lo| (0xDC00..=0xDFFF).contains(&lo))
                 {
                     i += 6;
                 }
@@ -294,9 +298,8 @@ pub(crate) fn decode_string(inner: &[u8]) -> Vec<u8> {
                                 .and_then(|_| hex4(inner.get(i + 2..i + 6)));
                             if let Some(l) = low.filter(|l| (0xDC00..=0xDFFF).contains(l)) {
                                 i += 6;
-                                let cp = 0x10000
-                                    + (((h as u32) - 0xD800) << 10)
-                                    + ((l as u32) - 0xDC00);
+                                let cp =
+                                    0x10000 + (((h as u32) - 0xD800) << 10) + ((l as u32) - 0xDC00);
                                 push_cp(&mut out, cp);
                             } else {
                                 // Lone high surrogate: encode as replacement char.

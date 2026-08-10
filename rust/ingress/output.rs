@@ -1,4 +1,4 @@
-// rust/output.rs — Ingress output buffer layout and low-level write helpers
+// rust/ingress/output.rs — Ingress output buffer layout and low-level write helpers
 // The canonical numeric source for the ingress binary output layout.
 // `ingress_constants.rs` re-exports these values to JS via NAPI.
 
@@ -228,9 +228,14 @@ impl HeaderFields {
     }
 }
 
-/// Write the output header into the buffer. Returns the total written bytes 
+/// Write the output header into the buffer. Returns the total written bytes
 /// (header + data payload sizes).
 #[inline(always)]
+/// Write the binary output header for an ingress decision.
+///
+/// The napi-driven ingress layout legitimately carries many fields; this is
+/// the single writer for the packed decision header.
+#[allow(clippy::too_many_arguments)]
 pub fn write_output_header(
     out: &mut [u8],
     verdict: u8,
@@ -270,8 +275,5 @@ pub fn write_output_header(
         write_u32(out, OUT_BODY_JSON_LEN, body_json_len);
     }
 
-    OUT_DATA_START
-        + cookies_json_len as usize
-        + query_json_len as usize
-        + body_json_len as usize
+    OUT_DATA_START + cookies_json_len as usize + query_json_len as usize + body_json_len as usize
 }

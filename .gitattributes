@@ -1,0 +1,10 @@
+# Normalize line endings to LF for all text files.
+* text=auto eol=lf
+
+# Native binaries and images are binary (never line-ending-converted).
+*.node binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary

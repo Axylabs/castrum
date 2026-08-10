@@ -1,4 +1,4 @@
-// rust/template.rs — HTML/text templating via minijinja.
+// rust/payload/template.rs — HTML/text templating via minijinja.
 //
 // Backend-framework feature: server-side templating. minijinja is a fast, safe,
 // Jinja2-compatible engine (no eval, no unsafe). Templates are compiled once and
@@ -92,10 +92,7 @@ impl TemplateRenderer {
 /// packed `[u32 count]{[u32 len][rendered]}` out. A new `TemplateRenderer` is
 /// built once per call from `source`, then all contexts render in parallel.
 #[napi]
-pub fn template_render_batch_packed(
-    data: Uint8Array,
-    source: String,
-) -> Result<Buffer> {
+pub fn template_render_batch_packed(data: Uint8Array, source: String) -> Result<Buffer> {
     let items = unpack(data.as_ref())?;
 
     let mut env = minijinja::Environment::new();
@@ -173,7 +170,7 @@ mod tests {
     #[test]
     fn compile_error_is_reported() {
         let mut env = minijinja::Environment::new();
-        assert!(env.add_template("t", "{% for x in %}" ).is_err());
+        assert!(env.add_template("t", "{% for x in %}").is_err());
     }
 
     #[test]

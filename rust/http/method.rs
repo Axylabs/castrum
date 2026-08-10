@@ -1,4 +1,4 @@
-// rust/method.rs — HTTP method classification
+// rust/http/method.rs — HTTP method classification
 // Uses the shared word-at-a-time byte helpers from `bytes.rs`.
 
 use crate::util::bytes::{ascii_eq_ignore_case, load_u64_padded};
@@ -25,6 +25,7 @@ const METHOD_OPTIONS: u64 = u64::from_le_bytes(*b"OPTIONS\0");
 
 impl MethodKind {
     /// Classify HTTP method from a `&str` (case-sensitive, exact match).
+    #[allow(clippy::should_implement_trait)]
     #[inline(always)]
     pub fn from_str(method: &str) -> Self {
         let bytes = method.as_bytes();

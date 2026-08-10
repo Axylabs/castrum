@@ -29,6 +29,8 @@ export interface RustBatch {
   queryParse(items: Uint8Array[]): Uint8Array[];
   cookieParse(items: Uint8Array[]): Uint8Array[];
   httpParseRequest(items: Uint8Array[]): Uint8Array[];
+  /** Apply N RFC 6902 patches (docs and patches zipped). Fail-fast on error. */
+  jsonPatch(docs: Uint8Array[], patches: Uint8Array[]): Uint8Array[];
   /** Encode N items to lowercase hex (packed in → byte results). */
   hexEncode(items: Uint8Array[]): Uint8Array[];
   /** Decode N lowercase/uppercase hex strings to bytes. */
@@ -130,6 +132,11 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
     httpParseRequest(items) {
       return unpackByteResults(
         addon.httpParseRequestBatchPacked(packBatch(items)),
+      );
+    },
+    jsonPatch(docs, patches) {
+      return unpackByteResults(
+        addon.jsonPatchBatchPacked(packBatch(docs), packBatch(patches)),
       );
     },
     hexEncode(items) {

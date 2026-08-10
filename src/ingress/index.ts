@@ -6,7 +6,7 @@
 
 import { decoder } from "../shared/bytes";
 import { generateRequestId } from "../shared/request-id";
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, METHOD_KIND } from "./shared";
+import { assertSyncCallback, DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, METHOD_KIND } from "./shared";
 import { createIngressFast } from "./fast";
 import { buildResponseContext } from "./headers/fast-templates";
 import { buildTerminalResponse } from "./response/terminal";
@@ -44,6 +44,13 @@ export type {
 } from "./types";
 
 // ── Sync factory ─────────────────────────────────────────────────
+
+/**
+ * Synchronous convenience wrapper over `createIngressFast` (path 1).
+ *
+ * The callback runs on the fast-path result and MUST be synchronous. Use
+ * {@link createIngress} when you want automatic body reading + error contexts.
+ */
 export function createIngressSync(
   options: IngressOptions = {},
 ): SyncIngressHandler {
@@ -53,15 +60,7 @@ export function createIngressSync(
     run(req, ip, body, requestId, fn) {
       return fast.run(req, ip, body, requestId, (result) => {
         const out = fn(result);
-
-        if (
-          out !== null &&
-          (typeof out === "object" || typeof out === "function") &&
-          typeof (out as any).then === "function"
-        ) {
-          throw new Error("createIngressSync().run() callback must be synchronous.");
-        }
-
+        assertSyncCallback(out, "createIngressSync().run()");
         return out;
       });
     },
@@ -69,6 +68,14 @@ export function createIngressSync(
 }
 
 // ── Async factory ────────────────────────────────────────────────
+
+/**
+ * Async ingress factory: reads the request body (size guard + deadline) and
+ * returns a snapshot `IngressContext` with a terminal `Response`.
+ *
+ * Recommended default for serverless/edge-style `fetch` handlers. For maximum
+ * throughput use `createIngressFast` / `createIngressSync` directly.
+ */
 export function createIngress(options: IngressOptions = {}): IngressHandler {
   const sync = createIngressSync(options);
 

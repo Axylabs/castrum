@@ -27,8 +27,11 @@ import type {
   IngressFastHandler,
 } from "./options";
 import {
+  assertSyncCallback,
+  buildHeaderPlan,
   DEFAULT_MAX_BODY_BYTES,
   METHOD_KIND,
+  METHOD_KIND_UNKNOWN,
   type HeaderPlan,
 } from "./shared";
 
@@ -58,12 +61,22 @@ export type { IngressFastOptions, IngressFastHandler } from "./options";
 export { generateRequestId } from "../shared/request-id";
 
 // ── Local constants ───────────────────────────────────────────
-const encoder = new TextEncoder();
 const EMPTY_BODY = new Uint8Array(0);
-const EMPTY_IP_BYTES = encoder.encode("0.0.0.0");
 const DEFAULT_OUTPUT_BUFFER_SIZE = 262_144;
 
 // ── Fast ingress factory ─────────────────────────────
+
+/**
+ * Create a fast packed-input ingress handler (path 1).
+ *
+ * JS packs the request headers into a binary buffer (`IngressInputPacker`) and
+ * the native `Ingress.handleRequestPacked` decodes them. Responses use the
+ * `{"error":{...}}` wire format with `x-ratelimit-*` headers.
+ *
+ * Prefer this when you want the lowest-overhead pipeline and will call `run()`
+ * yourself with a **synchronous** callback. For ready-made route handlers and a
+ * server builder, use `createIngressHandler` (path 2).
+ */
 export function createIngressFast(
   options: IngressFastOptions = {},
 ): IngressFastHandler {
@@ -122,12 +135,9 @@ export function createIngressFast(
   const NativeIngress = (addon as any).Ingress as new (opts: Record<string, unknown>) => IngressInstance;
   const handler = new NativeIngress(rustOptions);
 
-  const headerPlan: HeaderPlan = {
-    cookie: options.parseCookies === true,
-    cors: options.cors != null,
-    proxy: options.trustProxy === true || options.trustedProxies?.enabled === true,
-    proto: (options.trustProxy === true || options.trustedProxies?.enabled === true) && options.https === undefined,
-  };
+  // Shared with the pre-baked handler path so cookie/cors/proxy/proto
+  // extraction decisions can never silently diverge between the two paths.
+  const headerPlan: HeaderPlan = buildHeaderPlan(options);
 
   const outputBufSize = Math.max(
     OUT_DATA_START,
@@ -140,27 +150,27 @@ export function createIngressFast(
   return {
     run(req, ip, body, requestId, fn) {
       try {
-        const methodKind = METHOD_KIND[req.method] ?? 7;
-
-        const urlBytes = encoder.encode(req.url);
-        const ipBytes =
-          ip && ip.length > 0 ? encoder.encode(ip) : EMPTY_IP_BYTES;
-        const ridBytes = requestId
-          ? encoder.encode(requestId)
-          : new Uint8Array(0);
+        const methodKind = METHOD_KIND[req.method] ?? METHOD_KIND_UNKNOWN;
 
         const headers = packHeaders(req, headerPlan);
 
-        const input = inputPacker.pack(
+        const input = inputPacker.packFromStrings(
           methodKind,
-          urlBytes,
-          ipBytes,
-          ridBytes,
+          req.url,
+          ip,
+          requestId,
           headers,
         );
 
-        handler.handleRequestPacked(input, body, outputBuf);
-        result.refresh(outputBuf, body ?? EMPTY_BODY, requestId);
+        // handleRequestPacked returns the number of bytes it wrote; decode only
+        // the written prefix (mirrors handlers.ts) so stale bytes past `written`
+        // in the reused buffer can never be misread.
+        const written = handler.handleRequestPacked(input, body, outputBuf);
+        result.refresh(
+          outputBuf.subarray(0, written),
+          body ?? EMPTY_BODY,
+          requestId,
+        );
       } catch (err) {
         result.setInternalError(requestId);
         if (options.onError) {
@@ -174,17 +184,7 @@ export function createIngressFast(
 
       try {
         const out = fn(result);
-
-        if (
-          out !== null &&
-          (typeof out === "object" || typeof out === "function") &&
-          typeof (out as any).then === "function"
-        ) {
-          throw new Error(
-            "createIngressFast().run() callback must be synchronous.",
-          );
-        }
-
+        assertSyncCallback(out, "createIngressFast().run()");
         return out;
       } finally {
         result.invalidate();

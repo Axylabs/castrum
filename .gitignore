@@ -14,3 +14,5 @@ dist
 index.js
 index.d.ts
 .npmrc
+# CI publish staging dir (prepublish.mjs downloads platform addons here)
+artifacts

@@ -1,4 +1,4 @@
-// rust/json_ops.rs — v2: tighter inlining
+// rust/json/json_ops.rs — v2: tighter inlining
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::de::{Deserializer, IgnoredAny, SeqAccess, Visitor};
@@ -22,7 +22,10 @@ impl<'de> Visitor<'de> for IdSumVisitor {
     }
 
     #[inline]
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
         let mut sum = 0i64;
         while let Some(row) = seq.next_element::<Option<IdRow>>()? {
             if let Some(IdRow { id: Some(id) }) = row {
@@ -82,8 +85,8 @@ mod tests {
 
     #[test]
     fn json_parse_roundtrip() {
-        let v = sonic_rs::from_slice::<serde_json::Value>(br#"{"a":1,"b":[true,null,"x"]}"#)
-            .unwrap();
+        let v =
+            sonic_rs::from_slice::<serde_json::Value>(br#"{"a":1,"b":[true,null,"x"]}"#).unwrap();
         assert_eq!(v["a"], 1);
         assert_eq!(v["b"][0], true);
         assert_eq!(v["b"][2], "x");

@@ -144,7 +144,10 @@ src/
 │   ├── log.ts             ── createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines)
 │   ├── request-id.ts      ── zero-alloc request ID generator
 │   ├── buffer-pool.ts     ── reusable output-buffer pool
-│   └── response.ts        ── pooledBodyResponse (zero-copy response)
+│   ├── response.ts        ── pooledBodyResponse (zero-copy response)
+│   ├── bytes.ts           ── shared TextEncoder/Decoder singletons
+│   ├── packed.ts          ── packed-wire unpackers + packers
+│   └── proven.ts          ── PROVEN_SURFACE registry (single source for `proven`)
 │
 ├── native/                ── Native addon loading
 │   ├── types.ts           ── NativeAddon interface + instance types
@@ -164,19 +167,10 @@ src/
 │
 ├── baseline/              ── JS baseline implementations
 │   ├── index.ts           ── Aggregator
-│   └── tasks/             ── Individual baseline tasks
-│       ├── cookie.ts      ── Cookie parsing baseline
-│       ├── hashing.ts     ── Hashing baseline
-│       ├── hmac.ts        ── HMAC baseline
-│       ├── http.ts        ── HTTP parsing baseline
-│       ├── json.ts        ── JSON baseline
-│       ├── json-patch.ts  ── JSON patch baseline
-│       ├── mime.ts        ── MIME lookup baseline
-│       ├── query.ts       ── Query parsing baseline
-│       ├── token.ts       ── Token generation baseline
-│       ├── url.ts         ── URL codec baseline
-│       ├── validation.ts  ── Validation baseline
-│       └── websocket.ts   ── WebSocket baseline
+│   └── tasks/             ── 19 baseline tasks (cookie, hashing, hmac, http, json,
+│                              json-patch, mime, query, token, url, validation,
+│                              websocket, aead, compress, jwt, multipart, password,
+│                              streaming, template) — full list in docs/REPO_MAP.md
 │
 ├── bench/                 ── Benchmark framework
 │   ├── index.ts           ── Benchmark orchestrator
@@ -191,31 +185,15 @@ src/
 │   ├── report.ts          ── Report generation
 │   ├── run.ts             ── Benchmark runner
 │   ├── types.ts           ── Type definitions
-│   └── tasks/             ── Benchmark task implementations
-│       ├── complex.ts     ── Complex operation benchmarks
-│       ├── concurrent.ts  ── Concurrency benchmarks
-│       ├── cookie.ts      ── Cookie benchmarks
-│       ├── hashing.ts     ── Hashing benchmarks
-│       ├── hmac.ts        ── HMAC benchmarks
-│       ├── http.ts        ── HTTP benchmarks
-│       ├── index.ts       ── Task aggregator
-│       ├── json.ts        ── JSON benchmarks
-│       ├── json-patch.ts  ── JSON patch benchmarks
-│       ├── mime.ts        ── MIME benchmarks
-│       ├── query.ts       ── Query benchmarks
-│       ├── stress.ts      ── Stress benchmarks
-│       ├── token.ts       ── Token benchmarks
-│       ├── url.ts         ── URL benchmarks
-│       ├── validation.ts  ── Validation benchmarks
-│       └── websocket.ts   ── WebSocket benchmarks
+│   └── tasks/             ── 30 benchmark tasks (complex, concurrent, cookie,
+│                              hashing, hmac, http, json, json-patch, mime, query,
+│                              stress, token, url, validation, websocket, aead,
+│                              compress, jwt, password, streaming, template,
+│                              json-schema, media-type, form, etag, accept,
+│                              encoding, cookie-sign, csrf, url-join) — see docs/REPO_MAP.md
 │
-├── data/                  ── Data utilities
+├── data/                  ── Benchmark-fixture data (internal)
 │   └── json-rows.ts       ── JSON row serialization
-│
-└── shared/                ── Shared utilities
-    ├── bytes.ts           ── Text encoder/decoder
-    ├── json.ts            ── JSON helpers
-    └── packed.ts          ── Binary packing utilities
 ```
 
 > **Two ingress consumption paths** (see `docs/INGRESS.md`):
@@ -309,7 +287,7 @@ Multiple Inputs
                    │ packed batch
                    ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  Rust: Validator::validateBatchPacked()                       │
+│  Rust: SchemaValidator.validateBatchPacked()                  │
 │  - Iterate over packed inputs in a tight loop                │
 │  - Process each through validation pipeline                   │
 │  - Write results as packed output (bitset or length-prefixed)│

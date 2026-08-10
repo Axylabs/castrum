@@ -1,9 +1,9 @@
-// rust/cors.rs — CORS engine extracted from ingress.rs
+// rust/ingress/cors.rs — CORS engine extracted from ingress.rs
 // Pre-computes method bitmask for O(1) method matching
 
-use crate::util::bytes::ascii_eq_ignore_case;
 use crate::http::headers::HeaderRefs;
 use crate::http::method::MethodKind;
+use crate::util::bytes::ascii_eq_ignore_case;
 use crate::util::trim_ascii_whitespace;
 use napi::{Error, Result, Status};
 use napi_derive::napi;

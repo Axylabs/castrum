@@ -1,4 +1,4 @@
-// rust/jwt.rs — HS256 JSON Web Token signing/verification.
+// rust/crypto/jwt.rs — HS256 JSON Web Token signing/verification.
 //
 // Backend-framework feature: JWTs for auth. We implement HS256 by hand on top
 // of the existing aws-lc-rs HMAC + base64 crates (no `jsonwebtoken` dep) to
@@ -138,7 +138,8 @@ pub fn verify_signature_with_key(token: &[u8], key: &aws_lc_rs::hmac::Key) -> bo
         return false;
     };
 
-    let mut signing_input = Vec::with_capacity(parts.header_b64.len() + 1 + parts.payload_b64.len());
+    let mut signing_input =
+        Vec::with_capacity(parts.header_b64.len() + 1 + parts.payload_b64.len());
     signing_input.extend_from_slice(parts.header_b64);
     signing_input.push(b'.');
     signing_input.extend_from_slice(parts.payload_b64);
@@ -181,7 +182,7 @@ pub fn jwt_sign(
     let payload_b64 = b64url_encode(&serde_json::to_vec(&claims).map_err(napi_err)?);
 
     Ok(Buffer::from(build_token(
-        &header_b64,
+        header_b64,
         &payload_b64,
         secret.as_ref(),
     )))
@@ -189,11 +190,7 @@ pub fn jwt_sign(
 
 /// Pure-core JWT verification: HS256 signature + `alg` allowlist + time claims
 /// (`exp`/`nbf`/`iat`). Returns the decoded claims, or `None` on any failure.
-pub fn verify_token(
-    token: &[u8],
-    secret: &[u8],
-    now_seconds: i64,
-) -> Option<serde_json::Value> {
+pub fn verify_token(token: &[u8], secret: &[u8], now_seconds: i64) -> Option<serde_json::Value> {
     let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
     verify_token_with_key(token, &key, now_seconds)
 }
@@ -256,13 +253,8 @@ pub fn verify_token_with_key(
 /// object, or `null` on any failure (malformed, bad signature, wrong `alg`,
 /// expired, not-yet-valid `nbf`/`iat`, non-JSON payload).
 #[napi]
-pub fn jwt_verify(
-    token: Uint8Array,
-    secret: Uint8Array,
-    now_seconds: i64,
-) -> serde_json::Value {
-    verify_token(token.as_ref(), secret.as_ref(), now_seconds)
-        .unwrap_or(serde_json::Value::Null)
+pub fn jwt_verify(token: Uint8Array, secret: Uint8Array, now_seconds: i64) -> serde_json::Value {
+    verify_token(token.as_ref(), secret.as_ref(), now_seconds).unwrap_or(serde_json::Value::Null)
 }
 
 /// Higher-order instance: precompiles the HMAC-SHA256 key once from `secret`,
@@ -304,7 +296,7 @@ impl JwtSigner {
         let payload_b64 = b64url_encode(&serde_json::to_vec(&claims).map_err(napi_err)?);
 
         Ok(Buffer::from(build_token_with_key(
-            &header_b64,
+            header_b64,
             &payload_b64,
             &self.key,
         )))
@@ -357,7 +349,7 @@ pub fn jwt_sign_batch_packed(
             return Vec::new();
         };
         let payload_b64 = b64url_encode(&payload_bytes);
-        build_token(&header_b64, &payload_b64, secret.as_ref())
+        build_token(header_b64, &payload_b64, secret.as_ref())
     };
 
     if crate::util::should_parallelize(items.len(), crate::util::total_bytes(&items)) {
@@ -389,14 +381,13 @@ pub fn jwt_verify_batch_packed(
     let items = crate::util::unpack(data.as_ref())?;
     let n = items.len();
 
-    let verify_one = |token: &[u8]| -> bool {
-        verify_token(token, secret.as_ref(), now_seconds).is_some()
-    };
+    let verify_one =
+        |token: &[u8]| -> bool { verify_token(token, secret.as_ref(), now_seconds).is_some() };
 
-    let mut out = Vec::with_capacity(4 + (n + 7) / 8);
+    let mut out = Vec::with_capacity(4 + n.div_ceil(8));
     out.extend_from_slice(&(n as u32).to_le_bytes());
 
-    let mut bits = vec![0u8; (n + 7) / 8];
+    let mut bits = vec![0u8; n.div_ceil(8)];
     if crate::util::should_parallelize(n, crate::util::total_bytes(&items)) {
         use rayon::prelude::*;
         let results: Vec<bool> = items.par_iter().map(|t| verify_one(t)).collect();
@@ -424,7 +415,11 @@ mod tests {
     const SECRET: &[u8] = b"test-secret-key";
 
     fn token(claims: &serde_json::Value, secret: &[u8]) -> Vec<u8> {
-        token_with_header(&serde_json::json!({ "alg": "HS256", "typ": "JWT" }), claims, secret)
+        token_with_header(
+            &serde_json::json!({ "alg": "HS256", "typ": "JWT" }),
+            claims,
+            secret,
+        )
     }
 
     fn token_with_header(
@@ -471,7 +466,10 @@ mod tests {
     fn verify_token_enforces_iat_leeway() {
         let now = 1_000_000;
         // iat in the far future -> rejected (beyond 60s skew leeway).
-        let far = token(&serde_json::json!({ "sub": "1", "iat": now + 10_000 }), SECRET);
+        let far = token(
+            &serde_json::json!({ "sub": "1", "iat": now + 10_000 }),
+            SECRET,
+        );
         assert!(verify_token(&far, SECRET, now).is_none());
         // iat within leeway -> accepted.
         let near = token(&serde_json::json!({ "sub": "1", "iat": now + 30 }), SECRET);
@@ -488,8 +486,7 @@ mod tests {
 
     #[test]
     fn sign_then_verify_roundtrip() {
-        let claims =
-            serde_json::json!({ "sub": "123", "name": "John", "role": "admin" });
+        let claims = serde_json::json!({ "sub": "123", "name": "John", "role": "admin" });
         let t = token(&claims, SECRET);
         assert!(verify_signature(&t, SECRET));
     }

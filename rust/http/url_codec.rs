@@ -1,4 +1,4 @@
-// rust/url_codec.rs — URL percent-encoding
+// rust/http/url_codec.rs — URL percent-encoding
 use crate::util::bytes::{decode_percent_at, HEX_UPPER};
 use crate::util::{ensure_capacity, write_bytes};
 use memchr::memchr;
@@ -40,8 +40,7 @@ pub fn url_encode(input: Uint8Array) -> Buffer {
 #[napi]
 pub fn url_decode(input: Uint8Array) -> Result<Buffer> {
     let out = url_decode_bytes_vec(input.as_ref())?;
-    simdutf8::basic::from_utf8(&out)
-        .map_err(|e| Error::from_reason(e.to_string()))?;
+    simdutf8::basic::from_utf8(&out).map_err(|e| Error::from_reason(e.to_string()))?;
     Ok(Buffer::from(out))
 }
 

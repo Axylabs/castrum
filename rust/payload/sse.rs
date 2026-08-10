@@ -1,4 +1,4 @@
-// rust/sse.rs — Server-Sent Events framing.
+// rust/payload/sse.rs — Server-Sent Events framing.
 //
 // Backend-framework feature: SSE response framing. Encodes a single SSE event
 // per the WHATWG SSE spec: optional `id:`, `event:`, `retry:` lines followed by
@@ -76,14 +76,8 @@ pub fn sse_encode_batch_packed(
     let mut out = Vec::with_capacity(4 + items.len() * 24);
     out.extend_from_slice(&(items.len() as u32).to_le_bytes());
 
-    let encode_one = |d: &[u8]| {
-        encode_event(
-            event.as_deref(),
-            d,
-            id.as_deref(),
-            retry.map(u64::from),
-        )
-    };
+    let encode_one =
+        |d: &[u8]| encode_event(event.as_deref(), d, id.as_deref(), retry.map(u64::from));
 
     if should_parallelize(items.len(), total_bytes(&items)) {
         use rayon::prelude::*;
@@ -109,10 +103,7 @@ mod tests {
 
     #[test]
     fn encodes_basic_event() {
-        assert_eq!(
-            encode_event(None, b"hello", None, None),
-            b"data: hello\n\n"
-        );
+        assert_eq!(encode_event(None, b"hello", None, None), b"data: hello\n\n");
     }
 
     #[test]

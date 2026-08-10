@@ -1,4 +1,4 @@
-// rust/random_token.rs — random hex tokens (16/32/64 bytes use stack buffers)
+// rust/crypto/random_token.rs — random hex tokens (16/32/64 bytes use stack buffers)
 use crate::util::bytes::hex_encode;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -40,7 +40,8 @@ pub fn random_token(byte_len: u32) -> Result<Buffer> {
             Ok(Buffer::from(out.to_vec()))
         }
         _ => {
-            let out_len = len.checked_mul(2)
+            let out_len = len
+                .checked_mul(2)
                 .ok_or_else(|| Error::from_reason("byte_len too large"))?;
             let mut bytes = vec![0u8; len];
             getrandom::fill(&mut bytes).map_err(|e| Error::from_reason(e.to_string()))?;

@@ -175,21 +175,16 @@ When comparing multiple frameworks, differences are expressed as:
 
 ```
 bench.ts
-  └─ Loads benchmark tasks from src/bench/tasks/
+  └─ Loads benchmark tasks from src/bench/tasks/ (30 tasks)
        ├── hashing.ts       Compare Rust fnv1a64 vs JS TextEncoder + hash
        ├── validation.ts    Compare Rust validation vs validator library
        ├── json.ts          Compare Rust sonic-rs vs JSON.parse
-       ├── cookie.ts        Compare Rust cookie parser vs cookie-es
-       ├── query.ts         Compare Rust query parser vs manual parse
-       ├── hmac.ts          Compare Rust HMAC vs Web Crypto API
-       ├── mime.ts          Compare Rust mime_guess vs mime-types
-       ├── token.ts         Compare Rust getrandom vs crypto.randomBytes
-       ├── url.ts           Compare Rust URL codec vs encodeURIComponent
-       ├── websocket.ts     Compare Rust ws accept key vs manual
-       ├── json-patch.ts    Compare Rust json-patch vs fast-json-patch
        ├── http.ts          Compare Rust httparse vs manual
        ├── complex.ts       Combined operations
-       └── stress.ts        Concurrent load tests
+       ├── stress.ts        Concurrent load tests
+       └── ...              (aead, accept, compress, cookie-sign, csrf, encoding, etag,
+                            form, json-schema, jwt, media-type, multipart, password,
+                            streaming, template, url-join, ... — full list in docs/REPO_MAP.md)
 ```
 
 Each task runs:
@@ -197,6 +192,13 @@ Each task runs:
 2. **Measurement**: Fixed duration (default 2000ms) in a tight loop
 3. **Operations counted**: Number of function calls completed
 4. **Result**: Ops/sec calculated from wall-clock time
+
+### Benchmark controls
+
+| Env / flag | Effect |
+|------------|--------|
+| `CASTRUM_BENCH_BATCH_SIZE` | Batch size for sub-µs operations (default `64`). Batching amortizes the timer/measurement overhead for very fast ops. |
+| `HTTP_NO_SHAPE=1` | The HTTP load generator (`bench/load.ts`) skips response-shape `JSON.parse` for pure-throughput runs. |
 
 ---
 

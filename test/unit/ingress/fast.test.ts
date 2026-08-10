@@ -369,6 +369,26 @@ describe("FastIngressResult", () => {
     expect(r.bodyTruncated).toBe(true);
     expect(r.cookiesJson()).toBe("{}");
   });
+
+  test("refresh parses a subarray view with nonzero byteOffset (written-prefix pattern)", () => {
+    // fast.ts decodes only the exact written prefix of the reused output buffer
+    // (outputBuf.subarray(0, written), mirroring handlers.ts). Simulate a
+    // backing buffer with a stale/garbage tail and hand refresh a
+    // nonzero-byteOffset subarray — this is the pattern the written-count fix
+    // relies on, and it must not read garbage past the written region.
+    const backing = new Uint8Array(OUT_DATA_START + 512);
+    backing.fill(0xff); // stale garbage beyond the written region
+    const valid = buildOutputBuffer({ status: 200 });
+    backing.set(valid, 64);
+    const used = backing.subarray(64, 64 + valid.length);
+
+    const r = new FastIngressResult();
+    r.refresh(used, new Uint8Array(0), "test");
+
+    expect(r.ok).toBe(true);
+    expect(r.status).toBe(200);
+    expect(r.errorCode).toBe(ERR_CODE_NONE);
+  });
 });
 
 // ── Status helpers ────────────────────────────────────────────────────

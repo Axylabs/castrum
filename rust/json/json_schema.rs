@@ -126,7 +126,7 @@ impl SchemaValidator {
         if should_parallelize(count, payload) {
             use rayon::prelude::*;
             let items: Vec<&[u8]> = PackedIter::new(data)?.collect();
-            let chunk_items = 256usize.max(64);
+            let chunk_items = 256usize;
             let chunk_bytes = chunk_items.div_ceil(8);
             let bits = &mut out[4..];
             bits.par_chunks_mut(chunk_bytes)

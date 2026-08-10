@@ -52,11 +52,13 @@ import {
 } from "./constants";
 import { safeTerminalStatus } from "./status";
 import { warnTrustProxyDeprecated } from "./options";
-import { METHOD_KIND, type HeaderPlan } from "./shared";
+import { buildHeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN, type HeaderPlan } from "./shared";
 import { BakedIngressResult } from "./decode/baked-result";
 import { ERROR_BODIES, rateLimitedBody, ERROR_CODE_BODIES } from "./response/error-bodies";
 import { buildBakedHeaderTemplates } from "./headers/baked-templates";
-import { gatherRawHeaders } from "./packing/gather-raw-headers";
+import { gatherRawHeadersPacked } from "./packing/gather-raw-headers";
+import { IngressInputPacker } from "./packing/input-packer";
+import type { BakedContext, OptimizedIngressHandler } from "./types";
 
 // ── Re-exports (back-compat: preserve handlers.ts's original public surface) ──
 export { BakedIngressResult } from "./decode/baked-result";
@@ -84,6 +86,7 @@ export type { RouteHandler as IngressNodeRouteHandler } from "./server-node";
 const encoder = new TextEncoder();
 const EMPTY_BODY = new Uint8Array(0);
 const EMPTY_IP = "0.0.0.0";
+const EMPTY_IP_BYTES = encoder.encode(EMPTY_IP);
 
 /** Sentinel value used by Rust to mean "rate limiting disabled". */
 export const RATE_LIMIT_U32_MAX = 4_294_967_295;
@@ -91,10 +94,9 @@ export const RATE_LIMIT_U32_MAX = 4_294_967_295;
 const DEFAULT_OUTPUT_BUF_SIZE = 131_072;
 
 // ── Types ────────────────────────────────────────────────────────
-export interface BakedContext {
-  requestIdHeader: string | null;
-  origin: string | null;
-}
+// `BakedContext` and `OptimizedIngressHandler` are defined in ./types.ts
+// (shared with the route factories) and re-exported here for back-compat.
+export type { BakedContext, OptimizedIngressHandler } from "./types";
 
 export interface BakedIngressRuntime {
   /** Emit an `x-request-id` header on responses. Default: false. */
@@ -126,71 +128,21 @@ export interface BakedIngressRuntime {
   structuredLog?: boolean;
 }
 
-/**
- * An optimized ingress handler. `run()` is the zero-alloc pipeline entry
- * point; the response-builder methods are pre-baked and bound to this
- * handler's configuration, so consumers can build custom routes without
- * touching header templates or error bodies.
- */
-export interface OptimizedIngressHandler {
-  run<T>(
-    req: Request,
-    ip: string | undefined,
-    body: Uint8Array | null,
-    fn: (result: BakedIngressResult, ctx: BakedContext) => T,
-  ): T;
-
-  responseHeaders(
-    variant: number,
-    requestIdHeader: string | null,
-    origin: string | null,
-    rateRemaining?: number,
-    rateResetSecs?: number,
-    retryAfterSecs?: number,
-  ): [string, string][];
-
-  terminalHeaders(
-    variant: number,
-    ctx: BakedContext,
-    result: BakedIngressResult | null,
-  ): [string, string][];
-
-  terminalResponse(
-    req: Request,
-    result: BakedIngressResult,
-    ctx: BakedContext,
-  ): Response | null;
-
-  errorResponse(
-    req: Request,
-    result: BakedIngressResult | null,
-    status: number,
-    code: string,
-    message: string,
-    ctx: BakedContext,
-  ): Response;
-
-  internalErrorResponse(ctx: BakedContext, result?: BakedIngressResult): Response;
-
-  withContentType(
-    headers: ReadonlyArray<[string, string]>,
-    contentType: string,
-  ): [string, string][];
-
-  /**
-   * Build a zero-copy `Response` whose body is the request's pooled output
-   * slice. The pooled buffer is returned to its pool once the body has been
-   * consumed (stream closed) or the request aborted. Use when `copyBody` is
-   * `false`; otherwise a copied body is released eagerly at the end of `run()`.
-   */
-  zeroCopyResponse(
-    result: BakedIngressResult,
-    ctx: BakedContext,
-    init: ResponseInit,
-  ): Response;
-}
-
 // ── Optimized ingress factory ─────────────────────────────────────
+
+/**
+ * Create a pre-baked ingress handler (path 2).
+ *
+ * Headers are gathered as plain `[name, value][]` arrays and the native
+ * `Ingress.handleRequestFullSyncInto` packs them in Rust, writing into a
+ * pooled output buffer (no per-request allocation). Responses use the
+ * benchmark wire format (`{"ok":false,"error":{...}}` + `ratelimit-*`
+ * headers) — see AGENTS.md for why this differs from `createIngressFast`.
+ *
+ * Returns an `OptimizedIngressHandler` whose response-builder methods are
+ * bound to this handler's configuration. Pair it with the route factories
+ * (`readHandler`, `jsonWriteHandler`, ...) or `createIngressServer`.
+ */
 export function createIngressHandler(
   options: Record<string, unknown>,
   runtime: BakedIngressRuntime = {},
@@ -212,18 +164,14 @@ export function createIngressHandler(
     );
   }
 
-  const trust = options.trustProxy === true;
   const rateLimit = options.rateLimit as { limit?: number } | undefined;
   const limit = rateLimit?.limit;
   const rateEnabled =
     typeof limit === "number" && limit !== RATE_LIMIT_U32_MAX && limit > 0;
 
-  const headerPlan: HeaderPlan = {
-    cookie: options.parseCookies === true,
-    cors: options.cors != null,
-    proxy: trust && rateEnabled,
-    proto: trust && options.https === undefined,
-  };
+  // Shared with the fast path — proxy extraction is driven by trust config
+  // (trustProxy / trustedProxies), not by whether rate limiting is enabled.
+  const headerPlan: HeaderPlan = buildHeaderPlan(options);
 
   const emitRequestIdHeader = runtime.emitRequestIdHeader === true;
   const outputBufferSize = runtime.outputBufferSize ?? DEFAULT_OUTPUT_BUF_SIZE;
@@ -234,6 +182,11 @@ export function createIngressHandler(
   // Reusable output-buffer pool: eliminates the per-request output-buffer
   // allocation in handleRequestFullSync by reusing buffers across requests.
   const outputPool = new BufferPool({ initialSize: outputBufferSize });
+
+  // Reusable packed-input builder (same zero-alloc discipline as the fast
+  // path): the per-request frame is packed into this buffer instead of paying
+  // the napi `Vec<Vec<String>>` header marshaling of the full_sync family.
+  const inputPacker = new IngressInputPacker();
 
   // Per-call state: the output handle backing the current `run()`'s result,
   // and whether a zero-copy Response claimed it (so `run()` must not release
@@ -268,15 +221,16 @@ export function createIngressHandler(
   const corsMaxAge = cors?.maxAge != null ? String(cors.maxAge) : "";
   const rateLimitStr = rateEnabled ? String(limit) : "";
 
-  const headerTemplates = buildBakedHeaderTemplates({
-    securityEntries,
-    cors,
-    corsAllowMethods,
-    corsAllowHeaders,
-    corsExposeHeaders,
-    corsMaxAge,
-    rateLimitStr,
-  });
+  const { regular: headerTemplates, terminal: terminalTemplates } =
+    buildBakedHeaderTemplates({
+      securityEntries,
+      cors,
+      corsAllowMethods,
+      corsAllowHeaders,
+      corsExposeHeaders,
+      corsMaxAge,
+      rateLimitStr,
+    });
 
   function responseHeaders(
     variant: number,
@@ -339,17 +293,40 @@ export function createIngressHandler(
     ctx: BakedContext,
     result: BakedIngressResult | null,
   ): [string, string][] {
-    const base = responseHeaders(
-      variant | HV_JSON,
-      ctx.requestIdHeader,
-      ctx.origin,
-      result?.rateRemaining,
+    const v = variant | HV_JSON;
+    const requestIdHeader = ctx.requestIdHeader;
+    const origin = ctx.origin;
+    const rateResetSecs =
       result && result.rateResetMs > 0
         ? Math.ceil(result.rateResetMs / 1000)
-        : undefined,
+        : undefined;
+    const retryAfterSecs =
       result && result.retryAfterMs > 0
         ? Math.ceil(result.retryAfterMs / 1000)
-        : undefined,
+        : undefined;
+
+    const needsRequestId = emitRequestIdHeader && requestIdHeader !== null;
+    const needsOrigin =
+      ((v & HV_CORS_SIMPLE) !== 0 || (v & HV_CORS_PREFLIGHT) !== 0) &&
+      origin !== null;
+    const needsRate = (v & HV_RATE_ACTIVE) !== 0;
+    const needsRetry = (v & HV_RATE_LIMITED) !== 0;
+
+    // Steady state: no request-id/origin/rate extras — serve the pre-baked
+    // terminal template (JSON + `cache-control: no-store`) directly with zero
+    // per-response array allocation/copy.
+    if (!needsRequestId && !needsOrigin && !needsRate && !needsRetry) {
+      return terminalTemplates[v & 31] as unknown as [string, string][];
+    }
+
+    // Rare path: extras appended after the baked entries, then `cache-control`.
+    const base = responseHeaders(
+      v,
+      requestIdHeader,
+      origin,
+      result?.rateRemaining,
+      rateResetSecs,
+      retryAfterSecs,
     );
 
     const out = new Array<[string, string]>(base.length + 1);
@@ -472,7 +449,7 @@ export function createIngressHandler(
     fn: (result: BakedIngressResult, ctx: BakedContext) => T,
   ): T {
     const startedAt = logger ? performance.now() : 0;
-    const methodKind = METHOD_KIND[req.method] ?? 7;
+    const methodKind = METHOD_KIND[req.method] ?? METHOD_KIND_UNKNOWN;
     const ridBytes = generateRequestId();
     const requestIdStr = decoder.decode(ridBytes);
 
@@ -481,12 +458,22 @@ export function createIngressHandler(
 
     runtime.onRequest?.(req, requestIdStr, ip);
 
-    // Gather raw headers as [name, value][] — no binary packing in JS.
-    // handleRequestFullSync packs them internally in Rust synchronously,
-    // eliminating both JS-side encoding and async overhead.
-    const headers = gatherRawHeaders(req, headerPlan, methodKind);
-
     const ipStr = ip ?? EMPTY_IP;
+
+    // Pack the request frame in JS (reusing the fast path's zero-alloc packer
+    // discipline) and drive the same native core as `handleRequestPacked`.
+    // This removes the per-request `[name, value][]` header marshaling + napi
+    // `Vec<Vec<String>>` and the request-id string re-encode that the
+    // full_sync family paid on every request. The response wire format is
+    // unchanged because both entries run the identical `handle_packed` core.
+    const packedHeaders = gatherRawHeadersPacked(req, headerPlan, methodKind);
+    const input = inputPacker.pack(
+      methodKind,
+      encoder.encode(req.url),
+      ip && ip.length > 0 ? encoder.encode(ipStr) : EMPTY_IP_BYTES,
+      ridBytes,
+      packedHeaders,
+    );
 
     const handle = outputPool.acquire(outputBufferSize);
     currentHandle = handle;
@@ -495,12 +482,8 @@ export function createIngressHandler(
     try {
       try {
         // Write into the pooled buffer — no per-request allocation.
-        const written = handler.handleRequestFullSyncInto(
-          methodKind,
-          req.url,
-          ipStr,
-          requestIdStr,
-          headers,
+        const written = handler.handleRequestPacked(
+          input,
           body,
           handle.buffer,
         );

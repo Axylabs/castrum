@@ -61,11 +61,9 @@ export function createRust(options: RustOptions = {}): RustClient {
   };
 }
 
-// ── Default instance (optimized defaults) ─────────────────────
-
+/**
+ * The default, ready-to-use `RustClient` created with no options (resolves
+ * rayon threads from the host automatically). Most consumers just do
+ * `import { rust } from "castrum"` and call `rust.<fn>(...)` directly.
+ */
 export const rust = createRust();
-
-// ── Back-compat alias (non-breaking) ───────────────────────────
-
-/** @deprecated Use `rust.batch` (same object). */
-export const rustBatch = rust.batch;

@@ -23,14 +23,19 @@ HTTP **ingress pipeline** for Bun servers.
 | Build compiled JS entry (Node) | `bun run build:js` (bundle + types → `dist/`) |
 | Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
-| Rust unit tests | `cargo test` (~214 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
-| TS unit tests | `bun test` (~154 tests, `test/unit/**`) |
+| Rust unit tests | `cargo test` (~250 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
+| TS unit tests | `bun test` (~255 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Proven-surface audit | `bun run check:proven` (report) / `bun run check:proven:fail` (CI gate) |
 | Startup / first-call benchmark | `bun run bench:startup` |
-| Typecheck | `bunx tsc --noEmit` — **note**: `tsconfig.json` `include` is only `["index.ts", "bench.ts", "src"]`; `bench/` and `test/` are NOT typechecked here |
+| Typecheck | `bun run typecheck` (== `bunx tsc --noEmit`) — **note**: `tsconfig.json` `include` is only `["index.ts", "bench.ts", "src"]`; `bench/` and `test/` are NOT typechecked here |
+| JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
+| Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
+| JS dependency audit | `bun run audit` |
+| Cargo deny audit | `bun run deny` (== `cargo deny check`) |
 | HTTP bench (all servers) | `bun run bench:http` |
 | HTTP bench (ingress only) | `bun run bench:http:ingress` |
+| HTTP smoke (fast sanity; CI-gated wire-format guard) | `bun run bench:http:smoke` |
 | HTTP smoke (fast sanity) | `bun run bench:http:smoke` |
 | Ingress load scenario | `SERVER=ingress SCENARIO=01-smoke bun run bench:http:smoke` |
 
@@ -91,10 +96,12 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── response/           terminal.ts (fast) + error-bodies.ts (pre-baked)
   ├── routes/             read/head/json-write/echo/fallback factories + common.ts
   ├── fast.ts             thin: createIngressFast (packed-input path, handleRequestPacked) + re-exports
-  ├── handlers.ts         thin: createIngressHandler (full_sync path, handleRequestFullSyncInto, pooled output); used by the bench server
+  ├── handlers.ts         thin: createIngressHandler (packed-input path: frame packed in
+  │                       JS via IngressInputPacker + gatherRawHeadersPacked, driven by
+  │                       handleRequestPacked, pooled output); used by the bench server
   └── index.ts            barrel: public API + async createIngress + re-exports
 src/native/               addon layer: types.ts (NativeAddon + instance types) + loader.ts (getAddon/lazyAddon) + index.ts barrel
-src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts + text.ts + batch.ts + packed.ts + scalar.ts + client.ts + index.ts barrel
+src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts + text.ts + batch.ts + packed.ts + scalar.ts + client.ts + proven.ts + index.ts barrel
 src/shared/request-id.ts  shared zero-alloc request ID generator (both ingress paths) — aliased buffer hazard documented
 src/shared/buffer-pool.ts  generic reusable byte-buffer pool (pooled output buffers, zero-copy borrows)
 src/shared/response.ts     pooledBodyResponse: Response that returns a pooled buffer on body consumption
@@ -170,9 +177,13 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
 2. **`src/ingress/handlers.ts`** — `createIngressHandler(options, runtime)` +
    route factories (`readHandler`, `headHandler`, `jsonWriteHandler`,
    `echoHandler`, `fallbackHandler`) + `createIngressServer()` (Bun.serve
-   builder). Rust packs internally via `handleRequestFullSync`. **Different
-   wire format**: success = Rust-generated `{"ok":true,...,"requestId":...}`,
-   errors = `{"ok":false,"error":{"code","message"}}`, `ratelimit-*` headers.
+   builder). JS packs the request frame (`IngressInputPacker` + packed headers
+   via `gatherRawHeadersPacked`, keeping path 2's per-header size guards) and
+   drives the SAME native core as path 1 (`handleRequestPacked`); the full_sync
+   napi entries remain as compatible allocating / reusable-output wrappers.
+   **Different wire format**: success = Rust-generated
+   `{"ok":true,...,"requestId":...}`, errors =
+   `{"ok":false,"error":{"code","message"}}`, `ratelimit-*` headers.
 
 The HTTP benchmark server (`bench/servers/ingress-server.ts`) uses path 2 and
 re-exports the pre-baked functions. **Do not unify the two formats** — the load
@@ -180,9 +191,11 @@ generator `bench/load.ts` requires `ok === true` + `requestId: string` on
 success and `error.code` / `error.message` on errors (path 2's format).
 
 > **Pooled output buffers (handlers.ts)**: `createIngressHandler` owns a
-> `BufferPool` (`src/shared/buffer-pool.ts`) sized by `runtime.outputBufferSize`.
-> `run()` writes into a pooled buffer via `handleRequestFullSyncInto` and passes
-> the exact written subarray to `BakedIngressResult.refresh`. In copy mode the
+> `BufferPool` (`src/shared/buffer-pool.ts`) sized by `runtime.outputBufferSize`
+> AND a reusable `IngressInputPacker`. `run()` packs the frame in JS (headers
+> via `gatherRawHeadersPacked`, url/ip/rid encoded directly into the packer
+> buffer), writes into a pooled buffer via `handleRequestPacked`, and passes the
+> exact written subarray to `BakedIngressResult.refresh`. In copy mode the
 > buffer is released at the end of `run()`; in zero-copy mode
 > `ingress.zeroCopyResponse()` serves a `pooledBodyResponse` that keeps the
 > buffer in flight until the body is consumed.
@@ -229,9 +242,11 @@ success and `error.code` / `error.message` on errors (path 2's format).
   bench files with the editor language server, and run `bun run bench:http:smoke`
   to confirm the servers still pass load checks.
 - **Hot-path APIs (do not remove)**: `rust/ingress/mod.rs` (`Ingress`)::
-  `handle_request_packed` (fast.ts), `handle_request_full_sync` AND
-  `handle_request_full_sync_into` (handlers.ts — the latter is the
-  pooled/reusable-output variant; keep `handleRequestFullSync` as the allocating
+  `handle_request_packed` (drives BOTH ingress paths — `fast.ts` packs headers
+  via `packHeaders` and `handlers.ts` packs the full frame via
+  `IngressInputPacker` + `gatherRawHeadersPacked`), `handle_request_full_sync`
+  AND `handle_request_full_sync_into` (public compat wrappers — the latter is
+  the reusable-output variant; keep `handleRequestFullSync` as the allocating
   compat wrapper), `rust/ingress/ingress_constants.rs`, sync `util/batch.rs`,
   `util/mod.rs::init_thread_pool`, and the scalar NAPI fns used by
   `src/bench/tasks/*`.
@@ -249,10 +264,13 @@ success and `error.code` / `error.message` on errors (path 2's format).
   benchmarking use `bun run build:perf` (`scripts/build-perf.sh`), which compiles
   with `-C target-cpu=x86-64-v3` + avx2/bmi2/fma/sse4.2. Never commit those flags
   as the default and never use `build:perf` for publish.
-- **Rate limiter**: 256 `Mutex<LruCache>` shards, `Arc<KeyedRateLimiter>` per
-  ingress instance (NOT shared across routes), per-process (not distributed);
-  monotonic `Instant` + one-time wall offset via `OnceLock`. Ingress stores it as
-  a `RateLimiterState` enum (`Disabled`/`Enabled`) so the code can't have a
+- **Rate limiter**: 256 `Mutex<LruCache>` shards per limiter; limiters are
+  **shared process-wide** via `SHARED_LIMITERS` (an `OnceLock<Mutex<LruCache>>`
+  keyed by configuration, capped at 16 distinct configs) so the same config
+  shares ONE budget across all routes/instances — this blocks route-splitting
+  bypass (see SECURITY.md). Per-process, not distributed; monotonic `Instant` +
+  one-time wall offset via `OnceLock`. Ingress stores it as a
+  `RateLimiterState` enum (`Disabled`/`Enabled`) so the code can't have a
   "rate enabled but no limiter" state.
 - **XFF / proxy trust**: empty trusted networks → `ProxyTrustMode::All`
   (trust everything → spoofable). The bench server's `INGRESS_TRUST_PROXY`
@@ -282,8 +300,8 @@ success and `error.code` / `error.message` on errors (path 2's format).
 
 ## Testing
 
-- **TS**: `bun test`. Add tests under `test/unit/<area>/`. Only `test/unit/*`
-  currently has files (`ingress/fast`, `shared/packed`, `shared/bytes`).
+- **TS**: `bun test` (~255). Add tests under `test/unit/<area>/` (`ingress/`,
+  `shared/`, `features/`).
 - **Rust**: `cargo test`. New logic ships with a `#[cfg(test)] mod tests` block in
   the SAME module file (ingress.rs, url_codec.rs, validation.rs, proxy.rs,
   hmac_sha256.rs already do). Cross-module suites live in `rust/unit_tests.rs`;

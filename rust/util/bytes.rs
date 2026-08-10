@@ -1,4 +1,4 @@
-// rust/bytes.rs — Shared low-level byte utilities
+// rust/util/bytes.rs — Shared low-level byte utilities
 //
 // This is the ONE home for the small byte-manipulation primitives that are
 // reused across the crate: word-at-a-time comparison, hex (de)encoding,
@@ -87,21 +87,6 @@ pub fn hex_encode(bytes: &[u8], out: &mut [u8]) {
     }
 }
 
-/// Encode `bytes` as UPPERCASE hex into `out` (used by URL percent-encoding).
-#[inline]
-pub fn hex_encode_upper(bytes: &[u8], out: &mut [u8]) {
-    assert!(
-        out.len() >= bytes.len() * 2,
-        "hex_encode_upper: output buffer too small ({} < {})",
-        out.len(),
-        bytes.len() * 2
-    );
-    for (i, &b) in bytes.iter().enumerate() {
-        out[2 * i] = HEX_UPPER[(b >> 4) as usize];
-        out[2 * i + 1] = HEX_UPPER[(b & 0x0f) as usize];
-    }
-}
-
 /// Encode exactly 32 bytes as lowercase hex into a fixed 64-byte output.
 #[inline(always)]
 pub fn hex_encode_32(bytes: &[u8], out: &mut [u8; 64]) {
@@ -138,6 +123,70 @@ pub fn decode_percent_at(src: &[u8], i: usize) -> Option<(u8, usize)> {
     let hi = hex_val(src[i + 1])?;
     let lo = hex_val(src[i + 2])?;
     Some(((hi << 4) | lo, i + 3))
+}
+
+// ── Form-component decoding ────────────────────────────────────────
+
+/// Decode failure modes for [`decode_form_component_into`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormDecodeError {
+    /// Malformed `%XX` sequence (truncated or a non-hex digit).
+    Malformed,
+    /// `out` cannot hold the decoded result.
+    BufferTooSmall,
+}
+
+/// URL-decode a form component (`+` → space, `%XX` → byte) into `out`,
+/// returning the number of bytes written.
+///
+/// The decoded length never exceeds `src.len()` (each input byte maps to at
+/// most one output byte). Callers that pre-size `out` to `src.len()` can never
+/// observe [`FormDecodeError::BufferTooSmall`]; callers that pass the remaining
+/// tail of a larger buffer get a precise capacity check against the ACTUAL
+/// decoded length (a `%XX` sequence shrinks 3 input bytes to 1, so a buffer
+/// sized to the decoded form succeeds).
+///
+/// Single shared implementation for `query_parser::write_decoded_form_component`
+/// (length-prefixed slice writer) and `json_ser::decode_query_component`
+/// (Vec appender) — the wire decode loop lives in exactly one place.
+#[inline]
+pub fn decode_form_component_into(
+    src: &[u8],
+    out: &mut [u8],
+) -> std::result::Result<usize, FormDecodeError> {
+    if memchr::memchr2(b'+', b'%', src).is_none() {
+        if out.len() < src.len() {
+            return Err(FormDecodeError::BufferTooSmall);
+        }
+        out[..src.len()].copy_from_slice(src);
+        return Ok(src.len());
+    }
+    let mut i = 0usize;
+    let mut written = 0usize;
+    while i < src.len() {
+        let b = match src[i] {
+            b'+' => {
+                i += 1;
+                b' '
+            }
+            b'%' => {
+                let (byte, next) =
+                    decode_percent_at(src, i).ok_or(FormDecodeError::Malformed)?;
+                i = next;
+                byte
+            }
+            b => {
+                i += 1;
+                b
+            }
+        };
+        if written >= out.len() {
+            return Err(FormDecodeError::BufferTooSmall);
+        }
+        out[written] = b;
+        written += 1;
+    }
+    Ok(written)
 }
 
 // ── Whitespace + cookie splitting ──────────────────────────────────
@@ -184,4 +233,75 @@ pub fn cookie_pairs(input: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> + '_ {
 
         Some((name, value))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode(src: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8; src.len()];
+        let n = decode_form_component_into(src, &mut out).unwrap();
+        out.truncate(n);
+        out
+    }
+
+    #[test]
+    fn decode_form_plain_passthrough() {
+        assert_eq!(decode(b"abc"), b"abc");
+        assert_eq!(decode(b""), b"");
+        // The fast path copies exactly; verify capacity via the full slice.
+        let mut out = [0u8; 3];
+        assert_eq!(decode_form_component_into(b"abc", &mut out), Ok(3));
+    }
+
+    #[test]
+    fn decode_form_plus_and_percent() {
+        assert_eq!(decode(b"a+b"), b"a b");
+        assert_eq!(decode(b"%41%42"), b"AB");
+        assert_eq!(decode(b"q=%E2%9C%93"), b"q=\xE2\x9C\x93");
+        assert_eq!(decode(b"%2B"), b"+");
+    }
+
+    #[test]
+    fn decode_form_malformed_percent() {
+        let mut out = [0u8; 8];
+        assert_eq!(
+            decode_form_component_into(b"%ZZ", &mut out),
+            Err(FormDecodeError::Malformed)
+        );
+        assert_eq!(
+            decode_form_component_into(b"%4", &mut out),
+            Err(FormDecodeError::Malformed)
+        );
+        assert_eq!(
+            decode_form_component_into(b"x%", &mut out),
+            Err(FormDecodeError::Malformed)
+        );
+    }
+
+    #[test]
+    fn decode_form_capacity_semantics() {
+        // A `%XX` sequence shrinks 3 input bytes → 1; a buffer sized to the
+        // decoded length must succeed even though it is smaller than `src`.
+        let src = b"abcdef%20ghijkl";
+        let mut small = vec![0u8; src.len() - 2]; // decoded length = src.len() - 2
+        let n = decode_form_component_into(src, &mut small).unwrap();
+        assert_eq!(n, src.len() - 2);
+        assert_eq!(&small[..n], b"abcdef ghijkl");
+
+        // Too small for even the decoded form → BufferTooSmall.
+        let mut tiny = vec![0u8; src.len() - 3];
+        assert_eq!(
+            decode_form_component_into(src, &mut tiny),
+            Err(FormDecodeError::BufferTooSmall)
+        );
+
+        // Plain input requires the full length.
+        let mut tiny = [0u8; 2];
+        assert_eq!(
+            decode_form_component_into(b"abc", &mut tiny),
+            Err(FormDecodeError::BufferTooSmall)
+        );
+    }
 }

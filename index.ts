@@ -13,8 +13,6 @@ export {
 export type { ProvenClient, ProvenKey } from "./src/rust-ffi/proven";
 export type { PerformanceStatus, ProvenEntry } from "./src/shared/proven";
 
-export * as native from "./src/baseline";
-
 export { encoder, decoder } from "./src/shared/bytes";
 
 export {
@@ -33,6 +31,4 @@ export {
 } from "./src/shared/packed";
 export type { Pair, ParsedHttpRequestPacked } from "./src/shared/packed";
 
-export { jsonRowsBytes, createJsonRows } from "./src/data/json-rows";
-export type { JsonRow } from "./src/data/json-rows";
 export * from "./src/ingress";

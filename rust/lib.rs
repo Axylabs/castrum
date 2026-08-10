@@ -1,3 +1,17 @@
+//! # castrum — Rust acceleration addon (napi-rs cdylib)
+//!
+//! One cdylib crate decomposed into domain folders (`util`, `http`, `crypto`,
+//! `json`, `payload`, `ingress`). Modules keep a pure-Rust core (no napi types
+//! in signatures) so they stay testable and composable; only the `#[napi]`
+//! entry points use napi types. See the module map below and `docs/REPO_MAP.md`.
+
+// The napi `Uint8Array` exposes its backing JS-buffer memory to Rust through
+// `as_mut()`. We allow this lint crate-wide because the pattern is deliberate
+// and audited: the caller-provided buffer is only borrowed for the duration of
+// the call, aliasing with the input/body is checked via `slices_overlap`, and
+// every writer is capacity-checked (`ingress/output.rs` panics on overflow,
+// which napi converts to a JS 500). Do not widen the unsafe surface beyond
+// these sites without re-auditing.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use mimalloc::MiMalloc;
@@ -30,12 +44,12 @@ static GLOBAL: MiMalloc = MiMalloc;
 // Hot-path napi APIs (do not remove): ingress::handle_request_packed,
 // ingress::handle_request_full_sync{,_into}, util::init_thread_pool,
 // util::batch, ingress::ingress_constants.
-pub mod util;
-pub mod http;
 pub mod crypto;
+pub mod http;
+pub mod ingress;
 pub mod json;
 pub mod payload;
-pub mod ingress;
+pub mod util;
 
 // ── Unit tests (cargo test) ───────────────────────────────────────
 #[cfg(test)]

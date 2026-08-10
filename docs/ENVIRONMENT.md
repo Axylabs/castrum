@@ -31,7 +31,7 @@ for false; anything else is warned about and falls back to the default.
 | `CASTRUM_MAX_RAYON_THREADS` (legacy `RUST_BENCH_MAX_RAYON_THREADS`) | int | `cores` | Hard cap on rayon threads (native). |
 | `CASTRUM_PIN_CORES` (legacy `RUST_BENCH_PIN_CORES`) | (presence) | — | When set (Linux), pin rayon worker threads to distinct cores. |
 
-## Native addon loader (`src/native/index.ts`)
+## Native addon loader (`src/native/loader.ts`)
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|

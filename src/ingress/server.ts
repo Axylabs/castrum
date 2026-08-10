@@ -8,7 +8,7 @@ import {
   fallbackHandler,
 } from "./routes";
 import type { BakedHandlerOptions } from "./routes/common";
-import type { OptimizedIngressHandler } from "./handlers";
+import type { OptimizedIngressHandler } from "./types";
 
 /** Server-level default for the socket request-body cap (16 MiB). */
 export const DEFAULT_MAX_REQUEST_BODY_SIZE = 16 * 1024 * 1024;

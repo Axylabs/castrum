@@ -94,8 +94,20 @@ fn simple_type_parity() {
         json!(false),
     ];
     let docs = [
-        "{}", "[]", "\"x\"", "42", "42.5", "1e2", "true", "false", "null",
-        "{\"a\":1}", "[1,2]", "\"\"", "-0", "0.1",
+        "{}",
+        "[]",
+        "\"x\"",
+        "42",
+        "42.5",
+        "1e2",
+        "true",
+        "false",
+        "null",
+        "{\"a\":1}",
+        "[1,2]",
+        "\"\"",
+        "-0",
+        "0.1",
     ];
     for s in &schemas {
         assert_parity(s.clone(), &docs);
@@ -110,11 +122,15 @@ fn string_length_parity() {
         json!({"type":"string","minLength":1,"maxLength":3}),
     ];
     let docs = [
-        r#""ab""#, r#""a""#, r#""abcd""#, r#""abcde""#, r#""""#,
+        r#""ab""#,
+        r#""a""#,
+        r#""abcd""#,
+        r#""abcde""#,
+        r#""""#,
         // escapes count as decoded length
-        r#""\u0041""#,  // "A" -> len 1
-        r#""a\u0041b""#, // "aAb" -> len 3
-        r#""\n\t""#,    // 2 chars
+        r#""\u0041""#,       // "A" -> len 1
+        r#""a\u0041b""#,     // "aAb" -> len 3
+        r#""\n\t""#,         // 2 chars
         r#""\uD83D\uDE00""#, // 😀 -> len 1
     ];
     for s in &schemas {
@@ -132,8 +148,19 @@ fn number_bounds_parity() {
         json!({"type":"integer"}),
     ];
     let docs = [
-        "0", "5", "10", "11", "-1", "0.5", "0.5000001", "1e1", "1.5", "2.0",
-        "-0", "0.1", "100",
+        "0",
+        "5",
+        "10",
+        "11",
+        "-1",
+        "0.5",
+        "0.5000001",
+        "1e1",
+        "1.5",
+        "2.0",
+        "-0",
+        "0.1",
+        "100",
     ];
     for s in &schemas {
         assert_parity(s.clone(), &docs);
@@ -148,8 +175,17 @@ fn array_parity() {
         json!({"type":"array","items":{"type":"integer"},"minItems":2}),
     ];
     let docs = [
-        "[]", "[\"a\"]", "[\"a\",\"b\",\"c\"]", "[\"a\",1]", "[1]", "[1,2,3]",
-        "[1,2]", "[1.5]", "[\"a\",\"b\",\"c\",\"d\"]", "{}", "null",
+        "[]",
+        "[\"a\"]",
+        "[\"a\",\"b\",\"c\"]",
+        "[\"a\",1]",
+        "[1]",
+        "[1,2,3]",
+        "[1,2]",
+        "[1.5]",
+        "[\"a\",\"b\",\"c\",\"d\"]",
+        "{}",
+        "null",
     ];
     for s in &schemas {
         assert_parity(s.clone(), &docs);
@@ -167,11 +203,21 @@ fn object_required_additional_parity() {
         json!({"required":["a","b"]}),
     ];
     let docs = [
-        "{}", "{\"a\":1}", "{\"a\":\"x\"}", "{\"b\":1}", "{\"a\":1,\"b\":2}",
-        "{\"a\":1,\"c\":true}", "{\"c\":true}", "{\"a\":\"x\",\"c\":\"s\"}",
-        "{\"a\":\"x\",\"c\":1}", "{\"a\":\"x\",\"b\":\"y\"}", "\"str\"", "[]",
+        "{}",
+        "{\"a\":1}",
+        "{\"a\":\"x\"}",
+        "{\"b\":1}",
+        "{\"a\":1,\"b\":2}",
+        "{\"a\":1,\"c\":true}",
+        "{\"c\":true}",
+        "{\"a\":\"x\",\"c\":\"s\"}",
+        "{\"a\":\"x\",\"c\":1}",
+        "{\"a\":\"x\",\"b\":\"y\"}",
+        "\"str\"",
+        "[]",
         // duplicate keys (reference dedups, last wins)
-        "{\"a\":1,\"a\":2}", "{\"x\":1,\"x\":2}",
+        "{\"a\":1,\"a\":2}",
+        "{\"x\":1,\"x\":2}",
         // escaped keys
         "{\"\\u0061\":\"x\"}", // key "a"
     ];
@@ -181,25 +227,51 @@ fn object_required_additional_parity() {
 }
 
 #[test]
-fn nested_composite_parity() {
+fn min_max_properties_distinct_parity() {
     let schemas = [
-        json!({
-            "type": "object",
-            "properties": {
-                "data": {
-                    "type": "object",
-                    "required": ["x"],
-                    "properties": { "x": { "type": "integer" } },
-                    "additionalProperties": false
-                },
-                "list": {
-                    "type": "array",
-                    "items": { "type": "object", "properties": { "n": { "type": "number" } }, "required": ["n"] }
-                }
-            },
-            "required": ["data"]
-        }),
+        json!({"type":"object","minProperties":1}),
+        json!({"type":"object","maxProperties":2}),
+        json!({"type":"object","minProperties":1,"maxProperties":2}),
+        // These force the inline → heap distinct-key migration (>16 keys or a
+        // >48-byte key) — the heap path must stay byte-parity with the crate.
+        json!({"type":"object","minProperties":16,"maxProperties":17}),
+        json!({"type":"object","minProperties":1,"maxProperties":1}),
     ];
+    let docs = [
+        "{}",
+        "{\"a\":1}",
+        "{\"a\":1,\"b\":2}",
+        "{\"a\":1,\"b\":2,\"c\":3}",
+        // Duplicate keys: the distinct count differs from the member count.
+        "{\"a\":1,\"a\":2}",
+        // 17 distinct keys → exceeds the 16-slot inline tracker.
+        "{\"k0\":0,\"k1\":1,\"k2\":2,\"k3\":3,\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"k9\":9,\"k10\":10,\"k11\":11,\"k12\":12,\"k13\":13,\"k14\":14,\"k15\":15,\"k16\":16}",
+        // Key longer than the 48-byte inline key buffer.
+        "{\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\":1}",
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn nested_composite_parity() {
+    let schemas = [json!({
+        "type": "object",
+        "properties": {
+            "data": {
+                "type": "object",
+                "required": ["x"],
+                "properties": { "x": { "type": "integer" } },
+                "additionalProperties": false
+            },
+            "list": {
+                "type": "array",
+                "items": { "type": "object", "properties": { "n": { "type": "number" } }, "required": ["n"] }
+            }
+        },
+        "required": ["data"]
+    })];
     let docs = [
         r#"{"data":{"x":1}}"#,
         r#"{"data":{"x":"bad"}}"#,
@@ -238,4 +310,28 @@ fn unsupported_keywords_fall_back() {
     }
     // Sanity: the supported bench schema DOES compile.
     assert!(compile(&bench_schema()).is_ok());
+}
+
+#[test]
+fn invalid_utf8_and_malformed_bytes_return_false() {
+    // The fast path is byte-oriented; it must reject structurally invalid or
+    // non-UTF-8-leading documents without panicking (matching the DOM path's
+    // parse failure → false).
+    let fast = compile(&bench_schema()).unwrap();
+
+    // Non-UTF-8 leading bytes cannot start any JSON value.
+    assert!(!fast.is_valid_bytes(&[0xFF, 0xFE]));
+    assert!(!fast.is_valid_bytes(&[0x80]));
+    assert!(!fast.is_valid_bytes(&[0xC0, 0xAF]));
+
+    // Truncated structural input.
+    assert!(!fast.is_valid_bytes(b"{\"id\":1"));
+    assert!(!fast.is_valid_bytes(b"{\"id\":"));
+    assert!(!fast.is_valid_bytes(b"[1,2"));
+
+    // Trailing garbage after a valid document (must consume ALL bytes).
+    assert!(!fast.is_valid_bytes(b"{\"id\":1}\x00"));
+    assert!(!fast.is_valid_bytes(
+        b"{\"id\":1,\"name\":\"a\",\"active\":true,\"score\":1,\"tags\":[],\"nested\":{\"version\":1,\"createdAt\":\"c\"}} garbage"
+    ));
 }

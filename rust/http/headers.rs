@@ -1,4 +1,4 @@
-// rust/headers.rs — HeaderRefs: zero-alloc packed header parser
+// rust/http/headers.rs — HeaderRefs: zero-alloc packed header parser
 // Uses the shared word-at-a-time comparator from `bytes.rs`.
 
 use crate::util::bytes::ascii_eq_ignore_case;
@@ -122,10 +122,13 @@ impl<'a> HeaderRefs<'a> {
                     h.x_forwarded_proto = Some(value);
                 }
             } else if first == b'a' && is_options {
-                if name.len() == 29 && ascii_eq_ignore_case(name, b"access-control-request-method") {
+                if name.len() == 29 && ascii_eq_ignore_case(name, b"access-control-request-method")
+                {
                     h.flags |= HAS_ACRM;
                     h.acrm = Some(value);
-                } else if name.len() == 30 && ascii_eq_ignore_case(name, b"access-control-request-headers") {
+                } else if name.len() == 30
+                    && ascii_eq_ignore_case(name, b"access-control-request-headers")
+                {
                     h.flags |= HAS_ACRH;
                     h.acrh = Some(value);
                 }

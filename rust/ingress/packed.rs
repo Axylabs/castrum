@@ -14,7 +14,10 @@ pub(crate) fn read_u32_at(input: &[u8], pos: &mut usize) -> Result<usize> {
         return Err(Error::from_reason("packed input: truncated u32"));
     }
     let v = u32::from_le_bytes([
-        input[*pos], input[*pos + 1], input[*pos + 2], input[*pos + 3],
+        input[*pos],
+        input[*pos + 1],
+        input[*pos + 2],
+        input[*pos + 3],
     ]) as usize;
     *pos += 4;
     Ok(v)

@@ -17,7 +17,7 @@ Thank you for your interest in contributing to castrum! This document provides g
 ### Prerequisites
 
 - **Bun** >= 1.1.0
-- **Rust** nightly (latest stable)
+- **Rust** stable (latest stable via rustup)
 - **Node.js** (for napi-rs CLI, optional)
 
 ### Setup Steps
@@ -41,9 +41,15 @@ bun run check
 
 1. **Make changes to Rust code** → `cargo build --release` (or `bun run build`)
 2. **Make changes to TypeScript code** → No build step needed (Bun runs TS directly)
-3. **Run Rust tests** → `cargo test`
-4. **Run TypeScript tests** → `bun test`
-5. **Run benchmarks** → `bun bench.ts`
+3. **Run Rust tests** → `cargo test` (~250 tests)
+4. **Run TypeScript tests** → `bun test` (~255 tests)
+5. **Typecheck** → `bun run typecheck`
+6. **Format + lint** → `bun run format` / `bun run lint`
+7. **Run benchmarks** → `bun run check` (CPU) / `bun run bench:http:smoke` (HTTP wire-format guard)
+
+> **New here?** Start with [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md)
+> for a tutorial and [`docs/REPO_MAP.md`](./docs/REPO_MAP.md) for the full
+> "what is where and why" map.
 
 ## Project Architecture
 
@@ -86,7 +92,8 @@ bun run check
 
 ### TypeScript
 
-- **Format**: Use the project's Prettier/format-on-save configuration
+- **Format**: `bun run format` (Biome) / `bun run lint` to check. The repo uses
+  2-space indent, single quotes, and no semicolons.
 - **Types**: All public APIs must have explicit TypeScript types
 - **JSDoc**: All exported functions, classes, interfaces, and types must have JSDoc comments
 - **Imports**: Use explicit named imports; avoid default imports for larger modules
@@ -151,16 +158,15 @@ pub fn fnv1a64_bytes(input: &[u8]) -> u64 {
 ```
 test/
 ├── unit/                  # Unit tests (mirror src/ structure)
-│   ├── shared/
-│   ├── ingress/
-│   ├── data/
-│   └── rust-ffi/
-├── integration/           # Integration tests
-│   ├── ingress.test.ts
-│   └── rust-ffi.test.ts
-├── property/              # Property-based tests
-│   ├── validation.test.ts
-│   └── hashing.test.ts
+│   ├── shared/            # bytes, packed, buffer-pool, response
+│   ├── ingress/           # fast path, handlers path, header-plan
+│   ├── features/          # rust.* FFI feature tests (largest area)
+│   └── ...
+├── integration/           # Node.js compatibility tests (node --test)
+│   ├── node-smoke.test.mjs
+│   └── node-enterprise.test.mjs
+├── property/              # Property-style parity tests
+│   └── pool-parity.test.ts
 └── fixtures/              # Test fixtures
     └── ...
 ```
@@ -168,8 +174,8 @@ test/
 ### Writing Tests
 
 - **TypeScript tests**: Use Bun's built-in test runner (`bun test`)
-- **Rust tests**: `cargo test` — core logic lives in `rust/unit_tests.rs` (wired from `lib.rs`)
-- **Property-based tests**: Use `fast-check` for TypeScript
+- **Rust tests**: `cargo test` — per-module `#[cfg(test)] mod tests` blocks + cross-module suites in `rust/unit_tests.rs`
+- **Property-style tests**: parity/round-trip property tests live in `test/property/` (the project does **not** use fast-check)
 - **Naming**: `describe` blocks for modules, `test` for individual cases
 - **Edge cases**: Always include: empty input, max-size input, invalid input, concurrent access
 

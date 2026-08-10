@@ -46,9 +46,7 @@ pub(crate) struct IngressSchema {
 impl IngressSchema {
     /// Compile the authoritative validator plus the optional fast path. Returns
     /// the raw schema compile error string for the caller to format.
-    pub(crate) fn compile(
-        schema_value: &serde_json::Value,
-    ) -> std::result::Result<Self, String> {
+    pub(crate) fn compile(schema_value: &serde_json::Value) -> std::result::Result<Self, String> {
         let compiled = match jsonschema::validator_for(schema_value) {
             Ok(v) => v,
             Err(e) => return Err(e.to_string()),
@@ -101,26 +99,40 @@ impl IngressInner {
 
         let url_bytes = match read_section(input, &mut pos, self.limits.max_url_bytes) {
             Ok(v) => v,
-            Err(_) => return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 414),
+            Err(_) => {
+                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 414)
+            }
         };
         let ip_bytes = match read_section(input, &mut pos, 128) {
             Ok(v) => v,
-            Err(_) => return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400),
+            Err(_) => {
+                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400)
+            }
         };
         let rid_bytes = match read_section(input, &mut pos, 128) {
             Ok(v) => v,
-            Err(_) => return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400),
+            Err(_) => {
+                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400)
+            }
         };
         let headers_packed = match read_section(input, &mut pos, self.limits.max_headers_bytes) {
             Ok(v) => v,
             Err(_) => {
-                return terminal_simple(out, crate::ingress::output::ERR_CODE_REQUEST_TOO_LARGE, 431)
+                return terminal_simple(
+                    out,
+                    crate::ingress::output::ERR_CODE_REQUEST_TOO_LARGE,
+                    431,
+                )
             }
         };
         let headers = match HeaderRefs::parse(headers_packed, is_options, self.limits.max_headers) {
             Ok(v) => v,
             Err(_) => {
-                return terminal_simple(out, crate::ingress::output::ERR_CODE_REQUEST_TOO_LARGE, 431)
+                return terminal_simple(
+                    out,
+                    crate::ingress::output::ERR_CODE_REQUEST_TOO_LARGE,
+                    431,
+                )
             }
         };
 
@@ -139,8 +151,13 @@ impl IngressInner {
             flags |= FLAG_TRUSTED_PROXY;
         }
 
-        if crate::ingress::proxy::detect_https(self.https_fixed, &self.proxy_trust, url_bytes, &headers, peer_trusted)
-        {
+        if crate::ingress::proxy::detect_https(
+            self.https_fixed,
+            &self.proxy_trust,
+            url_bytes,
+            &headers,
+            peer_trusted,
+        ) {
             flags |= FLAG_HTTPS;
         }
 
@@ -245,7 +262,9 @@ impl IngressInner {
 
         let sections = match self.write_body_sections(url_bytes, rid_bytes, &headers, out) {
             Ok(s) => s,
-            Err(_) => return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400),
+            Err(_) => {
+                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400)
+            }
         };
 
         if sections.cookies_json_len > 2 {
@@ -371,4 +390,3 @@ struct BodySections {
     body_json_len: usize,
     truncated: bool,
 }
-

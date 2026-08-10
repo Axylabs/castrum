@@ -1,4 +1,4 @@
-// rust/url_join.rs — URL building: RFC 3986 reference resolution + query builder.
+// rust/http/url_join.rs — URL building: RFC 3986 reference resolution + query builder.
 //
 // `url_resolve(base, reference)` resolves a relative/absolute reference against
 // a base URI (merge paths + remove dot segments). `url_encode_query` builds a
@@ -41,8 +41,7 @@ fn parse_ref(input: &str) -> Ref {
         (rest, None)
     };
 
-    let (rest, authority) = if rest.starts_with("//") {
-        let rest2 = &rest[2..];
+    let (rest, authority) = if let Some(rest2) = rest.strip_prefix("//") {
         let end = rest2.find('/').unwrap_or(rest2.len());
         (&rest2[end..], Some(rest2[..end].to_string()))
     } else {
@@ -155,8 +154,8 @@ fn recompose(r: &Ref) -> String {
 
 #[napi]
 pub fn url_resolve(base: Uint8Array, reference: Uint8Array) -> Result<Buffer> {
-    let b = std::str::from_utf8(base.as_ref())
-        .map_err(|_| Error::from_reason("base must be UTF-8"))?;
+    let b =
+        std::str::from_utf8(base.as_ref()).map_err(|_| Error::from_reason("base must be UTF-8"))?;
     let r = std::str::from_utf8(reference.as_ref())
         .map_err(|_| Error::from_reason("reference must be UTF-8"))?;
     let target = resolve_target(&parse_ref(b), &parse_ref(r));
@@ -226,7 +225,10 @@ mod tests {
 
     #[test]
     fn authority_reference() {
-        assert_eq!(resolve("http://a/b/c/d;p?q", "//other/path"), "http://other/path");
+        assert_eq!(
+            resolve("http://a/b/c/d;p?q", "//other/path"),
+            "http://other/path"
+        );
     }
 
     #[test]
@@ -241,7 +243,10 @@ mod tests {
     #[test]
     fn query_and_fragment() {
         assert_eq!(resolve("http://a/b/c/d;p?q", "g?y#f"), "http://a/b/c/g?y#f");
-        assert_eq!(resolve("http://a/b/c/d;p?q", "#frag"), "http://a/b/c/d;p?q#frag");
+        assert_eq!(
+            resolve("http://a/b/c/d;p?q", "#frag"),
+            "http://a/b/c/d;p?q#frag"
+        );
         assert_eq!(resolve("http://a/b/c/d;p?q", "?y"), "http://a/b/c/d;p?y");
     }
 

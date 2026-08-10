@@ -1,6 +1,6 @@
 // src/ingress/routes/common.ts — Shared route-handler options + helpers.
 
-import type { OptimizedIngressHandler } from "../handlers";
+import type { OptimizedIngressHandler } from "../types";
 
 /** Options accepted by the pre-baked route factories. */
 export interface BakedHandlerOptions {

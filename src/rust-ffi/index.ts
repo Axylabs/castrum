@@ -11,8 +11,9 @@
 //   - client.ts    createRust() factory + default `rust` instance
 //
 // This barrel re-exports the exact public surface of the original single-file
-// implementation so existing imports (`rust`, `rustBatch`, `createRust`, all
-// types) keep working unchanged.
+// implementation so existing imports (`rust`, `createRust`, all types) keep
+// working unchanged. The deprecated `rustBatch` alias was removed in 0.8.0 —
+// use `rust.batch` instead.
 //
 //   import { rust } from "castrum";
 //
@@ -24,11 +25,8 @@
 //   rust.batch.jsonValid(docs);           // Uint8Array bitset
 //   rust.packed.jsonValidBatchPacked(p);  // raw packed in/out
 //   rust.configure({ rayonThreads: 8 });  // override defaults
-//
-// Back-compat alias (non-breaking):
-//   rustBatch           === rust.batch
 
-export { createRust, rust, rustBatch } from "./client";
+export { createRust, rust } from "./client";
 export type { RustClient } from "./client";
 export type { RustOptions } from "./options";
 export type { RustText } from "./text";

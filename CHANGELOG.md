@@ -7,7 +7,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **New docs**: `docs/REPO_MAP.md` (the "what is where and why" navigation
+  map), `docs/GETTING_STARTED.md` (intern-friendly tutorial), and a MIT
+  `LICENSE`.
+- **Tooling**: Biome for lint/format (`bun run lint` / `bun run format`), a
+  version-consistency check (`bun run check:version` — package.json ↔
+  Cargo.toml ↔ CHANGELOG), and hardened CI: per-job least-privilege
+  `permissions`, job `timeout-minutes`, an HTTP-smoke wire-format gate, a JS
+  dependency audit step, a Dependabot config, and `setup-node` in the publish
+  job.
+- **Rust unit tests** for previously uncovered modules: `mime_lookup`,
+  `json_patch_ops`, `websocket` (RFC 6455 accept-key vector), `terminal`, and
+  `time` (+16 tests).
+- **JSON Patch batch API**: `rust.batch.jsonPatch(docs, patches)` / raw
+  `rust.packed.jsonPatchBatchPacked` — zips two packed lists, applies each
+  pair in parallel via rayon, returns packed results. Fail-fast with
+  index-bearing errors (JSON patch output is data, so dropping items would
+  risk silent data loss).
+
+### Fixed
+
+- **Ingress proxy-header plan divergence** (`handlers.ts`): the pre-baked path
+  only forwarded X-Forwarded-For / X-Real-IP when rate limiting was ALSO
+  enabled and ignored `trustedProxies`. Both paths now share a single
+  `buildHeaderPlan` (`src/ingress/shared.ts`) driven by trust config alone —
+  proxy extraction no longer depends on rate limiting.
+- **Stale-buffer hazard** (`fast.ts`): `handleRequestPacked`'s written-byte
+  count is now honored — the fast path decodes only the exact written prefix of
+  the reused output buffer, mirroring `handlers.ts`.
+- **multipart Content-Disposition parsing** is now quote-aware: a `;` inside a
+  quoted `filename` (e.g. `b;c.txt`) is data, not a separator, and `\"`
+  escapes no longer break quote tracking (`rust/http/multipart.rs`).
+
 ### Changed
+
+- **Path-2 ingress input marshaling** (`handlers.ts`): the pre-baked path now
+  packs the request frame in JS (`IngressInputPacker` + packed headers with the
+  same per-header size guards) and drives the identical native core as
+  `handleRequestPacked`. This eliminates the per-request `[name, value][]` →
+  napi `Vec<Vec<String>>` header marshaling, the intermediate Rust packed-frame
+  build, and the request-id string re-encode. `handleRequestFullSync` /
+  `handleRequestFullSyncInto` remain as compatible allocating/`_into` wrappers.
+  Response wire format is unchanged (both entries run the same `handle_packed`).
+- **Zero-copy terminal headers**: `cache-control: no-store` is baked into a
+  second variant-indexed template set (`buildBakedHeaderTemplates` → `{regular,
+  terminal}`), so terminal/error responses return a frozen array with no
+  per-response allocation/copy (extras path preserved byte-identical).
+- **`query_to_json_into_slice` single-pass decode**: each query component is
+  percent-decoded once (previously twice — a length pass and a write pass, four
+  decodes per pair); one reused scratch holds `[key][value]`.
+- **Fast-path input encoding**: `IngressInputPacker.packFromStrings` encodes
+  url/ip/requestId directly into the packer buffer via `encodeInto` — three
+  fewer intermediate `Uint8Array` allocations + copies per request.
+- **fast_schema `validate_object`** is allocation-free for `minProperties` /
+  `maxProperties`: distinct-key tracking is a stack array (heap fallback only
+  for pathological objects), byte-parity with the jsonschema crate preserved.
+- **Decoder unification**: the `+`/`%XX` form-component decode loop is
+  centralized in `util/bytes.rs` (`decode_form_component_into`) and shared by
+  `query_parser::write_decoded_form_component` and `json_ser::decode_query_component`.
+- **http_parser dedup**: `http_parse_request_packed_vec` delegates to
+  `http_parse_request_packed_into_slice` (removes ~60 duplicated lines; guarded
+  by a new byte-parity test).
+- **Clippy-clean**: fixed all pre-existing clippy warnings (was ~29 warnings +
+  1 error) across crypto/http/json/ingress/util — zero warnings now.
+
+### Added
+
+- **Real-world Rust test coverage** (+75 tests, `cargo test` 273 → 348):
+  json_patch RFC 6902 gaps (`test`/`move`/`copy` edge cases, invalid `~2`
+  escape) + the rayon **parallel** batch path (order-preserving success and
+  deterministic single-failure index); `http_parser` wire-edge tests (incomplete
+  requests, HTTP/1.0, >64 headers, obs-fold/duplicate headers, absolute-form,
+  null bytes — previously untested); ingress pipeline end-to-end (schema → 422,
+  rate-limit → 429, CORS preflight 204/403, header/query `Limits` → 431/414,
+  https flag, cookie/query JSON output, unicode + truncated-multibyte query);
+  multipart edge cases (quoted semicolons, boundary-like data, epilogue, missing
+  `name`, empty filename, field-count limits, CRLF-only headers); fast_schema
+  invalid-UTF-8/malformed bytes + `min/maxProperties` distinct parity; direct
+  unit tests for `util/packed`, `util/batch_core`, `crypto/hashing`,
+  `ingress/options` (`Limits` defaults/merge).
+- **TS tests** (+9): runtime-detection seam (`runtime.test.ts`),
+  `buildRouteHandlers` route wiring incl. a live end-to-end GET
+  (`server.test.ts`), `gatherRawHeaders` vs `gatherRawHeadersPacked` parity and
+  shared size guards, json-patch batch index-bearing errors.
+- **Node enterprise tests** (+4): HTTP/1.0 requests (connection closes),
+  413 with `Connection: close`, concurrent multi-socket requests, and
+  `idleTimeout` closing idle keep-alive sockets.
+
+### Removed (breaking — next release 0.8.0)
+
+- Public benchmark-only exports: `native` (JS baselines), `jsonRowsBytes` /
+  `createJsonRows` / `JsonRow`, and the deprecated `rustBatch` alias (use
+  `rust.batch`).
+
+### Changed
+
+- **Ingress TS layer**: broke the `handlers.ts ↔ routes/*` import cycle by
+  moving `BakedContext` + `OptimizedIngressHandler` into `types.ts`;
+  deduplicated the synchronous-callback guards into `assertSyncCallback`;
+  named the method-kind magic numbers (`METHOD_KIND_UNKNOWN`,
+  `METHOD_KIND.OPTIONS`); moved the bench-only `sortKeys` out of `shared/`;
+  added JSDoc to the four ingress factories and the `rust` const; documented
+  the eager dlopen in `constants.ts`.
+- **Rust hardening**: removed dead symbols (`hex_encode_upper`,
+  `fast_hash_seeded`, `VecWriter::{push,len}`); replaced request-path `expect`s
+  with proper `Result` handling (`rate_limit.rs` `get_or_insert_mut`,
+  `ip_trust.rs` error propagation); added SAFETY docs at the `unsafe`
+  output-slice sites; added `//!` module docs; corrected stale file-header
+  paths after the domain-folder restructure.
+- **JSON Patch hardening** (`json_patch_ops.rs`): rewrote the module with a
+  pure-Rust core (`apply_json_patch_bytes` / `run_json_patch_batch`) separated
+  from the `#[napi]` boundary; bounded input/output guards (a chained RFC 6902
+  `copy` can grow output exponentially — oversized results are now rejected
+  rather than returned); output capacity heuristic ≈ document size (was
+  `doc + patch + 32`); and context-rich errors (`invalid document` /
+  `invalid patch` / `apply failed`). Expanded the test suite to 27 cases
+  covering all six patch operations, real-world documents, Unicode,
+  nested/escaped paths, size guards, and batch parity.
+
+### Changed
+
 
 - **`ws_frames` masking is now word-at-a-time** (u32 XOR over the RFC 6455 §5.3
   4-byte mask, with a byte tail for the last 1–3 bytes) in `encode_frame` /

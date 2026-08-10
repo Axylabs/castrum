@@ -1,4 +1,4 @@
-// rust/http/mod.rs — HTTP wire formats & parsing.
+//! HTTP wire formats & parsing (zero-alloc parsers + wire helpers).
 //
 // Zero-alloc parsers and wire-format helpers for the HTTP surface:
 //   - headers.rs       zero-alloc packed-header parser (HeaderRefs)

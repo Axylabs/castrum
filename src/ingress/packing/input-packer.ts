@@ -4,6 +4,10 @@
 // headers) into a single growable Uint8Array in the layout the native
 // `Ingress.handleRequestPacked` expects.
 
+const encoder = new TextEncoder();
+const EMPTY_BYTES = new Uint8Array(0);
+const EMPTY_IP_BYTES = encoder.encode("0.0.0.0");
+
 /** Growable packer for the fast-path packed input buffer. */
 export class IngressInputPacker {
   private buf: Uint8Array;
@@ -60,6 +64,51 @@ export class IngressInputPacker {
     this.writeLenPrefixed(urlBytes);
     this.writeLenPrefixed(ipBytes);
     this.writeLenPrefixed(requestIdBytes);
+    this.writeLenPrefixed(headers);
+
+    return this.buf.subarray(0, this.pos);
+  }
+
+  /** Encode `value` directly into the buffer, length-prefixed (zero-copy). */
+  private writeStringLenPrefixed(value: string): void {
+    // 3 bytes per UTF-16 code unit is a safe upper bound (BMP non-ASCII);
+    // surrogate pairs encode to fewer bytes per code unit.
+    this.ensure(4 + value.length * 3);
+    const valueLenPos = this.pos;
+    this.pos += 4;
+    const dest = this.buf.subarray(this.pos);
+    const { written } = encoder.encodeInto(value, dest);
+    this.view.setUint32(valueLenPos, written, true);
+    this.pos += written;
+  }
+
+  /**
+   * Pack the request inputs from raw strings, encoding url/ip/requestId
+   * directly into the internal buffer via `encodeInto` — three fewer
+   * intermediate `Uint8Array` allocations + copies per request vs [`pack`].
+   * The returned view is valid until the next pack.
+   */
+  packFromStrings(
+    methodKind: number,
+    url: string,
+    ip: string | undefined,
+    requestId: string | undefined,
+    headers: Uint8Array,
+  ): Uint8Array {
+    this.pos = 0;
+
+    this.writeU8(methodKind);
+    this.writeStringLenPrefixed(url);
+    if (ip && ip.length > 0) {
+      this.writeStringLenPrefixed(ip);
+    } else {
+      this.writeLenPrefixed(EMPTY_IP_BYTES);
+    }
+    if (requestId) {
+      this.writeStringLenPrefixed(requestId);
+    } else {
+      this.writeLenPrefixed(EMPTY_BYTES);
+    }
     this.writeLenPrefixed(headers);
 
     return this.buf.subarray(0, this.pos);

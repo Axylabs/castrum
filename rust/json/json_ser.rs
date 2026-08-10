@@ -1,8 +1,8 @@
-// rust/json_ser.rs — JSON serialization helpers extracted from ingress.rs
+// rust/json/json_ser.rs — JSON serialization helpers extracted from ingress.rs
 // Zero-alloc JSON escaping, cookie→JSON and query→JSON conversion
 // Uses memchr-based skip for bulk unescaped bytes (~95% path)
 
-use crate::util::bytes::{cookie_pairs, decode_percent_at, HEX_LOWER as JSON_HEX_LOWER};
+use crate::util::bytes::{cookie_pairs, HEX_LOWER as JSON_HEX_LOWER};
 use napi::{Error, Result};
 
 /// Determine whether bytes are valid UTF-8 (cached via a bit check).
@@ -201,20 +201,22 @@ fn write_json_escaped_utf8(out: &mut [u8], pos: &mut usize, bytes: &[u8]) {
 #[inline]
 pub fn cookie_json_into_slice(input: &[u8], out: &mut [u8], max_pairs: usize) -> Result<usize> {
     if out.len() < 2 {
-        return Err(Error::from_reason("output buffer too small for cookie JSON"));
+        return Err(Error::from_reason(
+            "output buffer too small for cookie JSON",
+        ));
     }
 
     out[0] = b'{';
     let mut pos = 1usize;
 
     for (count, (name, value)) in cookie_pairs(input).take(max_pairs).enumerate() {
-        let needed = (if count == 0 { 0 } else { 1 })
-            + 5
-            + json_escaped_len(name)
-            + json_escaped_len(value);
+        let needed =
+            (if count == 0 { 0 } else { 1 }) + 5 + json_escaped_len(name) + json_escaped_len(value);
 
         if needed > out.len().saturating_sub(pos) {
-            return Err(Error::from_reason("output buffer too small for cookie JSON"));
+            return Err(Error::from_reason(
+                "output buffer too small for cookie JSON",
+            ));
         }
 
         if count != 0 {
@@ -237,7 +239,9 @@ pub fn cookie_json_into_slice(input: &[u8], out: &mut [u8], max_pairs: usize) ->
     }
 
     if pos + 1 > out.len() {
-        return Err(Error::from_reason("output buffer too small for cookie JSON"));
+        return Err(Error::from_reason(
+            "output buffer too small for cookie JSON",
+        ));
     }
 
     out[pos] = b'}';
@@ -253,7 +257,9 @@ pub fn packed_pairs_to_json_into_slice(
     max_pairs: usize,
 ) -> Result<usize> {
     if out.len() < 2 {
-        return Err(Error::from_reason("output buffer too small for packed pairs JSON"));
+        return Err(Error::from_reason(
+            "output buffer too small for packed pairs JSON",
+        ));
     }
 
     if packed.len() < 4 {
@@ -266,9 +272,8 @@ pub fn packed_pairs_to_json_into_slice(
     out[0] = b'{';
     let mut pos = 1usize;
     let mut src = 4usize;
-    let mut written_pairs = 0usize;
 
-    for _ in 0..count {
+    for (written_pairs, _) in (0..count).enumerate() {
         if written_pairs >= max_pairs {
             break;
         }
@@ -299,7 +304,9 @@ pub fn packed_pairs_to_json_into_slice(
             + json_escaped_len(val);
 
         if needed > out.len().saturating_sub(pos) {
-            return Err(Error::from_reason("output buffer too small for packed pairs JSON"));
+            return Err(Error::from_reason(
+                "output buffer too small for packed pairs JSON",
+            ));
         }
 
         if written_pairs != 0 {
@@ -319,12 +326,12 @@ pub fn packed_pairs_to_json_into_slice(
         write_json_escaped(out, &mut pos, val);
         out[pos] = b'"';
         pos += 1;
-
-        written_pairs += 1;
     }
 
     if pos + 1 > out.len() {
-        return Err(Error::from_reason("output buffer too small for packed pairs JSON"));
+        return Err(Error::from_reason(
+            "output buffer too small for packed pairs JSON",
+        ));
     }
 
     out[pos] = b'}';
@@ -342,33 +349,24 @@ pub enum QueryJsonError {
 }
 
 /// Decode a single URL-form component (`+` → space, `%XX` → byte) into `out`.
-/// Mirrors `query_parser::write_decoded_form_component` (without the length
-/// prefix); errors on malformed `%XX`.
+///
+/// Shared decoder with `query_parser::write_decoded_form_component` (this one
+/// appends to a `Vec` rather than writing a length-prefixed slice); errors on
+/// malformed `%XX`.
 #[inline]
-fn decode_query_component(src: &[u8], out: &mut Vec<u8>) -> std::result::Result<(), QueryJsonError> {
-    if memchr::memchr2(b'+', b'%', src).is_none() {
-        out.extend_from_slice(src);
-        return Ok(());
-    }
-    let mut i = 0usize;
-    while i < src.len() {
-        match src[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' => {
-                let (byte, next) = decode_percent_at(src, i)
-                    .ok_or(QueryJsonError::Malformed)?;
-                out.push(byte);
-                i = next;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
+fn decode_query_component(
+    src: &[u8],
+    out: &mut Vec<u8>,
+) -> std::result::Result<(), QueryJsonError> {
+    let start = out.len();
+    out.resize(start + src.len(), 0);
+    let written = crate::util::bytes::decode_form_component_into(src, &mut out[start..]).map_err(
+        |e| match e {
+            crate::util::bytes::FormDecodeError::Malformed => QueryJsonError::Malformed,
+            crate::util::bytes::FormDecodeError::BufferTooSmall => QueryJsonError::BufferTooSmall,
+        },
+    )?;
+    out.truncate(start + written);
     Ok(())
 }
 
@@ -413,38 +411,38 @@ pub fn query_to_json_into_slice(
             None => (pair, &[][..]),
         };
 
-        // Length pass (decodes for the exact escaped count).
+        // Single-pass percent-decode: decode each component ONCE into the
+        // shared scratch as `[decoded_key][decoded_value]`, then derive the
+        // escaped lengths and write from the same buffers. (The previous code
+        // decoded every component twice — once in a length pass, once in a
+        // write pass — i.e. four decodes per pair.)
         scratch.clear();
         decode_query_component(key, &mut scratch)?;
-        let key_len = json_escaped_len(&scratch);
-        scratch.clear();
+        let key_end = scratch.len();
         decode_query_component(value, &mut scratch)?;
-        let val_len = json_escaped_len(&scratch);
+        let key_len = json_escaped_len(&scratch[..key_end]);
+        let val_len = json_escaped_len(&scratch[key_end..]);
 
         let needed = (if written_pairs == 0 { 0 } else { 1 }) + 5 + key_len + val_len;
         if needed > out.len().saturating_sub(pos) {
             return Err(QueryJsonError::BufferTooSmall);
         }
 
-        // Write pass.
+        // Write pass (from the already-decoded scratch buffers).
         if written_pairs != 0 {
             out[pos] = b',';
             pos += 1;
         }
         out[pos] = b'"';
         pos += 1;
-        scratch.clear();
-        decode_query_component(key, &mut scratch)?;
-        write_json_escaped(out, &mut pos, &scratch);
+        write_json_escaped(out, &mut pos, &scratch[..key_end]);
         out[pos] = b'"';
         pos += 1;
         out[pos] = b':';
         pos += 1;
         out[pos] = b'"';
         pos += 1;
-        scratch.clear();
-        decode_query_component(value, &mut scratch)?;
-        write_json_escaped(out, &mut pos, &scratch);
+        write_json_escaped(out, &mut pos, &scratch[key_end..]);
         out[pos] = b'"';
         pos += 1;
 
@@ -461,6 +459,10 @@ pub fn query_to_json_into_slice(
 }
 
 /// Write the full metadata JSON envelope (requestId, path, cookies, query).
+///
+/// The metadata envelope legitimately carries many fields; the flat signature
+/// keeps the writer allocation-free (no options struct on the hot path).
+#[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn write_full_body_json(
     out: &mut [u8],

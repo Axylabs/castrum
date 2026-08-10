@@ -1,4 +1,4 @@
-// rust/etag.rs — HTTP cache semantics.
+// rust/http/etag.rs — HTTP cache semantics.
 //
 // ETag generation (strong/weak, crc32-based), HTTP-date (IMF-fixdate)
 // formatting + parsing, and the `ConditionalRequest` higher-order instance
@@ -145,7 +145,13 @@ pub fn http_date_from_secs(secs: i64) -> String {
     if !(0..=9999).contains(&y) {
         return format!(
             "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
-            DAY_NAMES[wd], d, MONTH_NAMES[(m - 1) as usize], y, hh, mm, ss
+            DAY_NAMES[wd],
+            d,
+            MONTH_NAMES[(m - 1) as usize],
+            y,
+            hh,
+            mm,
+            ss
         );
     }
 
@@ -220,7 +226,7 @@ pub fn http_date(secs: Option<f64>) -> Buffer {
 
 #[napi]
 pub fn parse_http_date(input: Uint8Array) -> Option<BigInt> {
-    parse_http_date_secs(input.as_ref()).map(|v| BigInt::from(v))
+    parse_http_date_secs(input.as_ref()).map(BigInt::from)
 }
 
 // ── Conditional requests (If-None-Match / If-Modified-Since) ─────
@@ -321,10 +327,16 @@ mod tests {
         let data = b"hello world, this is etag data";
         let out = Uint8Array::new(vec![0u8; 16]);
         let n = etag_into(Uint8Array::new(data.to_vec()), out, None).unwrap();
-        assert_eq!(n as usize, etag_from_crc32(crc32fast::hash(data), false).len());
+        assert_eq!(
+            n as usize,
+            etag_from_crc32(crc32fast::hash(data), false).len()
+        );
         let out2 = Uint8Array::new(vec![0u8; 16]);
         let n2 = etag_into(Uint8Array::new(data.to_vec()), out2, Some(true)).unwrap();
-        assert_eq!(n2 as usize, etag_from_crc32(crc32fast::hash(data), true).len());
+        assert_eq!(
+            n2 as usize,
+            etag_from_crc32(crc32fast::hash(data), true).len()
+        );
     }
 
     #[test]
@@ -357,36 +369,24 @@ mod tests {
 
     #[test]
     fn conditional_if_none_match_star() {
-        let c = ConditionalRequest::new(
-            Uint8Array::new(b"\"abc123\"".to_vec()),
-            Some(1_000.0),
-        );
+        let c = ConditionalRequest::new(Uint8Array::new(b"\"abc123\"".to_vec()), Some(1_000.0));
         assert!(c.is_not_modified(Some(Uint8Array::new(b"*".to_vec())), None));
     }
 
     #[test]
     fn conditional_weak_etag_match() {
-        let c = ConditionalRequest::new(
-            Uint8Array::new(b"\"abc123\"".to_vec()),
-            Some(1_000.0),
-        );
+        let c = ConditionalRequest::new(Uint8Array::new(b"\"abc123\"".to_vec()), Some(1_000.0));
         assert!(c.is_not_modified(
             Some(Uint8Array::new(b"\"xyz\", W/\"abc123\"".to_vec())),
             None
         ));
-        assert!(!c.is_not_modified(
-            Some(Uint8Array::new(b"\"xyz\", \"abc124\"".to_vec())),
-            None
-        ));
+        assert!(!c.is_not_modified(Some(Uint8Array::new(b"\"xyz\", \"abc124\"".to_vec())), None));
     }
 
     #[test]
     fn conditional_if_modified_since() {
         // last-modified = 1970-01-01 00:16:40 (secs 1000).
-        let c = ConditionalRequest::new(
-            Uint8Array::new(b"\"abc123\"".to_vec()),
-            Some(1_000.0),
-        );
+        let c = ConditionalRequest::new(Uint8Array::new(b"\"abc123\"".to_vec()), Some(1_000.0));
         // IMS equal to last-modified → not modified → 304.
         let equal = Uint8Array::new(b"Thu, 01 Jan 1970 00:16:40 GMT".to_vec());
         assert!(c.is_not_modified(None, Some(equal)));

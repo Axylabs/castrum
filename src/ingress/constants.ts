@@ -9,8 +9,17 @@
 
 import { getAddon } from "../native";
 
-// Read eagerly at module load: these constants are the ingress layout source
-// of truth and are needed as soon as the ingress API is used.
+// ⚠️ EAGER DLOPEN — read at module load.
+//
+// These constants are the ingress binary-layout source of truth and are needed
+// as soon as the ingress API is imported, so we load the native addon here
+// (the ONE module that dlopens at import time). Everything else in the package
+// is lazy (`getAddon()` is called inside factories / `lazyAddon`), which is why
+// `import "castrum"` loads the addon but a plain `import { rust }` from a
+// package that doesn't touch ingress does not.
+//
+// The layout values themselves must never be hardcoded — they come from Rust's
+// `ingress/ingress_constants.rs` (single numeric source: `ingress/output.rs`).
 const addon = getAddon();
 
 // ── Output buffer layout ───────────────────────────────────

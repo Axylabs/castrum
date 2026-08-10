@@ -1,3 +1,8 @@
+//! The ingress HTTP pipeline (napi boundary): the `Ingress` class + entry
+//! points (`handle_request_packed`, `handle_request_full_sync{,_into}`). The
+//! core pipeline logic lives in the pure-Rust `pipeline` submodule; see
+//! `docs/INGRESS.md` and `docs/REPO_MAP.md` for the two JS-side paths.
+
 use napi::bindgen_prelude::*;
 use napi::Status;
 use napi_derive::napi;
@@ -22,16 +27,16 @@ mod pipeline;
 mod tests;
 
 pub(crate) mod options;
-pub(crate) mod time;
 pub(crate) mod packed;
+pub(crate) mod time;
 
 pub(crate) mod cors;
+pub mod ingress_constants;
 pub(crate) mod ip_trust;
 pub(crate) mod output;
 pub(crate) mod proxy;
 pub(crate) mod rate_limit;
 pub(crate) mod terminal;
-pub mod ingress_constants;
 
 use self::options::{IngressOptions, Limits};
 use self::packed::build_packed_input_sync;
@@ -72,7 +77,10 @@ impl Ingress {
         let emit_metadata_json = options.emit_metadata_json.unwrap_or(false);
 
         let proxy_trust = if let Some(tp) = options.trusted_proxies {
-            crate::ingress::ip_trust::ProxyTrustMode::from_config(tp.enabled.unwrap_or(false), tp.networks)?
+            crate::ingress::ip_trust::ProxyTrustMode::from_config(
+                tp.enabled.unwrap_or(false),
+                tp.networks,
+            )?
         } else if options.trust_proxy.unwrap_or(false) {
             crate::ingress::ip_trust::ProxyTrustMode::All
         } else {
@@ -87,8 +95,9 @@ impl Ingress {
             // Compile BOTH the authoritative jsonschema validator and the
             // zero-DOM fast path once at construction — no per-request schema
             // work (see IngressSchema in pipeline.rs).
-            let compiled = IngressSchema::compile(&schema_value)
-                .map_err(|e| Error::new(Status::InvalidArg, format!("Schema compile error: {}", e)))?;
+            let compiled = IngressSchema::compile(&schema_value).map_err(|e| {
+                Error::new(Status::InvalidArg, format!("Schema compile error: {}", e))
+            })?;
             Some(Arc::new(compiled))
         } else {
             None
@@ -150,19 +159,17 @@ impl Ingress {
     ) -> Result<u32> {
         let inner: &IngressInner = self.inner.as_ref();
 
-        crate::util::run_packed_into(&input, &mut output, move |inp, out| {
-            match body {
-                Some(b) => {
-                    let b_bytes = b.as_ref();
-                    if crate::util::slices_overlap(b_bytes, out) {
-                        let owned = b_bytes.to_vec();
-                        inner.handle_packed(inp, &owned, out)
-                    } else {
-                        inner.handle_packed(inp, b_bytes, out)
-                    }
+        crate::util::run_packed_into(&input, &mut output, move |inp, out| match body {
+            Some(b) => {
+                let b_bytes = b.as_ref();
+                if crate::util::slices_overlap(b_bytes, out) {
+                    let owned = b_bytes.to_vec();
+                    inner.handle_packed(inp, &owned, out)
+                } else {
+                    inner.handle_packed(inp, b_bytes, out)
                 }
-                None => inner.handle_packed(inp, &[], out),
             }
+            None => inner.handle_packed(inp, &[], out),
         })
     }
 
@@ -174,7 +181,10 @@ impl Ingress {
     /// Allocating variant: allocates a fresh output buffer per call. Hot paths
     /// should prefer [`Self::handle_request_full_sync_into`], which reuses a
     /// caller-provided (pooled) output buffer.
-    #[napi(ts_args_type = "methodKind: number, url: string, ip: string, requestId: string, headers: Array<[string, string]>, body: Uint8Array | null, outputBufferSize?: number")]
+    #[allow(clippy::too_many_arguments)]
+    #[napi(
+        ts_args_type = "methodKind: number, url: string, ip: string, requestId: string, headers: Array<[string, string]>, body: Uint8Array | null, outputBufferSize?: number"
+    )]
     pub fn handle_request_full_sync(
         &self,
         method_kind: u32,
@@ -185,8 +195,9 @@ impl Ingress {
         body: Option<Uint8Array>,
         output_buffer_size: Option<u32>,
     ) -> Result<Uint8Array> {
-        let output_size =
-            output_buffer_size.unwrap_or(262_144).max(OUT_DATA_START as u32) as usize;
+        let output_size = output_buffer_size
+            .unwrap_or(262_144)
+            .max(OUT_DATA_START as u32) as usize;
 
         // The fresh `out` vec cannot alias `body` (a distinct JS buffer), so it
         // is safe to borrow the body without copying.
@@ -218,7 +229,10 @@ impl Ingress {
     /// `src/shared/buffer-pool.ts`) to eliminate per-request allocation. The
     /// body is zero-copied unless it aliases `output` (guarded by
     /// `crate::util::slices_overlap`).
-    #[napi(ts_args_type = "methodKind: number, url: string, ip: string, requestId: string, headers: Array<[string, string]>, body: Uint8Array | null, output: Uint8Array")]
+    #[allow(clippy::too_many_arguments)]
+    #[napi(
+        ts_args_type = "methodKind: number, url: string, ip: string, requestId: string, headers: Array<[string, string]>, body: Uint8Array | null, output: Uint8Array"
+    )]
     pub fn handle_request_full_sync_into(
         &self,
         method_kind: u32,
@@ -271,6 +285,7 @@ impl Ingress {
     ///
     /// `body` is borrowed; callers must guarantee it does not alias `out` (the
     /// into-variant checks overlap before calling).
+    #[allow(clippy::too_many_arguments)]
     fn full_sync_into(
         &self,
         method_kind: u32,
@@ -309,4 +324,3 @@ impl Ingress {
         inner.handle_packed(&packed, body, out)
     }
 }
-

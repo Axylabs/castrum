@@ -1,4 +1,4 @@
-// rust/accept.rs — Accept-Encoding parsing + content-coding negotiation.
+// rust/http/accept.rs — Accept-Encoding parsing + content-coding negotiation.
 //
 // RFC 7231 §5.3.4: q-value parsing (0–1, up to 3 decimals), wildcard `*`,
 // order preservation, and the `AcceptNegotiator` higher-order instance that
@@ -176,7 +176,9 @@ fn negotiate_encoding_heap(supported: &[String], header: &[u8]) -> Option<String
                 matched = Some((pref.q, spec, pref.order));
             }
         }
-        let Some((q, spec, order)) = matched else { continue };
+        let Some((q, spec, order)) = matched else {
+            continue;
+        };
         if q <= 0.0 {
             continue;
         }
@@ -217,7 +219,9 @@ fn negotiate_refs(supported: &[String], prefs: &[EncodingPrefRef<'_>]) -> Option
                 matched = Some((pref.q, spec, pref.order));
             }
         }
-        let Some((q, spec, order)) = matched else { continue };
+        let Some((q, spec, order)) = matched else {
+            continue;
+        };
         if q <= 0.0 {
             continue;
         }
@@ -368,8 +372,10 @@ mod tests {
         // The allocation-free stack path must produce IDENTICAL results to the
         // exact heap path for every input, including case/whitespace/q-edge
         // cases where the two implementations could drift.
-        let supported: Vec<String> =
-            ["gzip", "br", "deflate"].iter().map(|s| s.to_string()).collect();
+        let supported: Vec<String> = ["gzip", "br", "deflate"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let cases = [
             "gzip, br, deflate",
             "GZip;q=0.8, br;q=1.0",

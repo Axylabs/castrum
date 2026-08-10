@@ -1,4 +1,4 @@
-// rust/ws_frames.rs — RFC 6455 WebSocket frame encode/decode.
+// rust/payload/ws_frames.rs — RFC 6455 WebSocket frame encode/decode.
 //
 // Backend-framework feature: byte-level WebSocket framing (opcode, FIN, length
 // encoding, client masking). Bun already provides a full WebSocket server; this
@@ -41,8 +41,8 @@ fn masked_copy(dst: &mut [u8], src: &[u8], mask: [u8; 4]) {
 
 /// Encode a single WebSocket frame per RFC 6455 §5.2.
 pub fn encode_frame(opcode: u8, payload: &[u8], mask: bool, fin: bool) -> Vec<u8> {
-    let header_len = 2
-        + if payload.len() > 125 {
+    let header_len =
+        2 + if payload.len() > 125 {
             if payload.len() > 65_535 {
                 8
             } else {
@@ -50,8 +50,7 @@ pub fn encode_frame(opcode: u8, payload: &[u8], mask: bool, fin: bool) -> Vec<u8
             }
         } else {
             0
-        }
-        + if mask { 4 } else { 0 };
+        } + if mask { 4 } else { 0 };
 
     let mut out = Vec::with_capacity(header_len + payload.len());
     out.push((if fin { 0x80 } else { 0 }) | (opcode & 0x0f));
@@ -133,7 +132,11 @@ pub fn decode_frame(data: &[u8]) -> Option<Frame> {
         payload.to_vec()
     };
 
-    Some(Frame { fin, opcode, payload })
+    Some(Frame {
+        fin,
+        opcode,
+        payload,
+    })
 }
 
 // ── NAPI entry points ──────────────────────────────────────────
@@ -148,12 +151,7 @@ pub struct WsFrame {
 /// Encode a WebSocket frame. `opcode`: 1=text, 2=binary, 8=close, 9=ping,
 /// 10=pong. `mask` applies client masking (RFC 6455 requires clients to mask).
 #[napi]
-pub fn ws_frame_encode(
-    opcode: u32,
-    payload: Uint8Array,
-    mask: bool,
-    fin: bool,
-) -> Buffer {
+pub fn ws_frame_encode(opcode: u32, payload: Uint8Array, mask: bool, fin: bool) -> Buffer {
     Buffer::from(encode_frame(opcode as u8, payload.as_ref(), mask, fin))
 }
 

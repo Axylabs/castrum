@@ -1,4 +1,4 @@
-// rust/csrf.rs — CSRF tokens (32-byte random hex + HMAC-SHA256 signature).
+// rust/crypto/csrf.rs — CSRF tokens (32-byte random hex + HMAC-SHA256 signature).
 //
 // Token format: `<random-hex>.<hex(HMAC-SHA256(secret, random-hex))>`. The
 // `CsrfProtector` higher-order instance precomputes the HMAC key once.

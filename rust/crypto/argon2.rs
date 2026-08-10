@@ -1,4 +1,4 @@
-// rust/argon2.rs — argon2id password hashing.
+// rust/crypto/argon2.rs — argon2id password hashing.
 //
 // Backend-framework feature: password storage hashing. argon2id is the OWASP
 // recommendation for new hashes; it is deliberately CPU/memory-heavy, which
@@ -213,7 +213,10 @@ mod tests {
         assert_eq!(phc_str, scalar);
 
         // Verify: correct password true, wrong password false.
-        assert!(hasher.verify(Uint8Array::new(PASSWORD.to_vec()), Buffer::from(phc_str.clone().into_bytes())));
+        assert!(hasher.verify(
+            Uint8Array::new(PASSWORD.to_vec()),
+            Buffer::from(phc_str.clone().into_bytes())
+        ));
         assert!(!hasher.verify(
             Uint8Array::new(b"wrong-password".to_vec()),
             Buffer::from(phc_str.into_bytes())
