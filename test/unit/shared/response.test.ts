@@ -53,6 +53,18 @@ describe("pooledBodyResponse", () => {
     expect(handle.released).toBe(true);
   });
 
+  test("abandonment guard releases an unconsumed body after timeoutMs", async () => {
+    const pool = new BufferPool({ initialSize: 16 });
+    const handle = pool.acquire();
+    pooledBodyResponse(handle, new Uint8Array([1, 2, 3]), { status: 200 }, 20);
+    expect(handle.released).toBe(false);
+
+    // Never pull or cancel the body — the 20ms guard must release the buffer
+    // and close the stream so an abandoned response can't hold it forever.
+    await new Promise((r) => setTimeout(r, 60));
+    expect(handle.released).toBe(true);
+  });
+
   test("preserves response init (status + headers)", async () => {
     const pool = new BufferPool({ initialSize: 16 });
     const handle = pool.acquire();

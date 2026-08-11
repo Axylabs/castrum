@@ -79,4 +79,17 @@ describe("resolveAddonPathFrom", () => {
       resolveAddonPathFrom(undefined, makeDir(), PLATFORM, ARCH),
     ).toThrow(/bun run build/);
   });
+
+  test("set-but-misconfigured override throws instead of falling back to roots", () => {
+    // A typo'd CASTRUM_NATIVE_LIBRARY_PATH must not silently resolve from the
+    // package roots (that would mask the misconfiguration).
+    expect(() =>
+      resolveAddonPathFrom(
+        "/definitely/not/a/real/override",
+        makeDir(),
+        PLATFORM,
+        ARCH,
+      ),
+    ).toThrow(/CASTRUM_NATIVE_LIBRARY_PATH/);
+  });
 });

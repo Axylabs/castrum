@@ -4,7 +4,7 @@ import { decoder, encoder, toPlainBuffer } from "../../shared/bytes";
 
 export function nativeWsAcceptKey(key: string | Uint8Array): Uint8Array {
   const keyText = typeof key === "string" ? key : decoder.decode(key);
-  const magic = "258EAFA5-E914-47DA-95CA-5AB5DC11BE85";
+  const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
   const combined = encoder.encode(keyText + magic);
 
   // node:crypto is available in BOTH runtimes and is synchronous — unlike

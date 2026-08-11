@@ -325,9 +325,7 @@ fn cors_engine() -> CorsEngine {
         allow_origin: Some(vec!["https://app.example.com".into()]),
         allow_methods: None,
         allow_headers: None,
-        expose_headers: None,
         allow_credentials: Some(false),
-        max_age: None,
     }))
     .unwrap()
 }

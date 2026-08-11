@@ -41,6 +41,24 @@ impl TemplateRenderer {
         Ok(Buffer::from(out.into_bytes()))
     }
 
+    /// Render the template with a PRE-SERIALIZED JSON context (bytes) → UTF-8
+    /// bytes. Avoids the napi `serde_json::Value` DOM marshal of `render` for
+    /// callers that already hold the context bytes (same core as the packed
+    /// batch path).
+    #[napi]
+    pub fn render_bytes(&self, context_json: Uint8Array) -> Result<Buffer> {
+        let tpl = self
+            .env
+            .get_template("main")
+            .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
+        let context: serde_json::Value = serde_json::from_slice(context_json.as_ref())
+            .map_err(|e| Error::from_reason(format!("template context is not valid JSON: {e}")))?;
+        let out = tpl
+            .render(&context)
+            .map_err(|e| Error::from_reason(format!("template render failed: {e}")))?;
+        Ok(Buffer::from(out.into_bytes()))
+    }
+
     /// Parallel render batch: packed `[u32 count]{[u32 len][context-json]}` in
     /// → packed `[u32 count]{[u32 len][rendered]}` out. The compiled template
     /// is fetched ONCE and reused for every item — no per-call recompilation.
@@ -177,6 +195,23 @@ mod tests {
             renders,
             vec!["Hello Alice!".to_string(), "Hello Bob!".to_string()]
         );
+    }
+
+    #[test]
+    fn render_bytes_matches_render() {
+        let r = TemplateRenderer::new("Hello {{ name }}!".to_string()).unwrap();
+        let via_value = r.render(serde_json::json!({ "name": "World" })).unwrap();
+        let via_bytes = r
+            .render_bytes(Uint8Array::new(br#"{"name":"World"}"#.to_vec()))
+            .unwrap();
+        assert_eq!(via_value.as_ref(), via_bytes.as_ref());
+        assert_eq!(&via_bytes[..], b"Hello World!");
+    }
+
+    #[test]
+    fn render_bytes_rejects_invalid_json_context() {
+        let r = TemplateRenderer::new("x".to_string()).unwrap();
+        assert!(r.render_bytes(Uint8Array::new(b"not json".to_vec())).is_err());
     }
 
     #[test]

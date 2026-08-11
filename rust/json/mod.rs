@@ -4,7 +4,7 @@
 //   - json_ser.rs       zero-alloc JSON escaping + cookie/query → JSON writers
 //   - json_patch_ops.rs RFC 6902 JSON patch
 //   - json_schema.rs    SchemaValidator napi class (fast + fallback)
-//   - fast_schema.rs    zero-DOM JSON Schema fast path (compiles the common
+//   - fast_schema/      zero-DOM JSON Schema fast path (compiles the common
 //                       keyword subset into a FastNode AST; unsupported
 //                       keywords fall back to the jsonschema crate DOM path)
 

@@ -7,7 +7,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [0.9.0] — 2026-08-11
+
+### Fixed
+
+- **Runtime seam was dead + unguarded**: `createIngressServer` called `Bun.serve`
+  unconditionally (raw `ReferenceError` on Node) and `src/shared/runtime.ts`
+  (`isBun`/`isNode`) had no production callers. It now guards on `isBun()` and
+  throws a friendly Bun-only error; `BakedServer.port` returns the ACTUAL bound
+  port (was `options.port`, wrong for `port: 0`).
+- **Node keep-alive body-drain hazard**: early terminal responses (413 at the
+  socket, 400/413/415 route guards) left the request body unread, corrupting the
+  next request on a keep-alive socket. The adapter now drains the unread body
+  after writing any response.
+- **`clientError` always 400**: Node header-overflow parse failures now map to
+  **431** (`HPE_HEADER_OVERFLOW`), other parse failures stay 400.
+- **Loader silently ignored a bad override**: a set-but-misconfigured
+  `CASTRUM_NATIVE_LIBRARY_PATH` fell through to the package roots (masking a
+  typo). It now throws with the expected override locations.
+- **Path-2 `run()` missing the sync-callback guard**: an async callback on
+  `createIngressHandler().run()` observed an invalidated (zeroed) result — it
+  now throws (parity with the fast path).
+- **`zeroCopyResponse` outside a live `run()`** silently served an empty body —
+  it now throws.
+- **Fast-path `bodyTruncated` omitted the body section**: the fast decoder now
+  flags any overran section (cookies/query/body), matching the baked decoder.
+- **WebSocket accept key (RFC 6455 violation)**: `WS_MAGIC` was
+  `258EAFA5-E914-47DA-95CA-5AB5DC11BE85` (transposed GUID) — the resulting
+  `Sec-WebSocket-Accept` was non-standard. Corrected to the RFC 6455 GUID
+  `258EAFA5-E914-47DA-95CA-C5AB0DC85B11` in `rust/payload/websocket.rs` and the
+  JS baseline; the unit-test vector now asserts the canonical
+  `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=` value.
+
 ### Added
+
+- **New primitives (performance-proven vs Bun built-ins — "don't reinvent the
+  wheel")**: public `rust.xxh3` (XXH3-64; `Bun.hash.xxHash3` is ~4x faster, so
+  prefer Bun under Bun — classified `not-competitive`), `rust.passwordHashBcrypt`
+  / `rust.passwordVerifyBcrypt` (bcrypt `$2b$` PHC; verify ~1.5x vs
+  `Bun.password`), `rust.pbkdf2Sha256` (PBKDF2-HMAC-SHA256; parity with
+  `node:crypto.pbkdf2Sync` and the only synchronous option in Bun), and the
+  `uuidv7()` helper (delegates to `Bun.randomUUIDv7`, `crypto.randomUUID` on
+  Node). Full measured results + keep/delegate decisions in
+  `docs/bun-builtins-decision-matrix.md`.
+- **Bun built-ins diagnostic benchmark set**: `bun run check` now races castrum
+  ops against `Bun.hash` / `Bun.password` / `Bun.CryptoHasher` / `Bun.gzipSync` /
+  `Bun.randomUUIDv7` under `diag:` task names (never audited by `check:proven`).
+  Sources: `src/baseline/tasks/bun-builtins.ts` + `src/bench/tasks/bun-builtins.ts`.
+- **Zero-dep observability** (`src/shared/metrics.ts`, `src/shared/trace.ts`,
+  `src/ingress/metrics.ts`, `src/ingress/health.ts`):
+  - `createMetrics()` — counters / gauges / histograms with Prometheus text
+    rendering (exported from the package root).
+  - `createIngressMetrics()` + `metricsHandler()` — wire the ingress
+    `onRequest`/`onResponse`/`onError` hooks into a `castrum_http_*` metric set
+    and serve it at a `/metrics` endpoint (Prometheus text).
+  - `livenessHandler()` / `readinessHandler(check?)` / `healthHandler(check?)`
+    — Kubernetes-style health-probe route factories (200/503).
+  - W3C trace context: `parseTraceParent()`, `createTraceId()`, `createSpanId()`,
+    `serializeTraceParent()` for cross-service `traceparent` correlation.
+- **`uuidv7()`** — UUIDv7 helper that delegates to `Bun.randomUUIDv7` and falls
+  back to `crypto.randomUUID` on Node (measured Bun ~2x faster than the FFI path
+  — deliberately not reimplemented in Rust).
+- **DELETE route factory** (`deleteHandler`) + **OPTIONS preflight on every
+  route**: `createIngressServer` now wires `DELETE` via `BakedRoute.delete` and
+  serves CORS preflight (204/403) for ALL routes with a handler — read-only
+  routes previously 404'd on `OPTIONS`.
+- **Node WebSocket upgrade support**: `createIngressServerNode` now listens for
+  `upgrade`; a route returning a 101 (`createWebSocketUpgrade`) completes the
+  RFC 6455 handshake on the hijacked socket and hands it to the new
+  `CreateIngressServerOptions.onUpgrade` hook (frame codec is caller-owned).
+- **`BakedIngressResult.cookiesJson()` / `queryJson()`**: the pre-baked decoder
+  now exposes the cookie/query JSON sections (parity with the fast decoder).
+- **Pooled-body abandonment guard**: `pooledBodyResponse` accepts an optional
+  `timeoutMs` that releases the pooled buffer (and closes the stream) when a
+  zero-copy body is never pulled/cancelled.
+- **Zero-DOM JSON Schema coverage + detailed errors**: `fast_schema` now
+  implements the full draft-07 validation keyword surface — `pattern` /
+  `patternProperties` (fancy-regex, the same ECMA-262 engine jsonschema uses,
+  incl. lookaheads), `enum`/`const` (exact cross-type number equality via
+  num-cmp), `multipleOf` (exact rational divisibility via fraction), `allOf` /
+  `anyOf` / `oneOf` / `not`, `if`/`then`/`else`, `contains`, `uniqueItems`,
+  draft-07 tuple `items` + `additionalItems`, `dependencies`, and in-document
+  `$ref` (`#`, `#/definitions/*`, `#/$defs/*`, any object/bool subschema).
+  Still-fallback keywords: `propertyNames`, `dependencies` with a schema value,
+  draft-04/06 boolean exclusive bounds, formats other than `email`, and
+  remote/dynamic/anchor refs. New `SchemaValidator.validateDetailed(doc)` and
+  `validateFirstError(doc)` return jsonschema-style errors (instance + schema
+  RFC 6901 JSON pointers, keyword, message) from the zero-DOM path. Schema
+  validation (fast + DOM fallback) is now consistently **draft-07** (jsonschema
+  0.48's default draft is 2020-12); a schema's declared `$schema` still
+  overrides the default.
+
+- **flux-core compatibility contract** (v0.8.0): castrum is now pinned by
+  flux-core's `@flux/native` package (`optionalDependencies`). The new
+  `test/compat/flux-contract.test.ts` guards the exact surface flux depends
+  on — entry normalization (`mod.rust ?? mod`), the scalar/class/factory
+  exports, and the packed-pairs wire format — in castrum's own CI, so a
+  change to the addon can never silently break flux's native acceleration.
 
 - **Public `loader` + `integration` surfaces**: `createLoader`/`loader` (HFC)
   and `createPipeline`/`createWebSocketUpgrade`/`sseResponse` are now exported
@@ -75,6 +173,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dead Rust code removed**: `jwt::hmac_sha256` (unused scalar wrapper),
+  test-only `verify_signature` / `packed_pairs_to_json_into_slice` are now
+  `#[cfg(test)]` (the latter with an inline reader, so `util::read_u32_le` is
+  gone), unused `util/mod.rs` re-export shims, and dead branches (rate-limit
+  `NonZeroUsize` fallback, `output.rs` 101 case). `json_ser::is_ascii` no longer
+  `expect()`s on the hot path.
+- **Deduped batch writers**: `hex_encode_batch_bytes` uses the shared
+  `util::bytes::hex_encode`; `crc32_batch_packed` delegates to
+  `util::packed::write_u32_batch_into` (the allocating variant now shares the
+  `_into` twin's validation + parallelism).
+- **Shared rate-limiter eviction now throws**: `shared_limiter` refuses a 17th
+  distinct config instead of silently evicting a live limiter (which reset
+  per-IP budgets — a rate-limit bypass vector).
+- **Rust `CorsOptions` dropped `expose_headers`/`max_age`**: the engine only
+  evaluates origin/method/header/credentials; the emitted
+  `access-control-expose-headers`/`access-control-max-age` come from the TS
+  header templates (both paths).
 - **Dead code / dead flows removed**: `HeaderRefs::has_cookie`/`has_acrh`,
   provably-dead `unreachable!` arms in `json_ser.rs`, an `Option` dance in
   `ip_trust.rs`, the empty `src/ffi/` dir, and the unregistered loader bench
@@ -150,6 +265,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Loader async benchmark persistence**: the 6 `load()` microbenchmarks now
   persist to `bench/results/loader/latest.json` (gitignored) so coalescing /
   cache-hit performance is comparable across runs.
+- **Zero-DOM `format: "email"` fast path** (`fast_schema`): the schema fast
+  path now compiles `format: "email"` (byte-parity replica of jsonschema
+  0.48.5's validator — `email_address` local-part parse + RFC 1034 hostname +
+  RFC 5891 A-label/punycode + RFC 5892 PVALID/contextual unicode-label rules)
+  instead of falling back to the serde_json DOM path. The ingress
+  `USER_SCHEMA` (which uses `format: "email"`) now validates every JSON-body
+  POST zero-DOM. **Behavior fix**: jsonschema 0.48 disables format validation
+  by default, so `format:` keywords were silently ignored before; both
+  `SchemaValidator` and `IngressSchema` now build the reference with
+  `should_validate_formats(true)` so `format: "email"` is actually enforced
+  (invalid emails → 422) and the fast path stays byte-parity with the
+  reference. Backed by a comprehensive email parity corpus + a 3000-case
+  property test cross-checking fast vs the authoritative validator.
+- **Byte-JSON overloads flip two losing scalar ops to wins**: `jwtSignBytes`
+  (claims as JSON bytes — skips the napi `serde_json::Value` marshal) and
+  `JwtSigner.signBytes` flip JWT sign from a ~1.3x loss to ~parity; `renderBytes`
+  on `TemplateRenderer` flips template render from a ~1.5x loss to a ~1.37x win.
+- **Pooled-output + string overloads** (additive, no breaking changes):
+  `httpDateInto` (fixed 29-byte write into a reused buffer), `urlEncodeStr`/
+  `urlDecodeStr` (string-in/string-out, no Uint8Array round-trip — the `rust.text`
+  layer now uses them), plus new benchmark comparisons for the pooled
+  `urlEncodeInto`/`urlDecodeInto`/`hexEncodeInto`/`httpDateInto` paths.
+- **Scalar hot-path allocation cuts**: `hex_encode` writes bytes directly via
+  the `HEX_LOWER` table (no per-nibble `char::push`; ~20% faster, pooled path
+  ~1.5x faster); `url_decode` exact-size decode + jitter-tail elimination
+  (~44% faster avg); `url_encode` exact-size allocation; `url_encode_query`
+  reuses one scratch buffer instead of a fresh `vec` per key/value;
+  `media_type` match uses `memchr`; `json_escaped_len` now validates UTF-8 in
+  the SAME pass as the memchr3 escape scan (was two full passes) with a
+  `len == bytes written` invariant corpus.
 
 ### Added
 

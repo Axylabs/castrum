@@ -71,6 +71,27 @@ describe("fnv1a64", () => {
   });
 });
 
+describe("xxh3", () => {
+  test("returns a deterministic 64-bit bigint", () => {
+    const a = rust.xxh3(enc("castrum"));
+    const b = rust.xxh3(enc("castrum"));
+    expect(typeof a).toBe("bigint");
+    expect(a).toBe(b);
+  });
+
+  test("differs across distinct inputs", () => {
+    expect(rust.xxh3(enc("a"))).not.toBe(rust.xxh3(enc("b")));
+  });
+
+  test("matches Bun.hash.xxHash3 when available", () => {
+    if (typeof Bun !== "undefined" && typeof Bun.hash?.xxHash3 === "function") {
+      for (const input of ["", "hello", "the quick brown fox"]) {
+        expect(rust.xxh3(enc(input))).toBe(Bun.hash.xxHash3(enc(input)));
+      }
+    }
+  });
+});
+
 describe("hmacSha256", () => {
   const key = enc("secret-key");
   const data = enc("message to sign");

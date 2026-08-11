@@ -29,6 +29,66 @@ The benchmark system compares Rust FFI implementations against pure JavaScript/B
 bun bench.ts
 ```
 
+### Performance-proven surface & auto-annotated JSDoc
+
+The CPU benchmark persists a machine-readable report to `bench/results/cpu/latest.json`
+(+ timestamped snapshots). Three commands consume it; `bun run check:docs` runs all
+three as the one-stop "informed decision" pipeline:
+
+| Command | What it does |
+|---------|--------------|
+| `bun run check` | Runs the CPU benchmark and writes `bench/results/cpu/latest.json` (report-only — **never mutates source**). |
+| `bun run check:annotate` | Rewrites the `@performance` / `@deprecated` / `@remarks` JSDoc on the public `rust.*` declarations (`src/rust-ffi/scalar/interface.ts`, `batch.ts`, `client.ts`) from the report. Idempotent — generated lines carry the `[check:annotate]` marker; hand-written JSDoc is preserved. `--dry-run` previews changes. |
+| `bun run check:proven` | Audits the `PROVEN_SURFACE` registry against the report and flags `REGRESSION`, `PARITY-DRIFT`, and `PROMOTABLE`. `--fail` exits 1 on regressions. |
+| `bun run check:docs` | `check` + `check:annotate` + `check:proven` — the full pipeline. |
+
+**Automatic annotation (opt-in):** `CASTRUM_BENCH_ANNOTATE=1 bun run check`
+auto-runs the annotator right after the benchmark, so the JSDoc always reflects
+the latest run. It is opt-in because it mutates tracked source files.
+
+**How the annotations work (data-driven):**
+
+- Each function's **score** is embedded in the `@performance` line, e.g.
+  `JSON valid: ~3.2x faster than the JS baseline (8/8 tasks won)` or
+  `CRC32: ~4.1x slower than the JS baseline (2/3 tasks failed)`. A function's
+  benchmark set is the canonical comparison plus all its `_`-suffixed variants
+  (`_large`, `_batch`, `_concurrent_*`, `_stress`, pooled `_into` overloads)
+  that no other registry entry claims.
+- Task bands (see `src/shared/bench-classify.ts`): **won** = `ratio >= 1`
+  (Rust at least as fast), **failed** = `ratio < 1 / 1.35` (clear loss), the
+  middle is a **tie** that counts toward neither.
+- `@deprecated` is **hybrid**:
+  - A clear **majority** of a function's benchmarks failing in the latest run
+    auto-deprecates it even when the static registry says `proven`/`parity` — a
+    `@remarks Auto-deprecated: N/M benchmarks failed ...` note records the drift.
+  - A single good run **never** removes an existing `@deprecated` (static
+    classifications reflect the shipped release build, not one local run). A
+    majority win on a static `not-competitive` function only adds a
+    `@remarks Promotion candidate ...` note.
+- Classifications are **build-dependent** (debug/SIMD builds distort ratios). The
+  annotator warns when the report carries no `buildFlavor`; confirm on a release
+  build (`bun run build`) or local perf build (`bun run build:perf`).
+
+### Bun built-ins diagnostic set ("don't reinvent the wheel")
+
+`bun run check` also races castrum ops against **Bun's native built-ins**
+(`Bun.hash`, `Bun.password`, `Bun.CryptoHasher`, `Bun.gzipSync`,
+`Bun.randomUUIDv7`) as a diagnostic set:
+
+- Task names use the **`diag:`** prefix (not `native:`/`rust:`) so
+  `check-proven`'s aggregation (which matches `PROVEN_SURFACE` rustTask names
+  and their `_`-suffixed variants) never picks them up — they are informational.
+- Sources: `src/baseline/tasks/bun-builtins.ts` (Bun-only baselines, guarded
+  with `typeof Bun` so the module still loads under Node),
+  `src/bench/tasks/bun-builtins.ts`, comparisons in `src/bench/comparisons.ts`.
+- **Runtime honesty guard**: a Bun API must be verified to actually execute real
+  work before its result is trusted. The first run produced false "wins"
+  (brotli 156x, validators 3-5x) because Bun 1.4 has **no**
+  `Bun.brotliCompressSync` and **no** `Bun.validators` — those pairs were
+  removed, not reported.
+- Results and the keep/delegate/add decisions live in
+  `docs/bun-builtins-decision-matrix.md`.
+
 ### HTTP Benchmarks
 
 ```bash
@@ -198,6 +258,7 @@ Each task runs:
 | Env / flag | Effect |
 |------------|--------|
 | `CASTRUM_BENCH_BATCH_SIZE` | Batch size for sub-µs operations (default `64`). Batching amortizes the timer/measurement overhead for very fast ops. |
+| `CASTRUM_BENCH_ANNOTATE=1` | After `bun run check`, auto-rewrite the `rust.*` JSDoc annotations from the fresh report (see "Performance-proven surface & auto-annotated JSDoc"). |
 | `HTTP_NO_SHAPE=1` | The HTTP load generator (`bench/load.ts`) skips response-shape `JSON.parse` for pure-throughput runs. |
 
 ---

@@ -36,6 +36,7 @@ export type { SchemaValidator } from "../shared/packed";
 export type {
   HmacSignerInstance,
   SchemaValidatorInstance,
+  SchemaError,
   TemplateRendererInstance,
   FormParserInstance,
   MediaTypeParserInstance,

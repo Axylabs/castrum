@@ -106,12 +106,18 @@ for (const target of targets) {
 if (missing.length > 0) {
   if (allowPartial) {
     // Local manual publish (bun run publish:manual): ship only what's built.
+    const present = targets.filter((t) => !missing.some((m) => m.startsWith(t)));
     console.warn(
       "prepublish: WARNING — publishing with MISSING platform addon(s):\n" +
         missing.map((m) => `  - ${m}`).join("\n") +
         "\n" +
-        "CASTRUM_PUBLISH_ALLOW_PARTIAL=1: the tarball only supports the platforms\n" +
-        "listed above. Push a v* tag to publish a full multi-platform tarball.",
+        "CASTRUM_PUBLISH_ALLOW_PARTIAL=1: this tarball includes ONLY the platforms\n" +
+        "built locally:\n" +
+        (present.length > 0
+          ? present.map((t) => `  - ${t}`).join("\n")
+          : "  (none)") +
+        "\n" +
+        "Push a v* tag to publish a full multi-platform tarball.",
     );
   } else {
     console.error(

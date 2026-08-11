@@ -6,9 +6,12 @@ import {
   jsonWriteHandler,
   echoHandler,
   fallbackHandler,
+  deleteHandler,
+  optionsHandler,
 } from "./routes";
 import type { BakedHandlerOptions } from "./routes/common";
 import type { OptimizedIngressHandler } from "./types";
+import { isBun } from "../shared/runtime";
 
 /** Server-level default for the socket request-body cap (16 MiB). */
 export const DEFAULT_MAX_REQUEST_BODY_SIZE = 16 * 1024 * 1024;
@@ -23,6 +26,8 @@ export interface BakedRoute {
   echo?: OptimizedIngressHandler;
   /** Wires a GET read handler (cookies-style route). */
   cookies?: OptimizedIngressHandler;
+  /** Wires a DELETE read-style handler. */
+  delete?: OptimizedIngressHandler;
   /** Overrides `maxBodyBytes` for this route's write/echo handlers. */
   maxBodyBytes?: number;
   /**
@@ -30,6 +35,14 @@ export interface BakedRoute {
    * write/echo handlers. Default: 0 (disabled).
    */
   bodyTimeoutMs?: number;
+}
+
+/** RFC 6455 handshake values returned by `CreateIngressServerOptions.upgrade`. */
+export interface NodeUpgradeHandshake {
+  /** `Sec-WebSocket-Accept` value (compute via `rust.text.wsAcceptKey`). */
+  accept: string;
+  /** Optional negotiated subprotocol (`Sec-WebSocket-Protocol`). */
+  protocol?: string;
 }
 
 /** Options for {@link createIngressServer}. */
@@ -57,6 +70,21 @@ export interface CreateIngressServerOptions {
   /** Node adapter only: max requests per keep-alive socket before Node forces
    *  a fresh connection (bounds long-lived socket reuse). Default: 1000. */
   maxRequestsPerSocket?: number;
+  /** Node adapter only: optional WebSocket upgrade handler. Return the RFC 6455
+   *  handshake values (see {@link NodeUpgradeHandshake}) to complete the
+   *  handshake on the hijacked socket; return null/undefined to decline the
+   *  upgrade. Ignored by the Bun server. (`createWebSocketUpgrade` is Bun-only
+   *  — Node's Response cannot carry a 101.) */
+  upgrade?: (req: Request) => NodeUpgradeHandshake | null | undefined;
+  /** Node adapter only: called after a WebSocket upgrade handshake completes
+   *  (the 101 response was accepted), with the hijacked socket so the caller
+   *  can attach a frame codec/message loop (e.g. the `ws` library). Ignored by
+   *  the Bun server. */
+  onUpgrade?: (
+    socket: import("node:stream").Duplex,
+    req: unknown,
+    head: Buffer,
+  ) => void;
 }
 
 /**
@@ -186,9 +214,6 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
       methods.POST = jsonWriteHandler(spec.write, writeOpts);
       methods.PUT = jsonWriteHandler(spec.write, writeOpts);
       methods.PATCH = jsonWriteHandler(spec.write, writeOpts);
-      if (options.fallback) {
-        methods.OPTIONS = fallbackHandler(options.fallback, routeOpts);
-      }
     }
 
     if (spec.echo) {
@@ -197,6 +222,19 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
 
     if (spec.cookies) {
       methods.GET = readHandler(spec.cookies, routeOpts);
+    }
+
+    if (spec.delete) {
+      methods.DELETE = deleteHandler(spec.delete, routeOpts);
+    }
+
+    // CORS preflight (OPTIONS) is served for EVERY route with a handler (not
+    // just write routes with a fallback), so read-only routes also answer
+    // preflights with 204/403 from the native pipeline.
+    const primary =
+      spec.delete ?? spec.read ?? spec.cookies ?? spec.write ?? spec.echo;
+    if (primary) {
+      methods.OPTIONS = optionsHandler(primary, routeOpts);
     }
 
     serverRoutes[path] = methods;
@@ -220,6 +258,15 @@ interface BunServerOptions {
 export function createIngressServer(
   options: CreateIngressServerOptions,
 ): BakedServer {
+  // Bun-only by design: this builder targets Bun.serve's Routes API. Node
+  // consumers use `createIngressServerNode` with the same route handlers
+  // (sharing `buildRouteHandlers`).
+  if (!isBun()) {
+    throw new TypeError(
+      "createIngressServer is Bun-only (it builds a Bun.serve config). " +
+        "On Node.js use createIngressServerNode with the same route handlers.",
+    );
+  }
   const { routes: serverRoutes, baseOpts } = buildRouteHandlers(options);
 
   const serverOptions: BunServerOptions = {
@@ -264,6 +311,9 @@ export function createIngressServer(
         // already stopped
       }
     },
-    port: options.port,
+    // The ACTUAL bound port (not `options.port`): with `port: 0` Bun
+    // auto-assigns a free port, and consumers expect the real listening port
+    // (parity with the Node adapter's `ready`/port behavior).
+    port: typeof server.port === "number" ? server.port : options.port,
   };
 }

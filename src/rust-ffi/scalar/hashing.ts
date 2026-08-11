@@ -17,6 +17,9 @@ export function buildHashing(ctx: RustClientContext) {
     fnv1a64(input: Uint8Array): bigint {
       return asBigInt(addon.fnv1a64(input) as unknown);
     },
+    xxh3(input: Uint8Array): bigint {
+      return asBigInt(addon.xxh3(input) as unknown);
+    },
     hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
       return ctx.hmacSigner(key).sign(data);
     },

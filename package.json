@@ -1,6 +1,6 @@
 {
     "name": "castrum",
-    "version": "0.7.0",
+    "version": "0.9.0",
     "private": false,
     "description": "Enterprise-grade Bun + Rust runtime: Rust-accelerated FFI primitives, a production-grade HTTP ingress pipeline, validation, hashing, and JSON processing with benchmark-grade performance.",
     "type": "module",
@@ -79,7 +79,7 @@
         "check:proven:fail": "bun scripts/check-proven.ts --fail",
         "check:annotate": "bun scripts/annotate-performance.ts",
         "check:annotate:dry": "bun scripts/annotate-performance.ts --dry-run",
-        "check:docs": "bun run check && bun run check:annotate",
+        "check:docs": "bun run check && bun run check:annotate && bun run check:proven",
         "bench:http": "bun run bench/run-bench.ts",
         "bench:http:smoke": "bun run bench/run-bench.ts smoke",
         "bench:http:stress": "bun run bench/run-bench.ts stress",
@@ -131,9 +131,11 @@
         "targets": [
             "aarch64-apple-darwin",
             "aarch64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl",
             "x86_64-apple-darwin",
             "x86_64-pc-windows-msvc",
-            "x86_64-unknown-linux-gnu"
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl"
         ]
     }
 }

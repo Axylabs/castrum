@@ -9,7 +9,14 @@ use serde_json::{json, Value};
 
 fn assert_parity(schema: Value, docs: &[&str]) {
     let fast = compile(&schema).expect("schema must compile on the fast path");
-    let v = jsonschema::validator_for(&schema).expect("schema must compile on reference");
+    // The fast path implements draft-07; pin the reference so parity is
+    // meaningful (jsonschema 0.48's default draft is 2020-12, whose `items`/
+    // `$ref`-sibling/boolean-exclusive semantics differ from draft-07).
+    let v = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .should_validate_formats(true)
+        .build(&schema)
+        .expect("schema must compile on reference");
     for &doc in docs {
         let expected = serde_json::from_str::<Value>(doc)
             .map(|value| v.is_valid(&value))
@@ -289,27 +296,481 @@ fn nested_composite_parity() {
 fn unsupported_keywords_fall_back() {
     // These must NOT compile on the fast path (caller falls back to DOM).
     let unsupported = [
-        json!({"pattern":"^a"}),
-        json!({"format":"email"}),
-        json!({"anyOf":[{"type":"string"},{"type":"number"}]}),
-        json!({"$ref":"#/definitions/x"}),
-        json!({"enum":[1,2,3]}),
-        json!({"const":5}),
-        json!({"multipleOf":3}),
-        json!({"uniqueItems":true}),
-        json!({"allOf":[{"type":"string"}]}),
-        json!({"not":{"type":"string"}}),
-        json!({"patternProperties":{"^x":{"type":"string"}}}),
-        json!({"items":[{"type":"string"}]}),
-        json!({"exclusiveMinimum":true}), // draft-07 boolean form
-        json!({"prefixItems":[{"type":"string"}]}),
-        json!({"if":{"type":"string"},"then":{"type":"string"}}),
+        json!({"propertyNames":{"type":"string"}}),
+        json!({"format":"uri"}), // only format:email is fast-path
+        json!({"format":"date-time"}),
+        json!({"exclusiveMinimum":true}), // draft-04/06 boolean form
+        json!({"$ref":"other.json#/definitions/x"}), // external ref
+        json!({"$ref":"#anchor"}), // anchor ref (unsupported)
+        json!({"$schema":"http://json-schema.org/draft-04/schema#"}),
+        json!({"dependencies":{"a":{"type":"string"}}}), // schema form
+        json!({"enum":[1,2],"const":1}), // enum + const together
     ];
     for s in &unsupported {
         assert!(compile(s).is_err(), "should fall back: {s}");
     }
     // Sanity: the supported bench schema DOES compile.
     assert!(compile(&bench_schema()).is_ok());
+}
+
+// ── extended draft-07 keyword parity (fast vs jsonschema crate) ──────────
+
+#[test]
+fn pattern_parity() {
+    let schemas = [
+        json!({"type":"string","pattern":"^a"}),
+        json!({"type":"string","pattern":"\\d{3}-\\d{4}"}),
+        json!({"type":"string","pattern":"a.c"}),
+        // ECMA-262 lookahead (fancy-regex only; the regex crate would reject it)
+        json!({"type":"string","pattern":"foo(?=bar)"}),
+        json!({"type":"string","pattern":"^(a|b)+$"}),
+    ];
+    let docs = [
+        r#""abc""#,
+        r#""a""#,
+        r#""xabc""#,
+        r#""123-4567""#,
+        r#""12-34""#,
+        r#""foobar""#,
+        r#""foo""#,
+        r#""foobaz""#,
+        r#""ab""#,
+        r#""baba""#,
+        r#""ccc""#,
+        "42",
+        "null",
+        r#""\u0061bc""#, // "abc"
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn pattern_properties_parity() {
+    let schemas = [
+        json!({"type":"object","patternProperties":{"^x":{"type":"integer"}}}),
+        json!({
+            "type":"object",
+            "properties":{"foo":{"type":"string"}},
+            "patternProperties":{"^[a-z]+$":{"type":"number"}},
+            "additionalProperties":false
+        }),
+        json!({
+            "type":"object",
+            "patternProperties":{"S_":{"type":"string"}},
+            "additionalProperties":{"type":"number"}
+        }),
+    ];
+    let docs = [
+        r#"{"x1":1,"x2":2}"#,
+        r#"{"x1":"str"}"#,
+        r#"{"y1":1}"#,
+        r#"{"foo":"a","bar":1}"#,
+        r#"{"foo":"a","bar":"s"}"#,
+        r#"{"FOO":1}"#,
+        r#"{"S_a":"ok","other":1}"#,
+        r#"{"S_a":1}"#,
+        r#"{"other":"str"}"#,
+        r#"{}"#,
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn enum_const_parity() {
+    let schemas = [
+        json!({"enum":[1,2,3]}),
+        json!({"enum":["a","b","c"]}),
+        json!({"enum":[1,1.0,"1",true,null]}), // 1 and 1.0 are equal per JSON Schema
+        json!({"const":5}),
+        json!({"const":{"a":1,"b":2}}),
+        json!({"type":"integer","enum":[1,2]}),
+        json!({"enum":[{"x":[1,2]},{"x":[2,1]}]}),
+    ];
+    let docs = [
+        "1", "2", "3", "4", "1.0", "1e0",
+        r#""a""#, r#""b""#, r#""d""#, r#""""#,
+        "true", "false", "null",
+        r#"{"a":1,"b":2}"#,
+        r#"{"b":2,"a":1}"#,
+        r#"{"a":2,"b":2}"#,
+        r#"{"x":[1,2]}"#,
+        r#"{"x":[2,1]}"#,
+        r#"[1,2]"#,
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn multiple_of_parity() {
+    let schemas = [
+        json!({"type":"number","multipleOf":2}),
+        json!({"type":"number","multipleOf":0.01}),
+        json!({"type":"number","multipleOf":0.1}),
+        json!({"type":"integer","multipleOf":3}),
+        json!({"multipleOf":1.5}),
+    ];
+    let docs = [
+        "0", "2", "4", "3", "-2", "2.5", "1", "0.5",
+        "0.01", "0.02", "0.03", "0.1", "1.23", "100",
+        "1.5", "3.0", "3.1", "4.5",
+        "1e1", "1.25", "2.25",
+        r#""x""#, "null", "{}",
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn combinators_parity() {
+    let schemas = [
+        json!({"allOf":[{"type":"number"},{"minimum":0}]}),
+        json!({"anyOf":[{"type":"string"},{"type":"integer"}]}),
+        json!({"oneOf":[{"type":"number"},{"minimum":0}]}),
+        json!({"not":{"type":"string"}}),
+        json!({"anyOf":[{"type":"null"},{"type":"array"}]}),
+        json!({"oneOf":[{"enum":[1,2]},{"minimum":1}]}),
+        json!({"allOf":[{"properties":{"a":{"type":"integer"}}},{"required":["a"]}]}),
+    ];
+    let docs = [
+        "5", "-5", r#""5""#, "0", "0.5", "null",
+        r#""s""#, "1", "1.5", "[]", "{}",
+        "2", "3", "-1",
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn if_then_else_parity() {
+    let schemas = [
+        json!({"type":"number","if":{"minimum":0},"then":{"multipleOf":2}}),
+        json!({
+            "if":{"properties":{"type":{"const":"a"}}},
+            "then":{"required":["a"]},
+            "else":{"required":["b"]}
+        }),
+        json!({"if":{"type":"string"},"else":{"type":"integer"}}),
+        json!({"if":false,"then":{"type":"string"}}),
+    ];
+    let docs = [
+        "2", "3", "-2", "-3", "0",
+        r#"{"type":"a","a":1}"#,
+        r#"{"type":"a"}"#,
+        r#"{"type":"b","b":1}"#,
+        r#"{"type":"b"}"#,
+        r#""hi""#, "1", "1.5", "true", "null",
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn unique_items_parity() {
+    let schemas = [
+        json!({"type":"array","uniqueItems":true}),
+        json!({"type":"array","uniqueItems":true,"items":{"type":"integer"}}),
+        json!({"type":"array","uniqueItems":true,"items":{"type":"object"}}),
+    ];
+    let docs = [
+        r#"[1,2,3]"#,
+        r#"[1,1]"#,
+        r#"[1,1.0]"#,
+        r#"[1,2,2.0]"#,
+        r#"["a","b"]"#,
+        r#"["a","a"]"#,
+        r#"[{"a":1},{"a":1}]"#,
+        r#"[{"a":1},{"b":1}]"#,
+        r#"[{"a":1,"b":2},{"b":2,"a":1}]"#,
+        r#"[true,false,true]"#,
+        r#"[[1],[1]]"#,
+        r#"[[1],[2]]"#,
+        r#"[]"#,
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn unique_items_bignum_parity() {
+    // Exercises the exact cross-type number comparison (num_cmp) — serde_json's
+    // Value PartialEq would wrongly treat these as equal via f64 casting.
+    let schema = json!({"type":"array","uniqueItems":true});
+    let docs = [
+        r#"[9007199254740993,9007199254740992]"#, // distinct large ints
+        r#"[9007199254740993,9007199254740993]"#, // duplicate
+        r#"[9007199254740993,9007199254740992.0]"#, // exact: NOT equal
+        r#"[1.0,1]"#,
+        r#"[18446744073709551615,18446744073709551615]"#, // u64 max duplicate
+    ];
+    assert_parity(schema, &docs);
+}
+
+#[test]
+fn tuple_items_parity() {
+    let schemas = [
+        json!({"type":"array","items":[{"type":"string"},{"type":"integer"}]}),
+        json!({"type":"array","items":[{"type":"string"}],"additionalItems":false}),
+        json!({
+            "type":"array",
+            "items":[{"type":"string"},{"type":"integer"}],
+            "additionalItems":{"type":"boolean"}
+        }),
+        json!({"type":"array","items":[{"type":"string"}],"minItems":1}),
+    ];
+    let docs = [
+        r#"["a",1]"#,
+        r#"["a"]"#,
+        r#"[1,"a"]"#,
+        r#"["a","b"]"#,
+        r#"["a","b","c"]"#,
+        r#"["a",1,true]"#,
+        r#"["a",1,2]"#,
+        r#"[]"#,
+        r#"["a","b",1]"#,
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn contains_parity() {
+    let schemas = [
+        json!({"type":"array","contains":{"type":"integer"}}),
+        json!({"type":"array","contains":{"const":5}}),
+        json!({"type":"array","contains":{"type":"string"},"minItems":1}),
+    ];
+    let docs = [r#"[1]"#, r#"[1.5]"#, r#"["a",1]"#, r#"["a","b"]"#, r#"[5]"#, r#"[4,6]"#, r#"[]"#, r#"[{}]"#];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn dependencies_parity() {
+    let schemas = [
+        json!({"type":"object","dependencies":{"a":["b"]}}),
+        json!({"type":"object","dependencies":{"a":["b","c"]}}),
+        json!({"type":"object","dependencies":{"a":[],"b":["a"]}}),
+    ];
+    let docs = [
+        r#"{"a":1,"b":2}"#,
+        r#"{"a":1}"#,
+        r#"{"b":2}"#,
+        r#"{}"#,
+        r#"{"a":1,"b":2,"c":3}"#,
+        r#"{"a":1,"c":3}"#,
+        r#"{"b":1,"a":2}"#,
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn ref_parity() {
+    let schemas = [
+        json!({
+            "definitions": {"positive": {"type":"number","minimum":0}},
+            "$ref":"#/definitions/positive"
+        }),
+        json!({
+            "$defs": {
+                "user": {
+                    "type":"object",
+                    "required":["id"],
+                    "properties":{"id":{"type":"integer"}}
+                }
+            },
+            "type":"object",
+            "properties":{
+                "owner":{"$ref":"#/$defs/user"},
+                "admin":{"$ref":"#/$defs/user"}
+            }
+        }),
+        json!({
+            "definitions": {
+                "a": {"type":"string"},
+                "b": {"allOf":[{"$ref":"#/definitions/a"},{"minLength":2}]}
+            },
+            "$ref":"#/definitions/b"
+        }),
+        json!({
+            "type":"object",
+            "properties":{"x":{"type":"object","properties":{"y":{"type":"string"}}}},
+            "$ref":"#/properties/x/properties/y"
+        }),
+    ];
+    let docs = [
+        "1", "-1", "0", "5.5", r#""s""#,
+        r#"{"id":1}"#,
+        r#"{"id":"x"}"#,
+        r#"{"owner":{"id":1},"admin":{"id":2}}"#,
+        r#"{"owner":{"id":1},"admin":{}}"#,
+        r#""abc""#,
+        r#""a""#,
+        r#""""#,
+        r#""x""#,
+        "123",
+    ];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
+fn dollar_schema_guard() {
+    // Non-draft-07 `$schema` declarations fall back (semantics diverge).
+    for ss in [
+        "http://json-schema.org/draft-04/schema#",
+        "http://json-schema.org/draft-06/schema#",
+        "https://json-schema.org/draft/2020-12/schema",
+        "https://json-schema.org/draft/2019-09/schema",
+    ] {
+        let schema = json!({"$schema": ss, "type": "object"});
+        assert!(compile(&schema).is_err(), "$schema={ss} must fall back");
+    }
+    // draft-07 (with or without the URL form) compiles.
+    for ss in [
+        "http://json-schema.org/draft-07/schema#",
+        "https://json-schema.org/draft-07/schema",
+    ] {
+        let schema = json!({"$schema": ss, "type": "object"});
+        assert!(compile(&schema).is_ok(), "$schema={ss} must compile");
+    }
+}
+
+#[test]
+fn draft07_unknown_keywords_ignored() {
+    // 2020-12-only keywords are UNKNOWN to draft-07, so the reference ignores
+    // them; the fast path must too (compile + behave identically).
+    for schema in [
+        json!({"type":"object","prefixItems":[{"type":"string"}]}),
+        json!({"type":"array","unevaluatedItems":false}),
+        json!({"type":"object","unevaluatedProperties":false}),
+        json!({"type":"object","dependentRequired":{"a":["b"]}}),
+        json!({"type":"array","minContains":1}),
+    ] {
+        assert!(compile(&schema).is_ok(), "should compile (ignored keyword): {schema}");
+        assert_parity(schema, &[r#"{}"#, r#"[]"#, r#"[1,2]"#, r#"{"a":1}"#]);
+    }
+}
+
+// ── detailed error reporting (fast path) ────────────────────────────────
+
+#[test]
+fn error_reporting_paths_and_keywords() {
+    let schema = json!({
+        "type":"object",
+        "required":["id","name"],
+        "properties":{
+            "id":{"type":"integer"},
+            "name":{"type":"string","minLength":2,"pattern":"^[a-z]+$"},
+            "tags":{"type":"array","items":{"type":"string"},"uniqueItems":true}
+        },
+        "additionalProperties":false
+    });
+    let fast = compile(&schema).unwrap();
+
+    // valid -> no errors
+    assert!(fast.validate_errors(br#"{"id":1,"name":"ab","tags":["x","y"]}"#, usize::MAX).is_empty());
+
+    // missing required -> keyword required, root pointer
+    let errs = fast.validate_errors(br#"{"id":1}"#, usize::MAX);
+    let req = errs.iter().find(|e| e.keyword == "required").unwrap();
+    assert_eq!(req.instance_path, "");
+    assert!(req.message.contains("name"));
+
+    // wrong type at /id
+    let errs = fast.validate_errors(br#"{"id":"x","name":"ab"}"#, usize::MAX);
+    let t = errs.iter().find(|e| e.keyword == "type").unwrap();
+    assert_eq!(t.instance_path, "/id");
+
+    // pattern at /name
+    let errs = fast.validate_errors(br#"{"id":1,"name":"AB"}"#, usize::MAX);
+    let p = errs.iter().find(|e| e.keyword == "pattern").unwrap();
+    assert_eq!(p.instance_path, "/name");
+    assert!(p.schema_path.ends_with("/properties/name/pattern"));
+
+    // additionalProperties at the offending key
+    let errs = fast.validate_errors(br#"{"id":1,"name":"ab","extra":true}"#, usize::MAX);
+    let ap = errs.iter().find(|e| e.keyword == "additionalProperties").unwrap();
+    assert_eq!(ap.instance_path, "/extra");
+
+    // uniqueItems at /tags
+    let errs = fast.validate_errors(br#"{"id":1,"name":"ab","tags":["x","x"]}"#, usize::MAX);
+    let u = errs.iter().find(|e| e.keyword == "uniqueItems").unwrap();
+    assert_eq!(u.instance_path, "/tags");
+
+    // multi-error collection: every failing property is reported
+    let errs = fast.validate_errors(br#"{"id":"x","name":"AB","extra":1}"#, usize::MAX);
+    let kw: Vec<&str> = errs.iter().map(|e| e.keyword.as_str()).collect();
+    assert!(
+        kw.contains(&"type")
+            && kw.contains(&"pattern")
+            && kw.contains(&"additionalProperties"),
+        "expected type+pattern+additionalProperties errors, got {kw:?}"
+    );
+
+    // max_errors=1 returns exactly the first error
+    let first = fast.validate_errors(br#"{"id":"x","name":""}"#, 1);
+    assert_eq!(first.len(), 1);
+
+    // RFC 6901 escaping: a key with a slash / tilde in the pointer
+    let schema2 = json!({
+        "type":"object",
+        "properties":{"a/b":{"type":"integer"},"c~d":{"type":"integer"}}
+    });
+    let fast2 = compile(&schema2).unwrap();
+    let errs = fast2.validate_errors(br#"{"a/b":"x"}"#, usize::MAX);
+    assert!(errs.iter().any(|e| e.instance_path == "/a~1b"));
+    let errs = fast2.validate_errors(br#"{"c~d":"x"}"#, usize::MAX);
+    assert!(errs.iter().any(|e| e.instance_path == "/c~0d"));
+}
+
+#[test]
+fn error_reporting_matches_validation_bool() {
+    // validate_errors(empty) must agree exactly with is_valid_bytes.
+    let schemas = [
+        json!({
+            "type":"object",
+            "required":["a"],
+            "properties":{"a":{"type":"number","multipleOf":2}},
+            "additionalProperties":false
+        }),
+        json!({"anyOf":[{"type":"string"},{"type":"integer"}]}),
+        json!({"type":"array","items":{"type":"string"},"minItems":1}),
+    ];
+    let docs = [
+        r#"{"a":4}"#,
+        r#"{"a":3}"#,
+        r#"{"a":"x"}"#,
+        r#"{"b":1}"#,
+        r#""s""#,
+        "1",
+        r#"["a"]"#,
+        "[]",
+        r#"["a",1]"#,
+        "not json",
+    ];
+    for s in &schemas {
+        let fast = compile(s).unwrap();
+        for doc in &docs {
+            let ok = fast.is_valid_bytes(doc.as_bytes());
+            let errs = fast.validate_errors(doc.as_bytes(), usize::MAX);
+            assert_eq!(ok, errs.is_empty(), "schema={s} doc={doc}");
+        }
+    }
 }
 
 #[test]
@@ -334,4 +795,156 @@ fn invalid_utf8_and_malformed_bytes_return_false() {
     assert!(!fast.is_valid_bytes(
         b"{\"id\":1,\"name\":\"a\",\"active\":true,\"score\":1,\"tags\":[],\"nested\":{\"version\":1,\"createdAt\":\"c\"}} garbage"
     ));
+}
+
+// ── format: "email" (zero-DOM fast path) ─────────────────────────
+
+#[test]
+fn email_format_matches_reference_corpus() {
+    let schema = json!({
+        "type": "object",
+        "required": ["email"],
+        "properties": {
+            "email": { "type": "string", "format": "email" }
+        },
+        "additionalProperties": false
+    });
+    let docs = [
+        // ── valid ──
+        r#"{"email":"a@b.com"}"#,
+        r#"{"email":"john.doe+tag@example.co.uk"}"#,
+        r#"{"email":"user@sub.example.com"}"#,
+        r#"{"email":"user@[IPv6:2001:db8::1]"}"#,
+        r#"{"email":"user@[192.168.0.1]"}"#,
+        r#"{"email":"user@[IPv6:2001:0db8:85a3:0000:0000:8a2e:0370:7334]"}"#,
+        r#"{"email":"user@xn--bcher-kva.com"}"#, // valid punycode domain
+        r#"{"email":"a.b.c.d.e.f@example.com"}"#,
+        r#"{"email":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"}"#, // 64-char local
+        r#"{"email":"user@xn--11b2ezcw70k"}"#, // ZWJ after virama (valid punycode)
+        r#"{"email":"user@xn--ll-0ea"}"#, // punycode with valid middle dot context
+        // ── invalid: domain shape ──
+        r#"{"email":"not-an-email"}"#,
+        r#"{"email":"a@"}"#,
+        r#"{"email":"@b.com"}"#,
+        r#"{"email":"a b@c.com"}"#,
+        r#"{"email":"a@b c.com"}"#,
+        r#"{"email":"a@-b.com"}"#,
+        r#"{"email":"a@b-.com"}"#,
+        r#"{"email":"a@b..com"}"#,
+        r#"{"email":"a@b.com."}"#,
+        r#"{"email":"a@ex--ample.com"}"#, // hyphens 3rd+4th, not punycode
+        r#"{"email":"a@xn--example.com"}"#, // invalid punycode
+        r#"{"email":"a@xn--x"}"#, // too-short punycode
+        r#"{"email":"a@[IPv6:zzzz::1]"}"#,
+        r#"{"email":"a@[999.999.999.999]"}"#,
+        r#"{"email":"a@[not-a-literal]"}"#,
+        r#"{"email":"a@xn--hello-zed"}"#, // punycode beginning with nonspacing mark
+        r#"{"email":"a@XN--aa---o47jg78q"}"#, // uppercase punycode prefix rejected
+        r#"{"email":"a@example-.com"}"#,
+        // ── invalid: local part / escapes ──
+        r#"{"email":"a\u0040b.com"}"#, // JSON escape decodes to a@b.com (valid) — decode path
+        r#"{"email":"a\\@b.com"}"#, // backslash in local part
+        r#"{"email":"héllo@example.com"}"#, // non-ASCII local part rejected (format:email)
+        // wrong root type
+        r#"42"#,
+    ];
+    assert_parity(schema, &docs);
+}
+
+#[test]
+fn email_only_schema_compiles_and_validates() {
+    // A schema with ONLY format:email (no minLength/maxLength) must still
+    // engage the fast path's string node.
+    let schema = json!({ "type": "string", "format": "email" });
+    let fast = compile(&schema).expect("format:email must compile on the fast path");
+    let v = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .should_validate_formats(true)
+        .build(&schema)
+        .unwrap();
+    for doc in [r#""a@b.com""#, r#""not-an-email""#, r#"42"#] {
+        let expected = serde_json::from_str::<Value>(doc)
+            .map(|x| v.is_valid(&x))
+            .unwrap_or(false);
+        assert_eq!(fast.is_valid_bytes(doc.as_bytes()), expected, "doc={doc}");
+    }
+}
+
+#[test]
+fn other_formats_and_unknown_formats_fall_back() {
+    for f in ["idn-email", "date-time", "uri", "uuid", "ipv4", "regex", "unknown"] {
+        let schema = json!({ "type": "string", "format": f });
+        assert!(
+            compile(&schema).is_err(),
+            "format {f:?} must fall back to the DOM path"
+        );
+    }
+}
+
+#[test]
+fn email_format_property_parity_with_reference() {
+    // Deterministic pseudo-random emails: cross-check the fast path against the
+    // authoritative jsonschema DOM validator. ANY divergence fails — this is
+    // the byte-parity gate that justifies engaging the fast path for the
+    // ingress schema (which uses format:email).
+    let schema = json!({ "type": "string", "format": "email" });
+    let fast = compile(&schema).unwrap();
+    let v = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .should_validate_formats(true)
+        .build(&schema)
+        .unwrap();
+
+    // Simple LCG (no rand dep needed in tests).
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 32) as u32
+    };
+
+    let alphabet_local: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789._%+-";
+    let alphabet_domain: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-.";
+    let alphabet_bad: &[u8] = b" @!?*\\/()";
+
+    let mut checked = 0u32;
+    for _ in 0..3000 {
+        // Local part: 0..=24 chars, mostly valid + occasional bad char.
+        let mut local = String::new();
+        let llen = (next() % 26) as usize;
+        for _ in 0..llen {
+            let pick = next() % 100;
+            let b = if pick < 88 {
+                alphabet_local[(next() % alphabet_local.len() as u32) as usize]
+            } else {
+                alphabet_bad[(next() % alphabet_bad.len() as u32) as usize]
+            };
+            local.push(b as char);
+        }
+        // Domain: 0..=40 chars, occasionally a space or trailing dot.
+        let mut domain = String::new();
+        let dlen = (next() % 42) as usize;
+        for _ in 0..dlen {
+            let pick = next() % 100;
+            let b = if pick < 92 {
+                alphabet_domain[(next() % alphabet_domain.len() as u32) as usize]
+            } else {
+                b' '
+            };
+            domain.push(b as char);
+        }
+        let mut email = local;
+        email.push('@');
+        email.push_str(&domain);
+
+        let doc = serde_json::to_string(&email).unwrap();
+        let expected = serde_json::from_str::<Value>(&doc)
+            .map(|x| v.is_valid(&x))
+            .unwrap_or(false);
+        let got = fast.is_valid_bytes(doc.as_bytes());
+        assert_eq!(got, expected, "email={email:?}");
+        checked += 1;
+    }
+    assert!(checked >= 3000);
 }

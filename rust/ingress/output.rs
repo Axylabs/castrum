@@ -251,7 +251,9 @@ pub fn write_output_header(
     header_variant: u8,
     body_json_len: u32,
 ) -> usize {
-    let status = if status == 101 || (200u16..=599u16).contains(&status) {
+    // The pipeline only writes 200 (`HeaderFields::ok`) or terminal 4xx/5xx,
+    // so 101 (and any other out-of-range status) is clamped to 500.
+    let status = if (200u16..=599u16).contains(&status) {
         status
     } else {
         500

@@ -18,3 +18,7 @@ export * from "./tasks/compress";
 export * from "./tasks/multipart";
 export * from "./tasks/template";
 export * from "./tasks/streaming";
+// Bun built-in diagnostics (Bun-only by design — see bun-builtins.ts header)
+export * from "./tasks/bun-builtins";
+// PBKDF2 baseline (node:crypto pbkdf2Sync)
+export * from "./tasks/pbkdf2";

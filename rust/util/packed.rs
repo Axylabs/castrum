@@ -8,19 +8,6 @@
 use napi::bindgen_prelude::Uint8Array;
 use napi::{Error, Result};
 
-#[inline(always)]
-pub fn read_u32_le(data: &[u8], offset: usize) -> Result<u32> {
-    let slice = data
-        .get(offset..offset + 4)
-        .ok_or_else(|| Error::from_reason("packed buffer: truncated u32"))?;
-
-    let bytes: [u8; 4] = slice
-        .try_into()
-        .map_err(|_| Error::from_reason("packed buffer: invalid u32"))?;
-
-    Ok(u32::from_le_bytes(bytes))
-}
-
 // ── Zero-Alloc Packed Iterator ─────────────────────────────────────
 
 /// A zero-allocation iterator over packed batch buffers.
@@ -369,16 +356,6 @@ mod tests {
             out.extend_from_slice(item);
         }
         out
-    }
-
-    #[test]
-    fn read_u32_le_cases() {
-        assert_eq!(read_u32_le(b"\x2a\x00\x00\x00", 0).unwrap(), 42);
-        // Truncated slice.
-        assert!(read_u32_le(b"\x01\x02", 0).is_err());
-        assert!(read_u32_le(b"\x01\x02\x03", 0).is_err());
-        // Offset runs off the end.
-        assert!(read_u32_le(b"\x01\x02\x03\x04", 1).is_err());
     }
 
     #[test]

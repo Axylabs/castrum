@@ -33,6 +33,7 @@ import { passwordTasks } from "./password";
 import { streamingTasks } from "./streaming";
 import { templateTasks } from "./template";
 import { urlJoinTasks } from "./url-join";
+import { bunBuiltinsTasks } from "./bun-builtins";
 
 export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
   return [
@@ -65,6 +66,8 @@ export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
     ...templateTasks(fixtures),
     ...streamingTasks(fixtures),
     ...urlJoinTasks(fixtures),
+    // Diagnostic: castrum vs Bun built-ins (diag: task names — never audited)
+    ...bunBuiltinsTasks(fixtures),
   ];
 }
 

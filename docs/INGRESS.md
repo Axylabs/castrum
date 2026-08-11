@@ -107,7 +107,10 @@ createIngressServer({
 ```
 
 > **Wire format** (a contract — `bench/load.ts` depends on it):
-> - Success: the body is Rust-generated `{"ok":true,"requestId":"...",...}`.
+> - Success (with `emitMetadataJson: true` — the bench enables it): the body is
+>   Rust-generated `{"ok":true,"requestId":"...",...}`. With the DEFAULT
+>   `emitMetadataJson: false` the success body is **empty** (lean reads) — serve
+>   `result.bodyJson()` / `cookiesJson()` / `queryJson()` instead.
 > - Errors: `{"ok":false,"error":{"code":"...","message":"..."}}` (rate limits
 >   also include `"retry_after_ms"`).
 > - Rate-limit headers use `ratelimit-limit/-remaining/-reset` (not
@@ -235,6 +238,49 @@ import { gracefulShutdown } from "castrum";
 const cleanup = gracefulShutdown([srv.server], { timeoutMs: 5_000 });
 // cleanup() removes the signal listeners
 ```
+
+### Observability: metrics, health probes, tracing
+
+Enterprise-grade operators get three zero-dependency primitives (all exported
+from the package root):
+
+**Metrics** — `createIngressMetrics()` returns a registry + the
+`onRequest`/`onResponse`/`onError` hooks to pass into `createIngressHandler`,
+plus a Prometheus `/metrics` route factory:
+
+```ts
+import { createIngressHandler, createIngressServer,
+         createIngressMetrics, metricsHandler,
+         livenessHandler, readinessHandler } from "castrum";
+
+const metrics = createIngressMetrics();
+const ingress = createIngressHandler(options, { ...metrics.runtime });
+
+createIngressServer({
+  port: 3000,
+  routes: {
+    "/healthz": { read: livenessHandler() },               // process alive
+    "/readyz":  { read: readinessHandler(async () => await dbReady()) }, // deps up
+    "/metrics": { read: metricsHandler(metrics) },         // Prometheus text
+    "/api":     { read: ingress },
+  },
+});
+```
+
+Metric names follow `castrum_http_*`:
+`castrum_http_requests_total{method,status}`, `castrum_http_request_duration_seconds{method,status}`,
+`castrum_http_errors_total{code}`, `castrum_http_rate_limited_total`, and
+`castrum_http_in_flight_requests`. The generic registry (`createMetrics()`) is
+also exported for standalone use (counters/gauges/histograms + Prometheus text
+rendering).
+
+**Health probes** — `livenessHandler()` (always 200), `readinessHandler(check?)`
+(200/503 via an async dependency check), `healthHandler(check?)`.
+
+**Tracing** — W3C trace-context helpers: `parseTraceParent(header)`,
+`createTraceId()`, `createSpanId()`, `serializeTraceParent(ctx)`. Wire an
+`onRequest` hook to parse `req.headers.get("traceparent")` and thread
+`traceId`/`spanId` into your structured logger:
 
 ### `BakedIngressResult`
 

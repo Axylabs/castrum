@@ -26,6 +26,7 @@ HTTP **ingress pipeline** for Bun servers.
 | Rust unit tests | `cargo test` (~250 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
 | TS unit tests | `bun test` (~255 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
+| Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts), NEVER audited by check:proven; decision matrix in docs/bun-builtins-decision-matrix.md |
 | Proven-surface audit | `bun run check:proven` (report) / `bun run check:proven:fail` (CI gate) |
 | Startup / first-call benchmark | `bun run bench:startup` |
 | Typecheck | `bun run typecheck` (== `bunx tsc --noEmit`; `include` = index.ts, bench.ts, src, bench) + `bun run typecheck:test` (== `bunx tsc --noEmit -p tsconfig.test.json`; typechecks `test/` + `bench/` with unused locals/params on) |
@@ -80,6 +81,8 @@ src/shared/runtime.ts     runtime detection (isBun/isNode) — the ONLY place `t
 src/shared/log.ts         createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines)
 src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── constants.ts        binary-layout constants, read from Rust at runtime (SINGLE SOURCE OF TRUTH)
+  ├── metrics.ts          createIngressMetrics (hook wiring) + metricsHandler (/metrics Prometheus text)
+  ├── health.ts           livenessHandler / readinessHandler / healthHandler probe factories
   ├── shared.ts           JS constants shared by both paths (METHOD_KIND, DEFAULT_MAX_BODY_BYTES, HeaderPlan)
   ├── status.ts           status normalization helpers (both paths)
   ├── errors.ts           fast-path error-code name/message mapping
@@ -88,12 +91,13 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── body.ts             streaming request-body reader (async API; size guard + bodyTimeoutMs)
   ├── context.ts          result snapshot + synthetic/internal context builders
   ├── server.ts           createIngressServer (Bun.serve) + buildRouteHandlers (shared) + gracefulShutdown
-  ├── server-node.ts      createIngressServerNode (node:http adapter, same route handlers)
+  ├── server-node.ts      createIngressServerNode (node:http adapter, same route handlers;
+  │                       WebSocket `upgrade` + 431 on header overflow + keep-alive body drain)
   ├── packing/            header-packing.ts (fast) + input-packer.ts + gather-raw-headers.ts (pre-baked) + scratch.ts (shared TLS buffers + per-header size guards)
   ├── headers/            cors.ts + hsts.ts + fast-templates.ts + baked-templates.ts (two template builders, NOT unified)
   ├── decode/             fast-result.ts + baked-result.ts (two decoders, NOT unified) + packed-sections.ts (shared section layout)
   ├── response/           terminal.ts (fast) + error-bodies.ts (pre-baked)
-  ├── routes/             read/head/json-write/echo/fallback factories + common.ts
+  ├── routes/             read/head/json-write/echo/delete/options/fallback factories + common.ts
   ├── fast.ts             thin: createIngressFast (packed-input path, handleRequestPacked) + re-exports
   ├── handlers.ts         thin: createIngressHandler (packed-input path: frame packed in
   │                       JS via IngressInputPacker + gatherRawHeadersPacked, driven by
@@ -102,6 +106,9 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
 src/native/               addon layer: types.ts (NativeAddon + instance types) + loader.ts (getAddon/lazyAddon) + index.ts barrel
 src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts + text.ts + batch.ts + packed.ts + scalar/ (interface + hashing/json/http/crypto/payload/factories builders) + client.ts + proven.ts + index.ts barrel
 src/shared/request-id.ts  shared zero-alloc request ID generator (both ingress paths) — aliased buffer hazard documented
+src/shared/metrics.ts     zero-dep metrics registry (counters/gauges/histograms + Prometheus render)
+src/shared/trace.ts       W3C traceparent/span-id helpers (tracing correlation)
+src/shared/uuid.ts        uuidv7() — delegates to Bun.randomUUIDv7, crypto.randomUUID on Node
 src/shared/buffer-pool.ts  generic reusable byte-buffer pool (pooled output buffers, zero-copy borrows)
 src/shared/response.ts     pooledBodyResponse: Response that returns a pooled buffer on body consumption
 src/shared/env.ts          centralized env-var alias resolution (CASTRUM_* + legacy RUST_BENCH_*/RUST_* names)
@@ -143,6 +150,8 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   ├── jwt.rs          HS256 JWT sign/verify + JwtSigner (precomputed header)
   │   ├── aead.rs         AES-256-GCM / chacha20-poly1305 + AeadCipher
   │   ├── argon2.rs       argon2id + Argon2Hasher
+  │   ├── bcrypt.rs       bcrypt PHC `$2b$` hashing/verify (passwordHashBcrypt)
+  │   ├── pbkdf2.rs       PBKDF2-HMAC-SHA256 (pbkdf2Sha256)
   │   ├── base64.rs       base64/base64url/hex + Base64Codec
   │   ├── hashing.rs      FNV-1a / XXH3 / crc32
   │   └── random_token.rs random hex tokens
@@ -151,8 +160,8 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   ├── json_ser.rs     zero-alloc JSON escaping + cookie/query → JSON writers
   │   ├── json_patch_ops.rs  RFC 6902 JSON patch
   │   ├── json_schema.rs  SchemaValidator napi class (fast path + jsonschema-crate fallback)
-  │   └── fast_schema/    zero-DOM JSON Schema fast path: mod.rs (re-exports compile/FastNode)
-  │       └── types.rs / cursor.rs / compile.rs / validate.rs / tests.rs
+  │   └── fast_schema/    zero-DOM draft-07 JSON Schema fast path: mod.rs (re-exports compile/FastNode + SchemaError)
+  │       └── types.rs / cursor.rs / compile.rs / validate.rs / errors.rs / email.rs (format:"email" replica) / tests.rs
   ├── payload/            OUTPUT & STREAMING
   │   ├── compress.rs     gzip (zlib-rs) + brotli + batch
   │   ├── sse.rs / ws_frames.rs / websocket.rs   SSE framing, RFC 6455 codec, accept-key
@@ -168,6 +177,7 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   └── ingress_constants.rs  NAPI projection of output.rs (single numeric source = output.rs)
   ├── test_support.rs     shared #[cfg(test)] helpers (pack_headers, decode_packed_pairs, Rng)
   └── unit_tests.rs       cross-module test suite
+  └── proptest_suite.rs   #[cfg(test)] property-based adversarial-parser tests (dev-dep proptest)
 ```
 
 ## Ingress: the two paths (do NOT conflate)
@@ -220,12 +230,15 @@ success and `error.code` / `error.message` on errors (path 2's format).
   `src/ingress/constants.ts`.
 - **Runtime seam**: runtime detection lives ONLY in `src/shared/runtime.ts`
   (`isBun`/`isNode`). Do not sprinkle `typeof Bun` checks elsewhere. `createIngressServer`
-  is Bun-only (throws on Node); Node users use `createIngressServerNode` (same route
-  handlers via `buildRouteHandlers` in `server.ts`).
+  guards on `isBun()` and throws a friendly error on Node (it builds a Bun.serve config);
+  Node users use `createIngressServerNode` (same route handlers via `buildRouteHandlers`
+  in `server.ts`). `BakedServer.port` is the ACTUAL bound port (Bun exposes it even with
+  `port: 0`; the Node adapter reports it via `ready`/getter).
 - **Addon loader** (`src/native/loader.ts`): resolves the `.node` from multiple roots so
   it works from BOTH the source layout (`src/native/…`) and the bundled layout
-  (`dist/…`). Honor `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`. Run
-  `bun run bench:startup` after touching it.
+  (`dist/…`). Honor `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`. A
+  SET-but-misconfigured override throws (never silently falls through to the package
+  roots). Run `bun run bench:startup` after touching it.
 - **Constants**: never hardcode binary-layout values. The single NUMERIC source is
   `rust/ingress/output.rs`; `rust/ingress/ingress_constants.rs` re-exports those
   values to JS via NAPI (`#[napi] pub const ... = crate::ingress::output::OUT_X
@@ -237,6 +250,27 @@ success and `error.code` / `error.message` on errors (path 2's format).
   `IngressSchema::validate` (fast path; jsonschema DOM fallback for unsupported
   keywords) → 422. The fast_schema fast path MUST stay byte-parity with the
   jsonschema crate for supported keywords (see rust/json/fast_schema/tests.rs).
+  **Draft-07 is pinned**: jsonschema 0.48's DEFAULT draft (no `$schema`) is
+  2020-12, whose `items`/`$ref`-sibling/boolean-exclusive semantics differ from
+  the fast path's draft-07 — so `SchemaValidator` and `IngressSchema` build the
+  reference with `.with_draft(Draft7)`, keeping both paths consistent for
+  schemas without a `$schema`. A schema's declared `$schema` still overrides
+  (and the fast path falls back for non-draft-07 declarations).
+  **Fast-path coverage** (draft-07 validation keywords): type, enum, const,
+  multipleOf, numeric bounds, min/maxLength, `pattern`/`patternProperties`
+  (fancy-regex = jsonschema's engine), items (single + tuple), additionalItems,
+  min/maxItems, uniqueItems, contains, min/maxProperties, required, properties,
+  additionalProperties, dependencies (array form), if/then/else, allOf, anyOf,
+  oneOf, not, in-document `$ref`, format:"email". Falls back: propertyNames,
+  dependencies-with-schema, boolean exclusive bounds, other formats,
+  remote/dynamic/anchor refs. `format: "email"` is fast-path supported via
+  `rust/json/fast_schema/email.rs` (a byte-parity replica of jsonschema 0.48.5's
+  `is_valid_email`). NOTE: jsonschema 0.48 disables format validation by default
+  (`validator_for`), so BOTH `SchemaValidator` (json_schema.rs) and
+  `IngressSchema` build the reference with `should_validate_formats(true)`.
+  Detailed errors: `SchemaValidator.validateDetailed` / `validateFirstError`
+  return jsonschema-style errors (instance + schema JSON pointers, keyword,
+  message) from the zero-DOM path (`validate_errors`).
 - **`tsconfig.json`** sets `noUncheckedIndexedAccess: true`. Indexed access on
   `Record<string, Uint8Array>` (e.g. `ERROR_BODIES.internal`) is
   `Uint8Array | undefined` — `handlers.ts` uses `!` where the key is guaranteed.
@@ -270,10 +304,16 @@ success and `error.code` / `error.message` on errors (path 2's format).
   **shared process-wide** via `SHARED_LIMITERS` (an `OnceLock<Mutex<LruCache>>`
   keyed by configuration, capped at 16 distinct configs) so the same config
   shares ONE budget across all routes/instances — this blocks route-splitting
-  bypass (see SECURITY.md). Per-process, not distributed; monotonic `Instant` +
+  bypass (see SECURITY.md). A (cap+1)th distinct config THROWS at construction
+  rather than silently evicting a live limiter (eviction would reset per-IP
+  budgets — a bypass vector). Per-process, not distributed; monotonic `Instant` +
   one-time wall offset via `OnceLock`. Ingress stores it as a
   `RateLimiterState` enum (`Disabled`/`Enabled`) so the code can't have a
   "rate enabled but no limiter" state.
+- **CORS headers**: the Rust `CorsOptions` carries only what the engine EVALUATES
+  (origin/methods/headers/credentials); the emitted `access-control-expose-headers` /
+  `access-control-max-age` come from the TS header templates (both paths read the same
+  `cors` option object).
 - **XFF / proxy trust**: empty `trustedProxies.networks` → trust NOTHING (safe
   default, not spoofable). The deprecated `trustProxy: true` boolean → trust
   EVERY hop (spoofable) and warns. The bench server's `INGRESS_TRUST_PROXY`

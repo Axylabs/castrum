@@ -56,7 +56,7 @@ import {
   warnTrustProxyDeprecated,
   type IngressHandlerOptions,
 } from "./options";
-import { buildHeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN, secondsFromMs, DEFAULT_BAKED_OUTPUT_BUFFER_SIZE, type HeaderPlan } from "./shared";
+import { assertSyncCallback, buildHeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN, secondsFromMs, DEFAULT_BAKED_OUTPUT_BUFFER_SIZE, type HeaderPlan } from "./shared";
 import { BakedIngressResult } from "./decode/baked-result";
 import { ERROR_BODIES, rateLimitedBody, ERROR_CODE_BODIES } from "./response/error-bodies";
 import { buildBakedHeaderTemplates } from "./headers/baked-templates";
@@ -484,8 +484,14 @@ export function createIngressHandler(
     init: ResponseInit,
   ): Response {
     if (currentHandle === null) {
-      // Defensive: no pooled handle available — serve the slice directly.
-      return new Response(result.bodyJson(false), init);
+      // `zeroCopyResponse` must only run inside a live `run()` callback (a
+      // pooled output buffer must be in flight). Called outside `run()` the
+      // result has already been invalidated and `result.bodyJson` is empty —
+      // throw instead of silently serving an empty body.
+      throw new Error(
+        "zeroCopyResponse() can only be called from within a run() callback " +
+          "(the pooled output buffer is only live during run()).",
+      );
     }
     responseBorrowsBuffer = true;
     return pooledBodyResponse(currentHandle, result.bodyJson(false), init);
@@ -573,6 +579,10 @@ export function createIngressHandler(
 
       try {
         const out = fn(result, ctx);
+        // The ingress result is invalidated when run() returns, so an async
+        // callback would observe a stale/zeroed result — reject it up front
+        // (parity with the fast path / createIngressSync).
+        assertSyncCallback(out, "createIngressHandler().run()");
         // Report observability for every outcome. Non-Response callbacks
         // (e.g. echoHandler's object return) fall back to the decoded terminal
         // status so they are not silently invisible to onResponse/logging.

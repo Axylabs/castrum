@@ -64,11 +64,30 @@ export function resolveAddonPathFrom(
         return false;
       }
     };
+    const overrideCandidates: string[] = [];
     if (existsSync(envOverride) && isFile(envOverride)) {
       candidates.push(envOverride);
+      overrideCandidates.push(envOverride);
     }
     for (const name of names) {
-      candidates.push(join(envOverride, name));
+      const candidate = join(envOverride, name);
+      candidates.push(candidate);
+      overrideCandidates.push(candidate);
+    }
+    // A SET-but-misconfigured override must not silently fall through to the
+    // package roots — that would mask a typo'd path (a stale/root addon could
+    // load while the user believes their override is active). Throw a clear
+    // error instead, pointing at the expected override locations.
+    if (!overrideCandidates.some((c) => existsSync(c))) {
+      throw new Error(
+        `Could not find castrum native addon.\n` +
+          `CASTRUM_NATIVE_LIBRARY_PATH (or NAPI_RS_NATIVE_LIBRARY_PATH) is set to ` +
+          `"${envOverride}" but no loadable addon was found there.\n` +
+          `Expected one of:\n${overrideCandidates
+            .map((c) => `  - ${c}`)
+            .join("\n")}\n` +
+          `Fix the path, or unset the variable to fall back to the package layout.`,
+      );
     }
   }
 

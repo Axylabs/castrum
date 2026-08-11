@@ -112,23 +112,56 @@ fn rate_limit_seed_is_stable_per_instance() {
 fn rate_limit_shared_limiter_is_shared_by_config() {
     use std::sync::Arc;
 
-    let a = crate::ingress::rate_limit::shared_limiter(100, 60_000, None);
-    let b = crate::ingress::rate_limit::shared_limiter(100, 60_000, None);
+    let a = crate::ingress::rate_limit::shared_limiter(100, 60_000, None).unwrap();
+    let b = crate::ingress::rate_limit::shared_limiter(100, 60_000, None).unwrap();
     assert!(
         Arc::ptr_eq(&a, &b),
         "identical config must share one process-wide limiter"
     );
 
-    let c = crate::ingress::rate_limit::shared_limiter(100, 60_000, Some(10_000));
+    let c = crate::ingress::rate_limit::shared_limiter(100, 60_000, Some(10_000)).unwrap();
     assert!(
         !Arc::ptr_eq(&a, &c),
         "different max_entries must not share a limiter"
     );
 
-    let d = crate::ingress::rate_limit::shared_limiter(200, 60_000, None);
+    let d = crate::ingress::rate_limit::shared_limiter(200, 60_000, None).unwrap();
     assert!(
         !Arc::ptr_eq(&a, &d),
         "different limit must not share a limiter"
+    );
+}
+
+#[test]
+fn rate_limit_shared_limiter_refuses_17th_distinct_config() {
+    // The registry is BOUNDED (MAX_SHARED_LIMITERS = 16) and must never
+    // SILENTLY evict a live limiter (eviction resets per-IP budgets — a
+    // rate-limit bypass vector). Fill it with 16 distinct configs (starting
+    // with the 4 the other shared_limiter tests already register, so this is
+    // deterministic regardless of test order), then assert a 17th throws.
+    let mut configs: Vec<(u32, u32, usize)> = vec![
+        (100, 60_000, 1_048_576), // matches shared_limiter(100, 60_000, None)
+        (100, 60_000, 10_000), // matches shared_limiter(100, 60_000, Some(10_000))
+        (200, 60_000, 1_048_576), // matches shared_limiter(200, 60_000, None)
+        (2, 60_000, 1_048_576), // matches shared_limiter(2, 60_000, None)
+    ];
+    for i in 0..12u32 {
+        configs.push((300 + i, 60_000, 1000 + i as usize));
+    }
+    for &(limit, window, max_entries) in &configs {
+        let _ =
+            crate::ingress::rate_limit::shared_limiter(limit, window, Some(max_entries))
+                .expect("distinct config registers");
+    }
+    // Registry at capacity: a genuinely new config must error, not evict.
+    let res = crate::ingress::rate_limit::shared_limiter(500_000, 60_000, Some(123_456));
+    let err = match res {
+        Ok(_) => panic!("17th distinct config must be refused, not silently evicted"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("too many distinct rate-limit configurations"),
+        "unexpected error: {err}"
     );
 }
 
@@ -137,8 +170,8 @@ fn rate_limit_shared_limiter_shares_budget() {
     // Two instances with the same config share one bucket — a request consumed
     // via one instance must count against the other (prevents route-splitting
     // bypass).
-    let a = crate::ingress::rate_limit::shared_limiter(2, 60_000, None);
-    let b = crate::ingress::rate_limit::shared_limiter(2, 60_000, None);
+    let a = crate::ingress::rate_limit::shared_limiter(2, 60_000, None).unwrap();
+    let b = crate::ingress::rate_limit::shared_limiter(2, 60_000, None).unwrap();
     let key = 1234u64;
 
     assert!(a.check_key(key, 0).allowed);
@@ -373,11 +406,14 @@ fn output_write_header_normalizes_invalid_status() {
 }
 
 #[test]
-fn output_write_header_keeps_101() {
+fn output_write_header_clamps_out_of_range_status() {
+    // The pipeline only emits 200 (`HeaderFields::ok`) or terminal 4xx/5xx;
+    // out-of-range statuses (e.g. 101, 600) are intentionally clamped to 500
+    // (see output.rs write_output_header).
     let mut out = vec![0u8; 128];
     write_output_header(&mut out, 1, 0, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     let status = u16::from_le_bytes([out[OUT_STATUS], out[OUT_STATUS + 1]]);
-    assert_eq!(status, 101);
+    assert_eq!(status, 500);
 }
 
 #[test]
@@ -589,9 +625,7 @@ fn cors_options(
         allow_origin: Some(origin),
         allow_methods: Some(methods),
         allow_headers: Some(headers),
-        expose_headers: None,
         allow_credentials: Some(creds),
-        max_age: None,
     }
 }
 
@@ -896,6 +930,45 @@ fn json_escaped_len_short_control_escapes() {
     );
     // Mixed: newline (memchr3 path) + tab (trailing path).
     assert_eq!(crate::json::json_ser::json_escaped_len(b"a\n\tb"), 6);
+}
+
+#[test]
+fn json_escaped_len_fused_matches_write_on_utf8_corpus() {
+    // The fused len (single pass: memchr3 + gap UTF-8 validation) must exactly
+    // equal the bytes `write_json_escaped` emits for valid non-ASCII UTF-8 AND
+    // invalid UTF-8 (where every byte becomes \u00XX).
+    let cases: &[&[u8]] = &[
+        "héllo wörld".as_bytes(),                           // valid non-ASCII, no escapes
+        "caf\u{00e9} \u{201c}quoted\u{201d}".as_bytes(),    // valid with escapes
+        &[b'a', 0xC3, 0xA9, b'b'],                          // é valid
+        &[b'"', 0xC3, 0xA9, b'\\'],                         // escapes + multibyte
+        &[0xFF, 0xFE, b'a'],                                // invalid UTF-8
+        &[b'a', 0x80, b'b'],                                // lone continuation byte
+        &[0xC3, b' ', b'x'],                                // truncated multibyte
+        &[b'a', b'\\', 0xFF, b'\n', 0x01],                  // mixed invalid + escapes
+        "日本語のテキスト".as_bytes(),                        // pure multibyte, no ASCII
+    ];
+    for input in cases {
+        let len = crate::json::json_ser::json_escaped_len(input);
+        let mut out = vec![0u8; len];
+        let mut pos = 0usize;
+        crate::json::json_ser::write_json_escaped(&mut out, &mut pos, input);
+        assert_eq!(pos, len, "len must match written for {input:?}");
+    }
+}
+
+#[test]
+fn json_escaped_len_invalid_utf8_is_len_times_six() {
+    let cases: &[&[u8]] = &[
+        &[0xFF, 0xFE],
+        &[b'a', 0x80, b'b'],
+        &[0xC3, b' '],
+        &[b'a', b'\\', 0xFF],
+    ];
+    for input in cases {
+        let len = crate::json::json_ser::json_escaped_len(input);
+        assert_eq!(len, input.len() * 6, "input: {input:?}");
+    }
 }
 
 #[test]
@@ -1241,7 +1314,7 @@ fn ws_accept_key_batch_matches_rfc6455() {
     .unwrap();
     let out = out.as_ref();
     let len0 = read_u32(out, 4) as usize;
-    assert_eq!(&out[8..8 + len0], b"mjqt7n322xkUQqCX5NPZbkSHHuk=");
+    assert_eq!(&out[8..8 + len0], b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 }
 
 #[test]

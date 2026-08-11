@@ -27,10 +27,10 @@ export function buildText(ctx: RustClientContext): RustText {
       return decoder.decode(ctx.cachedMime(encoder.encode(ext)));
     },
     urlEncode(input) {
-      return decoder.decode(addon.urlEncode(encoder.encode(input)));
+      return addon.urlEncodeStr(input);
     },
     urlDecode(input) {
-      return decoder.decode(addon.urlDecode(encoder.encode(input)));
+      return addon.urlDecodeStr(input);
     },
     wsAcceptKey(key) {
       return decoder.decode(addon.wsAcceptKey(encoder.encode(key)));

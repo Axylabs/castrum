@@ -13,13 +13,13 @@ function wsReq(path = "/ws", headers: Record<string, string> = {}): Request {
 
 describe("createWebSocketUpgrade", () => {
   test("returns a 101 with the RFC 6455 accept key", () => {
-    // RFC 6455 example: key "dGhlIHNhbXBsZSBub25jZQ==" →
-    // accept "mjqt7n322xkUQqCX5NPZbkSHHuk=" (verified against node:crypto).
+    // RFC 6455 §1.3 example: key "dGhlIHNhbXBsZSBub25jZQ==" →
+    // accept "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" (verified against node:crypto).
     const up = createWebSocketUpgrade(wsReq());
     expect(up).not.toBeNull();
     expect(up?.response.status).toBe(101);
     expect(up?.response.headers.get("sec-websocket-accept")).toBe(
-      "mjqt7n322xkUQqCX5NPZbkSHHuk=",
+      "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
     );
     expect(up?.key).toBe("dGhlIHNhbXBsZSBub25jZQ==");
     expect(up?.protocol).toBeNull();

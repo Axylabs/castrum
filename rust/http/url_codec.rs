@@ -32,8 +32,11 @@ fn is_unreserved(b: u8) -> bool {
 /// Percent-encode a raw byte slice (RFC 3986 unreserved set). Shared by the
 /// scalar napi path and the packed batch path.
 fn url_encode_bytes(input: &[u8]) -> Vec<u8> {
-    // Worst case: every byte is encoded → 3x. Use len + len/4 + 8 for typical.
-    let mut out = Vec::with_capacity(input.len() + input.len() / 4 + 8);
+    // Exact-size allocation: count bytes needing %XX in one pass, then size the
+    // Vec precisely so the write loop never reallocates. Saturating math keeps
+    // this overflow-safe under `overflow-checks = true`.
+    let reserved = input.iter().filter(|&&b| !is_unreserved(b)).count();
+    let mut out = Vec::with_capacity(input.len().saturating_add(reserved.saturating_mul(2)));
     let mut start = 0usize;
 
     for (i, &b) in input.iter().enumerate() {
@@ -55,6 +58,30 @@ fn url_encode_bytes(input: &[u8]) -> Vec<u8> {
 #[napi]
 pub fn url_encode(input: Uint8Array) -> Buffer {
     Buffer::from(url_encode_bytes(input.as_ref()))
+}
+
+/// Percent-encode a JS string directly → encoded string. Skips the Uint8Array
+/// round-trip of `url_encode` for string callers. Percent-encoded output is
+/// always ASCII, so no UTF-8 validation is needed.
+#[napi]
+pub fn url_encode_str(input: String) -> String {
+    let bytes = url_encode_bytes(input.as_bytes());
+    // SAFETY: percent-encoded output is ASCII (unreserved chars + %XX hex), so
+    // the bytes are valid UTF-8 by construction.
+    unsafe { String::from_utf8_unchecked(bytes) }
+}
+
+/// Percent-decode a JS string → decoded string. Equivalent to `url_decode` on
+/// the string's UTF-8 bytes; invalid UTF-8 output throws.
+#[napi]
+pub fn url_decode_str(input: String) -> Result<String> {
+    let (out, saw_high) = url_decode_bytes_vec(input.as_bytes())?;
+    if saw_high {
+        simdutf8::basic::from_utf8(&out).map_err(|e| Error::from_reason(e.to_string()))?;
+    }
+    // SAFETY: either the output is pure ASCII (no high bit observed) or it was
+    // validated by simdutf8 above.
+    Ok(unsafe { String::from_utf8_unchecked(out) })
 }
 
 /// Packed percent-encode batch: `[u32 count]{[u32 len][data]}` in →
@@ -218,4 +245,45 @@ mod tests {
         assert!(url_decode_into_slice(b"%ZZ", &mut out).is_err());
         assert!(url_decode_into_slice(b"%2", &mut out).is_err());
     }
-}
+
+    #[test]
+    fn url_encode_allocating_matches_into_slice() {
+        for input in [
+            b"hello world & foo=bar".as_slice(),
+            b"%2Fa%20b%3Fc%3Dd",
+            b"a%20b%20c%20d",
+            b"".as_slice(),
+            b"!~*'()",
+            b"\xff\x00\x80",
+        ] {
+            let allocating = url_encode_bytes(input);
+            let mut out = vec![0u8; input.len() * 3 + 1];
+            let n = url_encode_into_slice(input, &mut out).unwrap();
+            assert_eq!(allocating, &out[..n], "input: {:?}", input);
+        }
+    }
+    #[test]
+    fn url_encode_str_matches_bytes_path() {
+        for s in [
+            "hello world & foo=bar",
+            "!~*'()",
+            "",
+            "h%C3%A9llo",
+            "a/b?c=d#e",
+        ] {
+            let encoded = url_encode_str(s.to_string());
+            assert_eq!(encoded.as_bytes(), url_encode_bytes(s.as_bytes()), "input: {s}");
+        }
+    }
+
+    #[test]
+    fn url_encode_str_roundtrips() {
+        let s = "hello world & foo=bar";
+        assert_eq!(url_decode_str(url_encode_str(s.to_string())).unwrap(), s);
+    }
+
+    #[test]
+    fn url_decode_str_rejects_invalid_utf8() {
+        // Decoded %FF is a lone high byte — not valid UTF-8.
+        assert!(url_decode_str("%FF".to_string()).is_err());
+    }}

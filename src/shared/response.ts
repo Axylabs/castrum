@@ -21,6 +21,10 @@ import type { PooledBuffer } from "./buffer-pool";
  * @param handle - The pooled-buffer handle to release on consumption.
  * @param bytes - The (possibly shared) byte slice to serve as the body.
  * @param init - Standard `ResponseInit` (status, headers, ...).
+ * @param timeoutMs - Optional abandonment guard (ms, default 0 = disabled):
+ *   if the body is neither pulled nor cancelled within this window the pooled
+ *   buffer is released and the stream closed. Opt-in — lets zero-copy
+ *   responses bound memory under abandoned (unread) responses.
  * @returns A `Response` that releases `handle` once its body is consumed.
  *
  * @remarks
@@ -41,6 +45,7 @@ export function pooledBodyResponse(
   handle: PooledBuffer,
   bytes: Uint8Array,
   init: ResponseInit = {},
+  timeoutMs = 0,
 ): Response {
   if (bytes.byteLength === 0) {
     // Nothing to serve: release immediately.
@@ -49,16 +54,43 @@ export function pooledBodyResponse(
   }
 
   let released = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const release = (): void => {
     if (released) {
       return;
     }
     released = true;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
     handle.release();
   };
 
   const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      // Abandonment guard (opt-in): if the body is neither pulled nor
+      // cancelled within `timeoutMs`, release the pooled buffer so it can be
+      // reused and close the stream. Without this, an abandoned Response would
+      // hold the pooled buffer in flight forever (bounded only by maxInFlight).
+      // `pull()` re-checks `released` so a late read never serves the reused
+      // (potentially overwritten) bytes.
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (released) {
+            return;
+          }
+          release();
+          controller.close();
+        }, timeoutMs);
+      }
+    },
     pull(controller) {
+      if (released) {
+        // Released by the abandonment guard (or a racing cancel): the pooled
+        // bytes may already be reused — never serve them. End-of-stream.
+        controller.close();
+        return;
+      }
       controller.enqueue(bytes);
       controller.close();
       release();

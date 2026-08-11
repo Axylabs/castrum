@@ -363,6 +363,18 @@ describe("FastIngressResult", () => {
     expect(r.cookiesJson()).toBe("{}");
   });
 
+  test("refresh flags a truncated BODY section (parity with the baked decoder)", () => {
+    const buf = buildOutputBuffer({
+      status: 200,
+      bodyJsonLen: 1000, // larger than buffer
+    });
+
+    const r = new FastIngressResult();
+    r.refresh(buf, new Uint8Array(0), "");
+
+    expect(r.bodyTruncated).toBe(true);
+  });
+
   test("refresh parses a subarray view with nonzero byteOffset (written-prefix pattern)", () => {
     // fast.ts decodes only the exact written prefix of the reused output buffer
     // (outputBuf.subarray(0, written), mirroring handlers.ts). Simulate a

@@ -132,9 +132,10 @@ export interface RustBatch {
   /** Parse N multipart bodies → array of parts per item (same boundary). */
   multipartParse(items: Uint8Array[], boundary: Uint8Array): MultipartPart[][];
   /**
-   * @performance Template render: ~2.4x slower than the JS baseline [check:annotate]
-   * @deprecated Slower than the native JS baseline (~2.4x) — prefer the JS/Bun baseline. [check:annotate]
-   * @remarks The hand-rolled JS mini-template wins for small templates. [check:annotate]
+   * @performance Template render: ~1.7x slower than the JS baseline (1/3 tasks failed) [check:annotate]
+   * @deprecated Slower than the native JS baseline (~1.7x) — prefer the JS/Bun baseline. [check:annotate]
+   * @remarks Promotion candidate: 2/3 benchmarks won in the latest run (static: not-competitive). [check:annotate]
+   * @remarks The allocating render marshals the context via napi DOM (~1.5x loss). Use TemplateRenderer.renderBytes (JSON-bytes context) which avoids it and wins ~1.37x. [check:annotate]
    */
   templateRender(source: string, contexts: Uint8Array[]): Uint8Array[];
 }

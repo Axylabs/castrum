@@ -25,6 +25,30 @@ fn packed_payload_bytes(data: &[u8], count: usize) -> usize {
     data.len().saturating_sub(4).saturating_sub(count * 4)
 }
 
+/// A single JSON Schema validation error (fast path + DOM fallback).
+#[napi(object)]
+pub struct SchemaError {
+    /// RFC 6901 JSON pointer to the failing instance value ("" = root).
+    pub instance_path: String,
+    /// JSON pointer into the schema at the failing keyword.
+    pub schema_path: String,
+    /// The failing keyword (e.g. "type", "pattern", "required").
+    pub keyword: String,
+    /// Human-readable failure message.
+    pub message: String,
+}
+
+impl From<crate::json::fast_schema::SchemaError> for SchemaError {
+    fn from(e: crate::json::fast_schema::SchemaError) -> Self {
+        Self {
+            instance_path: e.instance_path,
+            schema_path: e.schema_path,
+            keyword: e.keyword,
+            message: e.message,
+        }
+    }
+}
+
 #[napi]
 impl SchemaValidator {
     #[napi(constructor)]
@@ -32,12 +56,29 @@ impl SchemaValidator {
         let schema_value: Value = sonic_rs::from_slice(schema_bytes.as_ref())
             .map_err(|e| Error::new(Status::InvalidArg, format!("Schema JSON error: {}", e)))?;
 
-        let compiled = jsonschema::validator_for(&schema_value).map_err(|e| {
-            Error::new(
-                Status::InvalidArg,
-                format!("Schema compilation error: {}", e),
-            )
-        })?;
+        // `should_validate_formats(true)`: jsonschema 0.48 disables format
+        // validation by default (validator_for uses default options), which
+        // silently ignored `format:` keywords (e.g. the ingress USER_SCHEMA's
+        // `format: "email"`). The zero-DOM fast path now honors `format:
+        // "email"`, so the DOM fallback must validate formats too — otherwise
+        // the two diverge on every format-using schema.
+        //
+        // `.with_draft(Draft7)`: the fast path implements draft-07 semantics,
+        // and jsonschema 0.48's DEFAULT draft (no `$schema`) is 2020-12. Pin
+        // the authoritative DOM validator to draft-07 so schemas without a
+        // `$schema` behave identically on both paths. Schemas that DO declare a
+        // different `$schema` still honor it (the document overrides the
+        // default), and the fast path falls back for those.
+        let compiled = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft7)
+            .should_validate_formats(true)
+            .build(&schema_value)
+            .map_err(|e| {
+                Error::new(
+                    Status::InvalidArg,
+                    format!("Schema compilation error: {}", e),
+                )
+            })?;
 
         // The zero-DOM fast path engages only for schemas using the supported
         // keyword subset; anything else falls back to the compiled crate.
@@ -64,6 +105,67 @@ impl SchemaValidator {
     #[napi]
     pub fn validate(&self, input: Uint8Array) -> bool {
         self.validate_doc(input.as_ref())
+    }
+
+    /// Validate a single JSON document and return detailed errors (empty = valid).
+    ///
+    /// On the zero-DOM fast path this returns every collected error; on the DOM
+    /// fallback path only the first validation error is produced.
+    #[napi]
+    pub fn validate_detailed(&self, input: Uint8Array) -> Vec<SchemaError> {
+        if let Some(fast) = &self.fast {
+            return fast
+                .validate_errors(input.as_ref(), usize::MAX)
+                .into_iter()
+                .map(SchemaError::from)
+                .collect();
+        }
+        match sonic_rs::from_slice::<Value>(input.as_ref()) {
+            Ok(value) => match self.schema.validate(&value) {
+                Ok(()) => Vec::new(),
+                Err(e) => vec![SchemaError {
+                    instance_path: e.instance_path().to_string(),
+                    schema_path: e.schema_path().to_string(),
+                    keyword: format!("{:?}", e.kind()),
+                    message: e.to_string(),
+                }],
+            },
+            Err(_) => vec![SchemaError {
+                instance_path: String::new(),
+                schema_path: String::new(),
+                keyword: "parse".to_string(),
+                message: "document is not valid JSON".to_string(),
+            }],
+        }
+    }
+
+    /// Validate a single JSON document and return only the first error (if any).
+    #[napi]
+    pub fn validate_first_error(&self, input: Uint8Array) -> Option<SchemaError> {
+        if let Some(fast) = &self.fast {
+            return fast
+                .validate_errors(input.as_ref(), 1)
+                .into_iter()
+                .next()
+                .map(SchemaError::from);
+        }
+        match sonic_rs::from_slice::<Value>(input.as_ref()) {
+            Ok(value) => match self.schema.validate(&value) {
+                Ok(()) => None,
+                Err(e) => Some(SchemaError {
+                    instance_path: e.instance_path().to_string(),
+                    schema_path: e.schema_path().to_string(),
+                    keyword: format!("{:?}", e.kind()),
+                    message: e.to_string(),
+                }),
+            },
+            Err(_) => Some(SchemaError {
+                instance_path: String::new(),
+                schema_path: String::new(),
+                keyword: "parse".to_string(),
+                message: "document is not valid JSON".to_string(),
+            }),
+        }
     }
 
     /// Validate a packed batch of individual JSON documents.

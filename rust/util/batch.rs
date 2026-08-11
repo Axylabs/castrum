@@ -404,6 +404,7 @@ fn http_parse_request_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
 fn hex_encode_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
     // Direct-write: hex output size is deterministic (2x input), so write each
     // item straight into the shared output Vec — no per-item String/Vec alloc.
+    // The nibble loop lives in `util::bytes::hex_encode` (single source).
     let iter = PackedIter::new(data)?;
     let count = iter.len();
     let mut out = Vec::with_capacity(4 + count * 32);
@@ -413,12 +414,7 @@ fn hex_encode_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
         out.extend_from_slice(&(out_len as u32).to_le_bytes());
         let start = out.len();
         out.resize(start + out_len, 0);
-        let mut pos = 0usize;
-        for &b in item {
-            out[start + pos] = crate::util::bytes::HEX_LOWER[(b >> 4) as usize];
-            out[start + pos + 1] = crate::util::bytes::HEX_LOWER[(b & 0x0f) as usize];
-            pos += 2;
-        }
+        crate::util::bytes::hex_encode(item, &mut out[start..start + out_len]);
     }
     Ok(out)
 }

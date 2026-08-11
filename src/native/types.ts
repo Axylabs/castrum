@@ -40,10 +40,26 @@ export interface IngressInstance {
   ): number;
 }
 
+/** A single JSON Schema validation error (fast path + DOM fallback). */
+export interface SchemaError {
+  /** RFC 6901 JSON pointer to the failing instance value ("" = root). */
+  instancePath: string;
+  /** JSON pointer into the schema at the failing keyword. */
+  schemaPath: string;
+  /** The failing keyword (e.g. "type", "pattern", "required"). */
+  keyword: string;
+  /** Human-readable failure message. */
+  message: string;
+}
+
 /** The native `SchemaValidator` class instance. */
 export interface SchemaValidatorInstance {
   /** Validate a single JSON document. */
   validate(input: Uint8Array): boolean;
+  /** Validate a single JSON document, returning detailed errors (empty = valid). */
+  validateDetailed(input: Uint8Array): SchemaError[];
+  /** Validate a single JSON document, returning only the first error (null = valid). */
+  validateFirstError(input: Uint8Array): SchemaError | null;
   validateBatchPackedCount(packed: Uint8Array): number;
   validateBatchPackedBitset(packed: Uint8Array): Uint8Array;
   validateBatchStreaming(batchBytes: Uint8Array): number;
@@ -106,6 +122,19 @@ export interface Base64CodecInstance {
   decode(input: Uint8Array): Uint8Array;
 }
 
+/** Result of a native rate-limit check for one key at a point in time. */
+export interface RateCheckResult {
+  allowed: boolean;
+  remaining: number;
+  resetMs: number;
+}
+
+/** The native `RateLimiter` class instance (sharded fixed-window state). */
+export interface RateLimiterInstance {
+  check(key: string, nowMs: number): RateCheckResult;
+  checkKey(key: number, nowMs: number): RateCheckResult;
+}
+
 /** The native `CookieSigner` class instance (HMAC key compiled once). */
 export interface CookieSignerInstance {
   sign(value: Uint8Array): Uint8Array;
@@ -150,6 +179,8 @@ export interface WsFrame {
 /** The native `TemplateRenderer` class instance. */
 export interface TemplateRendererInstance {
   render(context: unknown): Uint8Array;
+  /** Render from pre-serialized JSON context bytes (no napi Value marshal). */
+  renderBytes(contextJson: Uint8Array): Uint8Array;
   /** Parallel batch render: packed contexts in → packed rendered out. */
   renderBatchPacked(data: Uint8Array): Uint8Array;
 }
@@ -163,6 +194,8 @@ export interface MediaTypeMatcherInstance {
 /** The native `JwtSigner` class instance (HS256 key + ttl compiled once). */
 export interface JwtSignerInstance {
   sign(claims: unknown, nowSeconds: number): Uint8Array;
+  /** Sign from pre-serialized claim JSON bytes (no napi Value marshal). */
+  signBytes(claimsJson: Uint8Array, nowSeconds: number): Uint8Array;
   verify(token: Uint8Array, nowSeconds: number): unknown;
 }
 
@@ -229,6 +262,8 @@ export interface NativeAddon {
 
   crc32(input: Uint8Array): number;
   fnv1a64(input: Uint8Array): bigint;
+  /** XXH3-64 (high-throughput non-cryptographic hash). */
+  xxh3(input: Uint8Array): bigint;
   /** Packed FNV-1a 64 batch (i64 per item). */
   fnv1A64BatchPacked(input: Uint8Array): Uint8Array;
 
@@ -248,6 +283,10 @@ export interface NativeAddon {
   randomToken(byteLen: number): Uint8Array;
 
   urlEncode(input: Uint8Array): Uint8Array;
+  /** String-input percent-encode (no Uint8Array round-trip). */
+  urlEncodeStr(input: string): string;
+  /** String-input percent-decode; throws on invalid UTF-8 output. */
+  urlDecodeStr(input: string): string;
   urlDecode(input: Uint8Array): Uint8Array;
   urlDecodeBytes(input: Uint8Array): Uint8Array;
   urlEncodeBatchPacked(input: Uint8Array): Uint8Array;
@@ -273,6 +312,13 @@ export interface NativeAddon {
     ttlSeconds: number | null,
     nowSeconds: number,
   ): Uint8Array;
+  /** Sign from pre-serialized claim JSON bytes (no napi Value marshal). */
+  jwtSignBytes(
+    claimsJson: Uint8Array,
+    secret: Uint8Array,
+    ttlSeconds: number | null,
+    nowSeconds: number,
+  ): Uint8Array;
   jwtVerify(
     token: Uint8Array,
     secret: Uint8Array,
@@ -285,6 +331,17 @@ export interface NativeAddon {
     options?: PasswordHashOptions | null,
   ): Uint8Array;
   passwordVerify(password: Uint8Array, phc: Uint8Array): boolean;
+  /** bcrypt password hash → `$2b$` PHC string (cost clamped 4..=31). */
+  passwordHashBcrypt(password: Uint8Array, cost: number): string;
+  /** Verify a password against a bcrypt `$2b$` PHC string. */
+  passwordVerifyBcrypt(password: Uint8Array, hash: string): boolean;
+  /** PBKDF2-HMAC-SHA256 key derivation (dkLen clamped to 1 MiB). */
+  pbkdf2Sha256(
+    password: Uint8Array,
+    salt: Uint8Array,
+    rounds: number,
+    dkLen: number,
+  ): Uint8Array;
   /** Packed password-verify batch (two packed lists, zipped) → bitset. */
   passwordVerifyBatchPacked(passwords: Uint8Array, phcs: Uint8Array): Uint8Array;
   passwordHashBatchPacked(
@@ -359,6 +416,11 @@ export interface NativeAddon {
     options?: PasswordHashOptions | null,
   ) => Argon2HasherInstance;
   MediaTypeMatcher: new (expected: Uint8Array) => MediaTypeMatcherInstance;
+  RateLimiter: new (
+    limit: number,
+    windowMs: number,
+    maxEntries?: number | null,
+  ) => RateLimiterInstance;
 
   wsFrameEncode(
     opcode: number,
@@ -441,6 +503,8 @@ export interface NativeAddon {
   /** Packed ETag batch (10 strong / 12 weak bytes per item). */
   etagBatchPacked(input: Uint8Array, weak?: boolean | null): Uint8Array;
   httpDate(secs?: number): Uint8Array;
+  /** Reusable-output http-date; returns bytes written (29). Throws if `output` is too small or the year is out of the fixed-width range. */
+  httpDateInto(secs: number | undefined, output: Uint8Array): number;
   parseHttpDate(input: Uint8Array): bigint | null;
 
   initThreadPool(rayonThreads?: number): void;

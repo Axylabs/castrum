@@ -58,7 +58,9 @@ if (!/^## \[Unreleased\]/m.test(changelog)) {
   fail("CHANGELOG.md is missing a `## [Unreleased]` section.");
 }
 
-if (!new RegExp(`^## \\[${packageVersion}\\]`, "m").test(changelog)) {
+// Escape regex metacharacters: a version like `0.8.0` must not match `0x8a0`.
+const escapedVersion = packageVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+if (!new RegExp(`^## \\[${escapedVersion}\\]`, "m").test(changelog)) {
   fail(
     `CHANGELOG.md is missing a \`## [${packageVersion}]\` released section ` +
       `matching package.json. Add a changelog entry for the current version.`,

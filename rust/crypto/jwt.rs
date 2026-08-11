@@ -47,12 +47,6 @@ fn b64url_decode(data: &[u8]) -> Option<Vec<u8>> {
 
 // ── HMAC-SHA256 (aws-lc-rs) ────────────────────────────────────
 
-/// HMAC-SHA256 with a freshly derived key (scalar convenience path).
-pub fn hmac_sha256(secret: &[u8], data: &[u8]) -> [u8; 32] {
-    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
-    hmac_sha256_with_key(&key, data)
-}
-
 /// HMAC-SHA256 with a PRE-COMPILED key — avoids re-deriving the key on every
 /// call (the win the `JwtSigner`/`HmacSigner` instances exploit).
 pub fn hmac_sha256_with_key(key: &aws_lc_rs::hmac::Key, data: &[u8]) -> [u8; 32] {
@@ -127,6 +121,10 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Verify an HS256 signature (constant-time). Does NOT check claims/expiry.
+///
+/// Test-only convenience over the fresh-key derivation: production code uses
+/// `verify_signature_with_key` with a precompiled key.
+#[cfg(test)]
 pub fn verify_signature(token: &[u8], secret: &[u8]) -> bool {
     let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
     verify_signature_with_key(token, &key)
@@ -154,6 +152,27 @@ pub fn verify_signature_with_key(token: &[u8], key: &aws_lc_rs::hmac::Key) -> bo
 
 // ── NAPI entry points ──────────────────────────────────────────
 
+/// Inject `iat`/`exp` into object claims when `ttl_seconds` is set, then
+/// serialize + base64url-encode the payload. Shared by the scalar, instance,
+/// and byte-JSON sign paths so the injection semantics can't drift.
+fn inject_and_payload_b64(
+    claims: &mut serde_json::Value,
+    ttl_seconds: Option<i64>,
+    now_seconds: i64,
+) -> Result<Vec<u8>> {
+    if let Some(obj) = claims.as_object_mut() {
+        if let Some(ttl) = ttl_seconds {
+            if ttl > 0 {
+                obj.entry("iat")
+                    .or_insert_with(|| serde_json::json!(now_seconds));
+                obj.entry("exp")
+                    .or_insert_with(|| serde_json::json!(now_seconds + ttl));
+            }
+        }
+    }
+    Ok(b64url_encode(&serde_json::to_vec(claims).map_err(napi_err)?))
+}
+
 /// Sign a JWT (HS256). `claims` is any JSON value; when it is an object and a
 /// positive `ttlSeconds` is given, `iat`/`exp` are injected (unless present).
 /// `nowSeconds` is the caller-supplied current epoch seconds (keeps the core
@@ -166,23 +185,30 @@ pub fn jwt_sign(
     now_seconds: i64,
 ) -> Result<Buffer> {
     let mut claims = claims;
-
-    if let Some(obj) = claims.as_object_mut() {
-        if let Some(ttl) = ttl_seconds {
-            if ttl > 0 {
-                obj.entry("iat")
-                    .or_insert_with(|| serde_json::json!(now_seconds));
-                obj.entry("exp")
-                    .or_insert_with(|| serde_json::json!(now_seconds + ttl));
-            }
-        }
-    }
-
-    let header_b64 = jwt_header_b64();
-    let payload_b64 = b64url_encode(&serde_json::to_vec(&claims).map_err(napi_err)?);
-
+    let payload_b64 = inject_and_payload_b64(&mut claims, ttl_seconds, now_seconds)?;
     Ok(Buffer::from(build_token(
-        header_b64,
+        jwt_header_b64(),
+        &payload_b64,
+        secret.as_ref(),
+    )))
+}
+
+/// Sign a JWT (HS256) from pre-serialized claim JSON bytes. Avoids the napi
+/// `serde_json::Value` DOM marshal of `jwt_sign` for callers that already hold
+/// the claim bytes (e.g. JSON.stringify'd on the JS side). Semantics are
+/// identical to `jwt_sign` (incl. `iat`/`exp` injection).
+#[napi]
+pub fn jwt_sign_bytes(
+    claims_json: Uint8Array,
+    secret: Uint8Array,
+    ttl_seconds: Option<i64>,
+    now_seconds: i64,
+) -> Result<Buffer> {
+    let mut claims: serde_json::Value =
+        serde_json::from_slice(claims_json.as_ref()).map_err(napi_err)?;
+    let payload_b64 = inject_and_payload_b64(&mut claims, ttl_seconds, now_seconds)?;
+    Ok(Buffer::from(build_token(
+        jwt_header_b64(),
         &payload_b64,
         secret.as_ref(),
     )))
@@ -281,22 +307,23 @@ impl JwtSigner {
     #[napi]
     pub fn sign(&self, claims: serde_json::Value, now_seconds: i64) -> Result<Buffer> {
         let mut claims = claims;
-        if let Some(obj) = claims.as_object_mut() {
-            if let Some(ttl) = self.ttl_seconds {
-                if ttl > 0 {
-                    obj.entry("iat")
-                        .or_insert_with(|| serde_json::json!(now_seconds));
-                    obj.entry("exp")
-                        .or_insert_with(|| serde_json::json!(now_seconds + ttl));
-                }
-            }
-        }
-
-        let header_b64 = jwt_header_b64();
-        let payload_b64 = b64url_encode(&serde_json::to_vec(&claims).map_err(napi_err)?);
-
+        let payload_b64 = inject_and_payload_b64(&mut claims, self.ttl_seconds, now_seconds)?;
         Ok(Buffer::from(build_token_with_key(
-            header_b64,
+            jwt_header_b64(),
+            &payload_b64,
+            &self.key,
+        )))
+    }
+
+    /// Sign a JWT from pre-serialized claim JSON bytes with the precompiled
+    /// key — no napi `serde_json::Value` marshal, no per-call key derivation.
+    #[napi]
+    pub fn sign_bytes(&self, claims_json: Uint8Array, now_seconds: i64) -> Result<Buffer> {
+        let mut claims: serde_json::Value =
+            serde_json::from_slice(claims_json.as_ref()).map_err(napi_err)?;
+        let payload_b64 = inject_and_payload_b64(&mut claims, self.ttl_seconds, now_seconds)?;
+        Ok(Buffer::from(build_token_with_key(
+            jwt_header_b64(),
             &payload_b64,
             &self.key,
         )))
@@ -539,5 +566,61 @@ mod tests {
         let v2 = no_ttl.verify(Uint8Array::new(t2.to_vec()), now);
         assert!(v2.get("iat").is_none());
         assert!(v2.get("exp").is_none());
+    }
+
+    #[test]
+    fn jwt_sign_bytes_matches_value_sign_and_verifies() {
+        let claims_json = br#"{"sub":"123","name":"John"}"#.to_vec();
+        let secret = Uint8Array::new(SECRET.to_vec());
+
+        // Byte-JSON sign (no napi Value marshal) matches the Value sign exactly.
+        let from_bytes = jwt_sign_bytes(
+            Uint8Array::new(claims_json.clone()),
+            secret,
+            None,
+            1_000_000,
+        )
+        .unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&claims_json).unwrap();
+        let from_value =
+            jwt_sign(claims, Uint8Array::new(SECRET.to_vec()), None, 1_000_000).unwrap();
+        assert_eq!(from_bytes.as_ref(), from_value.as_ref());
+
+        // The bytes-signed token verifies and carries the claims.
+        let verified = jwt_verify(
+            Uint8Array::new(from_bytes.to_vec()),
+            Uint8Array::new(SECRET.to_vec()),
+            1_000_000,
+        );
+        assert_eq!(verified["sub"], "123");
+        assert_eq!(verified["name"], "John");
+    }
+
+    #[test]
+    fn jwt_sign_bytes_injects_ttl_and_instance_sign_bytes_works() {
+        let claims_json = br#"{"sub":"123"}"#.to_vec();
+        let token = jwt_sign_bytes(
+            Uint8Array::new(claims_json.clone()),
+            Uint8Array::new(SECRET.to_vec()),
+            Some(3600),
+            1_000_000,
+        )
+        .unwrap();
+        let v = jwt_verify(
+            Uint8Array::new(token.to_vec()),
+            Uint8Array::new(SECRET.to_vec()),
+            1_000_000,
+        );
+        assert_eq!(v["iat"], 1_000_000);
+        assert_eq!(v["exp"], 1_000_000 + 3600);
+
+        // Precompiled-key instance: sign_bytes injects its construction ttl.
+        let signer = JwtSigner::new(Uint8Array::new(SECRET.to_vec()), Some(3600));
+        let t2 = signer
+            .sign_bytes(Uint8Array::new(claims_json), 2_000_000)
+            .unwrap();
+        let v2 = signer.verify(Uint8Array::new(t2.to_vec()), 2_000_000);
+        assert_eq!(v2["iat"], 2_000_000);
+        assert_eq!(v2["exp"], 2_000_000 + 3600);
     }
 }

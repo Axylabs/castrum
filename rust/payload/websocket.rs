@@ -4,7 +4,7 @@ use base64::Engine;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-const WS_MAGIC: &[u8] = b"258EAFA5-E914-47DA-95CA-5AB5DC11BE85";
+const WS_MAGIC: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// RFC 6455 Sec-WebSocket-Accept core over a raw key slice. Shared by the
 /// scalar napi path and the packed batch path.
@@ -47,7 +47,7 @@ mod tests {
         // with the magic GUID. Verified against node:crypto.
         let key = b"dGhlIHNhbXBsZSBub25jZQ==";
         let out = ws_accept_key(Uint8Array::new(key.to_vec())).unwrap();
-        assert_eq!(out.as_ref(), b"mjqt7n322xkUQqCX5NPZbkSHHuk=");
+        assert_eq!(out.as_ref(), b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 
     #[test]

@@ -38,6 +38,18 @@ export type { ResponseBuildContext, HeaderTemplate } from "./headers/fast-templa
 export type { CorsStaticStrings, CorsOptions } from "./headers/cors";
 export type { SecurityHeadersOptions } from "./headers/hsts";
 export type { IngressFastHandler, IngressFastOptions } from "./options";
+// ── Observability (zero-dep): metrics, health probes ─────────────
+export { createIngressMetrics, metricsHandler } from "./metrics";
+export type { IngressMetrics } from "./metrics";
+export { livenessHandler, readinessHandler, healthHandler } from "./health";
+// W3C trace context helpers (parse `traceparent` for log/hook correlation).
+export {
+  parseTraceParent,
+  createTraceId,
+  createSpanId,
+  serializeTraceParent,
+} from "../shared/trace";
+export type { TraceContext } from "../shared/trace";
 export type {
   IngressOptions,
   IngressContext,

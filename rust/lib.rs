@@ -57,3 +57,6 @@ mod test_support;
 
 #[cfg(test)]
 mod unit_tests;
+
+#[cfg(test)]
+mod proptest_suite;

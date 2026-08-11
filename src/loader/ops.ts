@@ -284,6 +284,17 @@ function fastInto(
   return f;
 }
 
+/**
+ * Packed FNV-1a 64 batch into a caller-owned buffer. The coalesced `load()`
+ * flush uses this to compute every deferred default cache key in ONE native
+ * crossing (`[u32 count][u64 LE × n]`, u64 bit pattern — matches the scalar
+ * `rust.fnv1a64` key). Returns bytes written.
+ */
+export const fnvBatchKeysInto = (
+  packed: Uint8Array,
+  output: Uint8Array,
+): number => fastInto("fnv1A64BatchPackedInto")(packed, output);
+
 const BOOLEAN = "boolean";
 const NUMBER = "number";
 const BIGINT = "bigint";

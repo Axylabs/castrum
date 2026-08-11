@@ -194,20 +194,27 @@ export interface LoaderAsyncResult {
  * Async loader microbenchmarks — `load()` coalescing + LRU cache-hit.
  *
  * `bench`/`benchStress` are synchronous, so the async `load()` path is measured
- * here directly. Every `load()` pays one `fnv1a64` key crossing (default
- * caching key), so these are the honest end-to-end numbers:
+ * here directly. The rows are honest END-TO-END numbers for the async `load()`
+ * API: one Promise + microtask (and, when caching, one `fnv1a64` key crossing
+ * and one LRU lookup) per load — overhead the raw scalar baselines below do
+ * NOT pay. That is why `coalesced_load` is ~1.4µs/op for a sub-µs op like
+ * `validateEmail`: the JS async machinery dominates the native work, not the
+ * FFI. Coalescing pays off when the native op is expensive — see #5 vs #6.
  *
- *   1. `rust:loader_coalesced_load` — N same-tick `load()` calls → 1 packed
- *      native call per round (coalescing + key cost + promises).
- *   2. `native:loader_scalar_loop`   — N direct scalar crossings per round
+ *   1. `rust:loader_coalesced_load`        — N same-tick `load()` calls → 1
+ *      packed native call per round (coalescing + key cost + promises).
+ *   1b. `rust:loader_coalesced_load_nocache` — same, `{ cache: false }`: no key
+ *      crossing, no LRU — isolates the pure coalescer/async cost.
+ *   2. `native:loader_scalar_loop`         — N direct scalar crossings per round
  *      (the workload coalescing replaces).
- *   3. `rust:loader_cache_hit`       — repeated identical `load()` (cache hit:
- *      fnv1a64 key + promise + microtask, no native compute).
- *   4. `native:loader_single_recalc` — one direct scalar recompute per op (the
- *      cache-hit comparison baseline).
- *   5. `rust:loader_coalesced_gzip`  — expensive-op coalescing (gzipCompress),
- *      where per-call JS overhead should be dwarfed by native work.
- *   6. `native:loader_scalar_gzip`   — per-item scalar gzipCompress baseline.
+ *   3. `rust:loader_cache_hit`             — repeated identical `load()` (cache
+ *      hit: fnv1a64 key + promise + microtask, no native compute).
+ *   4. `native:loader_single_recalc`       — one direct scalar recompute per op
+ *      (the cache-hit comparison baseline).
+ *   5. `rust:loader_coalesced_gzip`        — expensive-op coalescing
+ *      (gzipCompress), where per-call JS overhead is dwarfed by native work.
+ *   6. `native:loader_scalar_gzip`         — per-item scalar gzipCompress
+ *      baseline.
  */
 export async function runLoaderAsyncBenchmarks(
   c: ComplexFixtures,
@@ -227,6 +234,20 @@ export async function runLoaderAsyncBenchmarks(
     for (const ok of results) checksumA += ok ? 1 : 0;
   }
   const totalMsA = nowMs() - startA;
+
+  // 1b. Coalesced load() with caching DISABLED: no key crossing, no LRU. If
+  //     this ≈ #1, the coalesced-load cost is async machinery (promise +
+  //     microtask + flush), not the key/cache; if much lower, the key/cache
+  //     dominated #1.
+  let checksumG = 0;
+  const startG = nowMs();
+  for (let r = 0; r < rounds; r++) {
+    const results = await Promise.all(
+      emails.map((e) => isEmail.load(e, { cache: false })),
+    );
+    for (const ok of results) checksumG += ok ? 1 : 0;
+  }
+  const totalMsG = nowMs() - startG;
 
   // 2. Direct scalar baseline: N crossings per round (no key, no promises).
   let checksumB = 0;
@@ -294,6 +315,7 @@ export async function runLoaderAsyncBenchmarks(
 
   return [
     make("rust:loader_coalesced_load", totalMsA, rounds * n, checksumA),
+    make("rust:loader_coalesced_load_nocache", totalMsG, rounds * n, checksumG),
     make("native:loader_scalar_loop", totalMsB, rounds * n, checksumB),
     make("rust:loader_cache_hit", totalMsC, rounds, checksumC),
     make("native:loader_single_recalc", totalMsD, rounds, checksumD),

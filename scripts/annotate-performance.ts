@@ -1,14 +1,24 @@
 // scripts/annotate-performance.ts — Annotate exported rust.* JSDoc from the CPU report.
 //
-// Reads the latest machine-readable CPU report (`bench/results/cpu/latest.json`,
+// Reads a machine-readable CPU report (default `bench/results/cpu/latest.json`,
 // written by `bun run check`) and rewrites the JSDoc on the public `rust.*`
-// function declarations in `src/rust-ffi/scalar.ts` (and `batch.ts` for
-// `templateRender`, the only registry entry that lives at batch level).
+// function declarations in `src/rust-ffi/scalar/interface.ts` (and `batch.ts`
+// for `templateRender`, `client.ts` for `configure`).
 //
-// For every `PROVEN_SURFACE` entry that has a measured comparison:
-//   - "proven"          → `@performance <label>: ~Nx faster than the JS baseline`
-//   - "parity"          → `@performance <label>: ≈ parity with the JS baseline`
-//   - "not-competitive" → `@performance <label>: ~Nx slower ...` + `@deprecated ...`
+// Classification is DATA-DRIVEN: for every `PROVEN_SURFACE` entry it aggregates
+// ALL of the function's benchmark comparisons (the canonical task plus its
+// `_`-suffixed variants) and derives a live status + score:
+//   - effective "proven"          → `@performance <label>: ~Nx faster ... (N/M tasks won)`
+//   - effective "parity"          → `@performance <label>: ≈ parity ... (N/M tasks won)`
+//   - effective "not-competitive" → `@performance <label>: ~Nx slower ...` + `@deprecated ...`
+//
+// Hybrid deprecation (see src/shared/bench-classify.ts): a clear MAJORITY of a
+// function's benchmarks failing in the latest run auto-deprecates it even when
+// the static registry says "proven"/"parity" (a `@remarks` note records the
+// drift). A single good run NEVER removes an existing `@deprecated` — static
+// classifications reflect the shipped release build, not one local run; a
+// majority win on a static "not-competitive" entry only adds a "promotion
+// candidate" note.
 //
 // Generated lines carry the `[check:annotate]` marker, so the script is
 // IDEMPOTENT — re-running it strips the previous generated lines and rewrites
@@ -18,30 +28,27 @@
 //   bun run check                     # produce a fresh bench/results/cpu/latest.json
 //   bun run check:annotate            # rewrite the JSDoc (default)
 //   bun run check:annotate -- --dry-run   # print what would change, write nothing
+//   CASTRUM_BENCH_ANNOTATE=1 bun run check  # auto-annotate after the run (src/bench/run.ts)
 //
-// This script imports ONLY the pure-data registry — it does NOT load the
-// native addon.
+// This script imports ONLY pure-data modules (registry + classifier) — it does
+// NOT load the native addon.
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { PROVEN_SURFACE, type ProvenEntry } from "../src/shared/proven";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { PROVEN_SURFACE } from "../src/shared/proven";
+import {
+  classifySurface,
+  type ClassifiedEntry,
+  type Comparison,
+} from "../src/shared/bench-classify";
 
 /** Marker tagging machine-generated JSDoc lines (used for idempotent strip). */
 const MARKER = "[check:annotate]";
 const REPORT_PATH = join(process.cwd(), "bench", "results", "cpu", "latest.json");
-const DRY_RUN = process.argv.includes("--dry-run");
-
-interface Comparison {
-  label: string;
-  nativeName: string;
-  rustName: string;
-  nativeAvgMs: number;
-  rustAvgMs: number;
-  ratio: number;
-  faster: "rust" | "native";
-}
 
 interface CpuReport {
+  environment?: { buildFlavor?: string };
   comparisons: Comparison[];
 }
 
@@ -59,51 +66,86 @@ function fileForName(name: string): string {
   return "src/rust-ffi/scalar/interface.ts";
 }
 
-function loadReport(): CpuReport {
+function loadReport(reportPath: string): CpuReport {
   let raw: string;
   try {
-    raw = readFileSync(REPORT_PATH, "utf8");
+    raw = readFileSync(reportPath, "utf8");
   } catch {
-    console.error(
-      `annotate — no report found at ${REPORT_PATH}.\nRun "bun run check" first (it writes the machine-readable CPU report).`,
+    throw new Error(
+      `no report found at ${reportPath}.\nRun "bun run check" first (it writes the machine-readable CPU report).`,
     );
-    process.exit(2);
   }
   return JSON.parse(raw) as CpuReport;
 }
 
 /**
- * Build the generated JSDoc lines for a registry entry, or null when there is
- * no measured comparison / the entry is "unmeasured".
+ * Score suffix for the `@performance` line, e.g. "(5/6 tasks won)" — omitted
+ * for single-task functions where the ratio already says it all. Shows the
+ * failed count when the displayed outcome is a loss, the won count otherwise.
  */
-function generatedLines(
-  entry: ProvenEntry,
-  cmp: Comparison | undefined,
-): string[] | null {
-  if (!cmp || entry.status === "unmeasured") return null;
+function scoreText(c: ClassifiedEntry): string {
+  if (c.total <= 1) return "";
+  const losing = c.effective === "not-competitive" && (c.ratio ?? 1) < 1;
+  return losing
+    ? ` (${c.failed}/${c.total} tasks failed)`
+    : ` (${c.won}/${c.total} tasks won)`;
+}
 
+/**
+ * Build the generated JSDoc lines for a classified entry, or null when there
+ * is nothing to annotate (unmeasured / no measured comparison).
+ *
+ * `effective` is the hybrid status from bench-classify: a clear majority of
+ * task losses overrides the static registry and auto-deprecates.
+ */
+function generatedLines(c: ClassifiedEntry): string[] | null {
+  if (c.effective === "unmeasured" || c.total === 0 || c.ratio === undefined) {
+    return null;
+  }
+  const entry = c.entry;
   // ratio = nativeAvg / rustAvg → >1 means rust is faster.
-  const r = cmp.ratio;
+  const r = c.ratio;
   const lines: string[] = [];
 
-  if (entry.status === "proven") {
+  if (c.effective === "proven") {
     // Clamp to >= 1 for display; a sub-1 ratio here is a regression the audit
     // (`bun run check:proven`) flags.
     lines.push(
-      ` * @performance ${entry.label}: ~${Math.max(r, 1).toFixed(1)}x faster than the JS baseline ${MARKER}`,
+      ` * @performance ${entry.label}: ~${Math.max(r, 1).toFixed(1)}x faster than the JS baseline${scoreText(c)} ${MARKER}`,
     );
-  } else if (entry.status === "parity") {
+  } else if (c.effective === "parity") {
     lines.push(
-      ` * @performance ${entry.label}: ≈ parity with the JS baseline ${MARKER}`,
+      ` * @performance ${entry.label}: ≈ parity with the JS baseline${scoreText(c)} ${MARKER}`,
     );
-  } else if (entry.status === "not-competitive") {
-    const loss = 1 / Math.max(r, 1e-9);
-    lines.push(
-      ` * @performance ${entry.label}: ~${loss.toFixed(1)}x slower than the JS baseline ${MARKER}`,
-    );
-    lines.push(
-      ` * @deprecated Slower than the native JS baseline (~${loss.toFixed(1)}x) — prefer the JS/Bun baseline. ${MARKER}`,
-    );
+  } else if (c.effective === "not-competitive") {
+    if (r >= 1) {
+      // Won in THIS run but statically "not-competitive" (promotable / mixed):
+      // report the win honestly while keeping the historical deprecation (a
+      // single good run never un-deprecates — see the classifier's hybrid rule).
+      lines.push(
+        ` * @performance ${entry.label}: ~${r.toFixed(1)}x faster than the JS baseline in the latest run${scoreText(c)} ${MARKER}`,
+      );
+      lines.push(
+        ` * @deprecated Historically slower than the native JS baseline on release builds — prefer the JS/Bun baseline until promoted. ${MARKER}`,
+      );
+    } else {
+      const loss = 1 / Math.max(r, 1e-9);
+      lines.push(
+        ` * @performance ${entry.label}: ~${loss.toFixed(1)}x slower than the JS baseline${scoreText(c)} ${MARKER}`,
+      );
+      lines.push(
+        ` * @deprecated Slower than the native JS baseline (~${loss.toFixed(1)}x) — prefer the JS/Bun baseline. ${MARKER}`,
+      );
+    }
+    if (c.drifted) {
+      lines.push(
+        ` * @remarks Auto-deprecated: ${c.failed}/${c.total} benchmarks failed in the latest run (static classification was ${c.entry.status}). ${MARKER}`,
+      );
+    } else if (c.promotable) {
+      lines.push(
+        ` * @remarks Promotion candidate: ${c.won}/${c.total} benchmarks won in the latest run (static: not-competitive). ${MARKER}`,
+      );
+    }
   } else {
     return null;
   }
@@ -123,6 +165,7 @@ const isGenerated = (line: string): boolean => line.includes(MARKER);
 function annotateFile(
   filePath: string,
   targets: Target[],
+  dryRun: boolean,
 ): { changed: number; deprecated: number } {
   const src = readFileSync(filePath, "utf8");
   const lines = src.split("\n");
@@ -137,7 +180,7 @@ function annotateFile(
 
   const interfaceEnd = (() => {
     for (let i = interfaceStart + 1; i < lines.length; i++) {
-      if (/^\}\s*$/.test(lines[i])) return i;
+      if (/^\}\s*$/.test(lines[i] ?? "")) return i;
     }
     return -1;
   })();
@@ -162,7 +205,8 @@ function annotateFile(
   let inJdoc = false;
 
   for (let i = interfaceStart + 1; i < interfaceEnd; i++) {
-    const line = lines[i];
+    // i is bounded by the validated interface range, so the element is defined.
+    const line = lines[i] ?? "";
 
     if (!inJdoc && /^\s*\/\*\*/.test(line)) {
       jdocStart = i;
@@ -212,7 +256,8 @@ function annotateFile(
   const padTo = (line: string, indent: string): string => `${indent}${line}`;
 
   for (const a of actions) {
-    const indent = lines[a.decl].match(/^\s*/)?.[0] ?? "";
+    // a.decl / a.start point at validated declaration lines within `lines`.
+    const indent = lines[a.decl]?.match(/^\s*/)?.[0] ?? "";
     const generated = a.generated.map((l) => padTo(l, indent));
 
     if (a.hasJdoc) {
@@ -224,10 +269,11 @@ function annotateFile(
       // multi-line block so generated lines can sit inside it.
       const singleLine =
         block.length === 1 &&
-        /^\s*\/\*\*/.test(block[0]) &&
-        /\*\/\s*$/.test(block[0]);
+        /^\s*\/\*\*/.test(block[0] ?? "") &&
+        /\*\/\s*$/.test(block[0] ?? "");
       if (singleLine) {
-        const inner = block[0]
+        // singleLine requires block.length === 1, so block[0] is defined.
+        const inner = (block[0] ?? "")
           .replace(/^\s*\/\*\*/, "")
           .replace(/\*\/\s*$/, "")
           .trim();
@@ -278,50 +324,118 @@ function annotateFile(
     return { changed: 0, deprecated: 0 };
   }
 
-  if (!DRY_RUN) {
+  if (!dryRun) {
     writeFileSync(filePath, next, "utf8");
   }
   return { changed: actions.length, deprecated };
 }
 
-function main(): void {
-  const report = loadReport();
-  const byRustTask = new Map(report.comparisons.map((c) => [c.rustName, c]));
+/** Options for a programmatic annotation run (used by src/bench/run.ts). */
+export interface AnnotateOptions {
+  /** Path to the CPU report JSON (defaults to bench/results/cpu/latest.json). */
+  reportPath?: string;
+  /** Print what would change without writing. */
+  dryRun?: boolean;
+}
+
+export interface AnnotateResult {
+  files: number;
+  changed: number;
+  deprecated: number;
+  unmeasured: number;
+}
+
+/**
+ * Rewrite the `@performance` / `@deprecated` / `@remarks` JSDoc on the public
+ * `rust.*` declarations from a CPU report. Returns how many files and functions
+ * were touched. Throws when the report cannot be read (callers decide whether
+ * that is fatal).
+ */
+export function annotateFromReport(options: AnnotateOptions = {}): AnnotateResult {
+  const reportPath = options.reportPath ?? REPORT_PATH;
+  const dryRun = options.dryRun ?? false;
+
+  const report = loadReport(reportPath);
+  const classified = classifySurface(PROVEN_SURFACE, report.comparisons);
 
   const targetsByFile = new Map<string, Target[]>();
-  for (const entry of PROVEN_SURFACE) {
-    const gen = generatedLines(entry, byRustTask.get(entry.rustTask));
+  for (const c of classified.values()) {
+    const gen = generatedLines(c);
     if (!gen) continue;
-    const file = fileForName(entry.name);
+    const file = fileForName(c.entry.name);
     const list = targetsByFile.get(file) ?? [];
-    list.push({ name: entry.name, lines: gen });
+    list.push({ name: c.entry.name, lines: gen });
     targetsByFile.set(file, list);
   }
+  const measuredEntries = [...targetsByFile.values()].reduce(
+    (n, t) => n + t.length,
+    0,
+  );
 
   let totalChanged = 0;
   let totalDeprecated = 0;
 
-  console.log(`\n=== Annotate rust.* JSDoc from CPU report ===${DRY_RUN ? " (dry-run)" : ""}`);
   console.log(
-    `Report: ${REPORT_PATH}\n${targetsByFile.size === 0 ? "" : `Entries with measurements: ${[...targetsByFile.values()].reduce((n, t) => n + t.length, 0)}`}\n`,
+    `\n=== Annotate rust.* JSDoc from CPU report ===${dryRun ? " (dry-run)" : ""}`,
+  );
+  console.log(
+    `Report: ${reportPath}\n${targetsByFile.size === 0 ? "" : `Entries with measurements: ${measuredEntries}`}\n`,
   );
 
   for (const [file, targets] of targetsByFile) {
-    const { changed, deprecated } = annotateFile(file, targets);
+    const { changed, deprecated } = annotateFile(file, targets, dryRun);
     totalChanged += changed;
     totalDeprecated += deprecated;
-    const action = DRY_RUN ? "would annotate" : "annotated";
+    const action = dryRun ? "would annotate" : "annotated";
     console.log(
       `  ${action} ${changed} function(s) in ${file}${deprecated > 0 ? ` (${deprecated} deprecated)` : ""}`,
     );
   }
 
-  const unmeasured = PROVEN_SURFACE.filter(
-    (e) => e.status === "unmeasured" || !byRustTask.has(e.rustTask),
-  ).length;
+  if (!report.environment?.buildFlavor) {
+    console.log(
+      "\nNote: the report has no buildFlavor — results (and any auto-deprecation) are build-dependent. Confirm on a release build (`bun run build`).",
+    );
+  }
+
+  const unmeasured = classified.size - measuredEntries;
   console.log(
-    `\n${totalChanged} function(s) ${DRY_RUN ? "to update" : "updated"}, ${totalDeprecated} marked @deprecated. ${unmeasured} registry entries skipped (unmeasured / no comparison).`,
+    `\n${totalChanged} function(s) ${dryRun ? "to update" : "updated"}, ${totalDeprecated} marked @deprecated. ${unmeasured} registry entries skipped (unmeasured / no comparison).`,
   );
+
+  return {
+    files: targetsByFile.size,
+    changed: totalChanged,
+    deprecated: totalDeprecated,
+    unmeasured,
+  };
 }
 
-main();
+function main(): void {
+  const dryRun = process.argv.includes("--dry-run");
+  try {
+    annotateFromReport({ dryRun });
+  } catch (err) {
+    console.error(`annotate — ${(err as Error).message}`);
+    process.exit(2);
+  }
+}
+
+/**
+ * Only run the CLI when this file is the executed entry point. Importing the
+ * module (e.g. from src/bench/run.ts for CASTRUM_BENCH_ANNOTATE=1) must not
+ * trigger a side-effectful annotation.
+ */
+function isEntryPoint(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return fileURLToPath(import.meta.url) === resolve(invoked);
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  main();
+}

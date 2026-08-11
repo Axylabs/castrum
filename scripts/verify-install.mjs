@@ -10,11 +10,25 @@
 // Run: node scripts/verify-install.mjs   (needs the host addon already built)
 
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = process.cwd();
+// Resolve the package root from THIS script (not process.cwd()), so the script
+// works when invoked from any directory.
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// `npm pack` ships the compiled ESM entry (dist/) — if it hasn't been built the
+// installed consumer fails with a confusing MODULE_NOT_FOUND. Fail early with
+// the actual prerequisite.
+if (!existsSync(join(root, "dist", "index.js"))) {
+  console.error(
+    "verify-install: dist/ is missing — run `bun run build:js` first " +
+      "(the installed-tarball consumer imports castrum/dist/index.js).",
+  );
+  process.exit(1);
+}
 const tmp = mkdtempSync(join(tmpdir(), "castrum-install-"));
 try {
   // 1. Pack (partial: only the host-platform .node is present in this repo).

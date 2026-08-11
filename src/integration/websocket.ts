@@ -64,6 +64,18 @@ export function createWebSocketUpgrade(
       null;
   }
 
+  // Node's fetch `Response` rejects status 101 (undici allows only 200-599);
+  // Bun permits it. This helper produces a Bun.serve-compatible 101 Response,
+  // so on Node throw a clear error pointing at the Node adapter's `upgrade`
+  // option (which writes the RFC 6455 handshake head directly).
+  if (typeof Bun === "undefined") {
+    throw new Error(
+      "createWebSocketUpgrade is Bun-only: Node's Response cannot carry status 101. " +
+        "On Node, use createIngressServerNode's `upgrade` option and compute the " +
+        "accept key with rust.text.wsAcceptKey().",
+    );
+  }
+
   const headers: Record<string, string> = {
     "sec-websocket-accept": accept,
   };

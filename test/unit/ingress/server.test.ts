@@ -42,28 +42,30 @@ describe("buildRouteHandlers", () => {
     expect(route.POST).toBeUndefined();
   });
 
-  test("write spec maps to POST/PUT/PATCH; OPTIONS only with a fallback", () => {
+  test("write spec maps to POST/PUT/PATCH; OPTIONS is wired for every route", () => {
     const { routes } = buildRouteHandlers({
       routes: { "/api": { write: ingress } },
     });
     expect(typeof routes["/api"].POST).toBe("function");
     expect(typeof routes["/api"].PUT).toBe("function");
     expect(typeof routes["/api"].PATCH).toBe("function");
-    expect(routes["/api"].OPTIONS).toBeUndefined();
-
-    const withFallback = buildRouteHandlers({
-      fallback: ingress,
-      routes: { "/api": { write: ingress } },
-    });
-    expect(typeof withFallback.routes["/api"].OPTIONS).toBe("function");
+    // CORS preflight is served for every route (not just with a fallback).
+    expect(typeof routes["/api"].OPTIONS).toBe("function");
   });
 
-  test("echo and cookies specs map to their methods", () => {
+  test("echo, cookies, delete specs map to their methods; read-only routes get OPTIONS", () => {
     const { routes } = buildRouteHandlers({
-      routes: { "/e": { echo: ingress }, "/c": { cookies: ingress } },
+      routes: {
+        "/e": { echo: ingress },
+        "/c": { cookies: ingress },
+        "/r": { delete: ingress },
+        "/h": { read: ingress },
+      },
     });
     expect(typeof routes["/e"].POST).toBe("function");
     expect(typeof routes["/c"].GET).toBe("function");
+    expect(typeof routes["/r"].DELETE).toBe("function");
+    expect(typeof routes["/h"].OPTIONS).toBe("function");
   });
 
   test("baseOpts carry getIp/copyBody", () => {
@@ -119,6 +121,48 @@ describe("createIngressServer (real Bun.serve)", () => {
 
       const fallback = await fetch(`${base}/nope`);
       expect(fallback.status).toBe(404);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  test("srv.port is the real bound port; DELETE + OPTIONS preflight work", async () => {
+    const corsIngress = createIngressHandler({
+      emitMetadataJson: true,
+      cors: {
+        allowOrigin: ["https://app.example.com"],
+        allowMethods: ["GET", "DELETE"],
+      },
+    });
+    const srv = createIngressServer({
+      port: 0,
+      routes: {
+        "/items": { delete: corsIngress },
+        "/health": { read: corsIngress },
+      },
+    });
+
+    // `srv.port` is the ACTUAL bound port even with port: 0.
+    const port = srv.port;
+    expect(port).toBeGreaterThan(0);
+    const base = `http://127.0.0.1:${port}`;
+
+    try {
+      const del = await fetch(`${base}/items`, {
+        method: "DELETE",
+        headers: { origin: "https://app.example.com" },
+      });
+      expect(del.status).toBe(200);
+
+      // CORS preflight on a READ-ONLY route: OPTIONS /health → 204 allowed.
+      const pre = await fetch(`${base}/health`, {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://app.example.com",
+          "access-control-request-method": "GET",
+        },
+      });
+      expect(pre.status).toBe(204);
     } finally {
       srv.stop();
     }

@@ -510,3 +510,153 @@ test("adapter closes idle keep-alive sockets per idleTimeout", async () => {
     srv.stop(true);
   }
 });
+
+test("adapter maps header overflow to 431 (clientError)", async (t) => {
+  if (typeof Bun !== "undefined") {
+    t.skip("real-Node clientError behavior; exercised in the Node CI job");
+    return;
+  }
+  const { srv, port } = startServer({});
+  const p = await port;
+  try {
+    const big = "x".repeat(64 * 1024); // > Node's default maxHeaderSize (16KB)
+    const response = await new Promise((resolve, reject) => {
+      const sock = net.connect(p, "127.0.0.1", () => {
+        sock.write(
+          `GET /health HTTP/1.1\r\nHost: localhost\r\nX-Big: ${big}\r\n\r\n`,
+        );
+      });
+      let data = "";
+      sock.on("data", (c) => (data += c.toString()));
+      sock.on("end", () => resolve(data));
+      sock.on("error", reject);
+      setTimeout(() => {
+        sock.destroy();
+        resolve(data);
+      }, 3000);
+    });
+    assert.match(response, /431 Request Header Fields Too Large/);
+    assert.match(response, /headers_too_large/);
+  } finally {
+    srv.stop(true);
+  }
+});
+
+test("adapter completes a WebSocket upgrade handshake via options.upgrade", async (t) => {
+  if (typeof Bun !== "undefined") {
+    t.skip("real-Node 'upgrade' event behavior; exercised in the Node CI job");
+    return;
+  }
+  const upgraded = [];
+  const { srv, port } = startServer({
+    extra: {
+      upgrade: (req) => {
+        const key = req.headers.get("sec-websocket-key");
+        if (!key) return null;
+        // Node's Response can't carry a 101, so supply the handshake values
+        // directly (accept key + negotiated subprotocol).
+        return {
+          accept: castrum.rust.text.wsAcceptKey(key),
+          protocol: "chat",
+        };
+      },
+      onUpgrade: () => {
+        upgraded.push(true);
+        // Leave the upgraded socket open (a real frame codec would attach
+        // here); the client closes it after reading the handshake.
+      },
+    },
+  });
+  const p = await port;
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const sock = net.connect(p, "127.0.0.1", () => {
+        sock.write(
+          "GET /ws HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Upgrade: websocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+            "Sec-WebSocket-Version: 13\r\n" +
+            "Sec-WebSocket-Protocol: chat, superchat\r\n\r\n",
+        );
+      });
+      let data = "";
+      sock.on("data", (c) => {
+        data += c.toString();
+        // End of the 101 response head — enough to assert the handshake.
+        if (data.includes("\r\n\r\n")) {
+          sock.destroy();
+          resolve(data);
+        }
+      });
+      sock.on("error", reject);
+      setTimeout(() => {
+        sock.destroy();
+        resolve(data);
+      }, 3000);
+    });
+    assert.match(response, /101 Switching Protocols/);
+    assert.match(
+      response,
+      /Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK\+xOo=/,
+    );
+    assert.match(response, /Sec-WebSocket-Protocol: chat/);
+    assert.equal(upgraded.length, 1, "onUpgrade hook fired");
+  } finally {
+    srv.stop(true);
+  }
+});
+
+test("adapter drains an unread body so the keep-alive socket stays clean", async (t) => {
+  if (typeof Bun !== "undefined") {
+    t.skip("real-Node keep-alive drain behavior; exercised in the Node CI job");
+    return;
+  }
+  const { srv, port } = startServer({});
+  const p = await port;
+  try {
+    const result = await new Promise((resolve) => {
+      const sock = net.connect(p, "127.0.0.1", () => {
+        // POST with a JSON body but NO content-type → the write route 415s
+        // before reading the body. The unread bytes must be drained so the
+        // following GET on the same socket parses cleanly.
+        sock.write(
+          "POST /write HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Content-Length: 11\r\n\r\n" +
+            '{"hi":"there"}',
+        );
+      });
+      let data = "";
+      let sentSecond = false;
+      sock.on("data", (c) => {
+        data += c.toString();
+        // After the first response arrives, try a second request on the SAME
+        // socket — it must NOT be corrupted by the unread POST body (the
+        // adapter now forces Connection: close, so the socket ends cleanly).
+        if (!sentSecond && /415/.test(data)) {
+          sentSecond = true;
+          try {
+            sock.write("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+          } catch {
+            // socket already closing — expected with Connection: close
+          }
+        }
+      });
+      sock.on("close", () => resolve(data));
+      sock.on("error", () => resolve(data)); // reset after Connection: close is fine
+      setTimeout(() => {
+        sock.destroy();
+        resolve(data);
+      }, 4000);
+    });
+    // The 415 is served and — because the body was not consumed — the socket
+    // closes cleanly instead of corrupting the next request (no spurious 400).
+    assert.match(result, /415/);
+    assert.match(result, /connection: close/i);
+    assert.doesNotMatch(result, /400 Bad Request/);
+  } finally {
+    srv.stop(true);
+  }
+});

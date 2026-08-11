@@ -1,7 +1,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::util::should_parallelize;
 use xxhash_rust::xxh3::xxh3_64;
 
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -36,7 +35,7 @@ pub fn fast_hash_bytes(input: &[u8]) -> u64 {
 // ── Napi exports ───────────────────────────────────────────────────
 
 /// CRC32 over a raw byte slice (pure core, shared by the napi boundary and
-/// the C ABI surface).
+/// the pure-core unit tests).
 #[inline]
 pub fn crc32_bytes(input: &[u8]) -> u32 {
     crc32fast::hash(input)
@@ -52,92 +51,24 @@ pub fn fnv1a64(input: Uint8Array) -> u64 {
     fnv1a64_bytes(input.as_ref())
 }
 
-/// CRC32 batch — zero-alloc inline iteration (no Vec allocation from unpack).
+/// XXH3-64 over raw bytes. High-throughput non-cryptographic hash; the same
+/// core the ingress IP-trust hasher uses. Exposed publicly so callers can
+/// race it against `Bun.hash.xxHash3` — see docs/bun-builtins-decision-matrix.md.
+#[napi]
+pub fn xxh3(input: Uint8Array) -> u64 {
+    fast_hash_bytes(input.as_ref())
+}
+
+/// CRC32 batch — delegates to the shared packed-u32 writer (same wire format
+/// as the `_into` variant; validation + parallelism live in
+/// `util::packed::write_u32_batch_into`, single source of truth).
 #[napi]
 pub fn crc32_batch_packed(input: Uint8Array) -> Result<Buffer> {
     let data = input.as_ref();
-    if data.len() < 4 {
-        return Err(Error::from_reason("packed buffer: missing count"));
-    }
-
-    let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-
-    // Validate count early
-    let max_possible = (data.len() - 4) / 4;
-    if count > max_possible {
-        return Err(Error::from_reason("packed buffer: impossible item count"));
-    }
-
-    let mut out = Vec::with_capacity(4 + count * 4);
-    out.extend_from_slice(&(count as u32).to_le_bytes());
-    out.resize(4 + count * 4, 0);
-
-    let out_slice = &mut out[4..];
-
-    if should_parallelize(count, data.len().saturating_sub(4)) {
-        use rayon::prelude::*;
-
-        // Pre-compute offsets so we can iterate in parallel without allocations
-        let offsets: Vec<(usize, usize)> = {
-            let mut offsets = Vec::with_capacity(count);
-            let mut offset = 4usize;
-            for _ in 0..count {
-                if offset + 4 > data.len() {
-                    return Err(Error::from_reason("packed buffer: truncated length"));
-                }
-                let len = u32::from_le_bytes([
-                    data[offset],
-                    data[offset + 1],
-                    data[offset + 2],
-                    data[offset + 3],
-                ]) as usize;
-                offset += 4;
-                let end = offset + len;
-                if end > data.len() {
-                    return Err(Error::from_reason("packed buffer: truncated item"));
-                }
-                offsets.push((offset, len));
-                offset = end;
-            }
-            offsets
-        };
-
-        const CHUNK_ITEMS: usize = 256;
-
-        out_slice
-            .par_chunks_mut(CHUNK_ITEMS * 4)
-            .enumerate()
-            .for_each(|(ci, chunk)| {
-                let num_items = chunk.len() / 4;
-                let start = ci * CHUNK_ITEMS;
-                for (i, item) in offsets[start..start + num_items].iter().enumerate() {
-                    let crc = crc32fast::hash(&data[item.0..item.0 + item.1]);
-                    chunk[i * 4..(i + 1) * 4].copy_from_slice(&crc.to_le_bytes());
-                }
-            });
-    } else {
-        let mut offset = 4usize;
-        for i in 0..count {
-            if offset + 4 > data.len() {
-                return Err(Error::from_reason("packed buffer: truncated length"));
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            let end = offset + len;
-            if end > data.len() {
-                return Err(Error::from_reason("packed buffer: truncated item"));
-            }
-            let crc = crc32fast::hash(&data[offset..end]);
-            out_slice[i * 4..(i + 1) * 4].copy_from_slice(&crc.to_le_bytes());
-            offset = end;
-        }
-    }
-
+    let count = crate::util::packed::PackedIter::new(data)?.len();
+    let mut out = vec![0u8; 4 + count.saturating_mul(4)];
+    let written = crate::util::write_u32_batch_into(data, &mut out, crc32_bytes)?;
+    out.truncate(written);
     Ok(Buffer::from(out))
 }
 
@@ -189,5 +120,19 @@ mod tests {
         assert_eq!(empty, fast_hash_bytes(b""));
         assert_ne!(empty, fast_hash_bytes(b"a"));
         assert_eq!(fast_hash_bytes(b"castrum"), fast_hash_bytes(b"castrum"));
+    }
+
+    #[test]
+    fn xxh3_napi_agrees_with_core() {
+        let input = b"castrum xxh3 known-vector check 0123456789";
+        assert_eq!(
+            xxh3(Uint8Array::new(input.to_vec())),
+            fast_hash_bytes(input)
+        );
+        // Deterministic across calls on the same bytes.
+        assert_eq!(
+            xxh3(Uint8Array::new(input.to_vec())),
+            xxh3(Uint8Array::new(input.to_vec()))
+        );
     }
 }

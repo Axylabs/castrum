@@ -47,7 +47,17 @@ impl IngressSchema {
     /// Compile the authoritative validator plus the optional fast path. Returns
     /// the raw schema compile error string for the caller to format.
     pub(crate) fn compile(schema_value: &serde_json::Value) -> std::result::Result<Self, String> {
-        let compiled = match jsonschema::validator_for(schema_value) {
+        // `should_validate_formats(true)`: see json_schema.rs — jsonschema 0.48
+        // disables formats by default; the fast path now honors format:email, so
+        // the authoritative DOM validator must too (byte-parity requirement).
+        // `.with_draft(Draft7)`: the fast path implements draft-07 and the crate
+        // default draft (no `$schema`) is 2020-12 — pin so both paths agree on
+        // schemas without a `$schema`. Declared `$schema` still overrides.
+        let compiled = match jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft7)
+            .should_validate_formats(true)
+            .build(schema_value)
+        {
             Ok(v) => v,
             Err(e) => return Err(e.to_string()),
         };

@@ -16,8 +16,9 @@ A high-performance Bun backend framework with Rust-accelerated FFI functions, pr
 │    ├── src/rust-ffi/     Raw Rust FFI bindings                   │
 │    ├── src/native/       NAPI native addon loader                │
 │    ├── src/ingress/      High-performance HTTP ingress pipeline  │
+│    ├── src/integration/  Framework-agnostic pipeline/WS/SSE      │
+│    ├── src/loader/       Higher-order loader (HFC)               │
 │    ├── src/baseline/     JS baseline (benchmark reference)       │
-│    ├── src/data/         Data serialization utilities            │
 │    └── src/shared/       Shared constants and helpers            │
 │                                                                  │
 ├─────────────────── NAPI Bridge (napi-rs) ──────────────────────┤
@@ -25,15 +26,19 @@ A high-performance Bun backend framework with Rust-accelerated FFI functions, pr
 │                     Rust (cdylib) Layer                          │
 │                                                                  │
 │  rust/lib.rs                                                     │
-│    ├── Core Pipeline: ingress, cors, rate_limit, ip_trust        │
-│    ├── Parsers:       http_parser, query_parser, cookie_parser   │
-│    ├── Validation:    validation (email/uuid/IP)                 │
-│    ├── JSON:          json_ops, json_patch_ops, json_schema,     │
-│    │                  json_ser                                    │
-│    ├── Crypto:        hashing, hmac_sha256, random_token         │
-│    ├── Data:          url_codec, mime_lookup, websocket          │
-│    ├── Batch:         batch                                       │
-│    ├── Utilities:     util, method, headers, output, terminal    │
+│    ├── util/       bytes, packed, batch, batch_core, threadpool, │
+│    │               validation                                   │
+│    ├── http/       headers, method, http_parser, cookie/query    │
+│    │               parsers, form, media_type, url_codec/join,    │
+│    │               etag, accept, mime_lookup, multipart          │
+│    ├── crypto/     hmac_sha256, cookie_sign, csrf, jwt, aead,    │
+│    │               argon2, base64, hashing, random_token         │
+│    ├── json/       json_ops, json_ser, json_patch_ops,           │
+│    │               json_schema, fast_schema/ (zero-DOM)          │
+│    ├── payload/    compress, sse, ws_frames, websocket, template │
+│    └── ingress/    mod.rs (napi boundary), pipeline.rs (core),   │
+│                    options/time/packed, cors, proxy, ip_trust,   │
+│                    rate_limit, terminal, output, constants       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -123,6 +128,32 @@ bun run bench:http:boundary # boundary conditions
 bun run bench:http:all-heavy # all heavy-JSON scenarios (01-11 + heavy)
 ```
 
+### Bun built-ins comparison ("don't reinvent the wheel")
+
+`bun run check` also races castrum ops against Bun's native built-ins
+(`Bun.hash`, `Bun.password`, `Bun.CryptoHasher`, `Bun.gzipSync`,
+`Bun.randomUUIDv7`) as a **diagnostic** set (`diag:` task names — never
+audited by `check:proven`). Findings on Bun 1.4 / release addon:
+
+- **Bun wins → `@flux/native` should prefer Bun**: non-crypto hashing
+  (`Bun.hash.crc32` ~3x, `xxHash3` ~4x, wyhash ~1-2x), gzip
+  (`Bun.gzipSync`/`gunzipSync` ~1.3-2x), `Bun.randomUUIDv7` (~2x), HMAC
+  (`Bun.CryptoHasher` ~1.2x).
+- **Rust wins → keep**: argon2id password hashing/verify (~1.8-2x vs
+  `Bun.password`), bcrypt verify (~1.5x), and everything with no sync Bun
+  equivalent (brotli, PBKDF2, zero-DOM JSON/parsers).
+
+Full table + per-op decisions: [`docs/bun-builtins-decision-matrix.md`](docs/bun-builtins-decision-matrix.md).
+
+### New primitives
+
+| `rust.*` | Description | Benchmark vs |
+|---|---|---|
+| `xxh3` | XXH3-64 (non-crypto hash) | `Bun.hash.xxHash3` (~4x Bun — prefer Bun under Bun) |
+| `passwordHashBcrypt` / `passwordVerifyBcrypt` | bcrypt `$2b$` PHC | `Bun.password` bcrypt (hash parity, verify rust ~1.5x) |
+| `pbkdf2Sha256` | PBKDF2-HMAC-SHA256 | `node:crypto.pbkdf2Sync` (parity; only sync option in Bun) |
+| `uuidv7()` (TS) | UUIDv7 — delegates to `Bun.randomUUIDv7`, `crypto.randomUUID` on Node | `Bun.randomUUIDv7` |
+
 ## API Reference
 
 ### Core Exports
@@ -199,7 +230,7 @@ string variants under `rust.text`.
 | `jsonParse(input)` | `unknown` — JSON → JS value (native sonic-rs DOM; throws on invalid) |
 | `jsonSumIds(input)` | `bigint` — sum of numeric `id` fields |
 | `jsonPatch(doc, patch)` | `Uint8Array` — RFC 6902 result |
-| `createSchemaValidator(schema)` | `SchemaValidator` — compile a JSON Schema; `.validate(doc): boolean`, `.validateBatchPackedCount(packed): number`, … |
+| `createSchemaValidator(schema)` | `SchemaValidator` — compile a JSON Schema (draft-07); `.validate(doc): boolean`, `.validateDetailed(doc): SchemaError[]`, `.validateFirstError(doc): SchemaError | null`, `.validateBatchPackedCount(packed): number`, … |
 | `mimeFromExtension(ext)` | `Uint8Array` — MIME type |
 | `randomToken(byteLen)` | `Uint8Array` — CSPRNG token |
 | `urlEncode(input)` / `urlDecode(input)` | `Uint8Array` — percent encode/decode |
@@ -477,7 +508,9 @@ castrum/
 │   ├── crypto/              # Auth & hashing: hmac, cookie_sign, csrf, jwt, aead, argon2,
 │   │                        #   base64, hashing, random_token
 │   ├── json/                # JSON & schema: json_ops, json_ser, json_patch_ops, json_schema,
-│   │                        #   fast_schema/ (zero-DOM engine: types/cursor/compile/validate)
+│   │                        #   fast_schema/ (zero-DOM draft-07 engine: types/cursor/compile/
+│   │                        #   validate/errors — incl. pattern, enum/const, multipleOf,
+│   │                        #   combinators, $ref, uniqueItems, detailed errors)
 │   ├── payload/             # Output & streaming: compress, sse, ws_frames, websocket, template
 │   ├── ingress/             # The ingress pipeline: mod.rs (napi boundary), pipeline.rs (core),
 │   │                        #   tests.rs, options/time/packed, cors, proxy, ip_trust,

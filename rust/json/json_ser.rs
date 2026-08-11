@@ -13,10 +13,12 @@ use crate::util::bytes::{cookie_pairs, HEX_LOWER as JSON_HEX_LOWER};
 fn is_ascii(bytes: &[u8]) -> bool {
     let mut chunks = bytes.chunks_exact(8);
     for chunk in &mut chunks {
-        // SAFETY-free: chunks_exact guarantees exactly 8 bytes here.
-        let w = u64::from_le_bytes(
-            <[u8; 8]>::try_from(chunk).expect("chunks_exact yields 8 bytes"),
-        );
+        // `chunks_exact` guarantees 8-byte chunks, but never panic on the hot
+        // path if that invariant is ever violated — fall back to a byte scan.
+        let Ok(word) = <[u8; 8]>::try_from(chunk) else {
+            return bytes.iter().all(|&b| b < 0x80);
+        };
+        let w = u64::from_le_bytes(word);
         if (w & 0x8080_8080_8080_8080) != 0 {
             return false;
         }
@@ -43,15 +45,57 @@ fn is_valid_utf8(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes).is_ok()
 }
 
-/// Compute the JSON-escaped length without writing.
-/// Uses memchr to find special characters in bulk.
+/// Compute the JSON-escaped length without writing, validating UTF-8 in the
+/// SAME pass as the memchr3 escape scan (previously `is_valid_utf8` + the
+/// memchr3 scan were two full passes). Uses memchr to find special characters
+/// in bulk.
+///
+/// # Correctness (matches `write_json_escaped`)
+///
+/// memchr3's needles (`"` 0x22, `\` 0x5C, `\n` 0x0A) are all < 0x80, and a valid
+/// UTF-8 multi-byte sequence is made only of bytes >= 0x80, so an ASCII byte
+/// can never appear inside a multi-byte sequence. Splitting the buffer at
+/// memchr3 hits therefore never splits a multi-byte sequence, and
+/// `str::from_utf8(whole)` is OK ⇔ every gap is OK. `write_json_escaped`
+/// derives the same valid/invalid decision from `is_valid_utf8`, so the length
+/// estimate stays an EXACT accounting of the written output (enforced by the
+/// `write_json_escaped_never_overflows_exact_buffer` test).
 #[inline(always)]
 pub fn json_escaped_len(bytes: &[u8]) -> usize {
-    if is_valid_utf8(bytes) {
-        json_escaped_len_impl(bytes)
-    } else {
-        bytes.len().saturating_mul(6)
+    // Pure ASCII is valid UTF-8 by construction — skip gap validation and just
+    // do the escape accounting.
+    if is_ascii(bytes) {
+        return json_escaped_len_impl(bytes);
     }
+
+    let mut total = bytes.len(); // start with all bytes as 1
+    let mut offset = 0usize;
+
+    while let Some(pos) = memchr::memchr3(b'"', b'\\', b'\n', &bytes[offset..]) {
+        let abs = offset + pos;
+        if std::str::from_utf8(&bytes[offset..abs]).is_err() {
+            // Invalid UTF-8 → the binary escape path escapes EVERY byte as
+            // `\u00XX` (6 bytes each), matching `write_json_escaped`.
+            return bytes.len().saturating_mul(6);
+        }
+        // Control chars before the special are escaped too — they contribute
+        // the same extra count the writer emits. This keeps the length an
+        // EXACT accounting of the escaped output, so the output is always
+        // RFC-8259-valid and never depends on memchr3's needle set.
+        total += control_escape_extra(&bytes[offset..abs]);
+
+        // memchr3 only matches ", \, \n — every hit is a 2-byte escape (+1).
+        total += 1;
+
+        offset = abs + 1;
+    }
+
+    // Trailing run after the last special — may contain control chars.
+    if std::str::from_utf8(&bytes[offset..]).is_err() {
+        return bytes.len().saturating_mul(6);
+    }
+    total += control_escape_extra(&bytes[offset..]);
+    total
 }
 
 /// Extra bytes (beyond the base 1 already counted per input byte) required to
@@ -279,12 +323,21 @@ pub fn cookie_json_into_slice(
 }
 
 /// Parse packed query pairs and write JSON to `out` with max_pairs limit.
-#[inline]
+///
+/// Test-only reference oracle: the ingress hot path uses the single-pass
+/// `query_to_json_into_slice` (which superseded the two-step pipeline this
+/// helper represents); `unit_tests.rs` keeps it as the byte-parity reference.
+#[cfg(test)]
 pub fn packed_pairs_to_json_into_slice(
     packed: &[u8],
     out: &mut [u8],
     max_pairs: usize,
 ) -> std::result::Result<usize, String> {
+    let read_u32 = |data: &[u8], offset: usize| -> Option<u32> {
+        let slice = data.get(offset..offset + 4)?;
+        Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    };
+
     if out.len() < 2 {
         return Err("output buffer too small for packed pairs JSON".to_string());
     }
@@ -294,7 +347,8 @@ pub fn packed_pairs_to_json_into_slice(
         return Ok(2);
     }
 
-    let count = crate::util::read_u32_le(packed, 0).map_err(|e| e.to_string())? as usize;
+    let count =
+        read_u32(packed, 0).ok_or_else(|| "packed pairs: truncated count".to_string())? as usize;
 
     out[0] = b'{';
     let mut pos = 1usize;
@@ -305,7 +359,9 @@ pub fn packed_pairs_to_json_into_slice(
             break;
         }
 
-        let key_len = crate::util::read_u32_le(packed, src).map_err(|e| e.to_string())? as usize;
+        let key_len = read_u32(packed, src)
+            .ok_or_else(|| "packed pairs: truncated key length".to_string())?
+            as usize;
         src += 4;
 
         if src + key_len > packed.len() {
@@ -315,7 +371,9 @@ pub fn packed_pairs_to_json_into_slice(
         let key = &packed[src..src + key_len];
         src += key_len;
 
-        let val_len = crate::util::read_u32_le(packed, src).map_err(|e| e.to_string())? as usize;
+        let val_len = read_u32(packed, src)
+            .ok_or_else(|| "packed pairs: truncated value length".to_string())?
+            as usize;
         src += 4;
 
         if src + val_len > packed.len() {

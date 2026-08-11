@@ -71,15 +71,22 @@ pub fn base64_decode_bytes(input: &[u8], url_safe: bool, padding: bool) -> Resul
 
 // ── hex ──────────────────────────────────────────────────────────
 
-/// Encode bytes as lowercase hex (uses the shared `HEX_LOWER` table — no
-/// per-nibble `char::from_digit` path).
+/// Encode bytes as lowercase hex (uses the shared `HEX_LOWER` table — direct
+/// byte writes, no per-nibble `char` push).
+///
+/// # Safety
+///
+/// Hex output is always ASCII (`HEX_LOWER` is a byte string of `0-9a-f`), so
+/// the built `Vec<u8>` is valid UTF-8 by construction; `from_utf8_unchecked`
+/// skips a redundant validation pass on the allocating hot path.
 pub fn hex_encode_bytes(input: &[u8]) -> String {
-    let mut out = String::with_capacity(input.len() * 2);
+    let mut out = Vec::with_capacity(input.len() * 2);
     for &b in input {
-        out.push(HEX_LOWER[(b >> 4) as usize] as char);
-        out.push(HEX_LOWER[(b & 0x0f) as usize] as char);
+        out.push(HEX_LOWER[(b >> 4) as usize]);
+        out.push(HEX_LOWER[(b & 0x0f) as usize]);
     }
-    out
+    // SAFETY: every byte pushed is an ASCII hex digit from `HEX_LOWER`.
+    unsafe { String::from_utf8_unchecked(out) }
 }
 
 /// Decode lowercase/uppercase hex to bytes.
@@ -88,9 +95,9 @@ pub fn hex_decode_bytes(input: &[u8]) -> std::result::Result<Vec<u8>, &'static s
         return Err("odd hex length");
     }
     let mut out = Vec::with_capacity(input.len() / 2);
-    for pair in input.chunks(2) {
-        let hi = hex_val(pair[0]).ok_or("invalid hex digit")?;
-        let lo = hex_val(pair[1]).ok_or("invalid hex digit")?;
+    for i in (0..input.len()).step_by(2) {
+        let hi = hex_val(input[i]).ok_or("invalid hex digit")?;
+        let lo = hex_val(input[i + 1]).ok_or("invalid hex digit")?;
         out.push((hi << 4) | lo);
     }
     Ok(out)
@@ -152,9 +159,9 @@ pub fn hex_decode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
         return Err(Error::from_reason("hex decode: output buffer too small"));
     }
     let mut pos = 0usize;
-    for pair in input.chunks(2) {
-        let hi = hex_val(pair[0]).ok_or_else(|| Error::from_reason("invalid hex digit"))?;
-        let lo = hex_val(pair[1]).ok_or_else(|| Error::from_reason("invalid hex digit"))?;
+    for i in (0..input.len()).step_by(2) {
+        let hi = hex_val(input[i]).ok_or_else(|| Error::from_reason("invalid hex digit"))?;
+        let lo = hex_val(input[i + 1]).ok_or_else(|| Error::from_reason("invalid hex digit"))?;
         out[pos] = (hi << 4) | lo;
         pos += 1;
     }
@@ -168,7 +175,7 @@ pub fn hex_decode_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32>
 
 /// Pure core: base64-encode `input` into `out` (zero-alloc `encode_slice`).
 /// Returns bytes written; errors if `out` is too small. Shared by the `_into`
-/// napi path and the C ABI surface.
+/// napi path and the pure-core unit tests.
 pub fn base64_encode_into_slice(
     input: &[u8],
     out: &mut [u8],
@@ -197,7 +204,7 @@ pub fn base64_encode_into(
 
 /// Pure core: base64-decode `input` into `out` (zero-alloc `decode_slice`).
 /// Returns bytes written; errors on invalid input or a too-small output
-/// buffer. Shared by the `_into` napi path and the C ABI surface.
+/// buffer. Shared by the `_into` napi path and the pure-core unit tests.
 pub fn base64_decode_into_slice(
     input: &[u8],
     out: &mut [u8],

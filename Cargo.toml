@@ -1,7 +1,7 @@
 [package]
 name = "castrum"
 # Keep in sync with package.json "version" (single source of truth: the npm package).
-version = "0.7.0"
+version = "0.9.0"
 edition = "2021"
 
 [lib]
@@ -26,6 +26,8 @@ sonic-rs = "0.5"
 jsonschema = { version = "0.48", default-features = false, features = ["resolve-file"] }
 json-patch = "4"
 aws-lc-rs = "1"
+# NOTE: base64 0.23 enables SIMD (SSE/AVX) by default via the `simd-unsafe`
+# feature (part of `default`); no explicit feature is needed.
 base64 = "0.23"
 crc32fast = "1"
 httparse = "1"
@@ -36,6 +38,11 @@ memchr = "2"
 simdutf8 = "0.1"
 email_address = "0.2"
 fast_chemail = { version = "0.9", optional = true }
+# Replicate jsonschema 0.48.5's format:"email" hostname validation (punycode
+# A-labels + RFC 5892 PVALID/contextual rules) on the zero-DOM fast path. Same
+# crates/versions the jsonschema crate uses, so the fast path stays byte-parity.
+idna = "1"
+unicode-general-category = "1"
 rayon = "1"
 # mimalloc is set as the Rust #[global_allocator] (see rust/lib.rs). We DELIBERATELY
 # do NOT enable the "override" feature: it interposes libc malloc/free at the
@@ -52,10 +59,25 @@ lru = "0.12"
 # Zero-cost hashing for fast_schema object-key lookups (default SipHash is slow
 # on short keys). Already a transitive dep, so no new download.
 rustc-hash = "2"
+# fast_schema extended-keyword parity: fancy-regex is the SAME regex engine the
+# jsonschema crate uses for `pattern`/`patternProperties` (ECMA-262 semantics incl.
+# lookahead/backrefs); fraction::BigFraction is the SAME exact-rational type used
+# for `multipleOf` divisibility. Both are already transitive deps, so no new
+# downloads — but they become direct deps so fast_schema can use them.
+fancy-regex = "0.18"
+fraction = "0.15"
+# Exact cross-type number equality for enum/const/uniqueItems (same semantics
+# jsonschema uses via jsonschema-value's cmp::equal). Already transitive.
+num-cmp = "0.1"
 
 # Backend-framework feature additions (Phase A/B/C)
 # argon2id password hashing (password-hash/rand features are default-on).
 argon2 = "0.5"
+# bcrypt password hashing (pure-Rust, Blowfish-based).
+bcrypt = "0.16"
+# PBKDF2-HMAC-SHA256 (RustCrypto) — pure-Rust KDF.
+pbkdf2 = "0.12"
+sha2 = "0.10"
 # HTML templating (fast, safe, no eval).
 minijinja = "2"
 # gzip via the memory-safe zlib-rs backend (pure Rust, no C).
@@ -65,6 +87,12 @@ brotli = "8"
 
 [build-dependencies]
 napi-build = "2"
+
+[dev-dependencies]
+# Property-based testing for the security-sensitive wire parsers (fuzz-style
+# with automatic shrinking) — complements the deterministic xorshift corpus in
+# rust/test_support.rs. Runs under `cargo test`; not part of the shipped addon.
+proptest = "1"
 
 [features]
 default = ["fast-email"]

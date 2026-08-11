@@ -70,5 +70,15 @@ export function encodingTasks(f: BenchFixtures): BenchTask[] {
       iterations: 300,
       warmup: 30,
     },
+    // Pooled-output variant: one reused buffer, no per-call Vec+Buffer alloc.
+    {
+      name: "rust:hex_encode_into",
+      run: (() => {
+        const out = new Uint8Array(256);
+        return () => rust.hexEncodeInto(f.encodeData, out);
+      })(),
+      iterations: 300,
+      warmup: 30,
+    },
   ];
 }

@@ -76,6 +76,63 @@ describe("SchemaValidator batch", () => {
   });
 });
 
+describe("SchemaValidator detailed errors", () => {
+  const validator = rust.createSchemaValidator(SCHEMA);
+
+  test("validateDetailed returns [] for a valid doc", () => {
+    expect(validator.validateDetailed(VALID_DOC)).toEqual([]);
+  });
+
+  test("validateDetailed reports instance path + keyword", () => {
+    const errs = validator.validateDetailed(INVALID_DOC);
+    expect(errs.length).toBeGreaterThan(0);
+    const e = errs[0];
+    expect(e?.instancePath).toBe("/id");
+    expect(e?.keyword).toBe("type");
+    expect(e?.schemaPath).toBe("/properties/id/type");
+    expect(e?.message.length ?? 0).toBeGreaterThan(0);
+  });
+
+  test("validateFirstError returns null for a valid doc", () => {
+    expect(validator.validateFirstError(VALID_DOC)).toBeNull();
+  });
+
+  test("validateFirstError returns a single error for an invalid doc", () => {
+    const first = validator.validateFirstError(INVALID_DOC);
+    expect(first).not.toBeNull();
+    expect(first?.instancePath).toBe("/id");
+  });
+
+  test("agrees with validate()", () => {
+    for (const doc of [VALID_DOC, INVALID_DOC]) {
+      const ok = validator.validate(doc);
+      const errs = validator.validateDetailed(doc);
+      const first = validator.validateFirstError(doc);
+      expect(ok).toBe(errs.length === 0);
+      expect(ok ? first == null : first != null).toBe(true);
+    }
+  });
+
+  test("collects multiple errors (pattern + additionalProperties)", () => {
+    const schema = encoder.encode(
+      JSON.stringify({
+        type: "object",
+        properties: {
+          name: { type: "string", pattern: "^[a-z]+$" },
+        },
+        additionalProperties: false,
+      }),
+    );
+    const v = rust.createSchemaValidator(schema);
+    const errs = v.validateDetailed(
+      encoder.encode(JSON.stringify({ name: "AB", extra: 1 })),
+    );
+    const keywords = errs.map((e) => e.keyword);
+    expect(keywords).toContain("pattern");
+    expect(keywords).toContain("additionalProperties");
+  });
+});
+
 describe("rust.jsonPatch", () => {
   test("replaces a field", () => {
     const doc = encoder.encode('{"name":"alice","age":30}');

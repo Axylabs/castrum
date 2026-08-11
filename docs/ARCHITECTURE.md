@@ -88,8 +88,8 @@ rust/
 │   ├── json_ser.rs        ── zero-alloc JSON escaping + cookie/query → JSON writers
 │   ├── json_patch_ops.rs  ── RFC 6902 JSON patch
 │   ├── json_schema.rs     ── SchemaValidator napi class (fast + jsonschema fallback)
-│   └── fast_schema/       ── zero-DOM JSON Schema fast path
-│       └── mod.rs + types.rs / cursor.rs / compile.rs / validate.rs / tests.rs
+│   └── fast_schema/       ── zero-DOM draft-07 JSON Schema fast path
+│       └── mod.rs + types.rs / cursor.rs / compile.rs / validate.rs / errors.rs / email.rs (format:"email" replica) / tests.rs
 │
 ├── payload/               ── Output & streaming
 │   ├── compress.rs        ── gzip (zlib-rs) + brotli + batch

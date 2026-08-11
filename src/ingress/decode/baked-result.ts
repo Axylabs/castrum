@@ -19,6 +19,7 @@ import {
   ERR_CODE_INTERNAL as ERROR_CODE_INTERNAL,
 } from "../constants";
 import { sectionLayout } from "./packed-sections";
+import { decoder } from "../../shared/bytes";
 
 const EMPTY_BODY = new Uint8Array(0);
 
@@ -45,6 +46,10 @@ export class BakedIngressResult {
   private _buf: Uint8Array = EMPTY_BODY;
   private _bodyJsonStart = OUT_DATA_START;
   private _bodyJsonLen = 0;
+  private _cookiesBuf: Uint8Array | null = null;
+  private _queryBuf: Uint8Array | null = null;
+  private _cookiesDecoded: string | null = null;
+  private _queryDecoded: string | null = null;
 
   refresh(buf: Uint8Array, body: Uint8Array, view: DataView): void {
     // Defensive: the native core always writes the full fixed header
@@ -107,6 +112,25 @@ export class BakedIngressResult {
     this._bodyJsonStart = layout.bodyJsonStart;
     this._bodyJsonLen = layout.safeBodyJsonLen;
 
+    // Lazy-decoded cookie/query JSON sections (bounds-checked by sectionLayout),
+    // mirroring the fast-path decoder's accessors.
+    this._cookiesBuf =
+      layout.safeCookiesLen > 0
+        ? this._buf.subarray(
+            OUT_DATA_START,
+            OUT_DATA_START + layout.safeCookiesLen,
+          )
+        : null;
+    this._cookiesDecoded = null;
+    this._queryBuf =
+      layout.safeQueryLen > 0
+        ? this._buf.subarray(
+            layout.queryStart,
+            layout.queryStart + layout.safeQueryLen,
+          )
+        : null;
+    this._queryDecoded = null;
+
     this.terminal = this.verdict !== 0 || this.status >= 400;
     this.ok = this.verdict === 0 && this.status >= 200 && this.status < 400;
 
@@ -142,6 +166,10 @@ export class BakedIngressResult {
     this._buf = EMPTY_BODY;
     this._bodyJsonStart = OUT_DATA_START;
     this._bodyJsonLen = 0;
+    this._cookiesBuf = null;
+    this._queryBuf = null;
+    this._cookiesDecoded = null;
+    this._queryDecoded = null;
   }
 
   setInternalError(): void {
@@ -166,5 +194,25 @@ export class BakedIngressResult {
 
     const slice = this._buf.subarray(this._bodyJsonStart, end);
     return (copy ? slice.slice() : slice) as Uint8Array;
+  }
+
+  /** Decoded cookies-JSON section, or `"{}"` when absent. */
+  cookiesJson(): string {
+    if (this._cookiesDecoded !== null) return this._cookiesDecoded;
+    if (this._cookiesBuf !== null) {
+      this._cookiesDecoded = decoder.decode(this._cookiesBuf);
+      return this._cookiesDecoded;
+    }
+    return "{}";
+  }
+
+  /** Decoded query-JSON section, or `"{}"` when absent. */
+  queryJson(): string {
+    if (this._queryDecoded !== null) return this._queryDecoded;
+    if (this._queryBuf !== null) {
+      this._queryDecoded = decoder.decode(this._queryBuf);
+      return this._queryDecoded;
+    }
+    return "{}";
   }
 }

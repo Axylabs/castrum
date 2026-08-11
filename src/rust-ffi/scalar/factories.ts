@@ -21,6 +21,7 @@ import type {
   JwtSignerInstance,
   AeadCipherInstance,
   Argon2HasherInstance,
+  RateLimiterInstance,
   PasswordHashOptions,
 } from "../../native";
 
@@ -84,6 +85,13 @@ export function buildFactories(ctx: RustClientContext) {
     },
     createMediaTypeMatcher(expected: Uint8Array): MediaTypeMatcherInstance {
       return new addon.MediaTypeMatcher(expected);
+    },
+    createRateLimiter(
+      limit: number,
+      windowMs: number,
+      maxEntries?: number | null,
+    ): RateLimiterInstance {
+      return new addon.RateLimiter(limit, windowMs, maxEntries ?? undefined);
     },
     initThreadPool(threads?: number): void {
       // Explicit user call also establishes the pool state locally.

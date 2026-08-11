@@ -12,6 +12,11 @@ export interface LoadRequest {
   reject(err: unknown): void;
   /** Cache key (only set when caching is enabled for this request). */
   key?: string | bigint;
+  /**
+   * The default cache key should be computed lazily at flush time (coalesce
+   * mode deferral) so all keys are computed in ONE packed native crossing.
+   */
+  needsDefaultKey?: boolean;
 }
 
 /** Bounded LRU cache used by the loader (Hot Function Cache). */

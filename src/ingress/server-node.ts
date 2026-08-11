@@ -19,7 +19,7 @@ import {
   type Server as HttpServer,
   type ServerResponse,
 } from "node:http";
-import { Readable } from "node:stream";
+import { Readable, type Duplex } from "node:stream";
 
 import {
   buildRouteHandlers,
@@ -92,6 +92,13 @@ function nodeRequestToWebRequest(req: IncomingMessage): Request {
 
 /** Write a web Response back to a Node ServerResponse. */
 async function writeResponse(res: ServerResponse, response: Response): Promise<void> {
+  // If the handler answered without consuming the request body (e.g. an early
+  // 400/413/415 guard), drain it BEFORE ending the response: Node only reuses a
+  // keep-alive socket once the request is fully read, and calling resume()
+  // after end() is too late — the unread bytes would bleed into the next
+  // request's parse (spurious 400s).
+  drainUnreadBody(res);
+
   res.statusCode = response.status;
 
   if (response.headers.has("set-cookie")) {
@@ -127,6 +134,37 @@ async function writeResponse(res: ServerResponse, response: Response): Promise<v
   }
 }
 
+/**
+ * Handle a response whose request body was never consumed (early 4xx guards).
+ *
+ * Empirically Node CANNOT safely reuse a keep-alive socket here: `resume()`
+ * alone still lets the unread bytes bleed into the next request's parse
+ * (spurious 400s — verified with a minimal repro). The safe behavior is to
+ * drain best-effort AND force `Connection: close` so the socket ends cleanly
+ * instead of corrupting the next request.
+ */
+function drainUnreadBody(res: ServerResponse): void {
+  const req = res.req;
+  if (req !== undefined && req !== null && !req.complete && hasBody(req)) {
+    req.resume();
+    // Only force-close when the request actually carried a body that was not
+    // consumed. A bodiless GET/HEAD is always safe to keep alive (bun's
+    // node:http reports `complete` differently, so don't trust it alone).
+    res.shouldKeepAlive = false;
+    if (!res.headersSent) {
+      res.setHeader("connection", "close");
+    }
+  }
+}
+
+/** Whether an incoming request carried a body (content-length or chunked). */
+function hasBody(req: IncomingMessage): boolean {
+  return (
+    Number(req.headers["content-length"] ?? 0) > 0 ||
+    req.headers["transfer-encoding"] !== undefined
+  );
+}
+
 /** Build a request listener that dispatches to the shared route map. */
 function makeRequestListener(
   options: CreateIngressServerOptions,
@@ -143,6 +181,12 @@ function makeRequestListener(
         contentLengthHeader !== undefined &&
         Number(contentLengthHeader) > options.maxRequestBodySize
       ) {
+        // Reject before buffering; Node cannot safely reuse a keep-alive socket
+        // with an unread body, so force the connection to close (no corruption
+        // of the next request).
+        req.resume();
+        res.shouldKeepAlive = false;
+        res.setHeader("connection", "close");
         const body = JSON.stringify({
           error: { code: "body_too_large", message: "Request body is too large" },
         });
@@ -199,6 +243,49 @@ function makeRequestListener(
 }
 
 /**
+ * Handle a WebSocket upgrade on the Node adapter. Node's `Response` cannot
+ * carry status 101 (undici only allows 200-599), so `createWebSocketUpgrade`
+ * is Bun-only. Here the caller supplies the RFC 6455 handshake VALUES via
+ * `options.upgrade` (accept key + optional negotiated subprotocol); we write
+ * the 101 head on the hijacked socket and hand it to `options.onUpgrade`
+ * (which owns the frame codec — e.g. the `ws` library). Previously a 101 was
+ * written as a normal response and the connection never became a socket.
+ */
+function makeUpgradeListener(
+  options: CreateIngressServerOptions,
+): (req: IncomingMessage, socket: Duplex, head: Buffer) => Promise<void> {
+  return async (req, socket, head) => {
+    try {
+      const webReq = nodeRequestToWebRequest(req);
+      const handshake = options.upgrade?.(webReq);
+      if (!handshake?.accept) {
+        // No valid handshake — decline the upgrade (never reuse the socket).
+        socket.destroy();
+        return;
+      }
+
+      // Complete the RFC 6455 handshake on the hijacked socket.
+      let raw =
+        "HTTP/1.1 101 Switching Protocols\r\n" +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
+        `Sec-WebSocket-Accept: ${handshake.accept}\r\n`;
+      if (handshake.protocol) {
+        raw += `Sec-WebSocket-Protocol: ${handshake.protocol}\r\n`;
+      }
+      raw += "\r\n";
+      socket.write(raw);
+
+      // Hand the upgraded socket to the caller (frame codec / message loop).
+      options.onUpgrade?.(socket, req, head);
+    } catch {
+      // Never leave a half-open socket on a handshake failure.
+      socket.destroy();
+    }
+  };
+}
+
+/**
  * Start a Node.js `node:http` server serving the same pre-baked ingress route
  * handlers as {@link createIngressServer}. Returns a {@link NodeIngressServer};
  * `stop()` drains in-flight connections (graceful) before closing, and
@@ -225,22 +312,36 @@ export function createIngressServerNode(
   }
 
   // Malformed requests → castrum's JSON error shape (not Node's raw 400/431).
-  server.on("clientError", (_err, socket) => {
+  server.on("clientError", (err, socket) => {
     if (!socket.writable) {
       socket.destroy();
       return;
     }
+    // Header-too-large parse failures are 431, everything else 400.
+    const isHeaderOverflow =
+      (err as NodeJS.ErrnoException | undefined)?.code === "HPE_HEADER_OVERFLOW";
+    const status = isHeaderOverflow ? 431 : 400;
+    const reason = isHeaderOverflow
+      ? "Request Header Fields Too Large"
+      : "Bad Request";
+    const code = isHeaderOverflow ? "headers_too_large" : "bad_request";
     const body = JSON.stringify({
-      error: { code: "bad_request", message: "Bad request" },
+      error: { code, message: reason },
     });
     socket.end(
-      "HTTP/1.1 400 Bad Request\r\n" +
+      `HTTP/1.1 ${status} ${reason}\r\n` +
         "Content-Type: application/json\r\n" +
         `Content-Length: ${Buffer.byteLength(body)}\r\n` +
         "Connection: close\r\n\r\n" +
         body,
     );
   });
+
+  // WebSocket upgrades: only register a listener when the caller opted in
+  // (otherwise Node's default — destroy the socket — applies unchanged).
+  if (options.upgrade || options.onUpgrade) {
+    server.on("upgrade", makeUpgradeListener(options));
+  }
 
   const hostname = options.hostname ?? "0.0.0.0";
 

@@ -208,4 +208,30 @@ describe("pooled ingress output buffers (handlers.ts)", () => {
     // request IDs must all be distinct (pool reuse must not clobber them)
     expect(seen.size).toBe(50);
   });
+
+  test("run() rejects an async callback (parity with the fast path)", async () => {
+    const h = createIngressHandler({ ...baseOptions });
+    let threw: Error | undefined;
+    try {
+      await h.run<Promise<Response>>(
+        req("/health"),
+        undefined,
+        null,
+        async () => new Response("late", { status: 200 }),
+      );
+    } catch (err) {
+      threw = err as Error;
+    }
+    // The result is invalidated when run() returns — an async callback must be
+    // rejected up front, not silently observe a zeroed result.
+    expect(threw?.message).toContain("must be synchronous");
+  });
+
+  test("zeroCopyResponse outside a live run() throws (no silent empty body)", () => {
+    const h = createIngressHandler({ ...baseOptions });
+    const result = { bodyJson: () => new Uint8Array(0) } as never;
+    expect(() => h.zeroCopyResponse(result, {} as never, { status: 200 })).toThrow(
+      /zeroCopyResponse/,
+    );
+  });
 });

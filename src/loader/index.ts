@@ -21,6 +21,7 @@
 
 import {
   LOADER_OPS,
+  fnvBatchKeysInto,
   type LoaderBulkArgs,
   type LoaderOpArgs,
   type LoaderOpName,
@@ -257,6 +258,8 @@ interface LoaderState {
   packScratch: Uint8Array;
   /** Reusable packed-output buffer for the zero-alloc fast flush (grows). */
   outScratch: Uint8Array;
+  /** Reusable packed-key output buffer for the batched default-key flush. */
+  keyScratch: Uint8Array;
 }
 
 const KEY_SEP = "\u0000";
@@ -431,6 +434,24 @@ function handleFlush(
     const req = requests[0];
     if (req === undefined) return;
     try {
+      // A lone coalesce-mode load may carry a deferred default key: compute it
+      // here (scalar fnv — no packed overhead for a single item), and resolve
+      // straight from the cache when present so no native op compute happens.
+      if (req.needsDefaultKey) {
+        if (shouldComputeDefaultKey(ctx)) {
+          ctx.keyAttempts++;
+          const k = op + KEY_SEP + String(rust.fnv1a64(req.input));
+          const hit = state.cache.get(k);
+          if (hit !== undefined) {
+            ctx.counters.cachedHits++;
+            ctx.keyHits++;
+            req.resolve(hit);
+            return;
+          }
+          req.key = k;
+        }
+        req.needsDefaultKey = false;
+      }
       const value = dispatchSingle(ctx, spec, req.input, []);
       maybeCache(state, req, value);
       req.resolve(value);
@@ -470,25 +491,94 @@ function handleFlush(
       pos += req.input.byteLength;
     }
 
+    // Hybrid coalesce: when any request deferred a default key, compute ALL
+    // keys in ONE packed fnv1a64 crossing, resolve cache hits with NO native
+    // op compute, and run the packed op batch only on the remaining misses
+    // (repacked). The adaptive key-skip decision is made once per flush.
+    const needKeys = requests.some((r) => r.needsDefaultKey);
+    const computeKeys = needKeys && shouldComputeDefaultKey(ctx);
+    let keyView: DataView | null = null;
+    if (computeKeys) {
+      ctx.keyAttempts += n;
+      const keyTotal = 4 + n * 8;
+      let keyBuf = state.keyScratch;
+      if (keyBuf.byteLength < keyTotal) {
+        keyBuf = new Uint8Array(keyTotal);
+        state.keyScratch = keyBuf;
+      }
+      fnvBatchKeysInto(scratch.subarray(0, total), keyBuf);
+      keyView = viewForArrayBuffer(keyBuf.buffer, keyBuf.byteOffset);
+    }
+
+    const pending: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const req = requests[i];
+      if (req === undefined) continue;
+      let key = req.key;
+      if (key === undefined && req.needsDefaultKey && keyView !== null) {
+        key = op + KEY_SEP + String(keyView.getBigUint64(4 + i * 8, true));
+        req.key = key;
+      }
+      if (key !== undefined) {
+        const hit = state.cache.get(key);
+        if (hit !== undefined) {
+          ctx.counters.cachedHits++;
+          if (req.needsDefaultKey) ctx.keyHits++;
+          req.resolve(hit);
+          continue;
+        }
+      }
+      pending.push(i);
+    }
+    if (pending.length === 0) return;
+
+    // Repack the pending (miss) requests into the same scratch and run the
+    // packed op batch. scratch is sized >= total >= the subset size, so it is
+    // reused without reallocating; the op only runs on the misses.
+    const m = pending.length;
+    let total2 = 4;
+    for (const i of pending) {
+      const req = requests[i];
+      if (req !== undefined) total2 += 4 + req.input.byteLength;
+    }
+    packView.setUint32(0, m, true);
+    let pos2 = 4;
+    for (let j = 0; j < m; j++) {
+      const pi = pending[j];
+      if (pi === undefined) continue;
+      const req = requests[pi];
+      if (req === undefined) continue;
+      packView.setUint32(pos2, req.input.byteLength, true);
+      pos2 += 4;
+      scratch.set(req.input, pos2);
+      pos2 += req.input.byteLength;
+    }
+
     // Size the reusable output buffer to the exact packed result.
-    const outSize = spec.fast.outSize(n);
+    const outSize = spec.fast.outSize(m);
     let out = state.outScratch;
     if (out.byteLength < outSize) {
       out = new Uint8Array(outSize);
       state.outScratch = out;
     }
     try {
-      spec.fast.batch(scratch.subarray(0, total), out);
+      spec.fast.batch(scratch.subarray(0, total2), out);
       const outView = viewForArrayBuffer(out.buffer, out.byteOffset);
-      for (let i = 0; i < n; i++) {
-        const req = requests[i];
+      for (let j = 0; j < m; j++) {
+        const pi = pending[j];
+        if (pi === undefined) continue;
+        const req = requests[pi];
         if (req === undefined) continue;
-        const value = spec.fast.element(outView, out, i);
+        const value = spec.fast.element(outView, out, j);
         maybeCache(state, req, value);
         req.resolve(value);
       }
     } catch (err) {
-      for (const req of requests) req.reject(err);
+      for (const j of pending) {
+        const req = requests[j];
+        if (req === undefined) continue;
+        req.reject(err);
+      }
     }
     return;
   }
@@ -566,22 +656,41 @@ function loadOne(
   }
 
   const ctx = ctxFor(state, op);
+  const spec: LoaderOpSpec = LOADER_OPS[op];
   const caching =
     state.options.caching && state.options.maxCacheKeys > 0 && (opts?.cache ?? true);
 
   let key: string | undefined;
+  let needsDefaultKey = false;
   if (caching) {
     if (opts?.key !== undefined) {
+      // Explicit key: computable synchronously, so keep the eager cache check
+      // and let a hit resolve without a coalescer flush.
       key = op + KEY_SEP + opts.key;
-    } else if (shouldComputeDefaultKey(ctx)) {
-      ctx.keyAttempts++;
-      key = op + KEY_SEP + String(rust.fnv1a64(input));
-    }
-    if (key !== undefined) {
       const hit = state.cache.get(key);
       if (hit !== undefined) {
         ctx.counters.cachedHits++;
-        if (opts?.key === undefined) ctx.keyHits++;
+        return Promise.resolve(hit);
+      }
+    } else if (
+      ctx.mode === "coalesce" &&
+      spec.fast !== undefined &&
+      state.coalescer.pending > 0
+    ) {
+      // Mid-burst on a cheap (fast) op: defer the default key to the flush so
+      // all keys are computed in ONE packed native crossing instead of one
+      // scalar fnv1a64 crossing per load. A LONE load (the first in the tick,
+      // `pending === 0`) keeps the eager key so a cache hit still resolves
+      // synchronously with no coalescer flush. Single mode and non-fast ops
+      // also keep eager keys.
+      needsDefaultKey = true;
+    } else if (shouldComputeDefaultKey(ctx)) {
+      ctx.keyAttempts++;
+      key = op + KEY_SEP + String(rust.fnv1a64(input));
+      const hit = state.cache.get(key);
+      if (hit !== undefined) {
+        ctx.counters.cachedHits++;
+        ctx.keyHits++;
         return Promise.resolve(hit);
       }
     }
@@ -617,7 +726,7 @@ function loadOne(
       }
       return;
     }
-    state.coalescer.enqueue(op, { input, resolve, reject, key });
+    state.coalescer.enqueue(op, { input, resolve, reject, key, needsDefaultKey });
   });
 }
 
@@ -727,6 +836,7 @@ export function createLoader(options: LoaderOptions = {}): Loader {
     flushes: 0,
     packScratch: new Uint8Array(0),
     outScratch: new Uint8Array(0),
+    keyScratch: new Uint8Array(0),
   };
 
   const loader = ((op: LoaderOpName): LoaderOpFn<LoaderOpName> => {

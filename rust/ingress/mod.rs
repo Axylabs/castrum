@@ -122,7 +122,8 @@ impl Ingress {
                     limit,
                     window_ms,
                     max_entries,
-                ))
+                )
+                .map_err(|e| Error::new(Status::InvalidArg, e))?)
             }
         } else {
             RateLimiterState::Disabled

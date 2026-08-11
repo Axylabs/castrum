@@ -5,4 +5,6 @@ export * from "./read";
 export * from "./head";
 export * from "./json-write";
 export * from "./echo";
+export * from "./delete";
+export * from "./options";
 export * from "./fallback";

@@ -86,6 +86,9 @@ export function buildHttp(ctx: RustClientContext) {
     httpDate(secs?: number): Uint8Array {
       return addon.httpDate(secs ?? undefined);
     },
+    httpDateInto(secs: number | undefined, output: Uint8Array): number {
+      return addon.httpDateInto(secs ?? undefined, output);
+    },
     parseHttpDate(input: Uint8Array): bigint | null {
       return addon.parseHttpDate(input);
     },

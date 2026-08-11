@@ -149,9 +149,19 @@ fn write_padded(out: &mut [u8], mut value: u32, width: usize) {
     }
 }
 
-/// Format a unix timestamp (seconds) as `Sun, 06 Nov 1994 08:49:37 GMT`.
-/// Written into a fixed 32-byte stack buffer — no `format!`/heap allocation.
-pub fn http_date_from_secs(secs: i64) -> String {
+/// Parsed http-date components (computed once, shared by the allocating and
+/// pooled-output formatters).
+struct HttpDateParts {
+    y: i64,
+    m: u32,
+    d: u32,
+    hh: i64,
+    mm: i64,
+    ss: i64,
+    wd: usize,
+}
+
+fn http_date_parts(secs: i64) -> HttpDateParts {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let hh = rem / 3600;
@@ -160,59 +170,88 @@ pub fn http_date_from_secs(secs: i64) -> String {
     let (y, m, d) = civil_from_days(days);
     // 1970-01-01 was a Thursday; weekday Mon=0 → (days+3) mod 7.
     let wd = ((days.rem_euclid(7) + 3) % 7) as usize;
+    HttpDateParts { y, m, d, hh, mm, ss, wd }
+}
 
-    // HTTP-date is only well-defined for years 0000-9999 (the `ddd, dd mmm
-    // yyyy hh:mm:ss GMT` layout). Outside that, fall back to the exact
-    // `format!` path so behavior never changes.
-    if !(0..=9999).contains(&y) {
-        return format!(
-            "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
-            DAY_NAMES[wd],
-            d,
-            MONTH_NAMES[(m - 1) as usize],
-            y,
-            hh,
-            mm,
-            ss
-        );
+/// Write the fixed-width `ddd, dd mmm yyyy hh:mm:ss GMT` layout into `out`
+/// (29 bytes, no heap allocation). `Err` only for years outside 0..=9999
+/// (where the fixed-width layout is undefined) or a too-small buffer.
+fn write_http_date_parts(p: &HttpDateParts, out: &mut [u8]) -> std::result::Result<usize, &'static str> {
+    // 3 + 2 (", ") + 2 + 1 (" ") + 3 + 1 (" ") + 4 + 1 (" ") + 2 + 1 (":") + 2
+    // + 1 (":") + 2 + 1 (" ") + 3 = 29
+    if out.len() < 29 {
+        return Err("http-date: output buffer too small");
     }
-
-    let mut buf = [0u8; 32];
+    if !(0..=9999).contains(&p.y) {
+        return Err("http-date: year out of range for fixed-width layout");
+    }
     let mut i = 0usize;
-    buf[i..i + 3].copy_from_slice(DAY_NAMES[wd].as_bytes());
+    out[i..i + 3].copy_from_slice(DAY_NAMES[p.wd].as_bytes());
     i += 3;
-    buf[i] = b',';
+    out[i] = b',';
     i += 1;
-    buf[i] = b' ';
+    out[i] = b' ';
     i += 1;
-    write_padded(&mut buf[i..i + 2], d, 2);
+    write_padded(&mut out[i..i + 2], p.d, 2);
     i += 2;
-    buf[i] = b' ';
+    out[i] = b' ';
     i += 1;
-    buf[i..i + 3].copy_from_slice(MONTH_NAMES[(m - 1) as usize].as_bytes());
+    out[i..i + 3].copy_from_slice(MONTH_NAMES[(p.m - 1) as usize].as_bytes());
     i += 3;
-    buf[i] = b' ';
+    out[i] = b' ';
     i += 1;
-    write_padded(&mut buf[i..i + 4], y as u32, 4);
+    write_padded(&mut out[i..i + 4], p.y as u32, 4);
     i += 4;
-    buf[i] = b' ';
+    out[i] = b' ';
     i += 1;
-    write_padded(&mut buf[i..i + 2], hh as u32, 2);
+    write_padded(&mut out[i..i + 2], p.hh as u32, 2);
     i += 2;
-    buf[i] = b':';
+    out[i] = b':';
     i += 1;
-    write_padded(&mut buf[i..i + 2], mm as u32, 2);
+    write_padded(&mut out[i..i + 2], p.mm as u32, 2);
     i += 2;
-    buf[i] = b':';
+    out[i] = b':';
     i += 1;
-    write_padded(&mut buf[i..i + 2], ss as u32, 2);
+    write_padded(&mut out[i..i + 2], p.ss as u32, 2);
     i += 2;
-    buf[i] = b' ';
+    out[i] = b' ';
     i += 1;
-    buf[i..i + 3].copy_from_slice(b"GMT");
+    out[i..i + 3].copy_from_slice(b"GMT");
     i += 3;
+    Ok(i)
+}
 
-    String::from_utf8(buf[..i].to_vec()).expect("http-date is ASCII")
+/// Format a unix timestamp (seconds) as `Sun, 06 Nov 1994 08:49:37 GMT`.
+/// Written into a fixed 32-byte stack buffer — no `format!`/heap allocation.
+pub fn http_date_from_secs(secs: i64) -> String {
+    let p = http_date_parts(secs);
+    let mut buf = [0u8; 32];
+    match write_http_date_parts(&p, &mut buf) {
+        Ok(n) => String::from_utf8(buf[..n].to_vec()).expect("http-date is ASCII"),
+        Err(_) => {
+            // Year outside 0..=9999: HTTP-date is only well-defined for
+            // 0000-9999, but keep the exact `format!` fallback so behavior
+            // never changes from before the refactor.
+            format!(
+                "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+                DAY_NAMES[p.wd],
+                p.d,
+                MONTH_NAMES[(p.m - 1) as usize],
+                p.y,
+                p.hh,
+                p.mm,
+                p.ss
+            )
+        }
+    }
+}
+
+/// Write an http-date directly into `out` (fixed 29 bytes, no heap alloc).
+/// Returns bytes written; errors on a too-small buffer or a year outside
+/// 0..=9999 (use the allocating `http_date` for that fallback).
+pub fn http_date_into_slice(secs: i64, out: &mut [u8]) -> Result<usize> {
+    let p = http_date_parts(secs);
+    write_http_date_parts(&p, out).map_err(|e| Error::from_reason(e.to_string()))
 }
 
 /// Parse `Sun, 06 Nov 1994 08:49:37 GMT` back to unix seconds.
@@ -244,6 +283,20 @@ pub fn parse_http_date_secs(input: &[u8]) -> Option<i64> {
 pub fn http_date(secs: Option<f64>) -> Buffer {
     let s = secs.map(|v| v as i64).unwrap_or(0);
     Buffer::from(http_date_from_secs(s).into_bytes())
+}
+
+/// Pooled-output variant: writes the http-date into `output` and returns bytes
+/// written, so hot loops can reuse a buffer instead of allocating a fresh
+/// Buffer per call. Errors if `output` is too small or the year is outside the
+/// fixed-width range (use the allocating `http_date` for that fallback).
+#[napi]
+pub fn http_date_into(secs: Option<f64>, mut output: Uint8Array) -> Result<u32> {
+    let s = secs.map(|v| v as i64).unwrap_or(0);
+    // SAFETY: `http_date_into_slice` is capacity-checked (returns Err on a
+    // too-small buffer before writing), and no other reference to `output` is
+    // live while it runs.
+    let written = unsafe { http_date_into_slice(s, output.as_mut())? };
+    Ok(written as u32)
 }
 
 #[napi]
@@ -380,6 +433,32 @@ mod tests {
             let s = http_date_from_secs(secs);
             assert_eq!(parse_http_date_secs(s.as_bytes()), Some(secs));
         }
+    }
+
+    #[test]
+    fn http_date_into_matches_allocating() {
+        for secs in [0i64, 1, 946_684_800, 784_111_777, 1_700_000_000, -1, -86_400] {
+            let expected = http_date_from_secs(secs);
+            let mut out = [0u8; 32];
+            let n = http_date_into_slice(secs, &mut out).unwrap();
+            assert_eq!(&out[..n], expected.as_bytes(), "secs: {secs}");
+        }
+    }
+
+    #[test]
+    fn http_date_into_rejects_small_buffer() {
+        let mut out = [0u8; 28];
+        assert!(http_date_into_slice(0, &mut out).is_err());
+    }
+
+    #[test]
+    fn http_date_into_out_of_range_year_falls_back() {
+        // Year 10000 (253_402_300_800s): the fixed-width pooled writer errors;
+        // the allocating path keeps the exact format! fallback.
+        let big = 253_402_300_800i64; // 10000-01-01T00:00:00Z
+        let mut out = [0u8; 32];
+        assert!(http_date_into_slice(big, &mut out).is_err());
+        assert!(http_date_from_secs(big).contains("01 Jan 10000"));
     }
 
     #[test]

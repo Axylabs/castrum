@@ -97,6 +97,19 @@ export function buildCrypto(ctx: RustClientContext) {
         nowSeconds ?? Math.floor(Date.now() / 1000),
       );
     },
+    jwtSignBytes(
+      claimsJson: Uint8Array,
+      secret: Uint8Array,
+      ttlSeconds?: number | null,
+      nowSeconds?: number,
+    ): Uint8Array {
+      return addon.jwtSignBytes(
+        claimsJson,
+        secret,
+        ttlSeconds ?? null,
+        nowSeconds ?? Math.floor(Date.now() / 1000),
+      );
+    },
     jwtVerify(
       token: Uint8Array,
       secret: Uint8Array,
@@ -117,6 +130,20 @@ export function buildCrypto(ctx: RustClientContext) {
     },
     passwordVerify(password: Uint8Array, phc: Uint8Array): boolean {
       return addon.passwordVerify(password, phc);
+    },
+    passwordHashBcrypt(password: Uint8Array, cost: number): string {
+      return addon.passwordHashBcrypt(password, cost);
+    },
+    passwordVerifyBcrypt(password: Uint8Array, hash: string): boolean {
+      return addon.passwordVerifyBcrypt(password, hash);
+    },
+    pbkdf2Sha256(
+      password: Uint8Array,
+      salt: Uint8Array,
+      rounds: number,
+      dkLen: number,
+    ): Uint8Array {
+      return addon.pbkdf2Sha256(password, salt, rounds, dkLen);
     },
     aeadEncrypt(
       key: Uint8Array,

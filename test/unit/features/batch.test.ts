@@ -51,7 +51,7 @@ describe("rust.batch: hashing / url / mime / ws / base64url", () => {
 
   test("wsAcceptKey + mime batches match the scalar", () => {
     expect(rust.batch.wsAcceptKey([bytes("dGhlIHNhbXBsZSBub25jZQ==")])[0]).toEqual(
-      bytes("mjqt7n322xkUQqCX5NPZbkSHHuk="),
+      bytes("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
     );
     const mimes = rust.batch.mimeFromExtension([bytes(".js"), bytes("PNG"), bytes("nope")]);
     expect(mimes[0]).toEqual(bytes("text/javascript"));

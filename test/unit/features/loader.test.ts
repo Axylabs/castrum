@@ -524,7 +524,7 @@ describe("loader: expanded byte ops — scalar + bulk parity", () => {
     expect(l("base64UrlEncode")([RAW_FBFF])[0]).toEqual(bytes("-_8"));
     // wsAcceptKey (vector matches the scalar test in rust/payload/websocket.rs)
     const ws = l("wsAcceptKey")([bytes("dGhlIHNhbXBsZSBub25jZQ==")]);
-    expect(ws[0]).toEqual(bytes("mjqt7n322xkUQqCX5NPZbkSHHuk="));
+    expect(ws[0]).toEqual(bytes("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
     // mime
     expect(l("mimeFromExtension")(bytes(".js"))).toEqual(bytes("text/javascript"));
     expect(l("mimeFromExtension")([bytes("PNG")])[0]).toEqual(bytes("image/png"));

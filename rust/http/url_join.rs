@@ -188,23 +188,29 @@ pub fn url_resolve_batch_packed(
     Ok(Buffer::from(out))
 }
 
-fn encode_query_component(input: &[u8], out: &mut Vec<u8>) -> Result<()> {
-    let mut buf = vec![0u8; input.len() * 3];
-    let written = crate::http::url_codec::url_encode_into_slice(input, &mut buf)?;
-    out.extend_from_slice(&buf[..written]);
+fn encode_query_component(input: &[u8], scratch: &mut Vec<u8>, out: &mut Vec<u8>) -> Result<()> {
+    // Reuse one caller-provided scratch buffer across all keys/values instead of
+    // allocating a fresh `vec![0u8; len*3]` per component. Grows only when the
+    // largest component needs more room.
+    if scratch.len() < input.len().saturating_mul(3) {
+        scratch.resize(input.len().saturating_mul(3), 0);
+    }
+    let written = crate::http::url_codec::url_encode_into_slice(input, scratch)?;
+    out.extend_from_slice(&scratch[..written]);
     Ok(())
 }
 
 #[napi]
 pub fn url_encode_query(params: BTreeMap<String, String>) -> Result<Buffer> {
     let mut out = Vec::new();
+    let mut scratch = Vec::new();
     for (i, (k, v)) in params.iter().enumerate() {
         if i > 0 {
             out.push(b'&');
         }
-        encode_query_component(k.as_bytes(), &mut out)?;
+        encode_query_component(k.as_bytes(), &mut scratch, &mut out)?;
         out.push(b'=');
-        encode_query_component(v.as_bytes(), &mut out)?;
+        encode_query_component(v.as_bytes(), &mut scratch, &mut out)?;
     }
     Ok(Buffer::from(out))
 }

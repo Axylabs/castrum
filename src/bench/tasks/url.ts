@@ -30,5 +30,26 @@ export function urlTasks(f: BenchFixtures): BenchTask[] {
       iterations: 1000,
       warmup: 100,
     },
+    // Pooled-output variants: a single pre-allocated buffer reused across
+    // iterations, so the FFI crossing is the only per-call cost (no Vec+Buffer
+    // alloc). Shows Rust's best case vs the allocating native baseline.
+    {
+      name: "rust:url_encode_into",
+      run: (() => {
+        const out = new Uint8Array(256);
+        return () => rust.urlEncodeInto(f.urlEncodeInput, out);
+      })(),
+      iterations: 1000,
+      warmup: 100,
+    },
+    {
+      name: "rust:url_decode_into",
+      run: (() => {
+        const out = new Uint8Array(256);
+        return () => rust.urlDecodeInto(f.urlDecodeInput, out);
+      })(),
+      iterations: 1000,
+      warmup: 100,
+    },
   ];
 }

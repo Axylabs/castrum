@@ -14,6 +14,11 @@ export type { ProvenClient, ProvenKey } from "./src/rust-ffi/proven";
 export type { PerformanceStatus, ProvenEntry } from "./src/shared/proven";
 
 export { encoder, decoder } from "./src/shared/bytes";
+// UUIDv7 generation — delegates to Bun.randomUUIDv7, crypto.randomUUID on Node.
+export { uuidv7 } from "./src/shared/uuid";
+// Zero-dep metrics registry (counters/gauges/histograms + Prometheus render).
+export { createMetrics, DEFAULT_BUCKETS } from "./src/shared/metrics";
+export type { MetricsRegistry, Counter, Gauge, Histogram } from "./src/shared/metrics";
 
 export {
   packBatch,

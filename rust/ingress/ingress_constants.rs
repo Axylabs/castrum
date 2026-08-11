@@ -5,6 +5,11 @@
 // `src/ingress/constants.ts`) always reads the same numbers the Rust hot path
 // uses — the two copies can never drift.
 
+// The `as u32` on each const is an intentional explicit-width projection of the
+// layout values (which are already u32) so the JS surface reads as a u32 layout
+// contract. Newer clippy (>= 1.97) flags these as redundant casts.
+#![allow(clippy::unnecessary_cast)]
+
 use crate::ingress::output;
 use napi_derive::napi;
 

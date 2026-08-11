@@ -164,13 +164,13 @@ pub fn parse_media_type(input: Uint8Array) -> Result<MediaTypeResult> {
 /// exactly like the parser.
 #[inline]
 fn split_type_subtype(input: &[u8]) -> Option<(&[u8], &[u8])> {
-    let semi = input.iter().position(|&b| b == b';');
+    let semi = memchr::memchr(b';', input);
     let main = match semi {
         Some(i) => &input[..i],
         None => input,
     };
     let main = trim_ascii_whitespace(main);
-    let slash = main.iter().position(|&b| b == b'/')?;
+    let slash = memchr::memchr(b'/', main)?;
     let ty = &main[..slash];
     let subtype = &main[slash + 1..];
     if ty.is_empty() || subtype.is_empty() {

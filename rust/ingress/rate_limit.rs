@@ -1,5 +1,6 @@
 use crate::crypto::hashing::fast_hash_bytes;
 use lru::LruCache;
+use napi_derive::napi;
 use parking_lot::Mutex;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,8 +68,9 @@ impl KeyedRateLimiter {
             .min(MAX_ENTRIES_CAP);
         let max_per_shard = (max_entries / SHARD_COUNT).max(64);
 
+        // `max_per_shard` is clamped to >= 64 above, so this cannot fail.
         let cap = NonZeroUsize::new(max_per_shard)
-            .unwrap_or_else(|| NonZeroUsize::new(64).expect("64 is nonzero"));
+            .expect("max_per_shard is clamped to >= 64");
 
         let shards = (0..SHARD_COUNT)
             .map(|_| Shard {
@@ -206,7 +208,7 @@ pub fn shared_limiter(
     limit: u32,
     window_ms: u32,
     max_entries: Option<usize>,
-) -> Arc<KeyedRateLimiter> {
+) -> std::result::Result<Arc<KeyedRateLimiter>, String> {
     let resolved = max_entries
         .unwrap_or(DEFAULT_MAX_ENTRIES)
         .min(MAX_ENTRIES_CAP);
@@ -224,10 +226,121 @@ pub fn shared_limiter(
     let mut guard = map.lock();
 
     if let Some(existing) = guard.get(&key) {
-        return existing.clone();
+        return Ok(existing.clone());
+    }
+
+    // Bounded registry: instead of SILENTLY evicting a live limiter (which
+    // would split one logical rate budget across two limiters and reset
+    // per-IP counters — a rate-limit bypass vector), refuse the (cap+1)th
+    // distinct config. Callers should reuse an existing
+    // (limit, window_ms, max_entries) configuration.
+    if guard.len() >= MAX_SHARED_LIMITERS {
+        return Err(format!(
+            "castrum: too many distinct rate-limit configurations ({MAX_SHARED_LIMITERS}); \
+             a shared limiter would be evicted and its per-IP budget reset. \
+             Reuse an existing (limit, window_ms, max_entries) config."
+        ));
     }
 
     let limiter = Arc::new(KeyedRateLimiter::new(limit, window_ms, Some(resolved)));
     guard.put(key, limiter.clone());
-    limiter
+    Ok(limiter)
+}
+
+// ── Standalone native rate limiter ────────────────────────────────
+// A napi wrapper over the same sharded fixed-window limiter the ingress
+// pipeline uses, exposed as a plain class so ANY app can get native per-key
+// rate limiting without mounting the full ingress pipeline. Each `RateLimiter`
+// instance owns an independent budget (unlike the ingress shared registry,
+// which dedupes by config — standalone instances are intentionally isolated).
+
+/// Result of a rate-limit check for one key at a point in time.
+#[napi(object)]
+pub struct RateCheck {
+    /// Whether the request is allowed.
+    pub allowed: bool,
+    /// Remaining requests in the current window (saturating).
+    pub remaining: u32,
+    /// Unix milliseconds when the window resets.
+    pub reset_ms: i64,
+}
+
+/// Sharded fixed-window per-key rate limiter (fixed-window, weighted overlap).
+#[napi]
+pub struct RateLimiter {
+    inner: Arc<KeyedRateLimiter>,
+}
+
+#[napi]
+impl RateLimiter {
+    #[napi(constructor)]
+    pub fn new(limit: u32, window_ms: u32, max_entries: Option<u32>) -> Self {
+        Self {
+            inner: Arc::new(KeyedRateLimiter::new(
+                limit,
+                window_ms,
+                max_entries.map(|v| v as usize),
+            )),
+        }
+    }
+
+    /// Check a rate limit for a string key (hashed internally) at `now_ms`.
+    #[napi]
+    pub fn check(&self, key: String, now_ms: f64) -> RateCheck {
+        let outcome = self.inner.check_key(fast_hash_bytes(key.as_bytes()), now_ms as u64);
+        RateCheck {
+            allowed: outcome.allowed,
+            remaining: outcome.remaining,
+            reset_ms: outcome.reset_ms as i64,
+        }
+    }
+
+    /// Check a rate limit for a pre-hashed i64 key at `now_ms`.
+    #[napi]
+    pub fn check_key(&self, key: i64, now_ms: f64) -> RateCheck {
+        let outcome = self.inner.check_key(key as u64, now_ms as u64);
+        RateCheck {
+            allowed: outcome.allowed,
+            remaining: outcome.remaining,
+            reset_ms: outcome.reset_ms as i64,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standalone_limiter_blocks_after_limit() {
+        let limiter = KeyedRateLimiter::new(2, 60_000, Some(1024));
+        let now = 1_700_000_000_000u64;
+        assert!(limiter.check_key(1, now).allowed);
+        assert!(limiter.check_key(1, now).allowed);
+        let third = limiter.check_key(1, now);
+        assert!(!third.allowed);
+        assert_eq!(third.remaining, 0);
+        // A different key is unaffected.
+        assert!(limiter.check_key(2, now).allowed);
+    }
+
+    #[test]
+    fn standalone_limiter_resets_after_window() {
+        let limiter = KeyedRateLimiter::new(1, 60_000, Some(1024));
+        let now = 1_700_000_000_000u64;
+        assert!(limiter.check_key(7, now).allowed);
+        assert!(!limiter.check_key(7, now).allowed);
+        // After two full windows the budget resets.
+        let later = now + 2 * 60_000;
+        assert!(limiter.check_key(7, later).allowed);
+    }
+
+    #[test]
+    fn standalone_limiter_independent_buckets() {
+        let a = KeyedRateLimiter::new(1, 60_000, Some(1024));
+        let b = KeyedRateLimiter::new(1, 60_000, Some(1024));
+        assert!(a.check_key(9, 1_700_000_000_000).allowed);
+        // `b` is a fresh independent budget — not shared with `a`.
+        assert!(b.check_key(9, 1_700_000_000_000).allowed);
+    }
 }

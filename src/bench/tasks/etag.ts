@@ -46,6 +46,16 @@ export function etagTasks(f: BenchFixtures): BenchTask[] {
       iterations: 500,
       warmup: 50,
     },
+    // Pooled-output variant: one reused 32-byte buffer, no per-call alloc.
+    {
+      name: "rust:http_date_into",
+      run: (() => {
+        const out = new Uint8Array(32);
+        return () => rust.httpDateInto(f.httpDateSecs, out);
+      })(),
+      iterations: 500,
+      warmup: 50,
+    },
     {
       name: "native:conditional",
       run: () => (nativeIsNotModified(etagStr, f.httpDateSecs, inm, ims) ? 1 : 0),

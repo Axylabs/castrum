@@ -256,7 +256,10 @@ pub struct CorsOptions {
     pub allow_origin: Option<Vec<String>>,
     pub allow_methods: Option<Vec<String>>,
     pub allow_headers: Option<Vec<String>>,
-    pub expose_headers: Option<Vec<String>>,
     pub allow_credentials: Option<bool>,
-    pub max_age: Option<u32>,
+    // NOTE: expose_headers / max_age are intentionally NOT here — the Rust
+    // engine only EVALUATES origin/method/header/credentials. The emitted
+    // `Access-Control-Expose-Headers` / `Access-Control-Max-Age` headers are
+    // produced by the TS header templates (both ingress paths), which read the
+    // same `cors` option object.
 }

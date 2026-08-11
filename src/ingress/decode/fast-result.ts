@@ -163,10 +163,10 @@ export class FastIngressResult {
 
     this._bodyJsonStart = layout.bodyJsonStart;
 
+    // Parity with the baked decoder: any declared section (cookies, query,
+    // OR body) that overran the buffer counts as truncated.
     this.bodyTruncated =
-      (flags & FLAG_BODY_TRUNCATED) !== 0 ||
-      layout.safeCookiesLen !== cookiesJsonLen ||
-      layout.safeQueryLen !== queryJsonLen;
+      (flags & FLAG_BODY_TRUNCATED) !== 0 || layout.truncated;
   }
 
   invalidate(): void {
