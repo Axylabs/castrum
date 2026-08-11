@@ -10,6 +10,7 @@
 // reading `opImpl(op)` here — they do NOT swap native↔js per call.
 
 import { lazyAddon, getAddon } from "./native";
+import { isBun } from "./shared/runtime";
 
 /** Recommended implementation for an operation. */
 export type OpImpl = "native" | "js";
@@ -21,25 +22,49 @@ export interface OpDecision {
   readonly note?: string;
 }
 
+/**
+ * Ops where Bun's NATIVE built-in beats the Rust addon (measured in
+ * `docs/bun-builtins-decision-matrix.md`: `Bun.gzipSync` ~2.0x, `Bun.hash.crc32`
+ * 2.8–8.4x, `Bun.CryptoHasher` ~1.2x, `Bun.hash.xxHash3` ~4.2x, and
+ * `crypto.getRandomValues` for token-sized random). Under Bun the fastest
+ * choice for these is the pure-JS path that DELEGATES to the Bun built-in
+ * (`"js"`), not the Rust addon — so we never ship something slower than what
+ * Bun natively provides. Under Node the base benchmark decision stands (Rust
+ * wins for gzip/random/hmac there).
+ */
+const BUN_WINS = new Set([
+  "gzipCompress",
+  "gzipDecompress",
+  "crc32",
+  "randomToken",
+  "hmacSha256",
+  "xxh3",
+]);
+
 // Lazy: importing this module does NOT dlopen the addon; `opImpl` reads the
 // baked decision from Rust on first call.
 const addon = lazyAddon(getAddon);
 
 /**
- * The benchmark-driven native-vs-JS decision for `op`.
+ * The benchmark-driven native-vs-JS decision for `op` — runtime-aware.
  *
  * Returns `"native"` when the Rust addon is the recommended implementation,
- * `"js"` when a pure-JS implementation wins, or `null` for unknown ops (or
- * when the addon is unavailable — with no addon there is no "native" choice).
+ * `"js"` when a pure-JS (or Bun built-in) implementation wins, or `null` for
+ * unknown ops (or when the addon is unavailable — with no addon there is no
+ * "native" choice). Under Bun, ops in {@link BUN_WINS} resolve to `"js"` so the
+ * consumer's JS path delegates to the faster Bun built-in.
  */
-export const opImpl = (op: string): OpImpl | null => addon.opImpl(op);
+export const opImpl = (op: string): OpImpl | null => {
+  if (isBun() && BUN_WINS.has(op)) return "js";
+  return addon.opImpl(op);
+};
 
 /** `true` when the Rust addon is the recommended impl for `op`. */
-export const isNativeOp = (op: string): boolean => addon.opImpl(op) === "native";
+export const isNativeOp = (op: string): boolean => opImpl(op) === "native";
 
 /** The decision record for `op`, or `null` when unknown. */
 export const opDecision = (op: string): OpDecision | null => {
-  const impl = addon.opImpl(op);
+  const impl = opImpl(op);
   if (impl === null) return null;
   return { impl };
 };
