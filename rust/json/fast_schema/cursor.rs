@@ -62,23 +62,25 @@ impl<'a> Cursor<'a> {
         let start = self.pos;
         let mut i = self.pos;
         while i < self.data.len() {
-            match self.data[i] {
-                b'"' => {
-                    self.pos = i + 1;
-                    return Some(&self.data[start..i]);
-                }
-                b'\\' => {
-                    let e = *self.data.get(i + 1)?;
-                    if !matches!(
-                        e,
-                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u'
-                    ) {
-                        return None;
-                    }
-                    i += 2;
-                }
-                _ => i += 1,
+            // SIMD: find the next `"` or `\` in bulk. A string body is usually
+            // long runs of plain bytes, so memchr2 is much faster than the old
+            // byte-at-a-time loop over every key and string value. `?` returns
+            // None for an unterminated string (no closing quote).
+            let rel = memchr::memchr2(b'"', b'\\', &self.data[i..])?;
+            i += rel;
+            if self.data[i] == b'"' {
+                self.pos = i + 1;
+                return Some(&self.data[start..i]);
             }
+            // Escape: validate the escape char and skip it.
+            let e = *self.data.get(i + 1)?;
+            if !matches!(
+                e,
+                b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u'
+            ) {
+                return None;
+            }
+            i += 2;
         }
         None
     }
@@ -189,9 +191,36 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// True when every byte is ASCII (< 0x80), checked word-at-a-time.
+#[inline]
+fn is_ascii(bytes: &[u8]) -> bool {
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        // SAFETY-free: chunks_exact guarantees exactly 8 bytes here.
+        let w = u64::from_le_bytes(
+            <[u8; 8]>::try_from(chunk).expect("chunks_exact yields 8 bytes"),
+        );
+        if (w & 0x8080_8080_8080_8080) != 0 {
+            return false;
+        }
+    }
+    for &b in chunks.remainder() {
+        if b >= 0x80 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Count Unicode scalar values (JSON Schema string length) in a raw JSON
 /// string body, handling escapes including surrogate pairs.
 pub(crate) fn count_chars(inner: &[u8]) -> usize {
+    // Fast path: no escape sequences and pure ASCII -> one scalar per byte.
+    // `contains` (memchr) and `is_ascii` (word-at-a-time) are both SIMD, so
+    // the common ASCII name/value case is O(1)-ish instead of byte-at-a-time.
+    if !inner.contains(&b'\\') && is_ascii(inner) {
+        return inner.len();
+    }
     let mut chars = 0usize;
     let mut i = 0usize;
     while i < inner.len() {

@@ -8,8 +8,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::util::{should_parallelize, total_bytes, unpack};
-
 // ── Pure-Rust core ─────────────────────────────────────────────
 
 /// Encode one SSE event. Multi-line `data` is emitted as repeated `data:` lines.
@@ -71,30 +69,9 @@ pub fn sse_encode_batch_packed(
     id: Option<String>,
     retry: Option<u32>,
 ) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
-
-    let mut out = Vec::with_capacity(4 + items.len() * 24);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
     let encode_one =
         |d: &[u8]| encode_event(event.as_deref(), d, id.as_deref(), retry.map(u64::from));
-
-    if should_parallelize(items.len(), total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items.par_iter().map(|d| encode_one(d)).collect();
-        for r in results {
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    } else {
-        for d in items {
-            let r = encode_one(d);
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    }
-
-    Ok(Buffer::from(out))
+    crate::util::run_packed_batch(data.as_ref(), encode_one).map(Buffer::from)
 }
 
 #[cfg(test)]

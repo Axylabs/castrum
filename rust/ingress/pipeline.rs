@@ -71,6 +71,22 @@ impl IngressSchema {
             Err(_) => false,
         }
     }
+
+    /// Whether the zero-DOM fast path is engaged for this schema.
+    ///
+    /// The fast path is used only when every keyword in the schema is in the
+    /// supported subset (otherwise `compile` leaves `fast` as `None` and the
+    /// DOM validator is authoritative). The ingress pipeline checks this so it
+    /// can skip the separate `json_valid_bytes` gate ONLY when the validator is
+    /// the DOM parser — a successful DOM parse already proves the body is
+    /// well-formed JSON. The fast path is deliberately NOT relied on for that:
+    /// its string scanning is structural but does not reject every RFC-8259
+    /// violation (e.g. invalid `\uXXXX` escapes), so it must stay behind the
+    /// strict `json_valid_bytes` gate.
+    #[inline]
+    pub(crate) fn uses_fast_path(&self) -> bool {
+        self.fast.is_some()
+    }
 }
 
 impl IngressInner {
@@ -100,39 +116,39 @@ impl IngressInner {
         let url_bytes = match read_section(input, &mut pos, self.limits.max_url_bytes) {
             Ok(v) => v,
             Err(_) => {
-                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 414)
+                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 414))
             }
         };
         let ip_bytes = match read_section(input, &mut pos, 128) {
             Ok(v) => v,
             Err(_) => {
-                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400)
+                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400))
             }
         };
         let rid_bytes = match read_section(input, &mut pos, 128) {
             Ok(v) => v,
             Err(_) => {
-                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400)
+                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400))
             }
         };
         let headers_packed = match read_section(input, &mut pos, self.limits.max_headers_bytes) {
             Ok(v) => v,
             Err(_) => {
-                return terminal_simple(
+                return Ok(terminal_simple(
                     out,
                     crate::ingress::output::ERR_CODE_REQUEST_TOO_LARGE,
                     431,
-                )
+                ))
             }
         };
         let headers = match HeaderRefs::parse(headers_packed, is_options, self.limits.max_headers) {
             Ok(v) => v,
             Err(_) => {
-                return terminal_simple(
+                return Ok(terminal_simple(
                     out,
                     crate::ingress::output::ERR_CODE_REQUEST_TOO_LARGE,
                     431,
-                )
+                ))
             }
         };
 
@@ -178,11 +194,11 @@ impl IngressInner {
                 } else {
                     compute_header_variant(false, false, rate_active, false, true)
                 };
-                return if eval.allowed {
+                return Ok(if eval.allowed {
                     terminal_preflight_ok(flags, hv, out)
                 } else {
                     terminal_preflight_forbidden(flags, hv, out)
-                };
+                });
             }
         }
 
@@ -204,13 +220,13 @@ impl IngressInner {
                 flags |= FLAG_RATE_LIMITED;
                 rate.retry_after_ms = outcome.reset_ms.saturating_sub(now);
                 let hv = compute_header_variant(cors_ok, false, true, true, true);
-                return terminal_rate_limited(flags, hv, rate, out);
+                return Ok(terminal_rate_limited(flags, hv, rate, out));
             }
         }
 
         // ── 5. Body size guard (may terminate with 413) ────────────
         if self.guard_enabled && body_bytes.len() > self.max_body_bytes {
-            return terminal_body_too_large(flags, success_hv, rate, out);
+            return Ok(terminal_body_too_large(flags, success_hv, rate, out));
         }
 
         // ── 6. JSON body validation & schema (400 / 422) ───────────
@@ -223,47 +239,71 @@ impl IngressInner {
 
         if enforce_json {
             if body_bytes.is_empty() {
-                return terminal_invalid_json(flags, success_hv, rate, out);
+                return Ok(terminal_invalid_json(flags, success_hv, rate, out));
             }
 
-            // JSON validity gate: distinguishes a malformed body (400) from a
-            // well-formed body that fails the schema (422). `json_valid_bytes`
-            // skips values via IgnoredAny (SIMD-validated, zero DOM allocation)
-            // — identical "is valid JSON" semantics to a full parse.
-            if !crate::json::json_ops::json_valid_bytes(body_bytes) {
-                return terminal_invalid_json(flags, success_hv, rate, out);
-            }
-            flags |= FLAG_BODY_VALID_JSON;
-
-            // Schema gate: the fast path (zero-DOM, compiled once at
-            // construction) when the schema uses the supported keyword subset;
-            // otherwise the jsonschema crate DOM validator. Neither path does
-            // any per-request schema compilation.
-            if let Some(schema) = self.schema.as_ref() {
-                if !schema.validate(body_bytes) {
-                    return terminal_schema_validation(flags, success_hv, rate, out);
+            // Fused validity + schema pass, preserving the 400/422 split:
+            //
+            // * DOM fallback path (no fast node): `schema.validate` parses the
+            //   body into a `serde_json::Value` first, so a pass already proves
+            //   the body is well-formed JSON — we can skip the separate
+            //   `json_valid_bytes` body scan on the happy path (one full-body
+            //   pass instead of two). On a failure `json_valid_bytes` still
+            //   distinguishes a malformed body (400) from a well-formed body
+            //   that fails the schema (422), exactly as before.
+            // * Fast path (zero-DOM): the fast validator's structural string
+            //   scanning does NOT reject every RFC-8259 violation (bad
+            //   `\uXXXX` escapes, raw control bytes), so it MUST stay behind
+            //   the strict `json_valid_bytes` gate to keep 400 semantics.
+            match self.schema.as_ref() {
+                Some(schema) if !schema.uses_fast_path() => {
+                    if schema.validate(body_bytes) {
+                        flags |= FLAG_BODY_VALID_JSON;
+                        flags |= FLAG_SCHEMA_VALID;
+                    } else if !crate::json::json_ops::json_valid_bytes(body_bytes) {
+                        return Ok(terminal_invalid_json(flags, success_hv, rate, out));
+                    } else {
+                        return Ok(terminal_schema_validation(flags, success_hv, rate, out));
+                    }
+                }
+                _ => {
+                    // Strict gate (fast-path schema, or no schema): validate
+                    // JSON validity first, then the schema when present.
+                    if !crate::json::json_ops::json_valid_bytes(body_bytes) {
+                        return Ok(terminal_invalid_json(flags, success_hv, rate, out));
+                    }
+                    flags |= FLAG_BODY_VALID_JSON;
+                    if let Some(schema) = self.schema.as_ref() {
+                        if !schema.validate(body_bytes) {
+                            return Ok(terminal_schema_validation(flags, success_hv, rate, out));
+                        }
+                    }
+                    // With no schema configured, validation trivially passes.
+                    // Setting the flag here keeps `schemaValid` meaning "schema
+                    // passed" for consumers that gate on it (e.g. handlers.ts
+                    // jsonWriteHandler) regardless of schema configuration.
+                    flags |= FLAG_SCHEMA_VALID;
                 }
             }
-
-            // With no schema configured, validation trivially passes. Setting
-            // the flag here keeps `schemaValid` meaning "schema passed" for
-            // consumers that gate on it (e.g. handlers.ts jsonWriteHandler)
-            // regardless of whether a schema is configured.
-            flags |= FLAG_SCHEMA_VALID;
         }
 
         // ── 7. Serialize cookies / query / metadata into the output ─
-        if self.parse_query {
-            let raw_query = crate::ingress::proxy::extract_query(url_bytes);
-            if raw_query.len() > self.limits.max_query_bytes {
-                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 414);
+        // Extract the query string once and reuse it for both the size guard
+        // and the JSON serialization, instead of scanning the URL twice.
+        let raw_query: &[u8] = if self.parse_query {
+            let q = crate::ingress::proxy::extract_query(url_bytes);
+            if q.len() > self.limits.max_query_bytes {
+                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 414));
             }
-        }
+            q
+        } else {
+            &[]
+        };
 
-        let sections = match self.write_body_sections(url_bytes, rid_bytes, &headers, out) {
+        let sections = match self.write_body_sections(url_bytes, rid_bytes, &headers, raw_query, out) {
             Ok(s) => s,
             Err(_) => {
-                return terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400)
+                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400))
             }
         };
 
@@ -301,6 +341,7 @@ impl IngressInner {
         url_bytes: &[u8],
         rid_bytes: &[u8],
         headers: &HeaderRefs<'_>,
+        raw_query: &[u8],
         out: &mut [u8],
     ) -> Result<BodySections> {
         let mut data_pos = OUT_DATA_START;
@@ -331,26 +372,25 @@ impl IngressInner {
         data_pos += cookies_json_len as usize;
 
         // ── Query → JSON (direct, zero-alloc: no intermediate packed buffer,
-        //     no second parse of packed pairs) ──
-        let query_json_len: u32 = if self.parse_query {
-            let raw_query = crate::ingress::proxy::extract_query(url_bytes);
-            if !raw_query.is_empty() && data_pos < out.len() {
-                match crate::json::json_ser::query_to_json_into_slice(
-                    raw_query,
-                    &mut out[data_pos..],
-                    self.limits.max_pairs,
-                ) {
-                    Ok(written) => written as u32,
-                    Err(crate::json::json_ser::QueryJsonError::Malformed) => {
-                        return Err(Error::from_reason("query parse failed"))
-                    }
-                    Err(crate::json::json_ser::QueryJsonError::BufferTooSmall) => {
-                        truncated = true;
-                        0
-                    }
+        //     no second parse of packed pairs; the query was already extracted
+        //     once by the caller for the size guard) ──
+        let query_json_len: u32 = if self.parse_query
+            && !raw_query.is_empty()
+            && data_pos < out.len()
+        {
+            match crate::json::json_ser::query_to_json_into_slice(
+                raw_query,
+                &mut out[data_pos..],
+                self.limits.max_pairs,
+            ) {
+                Ok(written) => written as u32,
+                Err(crate::json::json_ser::QueryJsonError::Malformed) => {
+                    return Err(Error::from_reason("query parse failed"))
                 }
-            } else {
-                0
+                Err(crate::json::json_ser::QueryJsonError::BufferTooSmall) => {
+                    truncated = true;
+                    0
+                }
             }
         } else {
             0

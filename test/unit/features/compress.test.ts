@@ -61,7 +61,7 @@ describe("brotli", () => {
 describe("batch", () => {
   test("gzip batch roundtrips", () => {
     const items = Array.from({ length: 8 }, (_, i) =>
-      encoder.encode(`item-${i}: ` + "abc".repeat(i)),
+      encoder.encode(`item-${i}: ${String("abc").repeat(i)}`),
     );
     const compressed = rust.batch.gzipCompress(items);
     const decompressed = rust.batch.gzipDecompress(compressed);

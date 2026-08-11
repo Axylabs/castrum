@@ -2,7 +2,7 @@
 
 import type { OptimizedIngressHandler } from "../types";
 import { resolveIp, type BakedHandlerOptions } from "./common";
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from "../shared";
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, secondsFromMs } from "../shared";
 import { HV_JSON } from "../constants";
 import { ERROR_BODIES } from "../response/error-bodies";
 import { readBodyWithLimit } from "../body";
@@ -42,7 +42,7 @@ export function echoHandler(
           ctx.origin,
           result.rateRemaining,
           result.rateResetMs > 0
-            ? Math.ceil(result.rateResetMs / 1000)
+            ? secondsFromMs(result.rateResetMs)
             : undefined,
         ),
       };

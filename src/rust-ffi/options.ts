@@ -6,6 +6,7 @@
 
 import { availableParallelism, cpus } from "node:os";
 import { decoder } from "../shared/bytes";
+import { resolveEnvVar } from "../shared/env";
 
 /** Options accepted by `createRust` / `rust.configure`. */
 export interface RustOptions {
@@ -50,9 +51,10 @@ export function resolveRayonThreads(explicit?: number): number {
   }
 
   const envThreads = Number(
-    process.env.CASTRUM_RAYON_THREADS ??
-      process.env.RUST_BENCH_RAYON_THREADS ??
-      process.env.RUST_RAYON_THREADS,
+    resolveEnvVar("CASTRUM_RAYON_THREADS", [
+      "RUST_BENCH_RAYON_THREADS",
+      "RUST_RAYON_THREADS",
+    ]),
   );
 
   if (Number.isFinite(envThreads) && envThreads > 0) {

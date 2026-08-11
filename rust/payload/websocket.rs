@@ -6,10 +6,11 @@ use napi_derive::napi;
 
 const WS_MAGIC: &[u8] = b"258EAFA5-E914-47DA-95CA-5AB5DC11BE85";
 
-#[napi]
-pub fn ws_accept_key(key: Uint8Array) -> Result<Buffer> {
+/// RFC 6455 Sec-WebSocket-Accept core over a raw key slice. Shared by the
+/// scalar napi path and the packed batch path.
+pub fn ws_accept_key_bytes(key: &[u8]) -> Result<Vec<u8>> {
     let mut ctx = digest::Context::new(&digest::SHA1_FOR_LEGACY_USE_ONLY);
-    ctx.update(key.as_ref());
+    ctx.update(key);
     ctx.update(WS_MAGIC);
 
     let hash = ctx.finish();
@@ -19,7 +20,20 @@ pub fn ws_accept_key(key: Uint8Array) -> Result<Buffer> {
         .encode_slice(hash.as_ref(), &mut out)
         .map_err(|e| Error::from_reason(e.to_string()))?;
 
-    Ok(Buffer::from(out[..n].to_vec()))
+    Ok(out[..n].to_vec())
+}
+
+#[napi]
+pub fn ws_accept_key(key: Uint8Array) -> Result<Buffer> {
+    Ok(Buffer::from(ws_accept_key_bytes(key.as_ref())?))
+}
+
+/// Packed WebSocket accept-key batch: `[u32 count]{[u32 len][key]}` in →
+/// `[u32 count]{[u32 len][accept]}` out.
+#[napi]
+pub fn ws_accept_key_batch_packed(input: Uint8Array) -> Result<Buffer> {
+    crate::util::run_packed_batch(input.as_ref(), |k| ws_accept_key_bytes(k).unwrap_or_default())
+        .map(Buffer::from)
 }
 
 #[cfg(test)]

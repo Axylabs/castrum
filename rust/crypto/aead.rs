@@ -14,8 +14,6 @@ use aws_lc_rs::error::Unspecified;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::util::{should_parallelize, total_bytes, unpack};
-
 const NONCE_LEN: usize = 12;
 
 /// Derive a unique per-item nonce for the batch APIs.
@@ -198,7 +196,6 @@ pub fn aead_encrypt_batch_packed(
     nonce: Uint8Array,
     algorithm: Option<String>,
 ) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
     let alg = resolve_algorithm(algorithm.as_deref())?;
 
     let enc_for = |plaintext: &[u8], index: usize| -> Vec<u8> {
@@ -206,29 +203,7 @@ pub fn aead_encrypt_batch_packed(
         encrypt(alg, key.as_ref(), &n, plaintext).unwrap_or_default()
     };
 
-    let mut out = Vec::with_capacity(4 + items.len() * 24);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
-    if should_parallelize(items.len(), total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items
-            .par_iter()
-            .enumerate()
-            .map(|(i, p)| enc_for(p, i))
-            .collect();
-        for r in results {
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    } else {
-        for (i, p) in items.iter().enumerate() {
-            let r = enc_for(p, i);
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    }
-
-    Ok(Buffer::from(out))
+    crate::util::run_packed_batch_idx(data.as_ref(), enc_for).map(Buffer::from)
 }
 
 /// Parallel decrypt batch: packed ciphertexts in → packed plaintexts out.
@@ -244,7 +219,6 @@ pub fn aead_decrypt_batch_packed(
     nonce: Uint8Array,
     algorithm: Option<String>,
 ) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
     let alg = resolve_algorithm(algorithm.as_deref())?;
 
     let dec_for = |ciphertext: &[u8], index: usize| -> Vec<u8> {
@@ -252,29 +226,7 @@ pub fn aead_decrypt_batch_packed(
         decrypt(alg, key.as_ref(), &n, ciphertext).unwrap_or_default()
     };
 
-    let mut out = Vec::with_capacity(4 + items.len() * 24);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
-    if should_parallelize(items.len(), total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items
-            .par_iter()
-            .enumerate()
-            .map(|(i, c)| dec_for(c, i))
-            .collect();
-        for r in results {
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    } else {
-        for (i, c) in items.iter().enumerate() {
-            let r = dec_for(c, i);
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    }
-
-    Ok(Buffer::from(out))
+    crate::util::run_packed_batch_idx(data.as_ref(), dec_for).map(Buffer::from)
 }
 
 #[cfg(test)]

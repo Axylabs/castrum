@@ -10,6 +10,21 @@ import type { BakedIngressResult } from "./decode/baked-result";
 /** Public ingress options (extends the fast-path options). */
 export interface IngressOptions extends IngressFastOptions {
   enableRequestIds?: boolean;
+  /**
+   * Invoked before a request is processed (for tracing/context hooks).
+   * Only used by the async `createIngress` path.
+   */
+  onRequest?: (req: Request, requestId: string, ip: string | undefined) => void;
+  /**
+   * Invoked after a terminal context (and its `Response`) is produced, for
+   * metrics/logging hooks. Only used by the async `createIngress` path.
+   */
+  onResponse?: (
+    req: Request,
+    result: IngressContext,
+    status: number,
+    requestId: string,
+  ) => void;
 }
 
 /**
@@ -72,9 +87,7 @@ export interface SyncIngressHandler {
 }
 
 /** Async ingress handler (wraps {@link SyncIngressHandler} with body reading). */
-export interface IngressHandler {
-  (req: Request, ip?: string): Promise<IngressContext>;
-}
+export type IngressHandler = (req: Request, ip?: string) => Promise<IngressContext>;
 
 // ── Pre-baked (handlers.ts) shared types ────────────────────────────
 // These live here (not in ./handlers.ts) so the route factories in

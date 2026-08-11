@@ -265,11 +265,74 @@ rust.batch.signCookie(docs, secret);    // Uint8Array[] (signed)
 rust.batch.verifyCookie(docs, secret);  // Uint8Array bitset (valid?)
 rust.batch.csrfVerify(tokens, secret);  // Uint8Array bitset (valid?)
 rust.batch.schemaValidate(validator, docs); // bitset
+
+// Hashing / url / mime / ws / base64url
+rust.batch.fnv1a64(docs);               // BigUint64Array (unsigned hashes)
+rust.batch.etag(docs);                  // Uint8Array[]
+rust.batch.urlEncode(docs);             // Uint8Array[]
+rust.batch.urlDecode(docs);             // Uint8Array[]
+rust.batch.base64UrlEncode(docs);       // Uint8Array[]
+rust.batch.wsAcceptKey(keys);           // Uint8Array[]
+rust.batch.mimeFromExtension(exts);     // Uint8Array[]
+
+// Backend-framework batches (zipped lists / shared args)
+rust.batch.passwordVerify(pwds, phcs);  // Uint8Array bitset (zipped)
+rust.batch.urlResolve(bases, refs);     // Uint8Array[] (zipped)
+rust.batch.jwtSign(claimDocs, secret);  // Uint8Array[] (sign N JSON claim docs)
+rust.batch.jwtVerify(tokens, secret, now); // Uint8Array bitset
+rust.batch.sseEncode(items, "event");   // Uint8Array[]
+rust.batch.wsFrameEncode(items, 1, false, true); // Uint8Array[]
+rust.batch.wsFrameDecode(frames);       // Uint8Array[] (payloads)
+rust.batch.multipartParse(bodies, boundary); // MultipartPart[][]
 ```
 
 Raw packed + metadata variants (advanced): `rust.packed.*` mirrors the native
 functions 1:1 (`jsonValidBatchPacked`, `jsonValidBatchCountPacked`,
 `queryParseBatchTotalLenPacked`, …).
+
+#### Higher-order data loader (`castrum.loader`)
+
+`loader` is a callable higher-order function over the whole batch surface. It
+pre-binds an op so repeated calls skip registry dispatch, and it routes small
+vs. large workloads automatically: a single item → one scalar native call, a
+bulk → ONE packed batch call, and `load()` coalesces N same-tick calls into one
+packed call (DataLoader-style) with a bounded LRU cache.
+
+```ts
+import { loader } from "castrum";
+
+const isEmail = loader("validateEmail");
+isEmail(emailBytes);                    // scalar → boolean
+isEmail([a, b, c]);                     // bulk → Uint8Array bitset (one packed call)
+await isEmail.load(a);                  // coalesced + cached (auto batch/strategy)
+
+// Covered op families (44 ops):
+//   hash     crc32, fnv1a64
+//   json     jsonValid, jsonSumIds, jsonPatch*, schemaValidate
+//   validate email, uuid, ipv4, ipv6
+//   parse    query, cookie, form, httpParseRequest, urlResolve*
+//   encode   hex, base64, base64Url, urlEncode, urlDecode, urlDecodeBytes, etag
+//   compress gzip, brotli
+//   crypto   hmacSha256, hmacSha256Verify*, signCookie, verifyCookie, csrfVerify,
+//            passwordHash, passwordVerify*, aeadEncrypt, aeadDecrypt, jwtSign, jwtVerify
+//   web      wsAcceptKey, wsFrameEncode, sseEncode, mimeFromExtension
+//   (* = paired: per-item companion array, e.g. loader.run("jsonPatch", docs, patches))
+
+// Paired ops take a companion array:
+loader.run("jsonPatch", docs, patches);       // bulk
+loader.run("jsonPatch", doc, patch);          // single
+
+// verifyCookie / jwtVerify are boolean-validity ops (valid/invalid);
+// use rust.verifyCookie / rust.jwtVerify for the decoded value.
+
+// Bind a schema validator for repeated single/bulk validation + count:
+const schema = loader.schema(rust.createSchemaValidator(schemaBytes));
+schema(doc);              // boolean
+schema(docs);             // Uint8Array bitset
+schema.count(docs);       // number of valid docs
+
+// Fine-grained control: createLoader({ adaptive, batchMin, maxCacheKeys, ... })
+```
 
 #### Configuring defaults
 

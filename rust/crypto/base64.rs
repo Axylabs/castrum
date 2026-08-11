@@ -166,6 +166,20 @@ pub fn hex_decode_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32>
     crate::util::run_packed_into(&input, &mut output, hex_decode_into_slice)
 }
 
+/// Pure core: base64-encode `input` into `out` (zero-alloc `encode_slice`).
+/// Returns bytes written; errors if `out` is too small. Shared by the `_into`
+/// napi path and the C ABI surface.
+pub fn base64_encode_into_slice(
+    input: &[u8],
+    out: &mut [u8],
+    url_safe: bool,
+    padding: bool,
+) -> Result<usize> {
+    engine(url_safe, padding)
+        .encode_slice(input, out)
+        .map_err(|e| Error::from_reason(format!("base64 encode: {e}")))
+}
+
 /// Base64-encode into a caller-provided output buffer (zero-alloc via
 /// `Engine::encode_slice`). Returns bytes written; errors if `output` is too
 /// small.
@@ -176,11 +190,23 @@ pub fn base64_encode_into(
     url_safe: Option<bool>,
     padding: Option<bool>,
 ) -> Result<u32> {
-    let eng = engine(url_safe.unwrap_or(false), padding.unwrap_or(true));
     crate::util::run_packed_into(&input, &mut output, move |inp, out| {
-        eng.encode_slice(inp, out)
-            .map_err(|e| Error::from_reason(format!("base64 encode: {e}")))
+        base64_encode_into_slice(inp, out, url_safe.unwrap_or(false), padding.unwrap_or(true))
     })
+}
+
+/// Pure core: base64-decode `input` into `out` (zero-alloc `decode_slice`).
+/// Returns bytes written; errors on invalid input or a too-small output
+/// buffer. Shared by the `_into` napi path and the C ABI surface.
+pub fn base64_decode_into_slice(
+    input: &[u8],
+    out: &mut [u8],
+    url_safe: bool,
+    padding: bool,
+) -> Result<usize> {
+    engine(url_safe, padding)
+        .decode_slice(input, out)
+        .map_err(|e| Error::from_reason(format!("base64 decode: {e}")))
 }
 
 /// Base64-decode into a caller-provided output buffer (zero-alloc via
@@ -193,10 +219,8 @@ pub fn base64_decode_into(
     url_safe: Option<bool>,
     padding: Option<bool>,
 ) -> Result<u32> {
-    let eng = engine(url_safe.unwrap_or(false), padding.unwrap_or(true));
     crate::util::run_packed_into(&input, &mut output, move |inp, out| {
-        eng.decode_slice(inp, out)
-            .map_err(|e| Error::from_reason(format!("base64 decode: {e}")))
+        base64_decode_into_slice(inp, out, url_safe.unwrap_or(false), padding.unwrap_or(true))
     })
 }
 

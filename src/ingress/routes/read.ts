@@ -2,6 +2,7 @@
 
 import type { OptimizedIngressHandler } from "../types";
 import { resolveIp, type BakedHandlerOptions } from "./common";
+import { secondsFromMs } from "../shared";
 
 /**
  * Pre-baked GET read handler: returns the ingress body JSON on success.
@@ -29,7 +30,7 @@ export function readHandler(
           ctx.origin,
           result.rateRemaining,
           result.rateResetMs > 0
-            ? Math.ceil(result.rateResetMs / 1000)
+            ? secondsFromMs(result.rateResetMs)
             : undefined,
         ),
       };

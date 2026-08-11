@@ -324,10 +324,10 @@ pub fn jwt_sign_batch_packed(
     ttl_seconds: Option<i64>,
     now_seconds: i64,
 ) -> Result<Buffer> {
-    let items = crate::util::unpack(data.as_ref())?;
-
-    let mut out = Vec::with_capacity(4 + items.len() * 96);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    // Derive the HMAC key ONCE for the whole batch (build_token derives a
+    // fresh key per call), then route through the shared packed batch helper
+    // (zero-alloc serial PackedIter path; rayon direct-write when justified).
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret.as_ref());
 
     let sign_one = |claims_json: &[u8]| -> Vec<u8> {
         let Ok(claims) = serde_json::from_slice::<serde_json::Value>(claims_json) else {
@@ -349,25 +349,10 @@ pub fn jwt_sign_batch_packed(
             return Vec::new();
         };
         let payload_b64 = b64url_encode(&payload_bytes);
-        build_token(header_b64, &payload_b64, secret.as_ref())
+        build_token_with_key(header_b64, &payload_b64, &key)
     };
 
-    if crate::util::should_parallelize(items.len(), crate::util::total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items.par_iter().map(|c| sign_one(c)).collect();
-        for r in results {
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    } else {
-        for c in items {
-            let r = sign_one(c);
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    }
-
-    Ok(Buffer::from(out))
+    crate::util::run_packed_batch(data.as_ref(), sign_one).map(Buffer::from)
 }
 
 /// Parallel verify batch: packed `[u32 count]{[u32 len][token]}` in → bitset
@@ -378,34 +363,16 @@ pub fn jwt_verify_batch_packed(
     secret: Uint8Array,
     now_seconds: i64,
 ) -> Result<Buffer> {
-    let items = crate::util::unpack(data.as_ref())?;
-    let n = items.len();
-
-    let verify_one =
-        |token: &[u8]| -> bool { verify_token(token, secret.as_ref(), now_seconds).is_some() };
-
-    let mut out = Vec::with_capacity(4 + n.div_ceil(8));
-    out.extend_from_slice(&(n as u32).to_le_bytes());
-
-    let mut bits = vec![0u8; n.div_ceil(8)];
-    if crate::util::should_parallelize(n, crate::util::total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<bool> = items.par_iter().map(|t| verify_one(t)).collect();
-        for (i, ok) in results.into_iter().enumerate() {
-            if ok {
-                bits[i / 8] |= 1 << (i % 8);
-            }
-        }
-    } else {
-        for (i, t) in items.iter().enumerate() {
-            if verify_one(t) {
-                bits[i / 8] |= 1 << (i % 8);
-            }
-        }
-    }
-
-    out.extend_from_slice(&bits);
-    Ok(Buffer::from(out))
+    // Derive the HMAC key ONCE for the whole batch (verify_token derives a
+    // fresh key per call), then route through the shared bitset batch helper
+    // (zero-alloc serial PackedIter path; rayon direct-write when justified).
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret.as_ref());
+    crate::util::run_bitset_batch(
+        data.as_ref(),
+        |token| verify_token_with_key(token, &key, now_seconds).is_some(),
+        4096,
+    )
+    .map(Buffer::from)
 }
 
 #[cfg(test)]

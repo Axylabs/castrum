@@ -43,7 +43,7 @@ export function createStructuredLogger(
         level,
         ...fields,
       });
-      stream.write(line + "\n");
+      stream.write(`${line}\n`);
     } catch {
       // never throw from logging
     }

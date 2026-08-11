@@ -72,7 +72,9 @@ impl Ingress {
         let parse_cookies = options.parse_cookies.unwrap_or(false);
         let parse_query = options.parse_query.unwrap_or(false);
         let require_json_body = options.require_json_body.unwrap_or(false);
-        let max_body_bytes = options.max_body_bytes.unwrap_or(1_048_576) as usize;
+        let max_body_bytes = options.max_body_bytes.unwrap_or(
+            crate::ingress::options::DEFAULT_MAX_BODY_BYTES as u32,
+        ) as usize;
         let guard_enabled = options.enable_body_size_guard.unwrap_or(true);
         let emit_metadata_json = options.emit_metadata_json.unwrap_or(false);
 
@@ -80,7 +82,8 @@ impl Ingress {
             crate::ingress::ip_trust::ProxyTrustMode::from_config(
                 tp.enabled.unwrap_or(false),
                 tp.networks,
-            )?
+            )
+            .map_err(|e| Error::new(Status::InvalidArg, e))?
         } else if options.trust_proxy.unwrap_or(false) {
             crate::ingress::ip_trust::ProxyTrustMode::All
         } else {

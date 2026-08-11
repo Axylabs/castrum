@@ -51,3 +51,35 @@ pub fn random_token(byte_len: u32) -> Result<Buffer> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_sizes_return_hex_of_requested_length() {
+        // The token is hex-encoded, so the output is exactly `len * 2` bytes
+        // of lowercase hex characters.
+        for len in [16u32, 32, 64, 7, 128] {
+            let out = random_token(len).expect("valid len must succeed");
+            assert_eq!(out.len(), len as usize * 2);
+            for b in out.iter() {
+                assert!(b.is_ascii_hexdigit(), "byte 0x{b:02x} is not hex");
+            }
+        }
+    }
+
+    #[test]
+    fn tokens_are_random() {
+        let a = random_token(32).unwrap();
+        let b = random_token(32).unwrap();
+        assert_ne!(a.to_vec(), b.to_vec(), "two tokens must not collide");
+    }
+
+    #[test]
+    fn huge_length_is_rejected() {
+        // The 16 MiB guard prevents a ~4 GiB single allocation from a u32 arg.
+        assert!(random_token(16 * 1024 * 1024 + 1).is_err());
+        assert!(random_token(u32::MAX).is_err());
+    }
+}

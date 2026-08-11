@@ -23,6 +23,7 @@
   "include": [
     "index.ts",
     "bench.ts",
-    "src"
+    "src",
+    "bench"
   ]
 }

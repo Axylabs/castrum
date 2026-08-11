@@ -71,10 +71,10 @@ describe("packHeaders", () => {
   });
 
   test("preserves a header block larger than HEADER_BUF_SIZE (8192 bytes)", () => {
-    // A cookie larger than the fixed buffer forces writeHeaderPair to grow the
-    // buffer. The packed output must contain the FULL value, uncorrupted.
-    const bigCookie = "big=" + "a".repeat(9000);
-    const origin = "https://app.example.com";
+    // Multiple within-guard values whose SUM exceeds the fixed buffer force
+    // writeHeaderPair to grow it; every value must survive uncorrupted.
+    const bigCookie = `big=${String("a").repeat(8000)}`; // <= MAX_COOKIE_HEADER_BYTES
+    const origin = `https://app.example.com/${String("b").repeat(2000)}`; // <= MAX_SMALL_HEADER_BYTES
 
     const req = new Request("http://example.com/", {
       headers: {
@@ -94,14 +94,17 @@ describe("packHeaders", () => {
   });
 
   test("preserves multiple large headers that overflow together", () => {
-    const bigOrigin = "https://app.example.com/" + "b".repeat(6000);
-    const bigCookie = "session=" + "c".repeat(4000);
+    // Each value is within its per-header size guard, but the SUM exceeds the
+    // 8192 scratch buffer, so the buffer must grow and preserve every header.
+    const bigCookie = `session=${String("c").repeat(5000)}`; // <= 8192
+    const bigXff = String("9").repeat(5000); // <= 8192
+    const bigOrigin = `https://app.example.com/${String("b").repeat(2000)}`; // <= 2048
 
     const req = new Request("http://example.com/", {
       headers: {
         cookie: bigCookie,
         origin: bigOrigin,
-        "x-forwarded-for": "9.9.9.9",
+        "x-forwarded-for": bigXff,
       },
     });
 
@@ -112,8 +115,20 @@ describe("packHeaders", () => {
     expect(pairs).toEqual([
       ["cookie", bigCookie],
       ["origin", bigOrigin],
-      ["x-forwarded-for", "9.9.9.9"],
+      ["x-forwarded-for", bigXff],
     ]);
+  });
+
+  test("oversized headers are dropped by packHeaders (shared guard policy)", () => {
+    const big = new Request("http://example.com/", {
+      headers: {
+        cookie: `c=${String("x").repeat(9000)}`, // > MAX_COOKIE_HEADER_BYTES
+        origin: "https://app.example.com", // within MAX_SMALL_HEADER_BYTES
+      },
+    });
+    const pairs = decodePacked(packHeaders(big, FULL_PLAN));
+    // The 9000-byte cookie is dropped; the within-guard origin is kept.
+    expect(pairs).toEqual([["origin", "https://app.example.com"]]);
   });
 
   test("reuses the thread-local buffer without cross-request contamination", () => {
@@ -123,7 +138,7 @@ describe("packHeaders", () => {
       headers: { cookie: "a=1" },
     });
     const large = new Request("http://example.com/", {
-      headers: { cookie: "big=" + "x".repeat(10_000) },
+      headers: { cookie: `big=${String("x").repeat(6000)}` },
     });
 
     const smallPacked = packHeaders(small, FULL_PLAN);
@@ -132,7 +147,7 @@ describe("packHeaders", () => {
 
     const largePacked = packHeaders(large, FULL_PLAN);
     const largePairs = decodePacked(largePacked);
-    expect(largePairs).toEqual([["cookie", "big=" + "x".repeat(10_000)]]);
+    expect(largePairs).toEqual([["cookie", `big=${String("x").repeat(6000)}`]]);
   });
 });
 
@@ -159,7 +174,7 @@ describe("gatherRawHeaders vs gatherRawHeadersPacked parity", () => {
   test("oversized headers are dropped by BOTH paths (same size guards)", () => {
     const big = new Request("http://example.com/", {
       headers: {
-        cookie: "c=" + "x".repeat(9000),
+        cookie: `c=${String("x").repeat(9000)}`,
         origin: "https://app.example.com",
       },
     });
@@ -168,5 +183,23 @@ describe("gatherRawHeaders vs gatherRawHeadersPacked parity", () => {
     expect(packed).toEqual(raw);
     // The 9000-byte cookie exceeds MAX_COOKIE_HEADER_BYTES → dropped in both.
     expect(packed.find(([n]) => n === "cookie")).toBeUndefined();
+  });
+
+  test("fast packHeaders agrees with the baked packed path on oversized headers", () => {
+    const big = new Request("http://example.com/", {
+      headers: {
+        cookie: `c=${String("x").repeat(9000)}`,
+        "x-forwarded-for": `xff=${String("y").repeat(10_000)}`,
+        origin: "https://app.example.com",
+      },
+    });
+    const fast = decodePacked(packHeaders(big, FULL_PLAN));
+    const baked = decodePacked(
+      gatherRawHeadersPacked(big, FULL_PLAN, METHOD_KIND.GET),
+    );
+    expect(fast).toEqual(baked);
+    // Oversized cookie + xff dropped on the fast path too (was a 500 before).
+    expect(fast.find(([n]) => n === "cookie")).toBeUndefined();
+    expect(fast.find(([n]) => n === "x-forwarded-for")).toBeUndefined();
   });
 });

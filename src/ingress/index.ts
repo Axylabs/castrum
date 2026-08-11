@@ -6,16 +6,18 @@
 
 import { decoder } from "../shared/bytes";
 import { generateRequestId } from "../shared/request-id";
-import { assertSyncCallback, DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, METHOD_KIND } from "./shared";
+import { assertSyncCallback, DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from "./shared";
 import { createIngressFast } from "./fast";
 import { buildResponseContext } from "./headers/fast-templates";
 import { buildTerminalResponse } from "./response/terminal";
 import { snapshotResult, syntheticContext, internalContext } from "./context";
 import { readRequestBodyOnce } from "./body";
-import { ERR_CODE_BODY_TOO_LARGE, ERR_CODE_INTERNAL } from "./constants";
+import {
+  ERR_CODE_BODY_TOO_LARGE,
+  ERR_CODE_REQUEST_TIMEOUT,
+} from "./constants";
 import type {
   IngressOptions,
-  IngressResult,
   IngressContext,
   SyncIngressHandler,
   IngressHandler,
@@ -30,7 +32,7 @@ export { createIngressFast, FastIngressResult } from "./fast";
 export { buildTerminalResponse } from "./response/terminal";
 export { buildResponseContext, headersForResult } from "./headers/fast-templates";
 export { generateRequestId } from "../shared/request-id";
-export { METHOD_KIND, DEFAULT_MAX_BODY_BYTES } from "./shared";
+export { METHOD_KIND, DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from "./shared";
 export type { HeaderPlan } from "./shared";
 export type { ResponseBuildContext, HeaderTemplate } from "./headers/fast-templates";
 export type { CorsStaticStrings, CorsOptions } from "./headers/cors";
@@ -70,6 +72,20 @@ export function createIngressSync(
 // ── Async factory ────────────────────────────────────────────────
 
 /**
+ * Return a copy of `options` without the security-header keys.
+ *
+ * `createIngress` applies security headers itself (via `buildResponseContext`),
+ * so they must not be forwarded to the underlying fast handler, which rejects
+ * them (see `createIngressFast`).
+ */
+function stripSecurityOptions(options: IngressOptions): IngressOptions {
+  const copy = { ...options };
+  delete copy.security;
+  delete copy.enableSecurityHeaders;
+  return copy;
+}
+
+/**
  * Async ingress factory: reads the request body (size guard + deadline) and
  * returns a snapshot `IngressContext` with a terminal `Response`.
  *
@@ -77,7 +93,7 @@ export function createIngressSync(
  * throughput use `createIngressFast` / `createIngressSync` directly.
  */
 export function createIngress(options: IngressOptions = {}): IngressHandler {
-  const sync = createIngressSync(options);
+  const sync = createIngressSync(stripSecurityOptions(options));
 
   const guard = options.enableBodySizeGuard !== false;
   const max = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
@@ -97,6 +113,14 @@ export function createIngress(options: IngressOptions = {}): IngressHandler {
   ): Promise<IngressContext> {
     const requestId =
       options.enableRequestIds === false ? "" : decoder.decode(generateRequestId());
+    options.onRequest?.(req, requestId, ip);
+
+    // Every terminal outcome (success, 413, 408, 500) flows through here so a
+    // hook consumer sees exactly one onResponse per request.
+    const emitResponse = (context: IngressContext): IngressContext => {
+      options.onResponse?.(req, context, context.status, requestId);
+      return context;
+    };
 
     try {
       if (guard) {
@@ -104,13 +128,15 @@ export function createIngress(options: IngressOptions = {}): IngressHandler {
         const contentLength = Number(rawLen ?? "0");
 
         if (Number.isFinite(contentLength) && contentLength > max) {
-          return syntheticContext(
-            req,
-            requestId,
-            options,
-            responseCtx,
-            413,
-            ERR_CODE_BODY_TOO_LARGE,
+          return emitResponse(
+            syntheticContext(
+              req,
+              requestId,
+              options,
+              responseCtx,
+              413,
+              ERR_CODE_BODY_TOO_LARGE,
+            ),
           );
         }
       }
@@ -121,37 +147,64 @@ export function createIngress(options: IngressOptions = {}): IngressHandler {
         try {
           body = await readRequestBodyOnce(req, max, guard, bodyTimeoutMs);
         } catch (err) {
-          if ((err as any)?.code === "BODY_TOO_LARGE") {
-            return syntheticContext(
-              req,
-              requestId,
-              options,
-              responseCtx,
-              413,
-              ERR_CODE_BODY_TOO_LARGE,
+          const code = (err as { code?: string } | null)?.code;
+
+          if (code === "BODY_TOO_LARGE") {
+            return emitResponse(
+              syntheticContext(
+                req,
+                requestId,
+                options,
+                responseCtx,
+                413,
+                ERR_CODE_BODY_TOO_LARGE,
+              ),
             );
           }
 
+          if (code === "REQUEST_TIMEOUT") {
+            // Match the pre-baked route factories: a body-read deadline is a
+            // 408, not a 500 (was silently swallowed as 500 before).
+            return emitResponse(
+              syntheticContext(
+                req,
+                requestId,
+                options,
+                responseCtx,
+                408,
+                ERR_CODE_REQUEST_TIMEOUT,
+              ),
+            );
+          }
+
+          // Unknown body-read failure: surface to onError, then fall through
+          // to the internal-error context below.
+          options.onError?.(err instanceof Error ? err : new Error(String(err)));
           throw err;
         }
       }
 
-      return sync.run(req, ip, body, requestId, (r) => {
-        const snapshot = snapshotResult(r);
-        const response = buildTerminalResponse(
-          responseCtx,
-          snapshot,
-          req,
-          requestId,
-        );
+      return emitResponse(
+        sync.run(req, ip, body, requestId, (r) => {
+          const snapshot = snapshotResult(r);
+          const response = buildTerminalResponse(
+            responseCtx,
+            snapshot,
+            req,
+            requestId,
+          );
 
-        return {
-          ...snapshot,
-          response,
-        };
-      });
-    } catch {
-      return internalContext(req, requestId, options, responseCtx);
+          return {
+            ...snapshot,
+            response,
+          };
+        }),
+      );
+    } catch (err) {
+      // Native/other failures: never silent — report to onError and emit a
+      // structured 500 context so the request still completes observably.
+      options.onError?.(err instanceof Error ? err : new Error(String(err)));
+      return emitResponse(internalContext(req, requestId, options, responseCtx));
     }
   };
 }

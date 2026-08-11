@@ -10,9 +10,45 @@ interface ServerHandle {
   port: number;
 }
 
-async function waitForServer(port: number, timeoutMs = 15_000): Promise<void> {
+/**
+ * Verify nothing is already answering on `port` before we spawn a server.
+ *
+ * A previous killed run can leave a stale process bound to 9120–9122; without
+ * this check `waitForServer` would happily measure the WRONG server. Note: the
+ * ownership check is best-effort (health-response + spawn liveness) rather than
+ * a full PID-of-listener lookup, so it is still the caller's job to ensure no
+ * foreign process uses these ports.
+ */
+async function assertPortFree(port: number): Promise<void> {
+  try {
+    const res = await fetch(`http://localhost:${port}/health`);
+    if (res.ok) {
+      throw new Error(
+        `Port :${port} already answers /health — a stale or foreign server is ` +
+          "already running there. Kill it before benchmarking to avoid measuring " +
+          "the wrong process.",
+      );
+    }
+  } catch (err) {
+    if (err instanceof Error && /already answers/.test(err.message)) {
+      throw err;
+    }
+    // Connection refused / not ready yet → port is free. Good.
+  }
+}
+
+async function waitForServer(
+  port: number,
+  proc: ReturnType<typeof Bun.spawn>,
+  timeoutMs = 15_000,
+): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    if (proc.exitCode !== null) {
+      throw new Error(
+        `Spawned server for :${port} exited during startup (code ${proc.exitCode}).`,
+      );
+    }
     try {
       const res = await fetch(`http://localhost:${port}/health`);
       if (res.ok) return;
@@ -26,12 +62,13 @@ async function waitForServer(port: number, timeoutMs = 15_000): Promise<void> {
 
 async function startServer(kind: ServerKind): Promise<ServerHandle> {
   const script = `./bench/servers/${kind}-server.ts`;
+  await assertPortFree(PORTS[kind]);
   const proc = Bun.spawn(["bun", "run", script], {
     stdout: "inherit",
     stderr: "inherit",
     env: { ...process.env },
   });
-  await waitForServer(PORTS[kind]);
+  await waitForServer(PORTS[kind], proc);
   console.log(`✓ ${kind} server ready on :${PORTS[kind]}`);
   return { proc, kind, port: PORTS[kind] };
 }

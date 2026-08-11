@@ -16,15 +16,9 @@ import {
   FLAG_BODY_VALID_JSON, FLAG_SCHEMA_VALID, FLAG_CORS_ALLOWED, FLAG_IS_PREFLIGHT,
   FLAG_RATE_LIMITED, FLAG_TRUSTED_PROXY, FLAG_BODY_TRUNCATED,
   HV_JSON,
-  ERR_CODE_CORS_PREFLIGHT as ERROR_CODE_CORS_PREFLIGHT,
-  ERR_CODE_RATE_LIMITED as ERROR_CODE_RATE_LIMITED,
-  ERR_CODE_BODY_TOO_LARGE as ERROR_CODE_BODY_TOO_LARGE,
-  ERR_CODE_INVALID_JSON as ERROR_CODE_INVALID_JSON,
-  ERR_CODE_SCHEMA_VALIDATION as ERROR_CODE_SCHEMA_VALIDATION,
-  ERR_CODE_BAD_REQUEST as ERROR_CODE_BAD_REQUEST,
-  ERR_CODE_REQUEST_TOO_LARGE as ERROR_CODE_REQUEST_TOO_LARGE,
   ERR_CODE_INTERNAL as ERROR_CODE_INTERNAL,
 } from "../constants";
+import { sectionLayout } from "./packed-sections";
 
 const EMPTY_BODY = new Uint8Array(0);
 
@@ -53,6 +47,14 @@ export class BakedIngressResult {
   private _bodyJsonLen = 0;
 
   refresh(buf: Uint8Array, body: Uint8Array, view: DataView): void {
+    // Defensive: the native core always writes the full fixed header
+    // (>= OUT_DATA_START bytes) before returning `written`. The cached
+    // whole-buffer DataView (see viewForArrayBuffer) would otherwise decode
+    // stale bytes if this contract is ever violated — treat as internal error.
+    if (buf.byteLength < OUT_DATA_START) {
+      this.setInternalError();
+      return;
+    }
     this._buf = buf;
     this.body = body;
 
@@ -66,14 +68,14 @@ export class BakedIngressResult {
     const headerVariant = view.getUint8(OUT_HEADER_VARIANT);
     const bodyJsonLenRaw = view.getUint32(OUT_BODY_JSON_LEN, true);
 
-    const safeCookiesLen =
-      OUT_DATA_START + cookiesLenRaw <= buf.byteLength ? cookiesLenRaw : 0;
-    const queryStart = OUT_DATA_START + safeCookiesLen;
-    const safeQueryLen =
-      queryStart + queryLenRaw <= buf.byteLength ? queryLenRaw : 0;
-    const bodyJsonStart = queryStart + safeQueryLen;
-    const safeBodyJsonLen =
-      bodyJsonStart + bodyJsonLenRaw <= buf.byteLength ? bodyJsonLenRaw : 0;
+    // Bounds-checked section offsets shared with the fast decoder: a
+    // malformed/truncated buffer can never produce slices past its end.
+    const layout = sectionLayout(
+      buf.byteLength,
+      cookiesLenRaw,
+      queryLenRaw,
+      bodyJsonLenRaw,
+    );
 
     if (h0 === 0 && h1 === 0) {
       this.verdict = 1;
@@ -102,8 +104,8 @@ export class BakedIngressResult {
     }
 
     this.headerVariant = headerVariant;
-    this._bodyJsonStart = bodyJsonStart;
-    this._bodyJsonLen = safeBodyJsonLen;
+    this._bodyJsonStart = layout.bodyJsonStart;
+    this._bodyJsonLen = layout.safeBodyJsonLen;
 
     this.terminal = this.verdict !== 0 || this.status >= 400;
     this.ok = this.verdict === 0 && this.status >= 200 && this.status < 400;
@@ -116,10 +118,7 @@ export class BakedIngressResult {
     this.schemaValid = (flags & FLAG_SCHEMA_VALID) !== 0;
 
     this.bodyTruncated =
-      (flags & FLAG_BODY_TRUNCATED) !== 0 ||
-      safeCookiesLen !== cookiesLenRaw ||
-      safeQueryLen !== queryLenRaw ||
-      safeBodyJsonLen !== bodyJsonLenRaw;
+      (flags & FLAG_BODY_TRUNCATED) !== 0 || layout.truncated;
   }
 
   invalidate(): void {

@@ -122,7 +122,7 @@ src/
 ├── ingress/               ── HTTP ingress pipeline (TS layer), decomposed by task
 │   ├── index.ts           ── Public API barrel + async factory
 │   ├── fast.ts            ── Thin: createIngressFast (packed input) + re-exports
-│   ├── handlers.ts        ── Thin: createIngressHandler (full_sync) + response builders
+│   ├── handlers.ts        ── Thin: createIngressHandler (packs frame in JS → handleRequestPacked) + response builders
 │   ├── server.ts          ── createIngressServer (Bun.serve builder) + buildRouteHandlers + gracefulShutdown
 │   ├── server-node.ts     ── createIngressServerNode (node:http adapter, same route handlers)
 │   ├── constants.ts       ── Layout constants (from Rust NAPI)
@@ -202,8 +202,9 @@ src/
 >    `buildTerminalResponse`: `{"error":{code,status,message,requestId}}`,
 >    `x-ratelimit-*`.
 > 2. `src/ingress/handlers.ts` (`createIngressHandler` + route factories +
->    `createIngressServer`) — Rust packs internally via
->    `handle_request_full_sync`. Different wire format: success
+>    `createIngressServer`) — JS packs the request frame (`IngressInputPacker`
+>    + `gatherRawHeadersPacked`) and drives the SAME native core as path 1
+>    (`handle_request_packed`). Different wire format: success
 >    `{"ok":true,...,"requestId":...}`, errors
 >    `{"ok":false,"error":{code,message}}`, `ratelimit-*` headers. The
 >    benchmark server (`bench/servers/ingress-server.ts`) uses this path and

@@ -12,8 +12,8 @@
 //
 // This barrel re-exports the exact public surface of the original single-file
 // implementation so existing imports (`rust`, `createRust`, all types) keep
-// working unchanged. The deprecated `rustBatch` alias was removed in 0.8.0 —
-// use `rust.batch` instead.
+// working unchanged. The deprecated `rustBatch` alias was removed — use
+// `rust.batch` instead.
 //
 //   import { rust } from "castrum";
 //

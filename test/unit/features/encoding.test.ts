@@ -10,8 +10,6 @@ import { Buffer } from "node:buffer";
 import { rust } from "../../../src/rust-ffi";
 import { decoder, encoder } from "../../../src/shared/bytes";
 import {
-  nativeBase64Decode,
-  nativeBase64Encode,
   nativeHexDecode,
   nativeHexEncode,
 } from "../../../src/bench/encoding-baseline";
@@ -121,7 +119,7 @@ describe("reusable-output (_into) variants", () => {
     const written = rust.hexEncodeInto(DATA, out);
     const expected = rust.hexEncode(DATA);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 
   test("hexDecodeInto roundtrips byte-for-byte", () => {
@@ -146,7 +144,7 @@ describe("reusable-output (_into) variants", () => {
     const written = rust.base64EncodeInto(DATA, out);
     const expected = rust.base64Encode(DATA);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 
   test("base64DecodeInto roundtrips byte-for-byte", () => {
@@ -180,7 +178,7 @@ describe("reusable-output (_into) variants", () => {
     const written = rust.urlEncodeInto(src, out);
     const expected = rust.urlEncode(src);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 
   test("urlDecodeInto matches urlDecode", () => {
@@ -189,6 +187,6 @@ describe("reusable-output (_into) variants", () => {
     const written = rust.urlDecodeInto(src, out);
     const expected = rust.urlDecode(src);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 });

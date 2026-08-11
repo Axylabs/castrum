@@ -124,7 +124,7 @@ function checkRateLimit(req: Request, server: any): { allowed: boolean; headers:
 }
 
 // ── Server with Bun's built-in `routes` ──
-const server = Bun.serve({
+Bun.serve({
   port: PORTS.bun,
   idleTimeout: 30,
   maxRequestBodySize: MAX_BODY_BYTES + 1024,
@@ -140,7 +140,7 @@ const server = Bun.serve({
         const origin = req.headers.get("origin");
         const body: ApiOk = {
           ok: true,
-          requestId: rl.headers["X-Request-Id"],
+          requestId: rl.headers["X-Request-Id"] ?? "",
           path: "/health",
           query: {},
           cookies: {},
@@ -163,7 +163,7 @@ const server = Bun.serve({
 
         const body: ApiOk = {
           ok: true,
-          requestId: rl.headers["X-Request-Id"],
+          requestId: rl.headers["X-Request-Id"] ?? "",
           path: "/api/users",
           query,
           cookies,
@@ -209,7 +209,7 @@ const server = Bun.serve({
         const query = parseQuery(url);
         const body: ApiOk = {
           ok: true,
-          requestId: rl.headers["X-Request-Id"],
+          requestId: rl.headers["X-Request-Id"] ?? "",
           path: "/api/users",
           query,
           cookies,
@@ -240,7 +240,7 @@ const server = Bun.serve({
         if (validationError) {
           return Response.json({ ok: false, error: { code: "schema_validation_failed", message: validationError } }, { status: 422, headers: buildHeaders({}, origin) });
         }
-        const body: ApiOk = { ok: true, requestId: rl.headers["X-Request-Id"], path: "/api/users", query: parseQuery(url), cookies: cookiesToRecord((req as any).cookies), body: parsed };
+        const body: ApiOk = { ok: true, requestId: rl.headers["X-Request-Id"] ?? "", path: "/api/users", query: parseQuery(url), cookies: cookiesToRecord((req as any).cookies), body: parsed };
         return Response.json(body, { headers: buildHeaders(rl.headers, origin) });
       },
 
@@ -261,7 +261,7 @@ const server = Bun.serve({
         if (validationError) {
           return Response.json({ ok: false, error: { code: "schema_validation_failed", message: validationError } }, { status: 422, headers: buildHeaders({}, origin) });
         }
-        const body: ApiOk = { ok: true, requestId: rl.headers["X-Request-Id"], path: "/api/users", query: parseQuery(url), cookies: cookiesToRecord((req as any).cookies), body: parsed };
+        const body: ApiOk = { ok: true, requestId: rl.headers["X-Request-Id"] ?? "", path: "/api/users", query: parseQuery(url), cookies: cookiesToRecord((req as any).cookies), body: parsed };
         return Response.json(body, { headers: buildHeaders(rl.headers, origin) });
       },
 
@@ -308,7 +308,7 @@ const server = Bun.serve({
 
         const body: ApiOk = {
           ok: true,
-          requestId: rl.headers["X-Request-Id"],
+          requestId: rl.headers["X-Request-Id"] ?? "",
           path: "/api/cookies",
           query: {},
           cookies,

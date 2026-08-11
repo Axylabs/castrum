@@ -12,6 +12,7 @@ import { httpTasks } from "./http";
 import { jsonTasks } from "./json";
 import { jsonSchemaTasks } from "./json-schema";
 import { jsonPatchTasks } from "./json-patch";
+import { loaderTasks } from "./loader";
 import { mediaTypeTasks } from "./media-type";
 import { mimeTasks } from "./mime";
 import { queryTasks } from "./query";
@@ -68,7 +69,7 @@ export function createAllTasks(fixtures: BenchFixtures): BenchTask[] {
 }
 
 export function createComplexTasks(fixtures: ComplexFixtures): BenchTask[] {
-  return complexTasks(fixtures);
+  return [...complexTasks(fixtures), ...loaderTasks(fixtures)];
 }
 
 export function createConcurrentTasks(

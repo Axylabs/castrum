@@ -22,15 +22,15 @@ import {
 } from "./encoding-baseline";
 import {
   nativeSignCookie,
-  nativeVerifyCookie,
 } from "./cookie-sign-baseline";
-import { nativeCsrfToken, nativeCsrfVerify } from "./csrf-baseline";
+import { nativeCsrfVerify } from "./csrf-baseline";
 import {
   nativeUrlEncodeQuery,
   nativeUrlResolve,
 } from "./url-join-baseline";
 import { assertDeepEqual, assertEqual, parseJsonBytes } from "./assert";
 import type { BenchFixtures, ComplexFixtures } from "./fixtures";
+import { createLoader } from "../loader";
 
 export function runCorrectnessChecks(f: BenchFixtures): void {
 
@@ -629,6 +629,35 @@ export function runComplexCorrectnessChecks(
     .reduce((acc, bytes) => acc + readPairsPacked(bytes).length, 0);
 
   assertEqual(nativeQueryCount, rustQueryCount, "batch query packed count");
+
+  // ── Loader (HFC) parity vs direct scalar + rust.batch ──
+  const loader = createLoader({ adaptive: false });
+  const email0 = c.batchEmails[0];
+  if (email0 !== undefined) {
+    assertEqual(
+      loader("validateEmail")(email0),
+      rust.validateEmail(email0),
+      "loader single == scalar",
+    );
+  }
+  const loaderEmailSum = loader("validateEmail")(c.batchEmails).reduce(
+    (acc, b) => acc + b,
+    0,
+  );
+  const rustEmailSum = rust.batch.validateEmail(c.batchEmails).reduce(
+    (acc, b) => acc + b,
+    0,
+  );
+  assertEqual(loaderEmailSum, rustEmailSum, "loader bulk == rust.batch (email)");
+
+  const loaderHmacLen = loader("hmacSha256")(c.batchTokens, c.batchSecret).reduce(
+    (acc, b) => acc + b.byteLength,
+    0,
+  );
+  const rustHmacLen = rust.batch
+    .hmacSha256(c.batchTokens, c.batchSecret)
+    .reduce((acc, b) => acc + b.byteLength, 0);
+  assertEqual(loaderHmacLen, rustHmacLen, "loader hmac bulk == rust.batch");
 
   console.log("Complex correctness checks passed. ✓");
 }

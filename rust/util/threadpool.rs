@@ -14,6 +14,16 @@ static RAYON_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 #[cfg(target_os = "linux")]
 static CORE_IDS: OnceLock<Option<Vec<core_affinity::CoreId>>> = OnceLock::new();
 
+/// Read the first set env var among `preferred` and its legacy aliases.
+///
+/// Centralizes the `CASTRUM_*` + legacy `RUST_BENCH_*` alias chains (mirrors
+/// `src/shared/env.ts` on the TS side) so the chains can never drift apart.
+fn read_env(preferred: &str, legacy: &[&str]) -> Option<String> {
+    std::env::var(preferred)
+        .ok()
+        .or_else(|| legacy.iter().find_map(|key| std::env::var(key).ok()))
+}
+
 #[napi]
 pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
     let stored = RAYON_INIT.get_or_init(|| {
@@ -27,9 +37,7 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
         // Do not hard-cap to 8 by default.
         // If you need a cap, set CASTRUM_MAX_RAYON_THREADS
         // (legacy alias: RUST_BENCH_MAX_RAYON_THREADS).
-        let max_threads = std::env::var("CASTRUM_MAX_RAYON_THREADS")
-            .ok()
-            .or_else(|| std::env::var("RUST_BENCH_MAX_RAYON_THREADS").ok())
+        let max_threads = read_env("CASTRUM_MAX_RAYON_THREADS", &["RUST_BENCH_MAX_RAYON_THREADS"])
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_threads.max(1));
 
@@ -70,9 +78,7 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn pin_rayon_thread(id: usize) {
-    if std::env::var_os("CASTRUM_PIN_CORES").is_none()
-        && std::env::var_os("RUST_BENCH_PIN_CORES").is_none()
-    {
+    if read_env("CASTRUM_PIN_CORES", &["RUST_BENCH_PIN_CORES"]).is_none() {
         return;
     }
 

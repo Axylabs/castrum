@@ -36,6 +36,25 @@ pub fn verify_cookie_bytes(signed: &[u8], key: &hmac::Key) -> Option<Vec<u8>> {
         .map(|()| value.to_vec())
 }
 
+/// Constant-time verify; returns whether the signature matches, WITHOUT
+/// materializing the signed value. Same checks as [`verify_cookie_bytes`] but
+/// skips the `value.to_vec()` — used by the packed batch to avoid a discarded
+/// allocation per item.
+pub fn verify_cookie_bytes_bool(signed: &[u8], key: &hmac::Key) -> bool {
+    let Some(dot) = signed.iter().rposition(|&b| b == b'.') else {
+        return false;
+    };
+    let (value, sig) = signed.split_at(dot);
+    let sig = &sig[1..];
+    if sig.len() != 64 {
+        return false;
+    }
+    let Some(sig_bytes) = hex_decode_32(sig) else {
+        return false;
+    };
+    hmac::verify(key, value, &sig_bytes).is_ok()
+}
+
 #[napi]
 pub fn sign_cookie(value: Uint8Array, secret: Uint8Array) -> Buffer {
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_ref());

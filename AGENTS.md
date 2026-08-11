@@ -28,7 +28,7 @@ HTTP **ingress pipeline** for Bun servers.
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Proven-surface audit | `bun run check:proven` (report) / `bun run check:proven:fail` (CI gate) |
 | Startup / first-call benchmark | `bun run bench:startup` |
-| Typecheck | `bun run typecheck` (== `bunx tsc --noEmit`) — **note**: `tsconfig.json` `include` is only `["index.ts", "bench.ts", "src"]`; `bench/` and `test/` are NOT typechecked here |
+| Typecheck | `bun run typecheck` (== `bunx tsc --noEmit`; `include` = index.ts, bench.ts, src, bench) + `bun run typecheck:test` (== `bunx tsc --noEmit -p tsconfig.test.json`; typechecks `test/` + `bench/` with unused locals/params on) |
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
 | Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
 | JS dependency audit | `bun run audit` |
@@ -36,7 +36,6 @@ HTTP **ingress pipeline** for Bun servers.
 | HTTP bench (all servers) | `bun run bench:http` |
 | HTTP bench (ingress only) | `bun run bench:http:ingress` |
 | HTTP smoke (fast sanity; CI-gated wire-format guard) | `bun run bench:http:smoke` |
-| HTTP smoke (fast sanity) | `bun run bench:http:smoke` |
 | Ingress load scenario | `SERVER=ingress SCENARIO=01-smoke bun run bench:http:smoke` |
 
 ## Publishing (npm)
@@ -73,7 +72,7 @@ HTTP **ingress pipeline** for Bun servers.
 ## Layout (quick map)
 
 ```
-index.ts                  package entry (re-exports src/rust-ffi, src/baseline, src/ingress, ...)
+index.ts                  package entry (re-exports src/rust-ffi, src/loader, src/integration, src/ingress, ...)
 bench.ts                  CPU benchmark entry -> src/bench
 dist/                     COMPILED ESM entry for Node (gitignored): dist/index.js + dist/index.d.ts
                           built by `bun run build:js`; wired via exports conditions (`bun` -> index.ts)
@@ -90,9 +89,9 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── context.ts          result snapshot + synthetic/internal context builders
   ├── server.ts           createIngressServer (Bun.serve) + buildRouteHandlers (shared) + gracefulShutdown
   ├── server-node.ts      createIngressServerNode (node:http adapter, same route handlers)
-  ├── packing/            header-packing.ts (fast, binary) + input-packer.ts + gather-raw-headers.ts (pre-baked)
+  ├── packing/            header-packing.ts (fast) + input-packer.ts + gather-raw-headers.ts (pre-baked) + scratch.ts (shared TLS buffers + per-header size guards)
   ├── headers/            cors.ts + hsts.ts + fast-templates.ts + baked-templates.ts (two template builders, NOT unified)
-  ├── decode/             fast-result.ts + baked-result.ts (two decoders, NOT unified)
+  ├── decode/             fast-result.ts + baked-result.ts (two decoders, NOT unified) + packed-sections.ts (shared section layout)
   ├── response/           terminal.ts (fast) + error-bodies.ts (pre-baked)
   ├── routes/             read/head/json-write/echo/fallback factories + common.ts
   ├── fast.ts             thin: createIngressFast (packed-input path, handleRequestPacked) + re-exports
@@ -101,10 +100,13 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   │                       handleRequestPacked, pooled output); used by the bench server
   └── index.ts            barrel: public API + async createIngress + re-exports
 src/native/               addon layer: types.ts (NativeAddon + instance types) + loader.ts (getAddon/lazyAddon) + index.ts barrel
-src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts + text.ts + batch.ts + packed.ts + scalar.ts + client.ts + proven.ts + index.ts barrel
+src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts + text.ts + batch.ts + packed.ts + scalar/ (interface + hashing/json/http/crypto/payload/factories builders) + client.ts + proven.ts + index.ts barrel
 src/shared/request-id.ts  shared zero-alloc request ID generator (both ingress paths) — aliased buffer hazard documented
 src/shared/buffer-pool.ts  generic reusable byte-buffer pool (pooled output buffers, zero-copy borrows)
 src/shared/response.ts     pooledBodyResponse: Response that returns a pooled buffer on body consumption
+src/shared/env.ts          centralized env-var alias resolution (CASTRUM_* + legacy RUST_BENCH_*/RUST_* names)
+src/loader/               higher-order loader (HFC) over the curated op set (ops/cost/batch/index) — exported from index.ts
+src/integration/          framework-agnostic helpers: createPipeline, createWebSocketUpgrade, sseResponse — exported from index.ts
 src/baseline/             JS baseline implementations (benchmark reference, `native`)
 src/bench/                CPU benchmark framework (tasks, measure, report, ...)
 src/data, src/shared/     JSON rows + bytes/packed helpers
@@ -238,9 +240,9 @@ success and `error.code` / `error.message` on errors (path 2's format).
 - **`tsconfig.json`** sets `noUncheckedIndexedAccess: true`. Indexed access on
   `Record<string, Uint8Array>` (e.g. `ERROR_BODIES.internal`) is
   `Uint8Array | undefined` — `handlers.ts` uses `!` where the key is guaranteed.
-- **`bench/` is not typechecked by `tsc`** (not in tsconfig `include`). Validate
-  bench files with the editor language server, and run `bun run bench:http:smoke`
-  to confirm the servers still pass load checks.
+- **`bench/` IS typechecked by `tsc`** (in tsconfig `include`). `test/` is not —
+  validate test files with the editor language server, and run
+  `bun run bench:http:smoke` to confirm the servers still pass load checks.
 - **Hot-path APIs (do not remove)**: `rust/ingress/mod.rs` (`Ingress`)::
   `handle_request_packed` (drives BOTH ingress paths — `fast.ts` packs headers
   via `packHeaders` and `handlers.ts` packs the full frame via
@@ -272,8 +274,9 @@ success and `error.code` / `error.message` on errors (path 2's format).
   one-time wall offset via `OnceLock`. Ingress stores it as a
   `RateLimiterState` enum (`Disabled`/`Enabled`) so the code can't have a
   "rate enabled but no limiter" state.
-- **XFF / proxy trust**: empty trusted networks → `ProxyTrustMode::All`
-  (trust everything → spoofable). The bench server's `INGRESS_TRUST_PROXY`
+- **XFF / proxy trust**: empty `trustedProxies.networks` → trust NOTHING (safe
+  default, not spoofable). The deprecated `trustProxy: true` boolean → trust
+  EVERY hop (spoofable) and warns. The bench server's `INGRESS_TRUST_PROXY`
   defaults OFF; only enable behind a trusted edge.
 
 ## Editing conventions

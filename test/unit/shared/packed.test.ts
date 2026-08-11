@@ -36,10 +36,10 @@ describe("packBatch", () => {
     let offset = 4;
     for (let i = 0; i < bufs.length; i++) {
       const len = dv.getUint32(offset, true);
-      expect(len).toBe(bufs[i]!.length);
+      expect(len).toBe(bufs[i]?.length);
       offset += 4;
       const slice = packed.slice(offset, offset + len);
-      expect([...slice]).toEqual([...bufs[i]!]);
+      expect([...slice]).toEqual([...(bufs[i] ?? new Uint8Array(0))]);
       offset += len;
     }
   });
@@ -136,8 +136,8 @@ describe("unpackByteResults", () => {
 
     const result = unpackByteResults(buf);
     expect(result.length).toBe(2);
-    expect([...result[0]!]).toEqual([10, 20, 30]);
-    expect([...result[1]!]).toEqual([40]);
+    expect([...(result[0] ?? new Uint8Array(0))]).toEqual([10, 20, 30]);
+    expect([...(result[1] ?? new Uint8Array(0))]).toEqual([40]);
   });
 
   test("handles empty results", () => {
@@ -157,8 +157,8 @@ describe("unpackByteResults", () => {
 
     const result = unpackByteResults(buf);
     expect(result.length).toBe(2);
-    expect(result[0]!.byteLength).toBe(0);
-    expect([...result[1]!]).toEqual([42]);
+    expect((result[0] ?? new Uint8Array(0)).byteLength).toBe(0);
+    expect([...(result[1] ?? new Uint8Array(0))]).toEqual([42]);
   });
 });
 

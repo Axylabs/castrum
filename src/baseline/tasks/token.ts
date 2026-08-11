@@ -7,8 +7,8 @@ export function nativeRandomToken(byteLen: number): Uint8Array {
   const hex = new Uint8Array(byteLen * 2);
 
   for (let i = 0; i < byteLen; i++) {
-    hex[i * 2] = HEX.charCodeAt(bytes[i]! >> 4);
-    hex[i * 2 + 1] = HEX.charCodeAt(bytes[i]! & 0x0f);
+    hex[i * 2] = HEX.charCodeAt((bytes[i] ?? 0) >> 4);
+    hex[i * 2 + 1] = HEX.charCodeAt((bytes[i] ?? 0) & 0x0f);
   }
 
   return hex;

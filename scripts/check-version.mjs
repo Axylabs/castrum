@@ -58,5 +58,13 @@ if (!/^## \[Unreleased\]/m.test(changelog)) {
   fail("CHANGELOG.md is missing a `## [Unreleased]` section.");
 }
 
+if (!new RegExp(`^## \\[${packageVersion}\\]`, "m").test(changelog)) {
+  fail(
+    `CHANGELOG.md is missing a \`## [${packageVersion}]\` released section ` +
+      `matching package.json. Add a changelog entry for the current version.`,
+  );
+}
+
 console.log(`CHANGELOG [Unreleased]: present`);
+console.log(`CHANGELOG [${packageVersion}]: present`);
 console.log("check:version — OK");

@@ -67,10 +67,13 @@ function randRequest(): {
   const headers: [string, string][] = [];
   const n = randInt(6);
   for (let i = 0; i < n; i++) {
-    headers.push([HEADER_NAMES[randInt(HEADER_NAMES.length)]!, randString(60)]);
+    headers.push([
+      HEADER_NAMES[randInt(HEADER_NAMES.length)] ?? "x-custom",
+      randString(60),
+    ]);
   }
   return {
-    method: METHODS[randInt(METHODS.length)]!,
+    method: METHODS[randInt(METHODS.length)] ?? "GET",
     url: `/${randString(40)}?${randString(30)}`,
     ip: `${randInt(256)}.${randInt(256)}.${randInt(256)}.${randInt(256)}`,
     rid: randString(16),

@@ -3,47 +3,10 @@
 // The canonical implementation of the packed batch format
 // (`[u32 count] { [u32 len] [bytes] }`) and the low-level byte writers used by
 // the parser/output modules. Everything here is allocation-free apart from the
-// explicitly-allocating compat helpers (`unpack`, `VecWriter`).
+// explicitly-allocating compat helper (`unpack`).
 
 use napi::bindgen_prelude::Uint8Array;
 use napi::{Error, Result};
-
-/// Growable byte writer (the allocating packed-buffer builder).
-#[derive(Default)]
-pub struct VecWriter {
-    buf: Vec<u8>,
-}
-
-impl VecWriter {
-    #[inline(always)]
-    pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: Vec::with_capacity(cap),
-        }
-    }
-
-    #[inline(always)]
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.buf
-    }
-
-    #[inline(always)]
-    pub fn write_u32(&mut self, value: u32) {
-        self.buf.extend_from_slice(&value.to_le_bytes());
-    }
-
-    #[inline(always)]
-    pub fn write_bytes(&mut self, bytes: &[u8]) {
-        self.buf.extend_from_slice(bytes);
-    }
-
-    #[inline(always)]
-    pub fn write_bytes_ascii_lowercase(&mut self, bytes: &[u8]) {
-        let start = self.buf.len();
-        self.buf.extend_from_slice(bytes);
-        self.buf[start..].make_ascii_lowercase();
-    }
-}
 
 #[inline(always)]
 pub fn read_u32_le(data: &[u8], offset: usize) -> Result<u32> {
@@ -127,6 +90,35 @@ impl<'a> PackedIter<'a> {
             offset += len;
         }
         Ok(items)
+    }
+
+    /// One-pass, zero-alloc statistics: `(item_count, total_payload_bytes)`.
+    ///
+    /// Reads the item-count header and scans the per-item length fields
+    /// WITHOUT materializing the item slices (unlike [`Self::collect_vec`]).
+    /// Used by the batch dispatchers to decide serial-vs-parallel execution.
+    #[inline]
+    pub fn count_and_total_bytes(&self) -> Result<(usize, usize)> {
+        let mut offset = 4usize;
+        let mut total = 0usize;
+        for _ in 0..self.count {
+            if offset + 4 > self.data.len() {
+                return Err(Error::from_reason("packed buffer: truncated length"));
+            }
+            let len = u32::from_le_bytes([
+                self.data[offset],
+                self.data[offset + 1],
+                self.data[offset + 2],
+                self.data[offset + 3],
+            ]) as usize;
+            offset += 4;
+            if offset + len > self.data.len() {
+                return Err(Error::from_reason("packed buffer: truncated item"));
+            }
+            offset += len;
+            total += len;
+        }
+        Ok((self.count, total))
     }
 }
 
@@ -273,6 +265,98 @@ where
     Ok(written as u32)
 }
 
+// ── Bounds-checked packed OUTPUT writers (reusable-output `_into`) ──
+//
+// These write the same packed formats as the allocating batch functions but
+// into a caller-provided `&mut [u8]`, returning the number of bytes written.
+// Capacity is enforced via `write_u32_le`/`ensure_capacity` (Err "packed
+// output: buffer too small" instead of an OOB write). The `_into` NAPI
+// wrappers route through `run_packed_into` so input/output aliasing is
+// detected and the input is copied when they overlap.
+
+/// Write `[u32 count][bits…]` (batch bitset) into `out`. Returns bytes written.
+#[inline]
+pub fn write_bitset_batch_into<F>(data: &[u8], out: &mut [u8], f: F) -> Result<usize>
+where
+    F: Fn(&[u8]) -> bool + Sync,
+{
+    let iter = PackedIter::new(data)?;
+    let (count, total) = iter.count_and_total_bytes()?;
+    let bitset_len = count.div_ceil(8);
+    let mut pos = 0usize;
+    write_u32_le(out, &mut pos, count as u32)?;
+    ensure_capacity(out, pos, bitset_len)?;
+    if crate::util::should_parallelize(count, total) {
+        let items = crate::util::unpack(data)?;
+        let bits = crate::util::validation_bitset_chunked(&items, f, 4096);
+        out[pos..pos + bitset_len].copy_from_slice(&bits[4..]);
+    } else {
+        // The pooled output buffer may hold stale bytes — zero the bits first.
+        out[pos..pos + bitset_len].fill(0);
+        for (i, item) in iter.enumerate() {
+            if f(item) {
+                out[pos + (i >> 3)] |= 1 << (i & 7);
+            }
+        }
+    }
+    Ok(pos + bitset_len)
+}
+
+/// Write `[u32 count][i64…]` (batch i64 array) into `out`. Returns bytes written.
+#[inline]
+pub fn write_sum_batch_into<F>(data: &[u8], out: &mut [u8], f: F) -> Result<usize>
+where
+    F: Fn(&[u8]) -> i64 + Sync,
+{
+    let iter = PackedIter::new(data)?;
+    let (count, total) = iter.count_and_total_bytes()?;
+    let mut pos = 0usize;
+    write_u32_le(out, &mut pos, count as u32)?;
+    ensure_capacity(out, pos, count.saturating_mul(8))?;
+    if crate::util::should_parallelize(count, total) {
+        use rayon::prelude::*;
+        let items = crate::util::unpack(data)?;
+        let sums: Vec<i64> = items.par_iter().map(|item| f(item)).collect();
+        for (i, s) in sums.iter().enumerate() {
+            out[pos + i * 8..pos + (i + 1) * 8].copy_from_slice(&s.to_le_bytes());
+        }
+    } else {
+        for (i, item) in iter.enumerate() {
+            let s = f(item);
+            out[pos + i * 8..pos + (i + 1) * 8].copy_from_slice(&s.to_le_bytes());
+        }
+    }
+    Ok(pos + count.saturating_mul(8))
+}
+
+/// Write `[u32 count][u32…]` (batch u32 array, e.g. crc32) into `out`.
+/// Returns bytes written.
+#[inline]
+pub fn write_u32_batch_into<F>(data: &[u8], out: &mut [u8], f: F) -> Result<usize>
+where
+    F: Fn(&[u8]) -> u32 + Sync,
+{
+    let iter = PackedIter::new(data)?;
+    let (count, total) = iter.count_and_total_bytes()?;
+    let mut pos = 0usize;
+    write_u32_le(out, &mut pos, count as u32)?;
+    ensure_capacity(out, pos, count.saturating_mul(4))?;
+    if crate::util::should_parallelize(count, total) {
+        use rayon::prelude::*;
+        let items = crate::util::unpack(data)?;
+        let vals: Vec<u32> = items.par_iter().map(|item| f(item)).collect();
+        for (i, v) in vals.iter().enumerate() {
+            out[pos + i * 4..pos + (i + 1) * 4].copy_from_slice(&v.to_le_bytes());
+        }
+    } else {
+        for (i, item) in iter.enumerate() {
+            let v = f(item);
+            out[pos + i * 4..pos + (i + 1) * 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    Ok(pos + count.saturating_mul(4))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,15 +369,6 @@ mod tests {
             out.extend_from_slice(item);
         }
         out
-    }
-
-    #[test]
-    fn vec_writer_layout() {
-        let mut w = VecWriter::with_capacity(0);
-        w.write_u32(0x0102_0304);
-        w.write_bytes(b"hi");
-        w.write_bytes_ascii_lowercase(b"MiXeD");
-        assert_eq!(w.into_bytes(), b"\x04\x03\x02\x01himixed");
     }
 
     #[test]

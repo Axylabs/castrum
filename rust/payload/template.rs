@@ -10,8 +10,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::util::{should_parallelize, total_bytes, unpack};
-
 /// A compiled template renderer. Construct once per template, render many times
 /// with different contexts.
 #[napi]
@@ -48,8 +46,6 @@ impl TemplateRenderer {
     /// is fetched ONCE and reused for every item — no per-call recompilation.
     #[napi]
     pub fn render_batch_packed(&self, data: Uint8Array) -> Result<Buffer> {
-        let items = unpack(data.as_ref())?;
-
         // get_template is a cheap internal Arc lookup — the expensive part
         // (compiling the template) happened once in the constructor.
         let tpl = self
@@ -66,25 +62,7 @@ impl TemplateRenderer {
                 .unwrap_or_default()
         };
 
-        let mut out = Vec::with_capacity(4 + items.len() * 32);
-        out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
-        if should_parallelize(items.len(), total_bytes(&items)) {
-            use rayon::prelude::*;
-            let results: Vec<Vec<u8>> = items.par_iter().map(|c| render_one(c)).collect();
-            for r in results {
-                out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-                out.extend_from_slice(&r);
-            }
-        } else {
-            for c in items {
-                let r = render_one(c);
-                out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-                out.extend_from_slice(&r);
-            }
-        }
-
-        Ok(Buffer::from(out))
+        crate::util::run_packed_batch(data.as_ref(), render_one).map(Buffer::from)
     }
 }
 
@@ -93,8 +71,6 @@ impl TemplateRenderer {
 /// built once per call from `source`, then all contexts render in parallel.
 #[napi]
 pub fn template_render_batch_packed(data: Uint8Array, source: String) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
-
     let mut env = minijinja::Environment::new();
     env.add_template_owned("main", source)
         .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
@@ -111,25 +87,7 @@ pub fn template_render_batch_packed(data: Uint8Array, source: String) -> Result<
             .unwrap_or_default()
     };
 
-    let mut out = Vec::with_capacity(4 + items.len() * 32);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
-    if should_parallelize(items.len(), total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items.par_iter().map(|c| render_one(c)).collect();
-        for r in results {
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    } else {
-        for c in items {
-            let r = render_one(c);
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    }
-
-    Ok(Buffer::from(out))
+    crate::util::run_packed_batch(data.as_ref(), render_one).map(Buffer::from)
 }
 
 #[cfg(test)]

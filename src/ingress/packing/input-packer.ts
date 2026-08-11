@@ -113,4 +113,38 @@ export class IngressInputPacker {
 
     return this.buf.subarray(0, this.pos);
   }
+
+  /**
+   * Pack the request inputs with a mixed strategy: `url`/`ip` are encoded
+   * directly from strings via `encodeInto` (no intermediate `Uint8Array`),
+   * while `requestId`/`headers` are already-encoded byte slices copied in
+   * verbatim.
+   *
+   * This removes the two `encoder.encode` allocations + copies per request
+   * that [`pack`] pays for URL/IP, while keeping the pre-encoded request-id
+   * bytes untouched (no decode-to-string → re-encode round trip, which
+   * `packFromStrings` would incur when a request id was already generated as
+   * bytes). The returned view is valid until the next pack.
+   */
+  packParts(
+    methodKind: number,
+    url: string,
+    ip: string | undefined,
+    requestId: Uint8Array,
+    headers: Uint8Array,
+  ): Uint8Array {
+    this.pos = 0;
+
+    this.writeU8(methodKind);
+    this.writeStringLenPrefixed(url);
+    if (ip && ip.length > 0) {
+      this.writeStringLenPrefixed(ip);
+    } else {
+      this.writeLenPrefixed(EMPTY_IP_BYTES);
+    }
+    this.writeLenPrefixed(requestId);
+    this.writeLenPrefixed(headers);
+
+    return this.buf.subarray(0, this.pos);
+  }
 }

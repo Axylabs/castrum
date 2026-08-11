@@ -50,6 +50,17 @@ pub struct IngressOptions {
 }
 
 // ── Limits ────────────────────────────────────────────────────────
+// Default per-request ingress limits (bytes / counts). These bound how much
+// of a request the pipeline will buffer/parse, protecting against oversized
+// URL/query/cookie/header blocks. Tunable via `limits` in the ingress options.
+pub(crate) const DEFAULT_MAX_URL_BYTES: usize = 65536;
+pub(crate) const DEFAULT_MAX_QUERY_BYTES: usize = 16384;
+pub(crate) const DEFAULT_MAX_COOKIE_BYTES: usize = 8192;
+pub(crate) const DEFAULT_MAX_HEADERS_BYTES: usize = 65536;
+pub(crate) const DEFAULT_MAX_HEADERS: usize = 100;
+pub(crate) const DEFAULT_MAX_PAIRS: usize = 1024;
+pub(crate) const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
+
 #[derive(Clone)]
 pub(crate) struct Limits {
     pub max_url_bytes: usize,
@@ -63,12 +74,12 @@ pub(crate) struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_url_bytes: 65536,
-            max_query_bytes: 16384,
-            max_cookie_bytes: 8192,
-            max_headers_bytes: 65536,
-            max_headers: 100,
-            max_pairs: 1024,
+            max_url_bytes: DEFAULT_MAX_URL_BYTES,
+            max_query_bytes: DEFAULT_MAX_QUERY_BYTES,
+            max_cookie_bytes: DEFAULT_MAX_COOKIE_BYTES,
+            max_headers_bytes: DEFAULT_MAX_HEADERS_BYTES,
+            max_headers: DEFAULT_MAX_HEADERS,
+            max_pairs: DEFAULT_MAX_PAIRS,
         }
     }
 }
@@ -108,20 +119,20 @@ mod tests {
     #[test]
     fn limits_defaults() {
         let d = Limits::default();
-        assert_eq!(d.max_url_bytes, 65536);
-        assert_eq!(d.max_query_bytes, 16384);
-        assert_eq!(d.max_cookie_bytes, 8192);
-        assert_eq!(d.max_headers_bytes, 65536);
-        assert_eq!(d.max_headers, 100);
-        assert_eq!(d.max_pairs, 1024);
+        assert_eq!(d.max_url_bytes, DEFAULT_MAX_URL_BYTES);
+        assert_eq!(d.max_query_bytes, DEFAULT_MAX_QUERY_BYTES);
+        assert_eq!(d.max_cookie_bytes, DEFAULT_MAX_COOKIE_BYTES);
+        assert_eq!(d.max_headers_bytes, DEFAULT_MAX_HEADERS_BYTES);
+        assert_eq!(d.max_headers, DEFAULT_MAX_HEADERS);
+        assert_eq!(d.max_pairs, DEFAULT_MAX_PAIRS);
     }
 
     #[test]
     fn limits_none_keeps_defaults() {
         let l = Limits::from_options(None);
-        assert_eq!(l.max_url_bytes, 65536);
-        assert_eq!(l.max_pairs, 1024);
-        assert_eq!(l.max_headers, 100);
+        assert_eq!(l.max_url_bytes, DEFAULT_MAX_URL_BYTES);
+        assert_eq!(l.max_pairs, DEFAULT_MAX_PAIRS);
+        assert_eq!(l.max_headers, DEFAULT_MAX_HEADERS);
     }
 
     #[test]
@@ -137,11 +148,11 @@ mod tests {
         let l = Limits::from_options(Some(opts));
         // Overridden field wins; untouched fields keep their defaults.
         assert_eq!(l.max_url_bytes, 4096);
-        assert_eq!(l.max_query_bytes, 16384);
-        assert_eq!(l.max_cookie_bytes, 8192);
-        assert_eq!(l.max_headers_bytes, 65536);
-        assert_eq!(l.max_headers, 100);
-        assert_eq!(l.max_pairs, 1024);
+        assert_eq!(l.max_query_bytes, DEFAULT_MAX_QUERY_BYTES);
+        assert_eq!(l.max_cookie_bytes, DEFAULT_MAX_COOKIE_BYTES);
+        assert_eq!(l.max_headers_bytes, DEFAULT_MAX_HEADERS_BYTES);
+        assert_eq!(l.max_headers, DEFAULT_MAX_HEADERS);
+        assert_eq!(l.max_pairs, DEFAULT_MAX_PAIRS);
     }
 
     #[test]

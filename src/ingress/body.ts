@@ -92,7 +92,7 @@ function concatUint8Arrays(
   total: number,
 ): Uint8Array {
   if (chunks.length === 0) return EMPTY_BODY;
-  if (chunks.length === 1) return chunks[0]!;
+  if (chunks.length === 1) return chunks[0] ?? EMPTY_BODY;
 
   const out = new Uint8Array(total);
   let offset = 0;

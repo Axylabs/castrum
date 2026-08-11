@@ -4,8 +4,8 @@
 // representation. Returns `Err(())` for any keyword outside the supported
 // subset so the caller can fall back to the jsonschema crate DOM path.
 
+use rustc_hash::FxHashMap;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::types::{
@@ -139,8 +139,8 @@ fn number_f64(v: &Value) -> Result<f64, ()> {
 
 fn compile_object_constraints(map: &serde_json::Map<String, Value>) -> Result<FastObject, ()> {
     let mut o = FastObject {
-        props: HashMap::new(),
-        required: HashMap::new(),
+        props: FxHashMap::default(),
+        required: FxHashMap::default(),
         required_count: 0,
         additional: Additional::Allow,
         min_props: None,

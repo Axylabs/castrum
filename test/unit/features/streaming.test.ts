@@ -6,7 +6,6 @@
 import { describe, test, expect } from "bun:test";
 import {
   nativeSseEncodeEvent,
-  nativeWsFrameDecode,
   nativeWsFrameEncode,
 } from "../../../src/baseline/tasks/streaming";
 import { rust } from "../../../src/rust-ffi";

@@ -6,7 +6,6 @@ import {
     SECURITY_HEADERS,
     CORS_CONFIG,
     RATE_LIMIT_CONFIG,
-    MAX_BODY_BYTES,
     type ApiOk,
 } from "./shared";
 

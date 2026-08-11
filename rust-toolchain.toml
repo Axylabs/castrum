@@ -1,0 +1,13 @@
+# Pin the Rust toolchain for reproducible builds (CI + release).
+#
+# Cargo/rustup read this file and use exactly this version, so a release build
+# on any machine produces the same compiler behavior. Bump deliberately only
+# after a newer stable is verified against the full test suite
+# (`cargo test`, `cargo clippy -- -D warnings`, `bun run check:proven`).
+#
+# Note: the local Arch system toolchain (not rustup-managed) ignores this file;
+# it primarily pins the CI `dtolnay/rust-toolchain` and rustup-managed builds.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

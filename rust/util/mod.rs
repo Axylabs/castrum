@@ -24,8 +24,10 @@ pub mod validation;
 pub use self::bytes::{hex_val, trim_ascii_whitespace};
 
 pub use self::batch_core::{count_batch, sum_batch_i64, validation_bitset_chunked};
+pub(crate) use self::batch::{run_bitset_batch, run_packed_batch, run_packed_batch_idx};
 pub use self::packed::{
     ensure_capacity, read_u32_le, run_packed_into, slices_overlap, total_bytes, unpack,
-    write_bytes, write_bytes_lowercase, write_u32_le, PackedIter, VecWriter,
+    write_bitset_batch_into, write_bytes, write_bytes_lowercase, write_sum_batch_into,
+    write_u32_batch_into, write_u32_le, PackedIter,
 };
 pub use self::threadpool::{init_thread_pool, rayon_num_threads, should_parallelize};

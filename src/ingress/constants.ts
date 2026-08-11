@@ -67,3 +67,15 @@ export const ERR_CODE_SCHEMA_VALIDATION: number = addon.INGRESS_ERR_SCHEMA_VALID
 export const ERR_CODE_BAD_REQUEST: number = addon.INGRESS_ERR_BAD_REQUEST;
 export const ERR_CODE_REQUEST_TOO_LARGE: number = addon.INGRESS_ERR_REQUEST_TOO_LARGE;
 export const ERR_CODE_INTERNAL: number = addon.INGRESS_ERR_INTERNAL;
+
+/**
+ * JS-only error-code sentinel for a request-body read timeout in the async
+ * `createIngress` path.
+ *
+ * The native pipeline never emits this value — it is a JS body-reader error
+ * (`REQUEST_TIMEOUT` from `readBodyWithLimit`) mapped onto the numeric
+ * error-code contract so the shared status/name/message helpers stay
+ * consistent. Deliberately not sourced from Rust (see the header comment:
+ * numeric layout values come from the addon; this one is a JS-level error).
+ */
+export const ERR_CODE_REQUEST_TIMEOUT: number = -1;

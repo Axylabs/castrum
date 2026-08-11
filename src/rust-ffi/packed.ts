@@ -22,6 +22,15 @@ export interface RustPacked {
   httpParseRequestBatchPacked(input: Uint8Array): Uint8Array;
   /** Batch RFC 6902 JSON Patch (two packed lists, zipped) → packed results. */
   jsonPatchBatchPacked(docs: Uint8Array, patches: Uint8Array): Uint8Array;
+  /** Packed FNV-1a 64 batch (i64 per item). */
+  fnv1A64BatchPacked(input: Uint8Array): Uint8Array;
+  /** Packed ETag batch (10 strong / 12 weak bytes per item). */
+  etagBatchPacked(input: Uint8Array, weak?: boolean | null): Uint8Array;
+  urlEncodeBatchPacked(input: Uint8Array): Uint8Array;
+  urlDecodeBatchPacked(input: Uint8Array): Uint8Array;
+  urlDecodeBytesBatchPacked(input: Uint8Array): Uint8Array;
+  mimeFromExtensionBatchPacked(input: Uint8Array): Uint8Array;
+  wsAcceptKeyBatchPacked(input: Uint8Array): Uint8Array;
 
   // ── Batch metadata / counts ──
   jsonValidBatchCountPacked(input: Uint8Array): number;
@@ -40,6 +49,10 @@ export interface RustPacked {
     salt: Uint8Array,
     options?: PasswordHashOptions | null,
   ): Uint8Array;
+  /** Packed password-verify batch (two packed lists, zipped) → bitset. */
+  passwordVerifyBatchPacked(passwords: Uint8Array, phcs: Uint8Array): Uint8Array;
+  /** Packed URL-resolve batch (two packed lists, zipped) → packed results. */
+  urlResolveBatchPacked(bases: Uint8Array, references: Uint8Array): Uint8Array;
   aeadEncryptBatchPacked(
     input: Uint8Array,
     key: Uint8Array,
@@ -66,6 +79,14 @@ export interface RustPacked {
     input: Uint8Array,
     secret: Uint8Array,
     nowSeconds: number,
+  ): Uint8Array;
+  /** Batch HMAC-SHA256 sign (packed in → hex-signature byte results). */
+  hmacSha256BatchPacked(input: Uint8Array, key: Uint8Array): Uint8Array;
+  /** Batch HMAC-SHA256 verify (two packed lists: data + hex sigs, zipped) → bitset. */
+  hmacSha256VerifyBatchPacked(
+    input: Uint8Array,
+    sigs: Uint8Array,
+    key: Uint8Array,
   ): Uint8Array;
   multipartParseBatchPacked(input: Uint8Array, boundary: Uint8Array): Uint8Array;
   templateRenderBatchPacked(input: Uint8Array, source: string): Uint8Array;
@@ -122,6 +143,27 @@ export function buildPacked(ctx: RustClientContext): RustPacked {
     jsonPatchBatchPacked(docs, patches) {
       return addon.jsonPatchBatchPacked(docs, patches);
     },
+    fnv1A64BatchPacked(input) {
+      return addon.fnv1A64BatchPacked(input);
+    },
+    etagBatchPacked(input, weak) {
+      return addon.etagBatchPacked(input, weak ?? null);
+    },
+    urlEncodeBatchPacked(input) {
+      return addon.urlEncodeBatchPacked(input);
+    },
+    urlDecodeBatchPacked(input) {
+      return addon.urlDecodeBatchPacked(input);
+    },
+    urlDecodeBytesBatchPacked(input) {
+      return addon.urlDecodeBytesBatchPacked(input);
+    },
+    mimeFromExtensionBatchPacked(input) {
+      return addon.mimeFromExtensionBatchPacked(input);
+    },
+    wsAcceptKeyBatchPacked(input) {
+      return addon.wsAcceptKeyBatchPacked(input);
+    },
 
     jsonValidBatchCountPacked(input) {
       return asNumber(addon.jsonValidBatchCountPacked(input));
@@ -154,6 +196,12 @@ export function buildPacked(ctx: RustClientContext): RustPacked {
     // ── Backend-framework features ──
     passwordHashBatchPacked(input, salt, options) {
       return addon.passwordHashBatchPacked(input, salt, options ?? null);
+    },
+    passwordVerifyBatchPacked(passwords, phcs) {
+      return addon.passwordVerifyBatchPacked(passwords, phcs);
+    },
+    urlResolveBatchPacked(bases, references) {
+      return addon.urlResolveBatchPacked(bases, references);
     },
     aeadEncryptBatchPacked(input, key, nonce, algorithm) {
       return addon.aeadEncryptBatchPacked(
@@ -188,6 +236,12 @@ export function buildPacked(ctx: RustClientContext): RustPacked {
     },
     jwtVerifyBatchPacked(input, secret, nowSeconds) {
       return addon.jwtVerifyBatchPacked(input, secret, nowSeconds);
+    },
+    hmacSha256BatchPacked(input, key) {
+      return addon.hmacSha256BatchPacked(input, key);
+    },
+    hmacSha256VerifyBatchPacked(input, sigs, key) {
+      return addon.hmacSha256VerifyBatchPacked(input, sigs, key);
     },
     multipartParseBatchPacked(input, boundary) {
       return addon.multipartParseBatchPacked(input, boundary);

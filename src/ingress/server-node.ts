@@ -28,6 +28,15 @@ import {
   type ServerHandle,
 } from "./server";
 import { fallbackHandler } from "./routes";
+
+/**
+ * Default socket-level guard for receiving request headers/body (ms). Node's
+ * `requestTimeout` / `headersTimeout` default to 0 (disabled); castrum opts
+ * into a 30s cap to reject slowloris/trickling sockets. Distinct from the
+ * route-level `bodyTimeoutMs` (`DEFAULT_BODY_TIMEOUT_MS`), which guards the
+ * body-read loop after headers arrive.
+ */
+const DEFAULT_SOCKET_TIMEOUT_MS = 30_000;
 import type { BakedHandlerOptions } from "./routes/common";
 
 export type RouteHandler = (
@@ -209,8 +218,8 @@ export function createIngressServerNode(
 
   // Map Bun-style options onto Node equivalents + harden slowloris/DoS.
   server.keepAliveTimeout = (options.idleTimeout ?? 30) * 1000;
-  server.requestTimeout = options.requestTimeoutMs ?? 30_000;
-  server.headersTimeout = options.headersTimeoutMs ?? 30_000;
+  server.requestTimeout = options.requestTimeoutMs ?? DEFAULT_SOCKET_TIMEOUT_MS;
+  server.headersTimeout = options.headersTimeoutMs ?? DEFAULT_SOCKET_TIMEOUT_MS;
   if (server.maxRequestsPerSocket !== undefined) {
     server.maxRequestsPerSocket = options.maxRequestsPerSocket ?? 1000;
   }

@@ -6,6 +6,12 @@
 // the buffers per call-site sequence.
 
 import type { HeaderPlan } from "../shared";
+import {
+  getHeaderBuf,
+  MAX_COOKIE_HEADER_BYTES,
+  MAX_SMALL_HEADER_BYTES,
+  MAX_XFF_HEADER_BYTES,
+} from "./scratch";
 
 const encoder = new TextEncoder();
 
@@ -17,29 +23,6 @@ export const HDR_ACRH = encoder.encode("access-control-request-headers");
 export const HDR_XFF = encoder.encode("x-forwarded-for");
 export const HDR_XRI = encoder.encode("x-real-ip");
 export const HDR_XFP = encoder.encode("x-forwarded-proto");
-
-const HEADER_BUF_SIZE = 8192;
-
-// Thread-local header buffer for per-call isolation
-const [getHeaderBuf] = (() => {
-  const tls = new Array<[Uint8Array, DataView]>();
-  const MAX_CACHED = 256;
-  let tlsIdx = 0;
-
-  function acquire(): [Uint8Array, DataView] {
-    const cached = tls[tlsIdx];
-    tlsIdx = (tlsIdx + 1) % MAX_CACHED;
-    if (cached) return cached;
-
-    const buf = new Uint8Array(HEADER_BUF_SIZE);
-    const view = new DataView(buf.buffer);
-    const pair: [Uint8Array, DataView] = [buf, view];
-    tls.push(pair);
-    return pair;
-  }
-
-  return [acquire];
-})();
 
 /**
  * Write one header pair into `buf`/`view`, growing them if needed.
@@ -90,9 +73,12 @@ export function packHeaders(req: Request, plan: HeaderPlan): Uint8Array {
 
   const headers = req.headers;
 
+  // Per-header size guards shared with the pre-baked path (scratch.ts): an
+  // oversized value is dropped rather than forwarded so the packed block can
+  // never exceed the native `max_headers_bytes` (65536) and 500.
   if (plan.cookie) {
     const v = headers.get("cookie");
-    if (v !== null) {
+    if (v !== null && v.length <= MAX_COOKIE_HEADER_BYTES) {
       [pos, buf, view] = writeHeaderPair(buf, view, pos, HDR_COOKIE, v);
       count++;
     }
@@ -100,20 +86,20 @@ export function packHeaders(req: Request, plan: HeaderPlan): Uint8Array {
 
   if (plan.cors) {
     const origin = headers.get("origin");
-    if (origin !== null) {
+    if (origin !== null && origin.length <= MAX_SMALL_HEADER_BYTES) {
       [pos, buf, view] = writeHeaderPair(buf, view, pos, HDR_ORIGIN, origin);
       count++;
     }
 
     if (req.method === "OPTIONS") {
       const acrm = headers.get("access-control-request-method");
-      if (acrm !== null) {
+      if (acrm !== null && acrm.length <= MAX_SMALL_HEADER_BYTES) {
         [pos, buf, view] = writeHeaderPair(buf, view, pos, HDR_ACRM, acrm);
         count++;
       }
 
       const acrh = headers.get("access-control-request-headers");
-      if (acrh !== null) {
+      if (acrh !== null && acrh.length <= MAX_SMALL_HEADER_BYTES) {
         [pos, buf, view] = writeHeaderPair(buf, view, pos, HDR_ACRH, acrh);
         count++;
       }
@@ -122,13 +108,13 @@ export function packHeaders(req: Request, plan: HeaderPlan): Uint8Array {
 
   if (plan.proxy) {
     const xff = headers.get("x-forwarded-for");
-    if (xff !== null) {
+    if (xff !== null && xff.length <= MAX_XFF_HEADER_BYTES) {
       [pos, buf, view] = writeHeaderPair(buf, view, pos, HDR_XFF, xff);
       count++;
     }
 
     const xri = headers.get("x-real-ip");
-    if (xri !== null) {
+    if (xri !== null && xri.length <= MAX_SMALL_HEADER_BYTES) {
       [pos, buf, view] = writeHeaderPair(buf, view, pos, HDR_XRI, xri);
       count++;
     }
@@ -136,7 +122,7 @@ export function packHeaders(req: Request, plan: HeaderPlan): Uint8Array {
 
   if (plan.proto) {
     const xfp = headers.get("x-forwarded-proto");
-    if (xfp !== null) {
+    if (xfp !== null && xfp.length <= MAX_SMALL_HEADER_BYTES) {
       [pos, buf, view] = writeHeaderPair(buf, view, pos, HDR_XFP, xfp);
       count++;
     }

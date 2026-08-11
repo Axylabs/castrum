@@ -1,11 +1,17 @@
 /**
- * Tests for src/ingress/server.ts `buildRouteHandlers` — the pure route →
- * { method → handler } wiring shared by both `createIngressServer` (Bun) and
- * `createIngressServerNode` (node:http). No server is started here.
+ * Tests for src/ingress/server.ts:
+ * - `buildRouteHandlers` — the pure route → { method → handler } wiring shared
+ *   by both `createIngressServer` (Bun) and `createIngressServerNode` (node:http)
+ * - `gracefulShutdown` — signal-driven drain-then-force lifecycle
+ * - `createIngressServer` — a REAL Bun.serve started on a random port
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildRouteHandlers } from "../../../src/ingress/server";
+import {
+  buildRouteHandlers,
+  createIngressServer,
+  gracefulShutdown,
+} from "../../../src/ingress/server";
 import { createIngressHandler } from "../../../src/ingress/handlers";
 
 const ingress = createIngressHandler({
@@ -13,6 +19,16 @@ const ingress = createIngressHandler({
   parseQuery: true,
   https: true,
   emitMetadataJson: true,
+});
+
+// jsonWriteHandler treats a body as valid JSON only when requireJsonBody (or a
+// schema) is configured, so the write route needs its own handler.
+const writeIngress = createIngressHandler({
+  parseCookies: true,
+  parseQuery: true,
+  https: true,
+  emitMetadataJson: true,
+  requireJsonBody: true,
 });
 
 describe("buildRouteHandlers", () => {
@@ -70,5 +86,114 @@ describe("buildRouteHandlers", () => {
     const body = JSON.parse(await res.text());
     expect(body.ok).toBe(true);
     expect(typeof body.requestId).toBe("string");
+  });
+});
+
+describe("createIngressServer (real Bun.serve)", () => {
+  test("routes GET + POST, 404 fallback, and stops cleanly", async () => {
+    const srv = createIngressServer({
+      port: 0,
+      routes: {
+        "/health": { read: ingress },
+        "/api": { write: writeIngress },
+      },
+      fallback: ingress,
+    });
+
+    const port = srv.server.port ?? 0;
+    expect(port).toBeGreaterThan(0);
+    const base = `http://127.0.0.1:${port}`;
+
+    try {
+      const health = await fetch(`${base}/health`);
+      expect(health.status).toBe(200);
+      const healthBody = JSON.parse(await health.text()) as { ok: boolean };
+      expect(healthBody.ok).toBe(true);
+
+      const api = await fetch(`${base}/api`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "ada" }),
+      });
+      expect(api.status).toBe(200);
+
+      const fallback = await fetch(`${base}/nope`);
+      expect(fallback.status).toBe(404);
+    } finally {
+      srv.stop();
+    }
+  });
+});
+
+describe("gracefulShutdown", () => {
+  test("soft-stops then force-closes after the grace period; cleanup detaches", async () => {
+    const stops: Array<boolean | undefined> = [];
+    const handle = {
+      port: 1,
+      stop: (force?: boolean) => {
+        stops.push(force);
+      },
+    };
+    const cleanup = gracefulShutdown([handle], {
+      timeoutMs: 15,
+      signals: ["SIGTERM"],
+    });
+
+    process.emit("SIGTERM");
+    expect(stops).toEqual([false]); // soft stop (drain) first
+
+    await Bun.sleep(40);
+    expect(stops).toEqual([false, true]); // force-close after the grace period
+
+    cleanup();
+    const count = stops.length;
+    process.emit("SIGTERM"); // after cleanup: no-op
+    expect(stops.length).toBe(count);
+  });
+
+  test("a second signal during shutdown is ignored (idempotent)", async () => {
+    const stops: Array<boolean | undefined> = [];
+    const handle = {
+      port: 1,
+      stop: (force?: boolean) => {
+        stops.push(force);
+      },
+    };
+    const cleanup = gracefulShutdown([handle], {
+      timeoutMs: 20,
+      signals: ["SIGINT"],
+    });
+
+    process.emit("SIGINT");
+    process.emit("SIGINT");
+    expect(stops).toEqual([false]); // only one drain, despite two signals
+
+    await Bun.sleep(50);
+    expect(stops).toEqual([false, true]);
+    cleanup();
+  });
+
+  test("ignores handles that throw on stop", () => {
+    const stops: Array<boolean | undefined> = [];
+    const bad = {
+      port: 1,
+      stop: () => {
+        throw new Error("already stopped");
+      },
+    };
+    const good = {
+      port: 2,
+      stop: (force?: boolean) => {
+        stops.push(force);
+      },
+    };
+    const cleanup = gracefulShutdown([bad, good], {
+      timeoutMs: 10,
+      signals: ["SIGTERM"],
+    });
+
+    expect(() => process.emit("SIGTERM")).not.toThrow();
+    expect(stops).toEqual([false]);
+    cleanup();
   });
 });

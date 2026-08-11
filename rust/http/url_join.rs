@@ -162,6 +162,32 @@ pub fn url_resolve(base: Uint8Array, reference: Uint8Array) -> Result<Buffer> {
     Ok(Buffer::from(recompose(&target).into_bytes()))
 }
 
+/// Packed URL-resolve batch (two packed lists: bases + references, zipped) →
+/// `[u32 count]{[u32 len][resolved]}` out. Items that fail UTF-8 parsing yield
+/// an empty result — skip-on-error.
+#[napi]
+pub fn url_resolve_batch_packed(
+    bases: Uint8Array,
+    references: Uint8Array,
+) -> Result<Buffer> {
+    use crate::util::packed::PackedIter;
+    let b = bases.as_ref();
+    let r = references.as_ref();
+    let count = PackedIter::new(b)?.len().min(PackedIter::new(r)?.len());
+    let mut out = Vec::with_capacity(4 + count * 64);
+    out.extend_from_slice(&(count as u32).to_le_bytes());
+    for (base, reference) in PackedIter::new(b)?.zip(PackedIter::new(r)?) {
+        let resolved = match (std::str::from_utf8(base), std::str::from_utf8(reference)) {
+            (Ok(bs), Ok(rs)) => recompose(&resolve_target(&parse_ref(bs), &parse_ref(rs)))
+                .into_bytes(),
+            _ => Vec::new(),
+        };
+        out.extend_from_slice(&(resolved.len() as u32).to_le_bytes());
+        out.extend_from_slice(&resolved);
+    }
+    Ok(Buffer::from(out))
+}
+
 fn encode_query_component(input: &[u8], out: &mut Vec<u8>) -> Result<()> {
     let mut buf = vec![0u8; input.len() * 3];
     let written = crate::http::url_codec::url_encode_into_slice(input, &mut buf)?;

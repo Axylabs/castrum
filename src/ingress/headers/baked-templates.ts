@@ -13,7 +13,6 @@ import {
   HV_CORS_SIMPLE,
   HV_CORS_PREFLIGHT,
   HV_RATE_ACTIVE,
-  HV_RATE_LIMITED,
 } from "../constants";
 
 /** Inputs needed to build the pre-baked header templates. */

@@ -21,6 +21,7 @@ import {
   type CorsStaticStrings,
 } from "./cors";
 import { buildHstsValue, type SecurityHeadersOptions } from "./hsts";
+import { secondsFromMs } from "../shared";
 
 /** A single precomputed header-variant template. */
 export interface HeaderTemplate {
@@ -30,6 +31,18 @@ export interface HeaderTemplate {
   readonly needsRetryAfter: boolean;
   readonly needsDynamicHsts: boolean;
 }
+
+/**
+ * Fallback used only when a variant template is unexpectedly absent. All 32
+ * variants are always built, so this never serves a real response.
+ */
+const EMPTY_HEADER_TEMPLATE: HeaderTemplate = Object.freeze({
+  entries: [],
+  needsOriginEcho: false,
+  needsRateDynamic: false,
+  needsRetryAfter: false,
+  needsDynamicHsts: false,
+});
 
 /** Precomputed per-handler response context. */
 export interface ResponseBuildContext {
@@ -171,30 +184,30 @@ function buildHeaderTemplates(
     const entries: Array<[string, string]> = [];
 
     if (securityEnabled) {
-      for (let i = 0; i < securityPairs.length; i++) {
-        entries.push(securityPairs[i]!);
+      for (const pair of securityPairs) {
+        entries.push(pair);
       }
     }
 
-    for (let i = 0; i < corsVaryPairs.length; i++) {
-      entries.push(corsVaryPairs[i]!);
+    for (const pair of corsVaryPairs) {
+      entries.push(pair);
     }
 
     if (isCorsSimple || isCorsPreflight) {
-      for (let i = 0; i < corsPolicyPairs.length; i++) {
-        entries.push(corsPolicyPairs[i]!);
+      for (const pair of corsPolicyPairs) {
+        entries.push(pair);
       }
     }
 
     if (isCorsPreflight) {
-      for (let i = 0; i < corsPreflightPairs.length; i++) {
-        entries.push(corsPreflightPairs[i]!);
+      for (const pair of corsPreflightPairs) {
+        entries.push(pair);
       }
     }
 
     if (isRateActive) {
-      for (let i = 0; i < rateLimitCeiling.length; i++) {
-        entries.push(rateLimitCeiling[i]!);
+      for (const pair of rateLimitCeiling) {
+        entries.push(pair);
       }
     }
 
@@ -228,7 +241,9 @@ export function headersForResult(
   requestId: string,
 ): Headers {
   const template =
-    ctx.templates[r.headerVariant & 0x1f] ?? ctx.templates[0]!;
+    ctx.templates[r.headerVariant & 0x1f] ??
+    ctx.templates[0] ??
+    EMPTY_HEADER_TEMPLATE;
 
   const headers = new Headers();
 
@@ -256,14 +271,14 @@ export function headersForResult(
     headers.set("x-ratelimit-remaining", String(Math.max(0, r.rateRemaining)));
 
     if (r.rateResetMs > 0) {
-      headers.set("x-ratelimit-reset", String(Math.ceil(r.rateResetMs / 1000)));
+      headers.set("x-ratelimit-reset", String(secondsFromMs(r.rateResetMs)));
     }
   }
 
   if (template.needsRetryAfter && r.retryAfterMs > 0) {
     headers.set(
       "retry-after",
-      String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))),
+      String(Math.max(1, secondsFromMs(r.retryAfterMs))),
     );
   }
 

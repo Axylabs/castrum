@@ -11,8 +11,6 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::io::{Read, Write};
 
-use crate::util::{should_parallelize, total_bytes, unpack};
-
 // ── Pure-Rust core ─────────────────────────────────────────────
 
 /// gzip-compress `data` at the given level (0–9; default 6).
@@ -82,62 +80,43 @@ pub fn brotli_decompress(data: Uint8Array) -> Result<Buffer> {
         .map_err(|e| Error::from_reason(format!("brotli decompress failed: {e}")))
 }
 
-/// Parallel gzip batch: packed `[u32 count]{[u32 len][data]}` in → packed
+/// gzip batch: packed `[u32 count]{[u32 len][data]}` in → packed
 /// `[u32 count]{[u32 len][gzip]}` out (same level for all items).
 #[napi]
 pub fn gzip_compress_batch_packed(data: Uint8Array, level: Option<u32>) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
     let level = level.unwrap_or(6).min(9);
-    packed_batch(items, |chunk| gzip_compress_bytes(chunk, level))
+    crate::util::run_packed_batch(data.as_ref(), move |chunk| {
+        gzip_compress_bytes(chunk, level).unwrap_or_default()
+    })
+    .map(Buffer::from)
 }
 
-/// Parallel gzip-decompress batch: packed gzip streams in → packed originals out.
+/// gzip-decompress batch: packed gzip streams in → packed originals out.
 #[napi]
 pub fn gzip_decompress_batch_packed(data: Uint8Array) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
-    packed_batch(items, gzip_decompress_bytes)
+    crate::util::run_packed_batch(data.as_ref(), |chunk| {
+        gzip_decompress_bytes(chunk).unwrap_or_default()
+    })
+    .map(Buffer::from)
 }
 
-/// Parallel brotli batch: packed data in → packed brotli streams out.
+/// brotli batch: packed data in → packed brotli streams out.
 #[napi]
 pub fn brotli_compress_batch_packed(data: Uint8Array, quality: Option<u32>) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
     let quality = quality.unwrap_or(5).min(11);
-    packed_batch(items, |chunk| brotli_compress_bytes(chunk, quality))
+    crate::util::run_packed_batch(data.as_ref(), move |chunk| {
+        brotli_compress_bytes(chunk, quality).unwrap_or_default()
+    })
+    .map(Buffer::from)
 }
 
-/// Parallel brotli-decompress batch: packed brotli streams in → packed originals out.
+/// brotli-decompress batch: packed brotli streams in → packed originals out.
 #[napi]
 pub fn brotli_decompress_batch_packed(data: Uint8Array) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
-    packed_batch(items, brotli_decompress_bytes)
-}
-
-/// Shared direct-write packed batch helper (items that fail produce an empty
-/// entry so item counts stay aligned).
-fn packed_batch(
-    items: Vec<&[u8]>,
-    f: impl Fn(&[u8]) -> std::io::Result<Vec<u8>> + Sync,
-) -> Result<Buffer> {
-    let mut out = Vec::with_capacity(4 + items.len() * 24);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
-    if should_parallelize(items.len(), total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items.par_iter().map(|c| f(c).unwrap_or_default()).collect();
-        for r in results {
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    } else {
-        for c in items {
-            let r = f(c).unwrap_or_default();
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    }
-
-    Ok(Buffer::from(out))
+    crate::util::run_packed_batch(data.as_ref(), |chunk| {
+        brotli_decompress_bytes(chunk).unwrap_or_default()
+    })
+    .map(Buffer::from)
 }
 
 #[cfg(test)]

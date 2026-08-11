@@ -6,7 +6,7 @@
 import { describe, test, expect } from "bun:test";
 import { nativeMultipartParse } from "../../../src/baseline/tasks/multipart";
 import { rust } from "../../../src/rust-ffi";
-import { decoder, encoder } from "../../../src/shared/bytes";
+import { encoder } from "../../../src/shared/bytes";
 import { packBatch } from "../../../src/shared/packed";
 
 const boundary = encoder.encode("TestBoundaryX");
@@ -88,5 +88,47 @@ describe("rust.batch.multipartParse (packed)", () => {
     // unpack [u32 count]{[u32 len][parts]} and sanity check first item decodes.
     const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
     expect(view.getUint32(0, true)).toBe(2);
+  });
+});
+
+describe("rust.multipartParsePacked (zero-copy scalar)", () => {
+  test("packed output matches the object path", () => {
+    const packed = rust.multipartParsePacked(makeBody(), boundary);
+    const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
+    const decoder = new TextDecoder();
+    // [u32 count]{[u32 name_len][name][has_filename][u32 filename_len][filename][has_ct][u32 ct_len][ct][u32 data_len][data]}
+    expect(view.getUint32(0, true)).toBe(2);
+
+    const parts = rust.multipartParse(makeBody(), boundary);
+    let pos = 4;
+    for (const p of parts) {
+      const nameLen = view.getUint32(pos, true);
+      pos += 4;
+      expect(decoder.decode(packed.subarray(pos, pos + nameLen))).toBe(p.name);
+      pos += nameLen;
+
+      const hasFile = packed[pos] as number;
+      pos += 1;
+      const fileLen = view.getUint32(pos, true);
+      pos += 4;
+      expect(
+        hasFile ? decoder.decode(packed.subarray(pos, pos + fileLen)) : "",
+      ).toBe(p.filename ?? "");
+      pos += fileLen;
+
+      const hasCt = packed[pos] as number;
+      pos += 1;
+      const ctLen = view.getUint32(pos, true);
+      pos += 4;
+      expect(
+        hasCt ? decoder.decode(packed.subarray(pos, pos + ctLen)) : "",
+      ).toBe(p.contentType ?? "");
+      pos += ctLen;
+
+      const dataLen = view.getUint32(pos, true);
+      pos += 4;
+      expect([...packed.subarray(pos, pos + dataLen)]).toEqual([...p.data]);
+      pos += dataLen;
+    }
   });
 });

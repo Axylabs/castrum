@@ -225,6 +225,7 @@ dependencies = [
  "parking_lot",
  "phf",
  "rayon",
+ "rustc-hash",
  "serde",
  "serde_json",
  "simdutf8",

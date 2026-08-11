@@ -17,38 +17,20 @@ import {
   HDR_XRI,
   writeHeaderPair,
 } from "./header-packing";
+import {
+  getHeaderBuf,
+  MAX_COOKIE_HEADER_BYTES,
+  MAX_SMALL_HEADER_BYTES,
+  MAX_XFF_HEADER_BYTES,
+} from "./scratch";
 
-/** Upper bound for the `cookie` header value. */
-export const MAX_COOKIE_HEADER_BYTES = 8192;
-/** Upper bound for small single-value headers (origin, ACRM, ACRH, ...). */
-export const MAX_SMALL_HEADER_BYTES = 2048;
-/** Upper bound for the `x-forwarded-for` header value. */
-export const MAX_XFF_HEADER_BYTES = 8192;
-
-/** Scratch capacity for the reusable packed-header buffer. */
-const HEADER_BUF_SIZE = 8192;
-
-// Thread-local reusable header buffer (mirrors `packHeaders`' per-call-site
-// isolation: the buffer is only borrowed for the duration of one gather call).
-const [getHeaderBuf] = (() => {
-  const tls = new Array<[Uint8Array, DataView]>();
-  const MAX_CACHED = 256;
-  let tlsIdx = 0;
-
-  function acquire(): [Uint8Array, DataView] {
-    const cached = tls[tlsIdx];
-    tlsIdx = (tlsIdx + 1) % MAX_CACHED;
-    if (cached) return cached;
-
-    const buf = new Uint8Array(HEADER_BUF_SIZE);
-    const view = new DataView(buf.buffer);
-    const pair: [Uint8Array, DataView] = [buf, view];
-    tls.push(pair);
-    return pair;
-  }
-
-  return [acquire];
-})();
+// Shared per-header size guards (single source of truth in scratch.ts).
+// Re-exported for back-compat with imports that referenced them here.
+export {
+  MAX_COOKIE_HEADER_BYTES,
+  MAX_SMALL_HEADER_BYTES,
+  MAX_XFF_HEADER_BYTES,
+} from "./scratch";
 
 /**
  * Gather the request headers selected by `plan` as a `[name, value][]` array.

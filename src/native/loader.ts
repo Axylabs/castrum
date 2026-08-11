@@ -8,15 +8,32 @@ import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
+import { resolveEnvVar } from "../shared/env";
 import type { NativeAddon } from "./types";
 
 const require = createRequire(import.meta.url);
 
-function resolveAddonPath(): string {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const platform = process.platform;
-  const arch = process.arch;
-
+/**
+ * Resolve the addon path given EXPLICIT inputs (pure — unit-testable).
+ *
+ * `resolveAddonPath()` is a thin wrapper that reads `process.env` and the
+ * module location; this function contains all the resolution logic so tests
+ * can exercise env-override / multi-root / missing-addon behavior without
+ * mutating the process-global cache.
+ *
+ * @param envOverride an explicit `CASTRUM_NATIVE_LIBRARY_PATH`-style path, or
+ *   `undefined` for none (the real call passes the env-var value)
+ * @param baseDir the directory of the current module (`dist/` or `src/native`)
+ * @param platform `process.platform`
+ * @param arch `process.arch`
+ * @returns the first existing candidate path (throws if none exists)
+ */
+export function resolveAddonPathFrom(
+  envOverride: string | undefined,
+  baseDir: string,
+  platform: string,
+  arch: string,
+): string {
   // napi-rs artifact naming: castrum.<platform>-<arch>[-<libc>].node
   // e.g. linux-x64-gnu, linux-x64-musl, win32-x64-msvc, darwin-arm64.
   const libcVariants =
@@ -35,11 +52,6 @@ function resolveAddonPath(): string {
 
   // Explicit override (napi-rs convention + castrum/legacy aliases). May be a
   // direct file path or a directory that contains the .node artifact.
-  const envOverride =
-    process.env.CASTRUM_NATIVE_LIBRARY_PATH ??
-    process.env.NAPI_RS_NATIVE_LIBRARY_PATH ??
-    process.env.RUST_BENCH_NATIVE_LIBRARY_PATH;
-
   if (envOverride) {
     // A DIRECT file override must resolve to a FILE (a .node/loadable path).
     // If the override is a DIRECTORY, only the joined `dir/<name>.node`
@@ -64,9 +76,9 @@ function resolveAddonPath(): string {
   //   - source layout (Bun, raw TS): <pkg>/src/native → <pkg> via ".."/"../.."
   //   - bundled layout (Node, dist/): <pkg>/dist → <pkg> via ".."
   const roots = [
-    __dirname, // <pkg>/dist (bundled) or <pkg>/src/native
-    join(__dirname, ".."), // <pkg> when bundled into <pkg>/dist
-    join(__dirname, "..", ".."), // <pkg> when running from <pkg>/src/native
+    baseDir, // <pkg>/dist (bundled) or <pkg>/src/native
+    join(baseDir, ".."), // <pkg> when bundled into <pkg>/dist
+    join(baseDir, "..", ".."), // <pkg> when running from <pkg>/src/native
   ];
 
   for (const root of roots) {
@@ -75,8 +87,12 @@ function resolveAddonPath(): string {
     }
   }
 
-  // Local dev fallback: <pkg>/target/release.
-  candidates.push(join(__dirname, "..", "..", "target", "release"));
+  // Local dev fallback: <pkg>/target/release/<name>.node (cargo-built artifact
+  // not yet copied to the package root). Note the artifact NAME must be
+  // appended — a bare directory is not loadable (regression guarded in tests).
+  for (const name of names) {
+    candidates.push(join(baseDir, "..", "..", "target", "release", name));
+  }
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
@@ -88,6 +104,18 @@ function resolveAddonPath(): string {
     `Could not find castrum native addon.\n` +
       `Run: bun run build\n` +
       `Looked in:\n${candidates.map((c) => `  - ${c}`).join("\n")}`,
+  );
+}
+
+function resolveAddonPath(): string {
+  return resolveAddonPathFrom(
+    resolveEnvVar("CASTRUM_NATIVE_LIBRARY_PATH", [
+      "NAPI_RS_NATIVE_LIBRARY_PATH",
+      "RUST_BENCH_NATIVE_LIBRARY_PATH",
+    ]),
+    dirname(fileURLToPath(import.meta.url)),
+    process.platform,
+    process.arch,
   );
 }
 
@@ -124,7 +152,7 @@ export function getAddon(): NativeAddon {
       );
     }
 
-    if (process.env.CASTRUM_DEBUG || process.env.RUST_BENCH_DEBUG) {
+    if (resolveEnvVar("CASTRUM_DEBUG", ["RUST_BENCH_DEBUG"]) !== undefined) {
       console.log("Native addon loaded from:", addonPath);
       console.log("Exported keys:", Object.keys(loaded).sort());
     }

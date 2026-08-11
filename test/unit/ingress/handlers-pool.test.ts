@@ -39,9 +39,11 @@ describe("pooled ingress output buffers (handlers.ts)", () => {
       null,
       (result, ctx) => {
         const t = h.terminalResponse(req("/health"), result, ctx);
+        // bodyJson returns a Uint8Array — a valid Response body (no BodyInit
+        // global under the ESNext lib config).
         return (
           t ??
-          new Response(result.bodyJson(true) as BodyInit, { status: 200 })
+          new Response(result.bodyJson(true) as Uint8Array, { status: 200 })
         );
       },
     );
@@ -142,6 +144,50 @@ describe("pooled ingress output buffers (handlers.ts)", () => {
       }),
     );
     expect(invalid.status).toBe(422);
+  });
+
+  test("jsonWriteHandler with no requireJsonBody/schema validates JSON itself", async () => {
+    // Regression: when neither `requireJsonBody` nor a `schema` is configured
+    // on the ingress, the pipeline skips JSON validation, so `bodyValidJson`/
+    // `schemaValid` stay false. The write handler must still accept valid JSON
+    // (200) and reject malformed/empty bodies (400) using the zero-DOM native
+    // check — a shared `{ read, write }` ingress (the documented pattern) must
+    // not 400 every valid POST.
+    const h = createIngressHandler({ ...baseOptions }); // no requireJsonBody, no schema
+    const write = jsonWriteHandler(h, { maxBodyBytes: 1024 });
+
+    const valid = await write(
+      req("/api/users", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "ada", age: 36 }),
+      }),
+    );
+    expect(valid.status).toBe(200);
+    const parsed = JSON.parse(await valid.text()) as Record<string, unknown>;
+    expect(parsed.ok).toBe(true);
+
+    const malformed = await write(
+      req("/api/users", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{ not json",
+      }),
+    );
+    expect(malformed.status).toBe(400);
+    const errBody = JSON.parse(await malformed.text()) as {
+      error?: { code?: string };
+    };
+    expect(errBody.error?.code).toBe("invalid_json");
+
+    const empty = await write(
+      req("/api/users", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "",
+      }),
+    );
+    expect(empty.status).toBe(400);
   });
 
   test("many sequential pooled requests keep working (no cross-request corruption)", async () => {

@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { nativeAeadDecrypt, nativeAeadEncrypt } from "../../../src/baseline/tasks/aead";
+import { nativeAeadEncrypt } from "../../../src/baseline/tasks/aead";
 import { rust } from "../../../src/rust-ffi";
 import { encoder } from "../../../src/shared/bytes";
 

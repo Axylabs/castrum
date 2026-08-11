@@ -67,7 +67,7 @@ test("createIngressHandler + readHandler return a 200 ok Response", async () => 
 
 // ── 4. node:http server adapter ───────────────────────────────────
 test("createIngressServerNode serves GET/HEAD/POST and stops gracefully", async () => {
-  const { createIngressHandler, readHandler, createIngressServerNode } = castrum;
+  const { createIngressHandler, createIngressServerNode } = castrum;
 
   const ingress = createIngressHandler(
     { emitMetadataJson: true, parseCookies: true, parseQuery: true },

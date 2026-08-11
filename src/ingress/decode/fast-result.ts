@@ -8,7 +8,7 @@
 // pre-baked path has its own decoder (./baked-result.ts) with a different
 // wire format and status normalization — do not unify them (see AGENTS.md).
 
-import { decoder } from "../../shared/bytes";
+import { decoder, viewForArrayBuffer } from "../../shared/bytes";
 import {
   OUT_VERDICT, OUT_ERROR_CODE, OUT_STATUS, OUT_FLAGS,
   OUT_RATE_LIMIT, OUT_RATE_REMAINING, OUT_RATE_RESET, OUT_RETRY_AFTER,
@@ -21,6 +21,7 @@ import {
   ERR_CODE_INTERNAL,
 } from "../constants";
 import { normalizeResponseStatus } from "../status";
+import { sectionLayout } from "./packed-sections";
 
 const EMPTY_BODY = new Uint8Array(0);
 
@@ -60,11 +61,21 @@ export class FastIngressResult {
   private _queryDecoded: string | null = null;
 
   refresh(buf: Uint8Array, body: Uint8Array, requestId: string): void {
+    // Defensive: the native core always writes the full fixed header
+    // (>= OUT_DATA_START bytes) before returning `written`. The cached
+    // whole-buffer DataView below would otherwise decode stale bytes if this
+    // contract is ever violated — treat it as an internal error instead.
+    if (buf.byteLength < OUT_DATA_START) {
+      this.setInternalError(requestId);
+      return;
+    }
     this._buf = buf;
     this.body = body;
     this.requestId = requestId;
 
-    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    // Cached per-ArrayBuffer DataView (respects the subarray byteOffset): no
+    // per-request view alloc on the offset-0 production buffers.
+    const dv = viewForArrayBuffer(buf.buffer, buf.byteOffset);
 
     const rawVerdict = dv.getUint8(OUT_VERDICT);
     const rawErrorCode = dv.getUint8(OUT_ERROR_CODE);
@@ -130,35 +141,32 @@ export class FastIngressResult {
     this.isPreflight = (flags & FLAG_IS_PREFLIGHT) !== 0;
     this.rateLimited = (flags & FLAG_RATE_LIMITED) !== 0;
 
-    const safeCookiesLen =
-      cookiesJsonLen > 0 && OUT_DATA_START + cookiesJsonLen <= buf.byteLength
-        ? cookiesJsonLen
-        : 0;
-
-    const queryStart = OUT_DATA_START + safeCookiesLen;
-
-    const safeQueryLen =
-      queryJsonLen > 0 && queryStart + queryJsonLen <= buf.byteLength
-        ? queryJsonLen
-        : 0;
+    // Bounds-checked section offsets shared with the pre-baked decoder: a
+    // malformed/truncated buffer can never produce slices past its end.
+    const layout = sectionLayout(
+      buf.byteLength,
+      cookiesJsonLen,
+      queryJsonLen,
+      bodyJsonLen,
+    );
 
     // Store slices for lazy decode instead of eagerly decoding strings
-    this._cookiesBuf = safeCookiesLen > 0
-      ? buf.subarray(OUT_DATA_START, OUT_DATA_START + safeCookiesLen)
+    this._cookiesBuf = layout.safeCookiesLen > 0
+      ? buf.subarray(OUT_DATA_START, OUT_DATA_START + layout.safeCookiesLen)
       : null;
     this._cookiesDecoded = null;
 
-    this._queryBuf = safeQueryLen > 0
-      ? buf.subarray(queryStart, queryStart + safeQueryLen)
+    this._queryBuf = layout.safeQueryLen > 0
+      ? buf.subarray(layout.queryStart, layout.queryStart + layout.safeQueryLen)
       : null;
     this._queryDecoded = null;
 
-    this._bodyJsonStart = queryStart + safeQueryLen;
+    this._bodyJsonStart = layout.bodyJsonStart;
 
     this.bodyTruncated =
       (flags & FLAG_BODY_TRUNCATED) !== 0 ||
-      safeCookiesLen !== cookiesJsonLen ||
-      safeQueryLen !== queryJsonLen;
+      layout.safeCookiesLen !== cookiesJsonLen ||
+      layout.safeQueryLen !== queryJsonLen;
   }
 
   invalidate(): void {

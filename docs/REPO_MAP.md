@@ -41,6 +41,7 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 | Typecheck | `bun run typecheck` | `bunx tsc --noEmit` (only `index.ts`, `bench.ts`, `src/`) |
 | CPU benchmark + correctness | `bun run check` | == `bun bench.ts`; writes `bench/results/cpu/` |
 | Proven-surface audit | `bun run check:proven[:fail]` | `:fail` gates CI on regressions |
+| Performance JSDoc | `bun run check:annotate` | rewrites perf JSDoc from CPU report; `--dry-run` previews |
 | HTTP bench (all servers) | `bun run bench:http` | |
 | HTTP smoke (fast sanity) | `bun run bench:http:smoke` | **the wire-format guard** (CI-gated) |
 | Startup bench | `bun run bench:startup` | import + first-call timing |
@@ -60,6 +61,9 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 ```
 index.ts                  Package entry (Bun). Re-exports src/rust-ffi, proven, shared helpers, src/ingress.
 bench.ts                  CPU benchmark entry point → src/bench/run.ts.
+
+examples/                 Runnable sample app (basic-server.ts + README) — see also README Quick Start.
+  basic-server.ts         Minimal pre-baked ingress server + rust.* primitives.
 
 src/
   native/                 The native-addon layer (types + loader).
@@ -85,7 +89,8 @@ src/
     proven.ts             PROVEN_SURFACE registry (PURE DATA — no addon imports).
   ingress/                The HTTP ingress pipeline (two paths — see §4.2).
     fast.ts               PATH 1: createIngressFast (packed-input via handleRequestPacked).
-    handlers.ts           PATH 2: createIngressHandler (full_sync via handleRequestFullSyncInto).
+    handlers.ts           PATH 2: createIngressHandler (JS-packs the frame via IngressInputPacker
+                          + gatherRawHeadersPacked → handleRequestPacked).
     index.ts              Barrel + createIngress / createIngressSync convenience factories.
     shared.ts             JS constants + buildHeaderPlan + assertSyncCallback (shared by both paths).
     constants.ts          Binary-layout constants read from Rust at runtime (SINGLE SOURCE).
@@ -97,6 +102,10 @@ src/
     routes/               read/head/json-write/echo/fallback factories + common.ts
     server.ts             createIngressServer (Bun.serve) + buildRouteHandlers + gracefulShutdown.
     server-node.ts        createIngressServerNode (node:http adapter, same route handlers).
+  integration/            Framework integration (wraps path 2 — createIngressHandler).
+    pipeline.ts           createPipeline (framework-agnostic request stage for Hono/Elysia/Bun.serve).
+    websocket.ts          createWebSocketUpgrade (RFC 6455 101 handshake + subprotocol).
+    streaming.ts          sseResponse (SSE frames via rust.sseEncodeEvent).
   baseline/               Pure-JS baseline implementations (benchmark reference). Internal.
   bench/                  CPU benchmark framework (tasks, measure, report, checks, comparisons).
   data/                   json-rows.ts fixture generator (benchmark-only).
@@ -147,8 +156,9 @@ value** — if you change the layout, change `output.rs` and nothing else.
    `handleRequestPacked`. Responses: `{"error":{code,status,message,requestId}}`
    with `x-ratelimit-*` headers.
 2. **`src/ingress/handlers.ts`** — `createIngressHandler(options, runtime)`.
-   Headers pass as `[name,value][]`; Rust packs internally via
-   `handleRequestFullSyncInto` into a **pooled** output buffer. Responses:
+   The request frame is packed in JS (`IngressInputPacker` +
+   `gatherRawHeadersPacked`) and driven through the SAME native core as path 1
+   (`handleRequestPacked`), writing into a **pooled** output buffer. Responses:
    `{"ok":true,...,"requestId":...}` (success) / `{"ok":false,"error":{code,
    message}}` (errors) with `ratelimit-*` headers.
 
@@ -172,17 +182,21 @@ this reason. **Shared between both paths**: `generateRequestId`
   Everything else is lazy.
 
 ### 4.4 The `proven` performance surface
-`src/shared/proven.ts` (`PROVEN_SURFACE`) is the single source of truth for
-which `rust.*` functions are exported via `proven` (status === "proven"). It is
-**pure data** (no addon imports) so `scripts/check-proven.ts` can audit it
-without dlopening. `src/rust-ffi/proven.ts` derives the `proven` client from
-the registry. `bun run check:proven:fail` (CI) audits it against the CPU
-benchmark report on a **release** build.
+`src/shared/proven.ts` (`PROVEN_SURFACE`) is the single source of truth for the
+per-function performance classifications. It is **pure data** (no addon
+imports) so `scripts/check-proven.ts` can audit it without dlopening.
+`src/rust-ffi/proven.ts` exposes the FULL `rust.*` surface (nothing is
+filtered); each function's JSDoc carries its measured performance vs the JS
+baseline, written by `scripts/annotate-performance.ts` (`bun run check:annotate`)
+and marked `@deprecated` when slower. `bun run check:proven:fail` (CI) audits
+the registry against the CPU benchmark report on a **release** build.
 
 ### 4.5 Pooled output buffers (path 2)
 `createIngressHandler` owns a `BufferPool` (`src/shared/buffer-pool.ts`) sized
-by `runtime.outputBufferSize`. `run()` writes via `handleRequestFullSyncInto`
-and passes the exact written subarray to `BakedIngressResult.refresh`. In copy
+by `runtime.outputBufferSize`. `run()` packs the frame in JS (`IngressInputPacker`
++ `gatherRawHeadersPacked`) and writes via `handleRequestPacked`
+into the pooled buffer, passing the exact written subarray to
+`BakedIngressResult.refresh`. In copy
 mode the buffer is released at the end of `run()`; in zero-copy mode
 `ingress.zeroCopyResponse()` serves a `pooledBodyResponse`
 (`src/shared/response.ts`) that keeps the buffer in flight until the body is

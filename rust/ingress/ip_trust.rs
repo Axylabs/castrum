@@ -1,6 +1,5 @@
 use crate::util::trim_ascii_whitespace;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use napi::{Error, Result, Status};
 use std::net::IpAddr;
 use xxhash_rust::xxh3::Xxh3;
 
@@ -12,7 +11,12 @@ pub enum ProxyTrustMode {
 }
 
 impl ProxyTrustMode {
-    pub fn from_config(enabled: bool, networks: Option<Vec<String>>) -> Result<Self> {
+    /// Build the trust mode from user config. Pure core: errors are `String`
+    /// messages; the napi boundary (`mod.rs`) maps them to JS errors.
+    pub fn from_config(
+        enabled: bool,
+        networks: Option<Vec<String>>,
+    ) -> std::result::Result<Self, String> {
         if !enabled {
             return Ok(Self::None);
         }
@@ -40,12 +44,9 @@ impl ProxyTrustMode {
             if let Ok(ip) = raw.parse::<IpAddr>() {
                 out.push(ip_to_net(ip)?);
             } else {
-                let net: IpNet = raw.parse().map_err(|_| {
-                    Error::new(
-                        Status::InvalidArg,
-                        format!("invalid trusted proxy network: {raw}"),
-                    )
-                })?;
+                let net: IpNet = raw
+                    .parse()
+                    .map_err(|_| format!("invalid trusted proxy network: {raw}"))?;
                 out.push(net);
             }
         }
@@ -106,17 +107,17 @@ impl ResolvedIp<'_> {
     }
 }
 
-fn ip_to_net(ip: IpAddr) -> Result<IpNet> {
+fn ip_to_net(ip: IpAddr) -> std::result::Result<IpNet, String> {
     match ip {
         // Prefix 32 (v4) / 128 (v6) is always valid, but return a proper error
         // instead of panicking so a failed conversion surfaces as a JS error
         // rather than unwinding through the constructor.
         IpAddr::V4(v4) => Ipv4Net::new(v4, 32)
             .map(IpNet::V4)
-            .map_err(|_| Error::from_reason("invalid IPv4 /32 trusted network")),
+            .map_err(|_| "invalid IPv4 /32 trusted network".to_string()),
         IpAddr::V6(v6) => Ipv6Net::new(v6, 128)
             .map(IpNet::V6)
-            .map_err(|_| Error::from_reason("invalid IPv6 /128 trusted network")),
+            .map_err(|_| "invalid IPv6 /128 trusted network".to_string()),
     }
 }
 
@@ -156,11 +157,11 @@ pub fn resolve_client_ip<'a>(
 
             match parse_ip_bytes(part) {
                 Some(ip) => {
-                    let trusted = mode.is_trusted(ip);
-                    last_valid = Some(ip.into());
-
-                    if !trusted {
-                        return (last_valid.take().unwrap(), peer_trusted);
+                    if mode.is_trusted(ip) {
+                        last_valid = Some(ip.into());
+                    } else {
+                        // First hop past the trusted edge: use it directly.
+                        return (ip.into(), peer_trusted);
                     }
                 }
                 None => break,

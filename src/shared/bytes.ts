@@ -13,6 +13,42 @@ export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
 
 /**
+ * Cache of `DataView`s keyed by their backing buffer + creation offset.
+ */
+const dataViewCache = new WeakMap<
+  ArrayBufferLike,
+  { offset: number; view: DataView }
+>();
+
+/**
+ * Returns a `DataView` over `buffer` starting at `byteOffset`, creating and
+ * caching it once per (backing buffer, byteOffset) pair.
+ *
+ * Hot ingress paths decode the native packed output through a `DataView` on
+ * every request. The pooled/fixed output buffers are long-lived `Uint8Array`s
+ * over stable `ArrayBuffer`s at `byteOffset` 0, so a single view per buffer is
+ * reused across requests — eliminating one allocation per request. A
+ * nonzero-offset subarray (e.g. a written-prefix view over a shared backing
+ * buffer) gets its own view so reads stay aligned to the caller's start.
+ *
+ * @param buffer - The backing buffer to create (or reuse) a view for.
+ * @param byteOffset - The start of the view within `buffer`. Default 0.
+ * @returns A cached `DataView` over `buffer` starting at `byteOffset`.
+ */
+export function viewForArrayBuffer(
+  buffer: ArrayBufferLike,
+  byteOffset = 0,
+): DataView {
+  const cached = dataViewCache.get(buffer);
+  if (cached !== undefined && cached.offset === byteOffset) {
+    return cached.view;
+  }
+  const view = new DataView(buffer, byteOffset);
+  dataViewCache.set(buffer, { offset: byteOffset, view });
+  return view;
+}
+
+/**
  * Creates an independent copy of a Uint8Array.
  *
  * This ensures the returned buffer has its own backing store, decoupled

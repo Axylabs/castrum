@@ -48,7 +48,7 @@ export function nativeJwtVerify(
   if (parts.length !== 3) return false;
 
   const [headerB64, payloadB64, sigB64] = parts;
-  const signingInput = `${headerB64!}.${payloadB64!}`;
+  const signingInput = `${headerB64 ?? ""}.${payloadB64 ?? ""}`;
 
   const expected = createHmac("sha256", Buffer.from(secret))
     .update(signingInput)
@@ -56,7 +56,7 @@ export function nativeJwtVerify(
 
   let provided: Buffer;
   try {
-    provided = Buffer.from(b64urlDecode(sigB64!));
+    provided = Buffer.from(b64urlDecode(sigB64 ?? ""));
   } catch {
     return false;
   }
@@ -66,7 +66,7 @@ export function nativeJwtVerify(
 
   // `exp` claim check.
   try {
-    const payload = JSON.parse(decoder.decode(b64urlDecode(payloadB64!)));
+    const payload = JSON.parse(decoder.decode(b64urlDecode(payloadB64 ?? "")));
     if (
       payload !== null &&
       typeof payload === "object" &&

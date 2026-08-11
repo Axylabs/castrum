@@ -229,6 +229,8 @@ export interface NativeAddon {
 
   crc32(input: Uint8Array): number;
   fnv1a64(input: Uint8Array): bigint;
+  /** Packed FNV-1a 64 batch (i64 per item). */
+  fnv1A64BatchPacked(input: Uint8Array): Uint8Array;
 
   hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array;
   hmacSha256Verify(key: Uint8Array, data: Uint8Array, sig: Uint8Array): boolean;
@@ -242,11 +244,15 @@ export interface NativeAddon {
   jsonPatchBatchPacked(docs: Uint8Array, patches: Uint8Array): Uint8Array;
 
   mimeFromExtension(ext: Uint8Array): Uint8Array;
+  mimeFromExtensionBatchPacked(input: Uint8Array): Uint8Array;
   randomToken(byteLen: number): Uint8Array;
 
   urlEncode(input: Uint8Array): Uint8Array;
   urlDecode(input: Uint8Array): Uint8Array;
   urlDecodeBytes(input: Uint8Array): Uint8Array;
+  urlEncodeBatchPacked(input: Uint8Array): Uint8Array;
+  urlDecodeBatchPacked(input: Uint8Array): Uint8Array;
+  urlDecodeBytesBatchPacked(input: Uint8Array): Uint8Array;
   /** Reusable-output percent-encode; returns bytes written. Throws if `output` is too small. */
   urlEncodeInto(input: Uint8Array, output: Uint8Array): number;
   /** Reusable-output percent-decode; returns bytes written. Throws if `output` is too small. */
@@ -258,6 +264,7 @@ export interface NativeAddon {
   validateIpv6(input: Uint8Array): boolean;
 
   wsAcceptKey(key: Uint8Array): Uint8Array;
+  wsAcceptKeyBatchPacked(input: Uint8Array): Uint8Array;
 
   // ── Backend-framework features ──
   jwtSign(
@@ -278,6 +285,8 @@ export interface NativeAddon {
     options?: PasswordHashOptions | null,
   ): Uint8Array;
   passwordVerify(password: Uint8Array, phc: Uint8Array): boolean;
+  /** Packed password-verify batch (two packed lists, zipped) → bitset. */
+  passwordVerifyBatchPacked(passwords: Uint8Array, phcs: Uint8Array): Uint8Array;
   passwordHashBatchPacked(
     data: Uint8Array,
     salt: Uint8Array,
@@ -320,6 +329,10 @@ export interface NativeAddon {
 
   multipartParse(body: Uint8Array, boundary: Uint8Array): MultipartPart[];
   multipartParseBatchPacked(data: Uint8Array, boundary: Uint8Array): Uint8Array;
+  /** Zero-copy scalar sibling of `multipartParse` — returns the packed parts
+   * layout (`[u32 count]{[u32 len][name][has_filename][filename][ct][data]}`)
+   * instead of JS objects, skipping the per-part String alloc + data copy. */
+  multipartParsePacked(body: Uint8Array, boundary: Uint8Array): Uint8Array;
   jwtSignBatchPacked(
     data: Uint8Array,
     secret: Uint8Array,
@@ -389,6 +402,8 @@ export interface NativeAddon {
   UrlBuilder: new (base: Uint8Array) => UrlBuilderInstance;
   parseAcceptEncoding(input: Uint8Array): EncodingPrefResult[];
   urlResolve(base: Uint8Array, reference: Uint8Array): Uint8Array;
+  /** Packed URL-resolve batch (two packed lists, zipped) → packed results. */
+  urlResolveBatchPacked(bases: Uint8Array, references: Uint8Array): Uint8Array;
   urlEncodeQuery(params: Record<string, string>): Uint8Array;
   csrfToken(secret: Uint8Array): Uint8Array;
   csrfVerify(token: Uint8Array, secret: Uint8Array): boolean;
@@ -397,6 +412,14 @@ export interface NativeAddon {
   verifyCookie(signed: Uint8Array, secret: Uint8Array): Uint8Array | null;
   signCookieBatchPacked(data: Uint8Array, secret: Uint8Array): Uint8Array;
   verifyCookieBatchPacked(data: Uint8Array, secret: Uint8Array): Uint8Array;
+  /** Batch HMAC-SHA256 sign (packed in → hex-signature byte results). */
+  hmacSha256BatchPacked(input: Uint8Array, key: Uint8Array): Uint8Array;
+  /** Batch HMAC-SHA256 verify (two packed lists: data + hex sigs, zipped) → bitset. */
+  hmacSha256VerifyBatchPacked(
+    input: Uint8Array,
+    sigs: Uint8Array,
+    key: Uint8Array,
+  ): Uint8Array;
   base64Encode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
   base64Decode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array;
   /** Reusable-output base64 encode; returns bytes written. Throws if `output` is too small. */
@@ -415,6 +438,8 @@ export interface NativeAddon {
   etag(input: Uint8Array, weak?: boolean): Uint8Array;
   /** Reusable-output etag; returns bytes written (10 strong / 12 weak). Throws if `output` is too small. */
   etagInto(input: Uint8Array, output: Uint8Array, weak?: boolean): number;
+  /** Packed ETag batch (10 strong / 12 weak bytes per item). */
+  etagBatchPacked(input: Uint8Array, weak?: boolean | null): Uint8Array;
   httpDate(secs?: number): Uint8Array;
   parseHttpDate(input: Uint8Array): bigint | null;
 
@@ -460,6 +485,20 @@ export interface NativeAddon {
   formParsePacked(input: Uint8Array): Uint8Array;
 
   crc32BatchPacked(input: Uint8Array): Uint8Array;
+
+  // ── Reusable-output (`_into`) packed batch variants ──
+  // Write the packed batch result into a caller-provided `output` buffer and
+  // return the number of bytes written (0 on empty). Wire format is identical
+  // to the allocating `*BatchPacked` variants. Throws when `output` is too
+  // small (the JS loader sizes these from a pool before calling).
+  jsonValidBatchPackedInto(input: Uint8Array, output: Uint8Array): number;
+  validateEmailBatchPackedInto(input: Uint8Array, output: Uint8Array): number;
+  validateUuidBatchPackedInto(input: Uint8Array, output: Uint8Array): number;
+  validateIpv4BatchPackedInto(input: Uint8Array, output: Uint8Array): number;
+  validateIpv6BatchPackedInto(input: Uint8Array, output: Uint8Array): number;
+  jsonSumBatchPackedInto(input: Uint8Array, output: Uint8Array): number;
+  fnv1A64BatchPackedInto(input: Uint8Array, output: Uint8Array): number;
+  crc32BatchPackedInto(input: Uint8Array, output: Uint8Array): number;
 
   // ── Batch metadata / counts ──
   jsonValidBatchCountPacked(input: Uint8Array): number;

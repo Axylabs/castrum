@@ -78,7 +78,7 @@ describe("rust.etagInto (reusable output)", () => {
     const written = rust.etagInto(DATA, out);
     const expected = rust.etag(DATA);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 
   test("weak variant matches rust.etag(data, true)", () => {
@@ -86,7 +86,7 @@ describe("rust.etagInto (reusable output)", () => {
     const written = rust.etagInto(DATA, out, true);
     const expected = rust.etag(DATA, true);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 
   test("too-small output throws", () => {

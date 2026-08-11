@@ -355,6 +355,47 @@ test("slowloris body read hits the route bodyTimeoutMs → 408", async () => {
   }
 });
 
+// ── 4b. async createIngress slowloris → 408 (fast-path wire format) ──
+test("createIngress async body-read timeout maps to 408, not 500", async () => {
+  // Node is lazy about constructed-stream bodies (unlike Bun), so a stream
+  // that never finishes is the deterministic way to hit the deadline race.
+  const neverEnding = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"par'));
+      // never close — the reader's read() never resolves
+    },
+  });
+  const req = new Request("http://localhost/api", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "content-length": "50",
+    },
+    body: neverEnding,
+    // @ts-expect-error Node requires `duplex` for a stream body (undici).
+    duplex: "half",
+  });
+
+  const ingress = castrum.createIngress({
+    requireJsonBody: true,
+    maxBodyBytes: 128,
+    bodyTimeoutMs: 100,
+  });
+
+  const ctx = await ingress(req, "127.0.0.1");
+
+  // Previously the timeout was swallowed into a 500; it must now be a 408.
+  assert.equal(ctx.status, 408);
+  assert.equal(ctx.ok, false);
+  assert.ok(ctx.response, "terminal timeout context must carry a Response");
+  assert.equal(ctx.response.status, 408);
+
+  const body = JSON.parse(await ctx.response.text());
+  assert.equal(body.error.code, "request_timeout");
+  assert.equal(body.error.status, 408);
+  assert.match(body.error.message, /timed out/i);
+});
+
 test("adapter serves HTTP/1.0 requests and closes the connection", async () => {
   const { srv, port } = startServer({});
   const p = await port;

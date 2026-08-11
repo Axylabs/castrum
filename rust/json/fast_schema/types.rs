@@ -5,7 +5,7 @@
 // the sibling compile/validate modules can build and read them; the only
 // public surface is `FastNode` (re-exported from mod.rs).
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 pub(crate) const T_NULL: u8 = 1 << 0;
@@ -63,9 +63,9 @@ pub(crate) enum Additional {
 }
 
 pub(crate) struct FastObject {
-    pub(crate) props: HashMap<Box<[u8]>, Arc<FastNode>>,
+    pub(crate) props: FxHashMap<Box<[u8]>, Arc<FastNode>>,
     /// Maps required key -> bit index (0..=63); compile fails beyond 64.
-    pub(crate) required: HashMap<Box<[u8]>, u32>,
+    pub(crate) required: FxHashMap<Box<[u8]>, u32>,
     pub(crate) required_count: usize,
     pub(crate) additional: Additional,
     pub(crate) min_props: Option<usize>,

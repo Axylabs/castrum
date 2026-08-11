@@ -465,7 +465,8 @@ fn headers_parse_acrm_only_for_options() {
     // OPTIONS: they should be captured.
     let h2 = HeaderRefs::parse(&packed, true, 100).unwrap();
     assert!(h2.has_acrm());
-    assert!(h2.has_acrh());
+    // ACRH value is captured on OPTIONS (no dedicated flag/method).
+    assert_eq!(h2.acrh(), Some(&b"Content-Type"[..]));
 }
 
 #[test]
@@ -1098,4 +1099,181 @@ fn header_parser_do_not_panic_on_adversarial_packed_headers() {
         let _ = HeaderRefs::parse(&data, true, 200);
         let _ = HeaderRefs::parse(&data, false, 200);
     }
+}
+
+// ── New packed batch entry points (fnv1a64, etag, url, mime, ws, passwordVerify, urlResolve) ──
+
+use napi::bindgen_prelude::Uint8Array;
+
+/// Build the `[u32 count]{[u32 len][bytes]}` packed batch input for tests.
+fn pack_slices(items: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    for it in items {
+        out.extend_from_slice(&(it.len() as u32).to_le_bytes());
+        out.extend_from_slice(it);
+    }
+    out
+}
+
+fn read_u32(buf: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
+}
+
+fn read_i64(buf: &[u8], off: usize) -> i64 {
+    i64::from_le_bytes([
+        buf[off],
+        buf[off + 1],
+        buf[off + 2],
+        buf[off + 3],
+        buf[off + 4],
+        buf[off + 5],
+        buf[off + 6],
+        buf[off + 7],
+    ])
+}
+
+#[test]
+fn fnv1a64_batch_matches_scalar() {
+    let out = crate::util::batch::fnv1a64_batch_packed(Uint8Array::new(pack_slices(&[
+        b"foobar",
+        b"",
+        b"castrum",
+    ])))
+    .unwrap();
+    let out = out.as_ref();
+    assert_eq!(read_u32(out, 0), 3);
+    assert_eq!(read_i64(out, 4), 0x8594_4171_f739_67e8u64 as i64);
+    assert_eq!(read_i64(out, 12), 0xcbf2_9ce4_8422_2325u64 as i64);
+    assert_eq!(
+        read_i64(out, 20),
+        crate::crypto::hashing::fnv1a64_bytes(b"castrum") as i64
+    );
+}
+
+#[test]
+fn etag_batch_matches_scalar() {
+    let out = crate::http::etag::etag_batch_packed(
+        Uint8Array::new(pack_slices(&[b"123456789", b"hello"])),
+        None,
+    )
+    .unwrap();
+    let out = out.as_ref();
+    assert_eq!(read_u32(out, 0), 2);
+    let len0 = read_u32(out, 4) as usize;
+    assert_eq!(&out[8..8 + len0], b"\"cbf43926\"");
+    // Weak variant is 12 bytes with the W/ prefix.
+    let weak = crate::http::etag::etag_batch_packed(
+        Uint8Array::new(pack_slices(&[b"123456789"])),
+        Some(true),
+    )
+    .unwrap();
+    let weak = weak.as_ref();
+    let wlen = read_u32(weak, 4) as usize;
+    assert_eq!(wlen, 12);
+    assert_eq!(&weak[8..8 + wlen], b"W/\"cbf43926\"");
+}
+
+#[test]
+fn url_encode_batch_matches_scalar() {
+    let out = crate::http::url_codec::url_encode_batch_packed(Uint8Array::new(pack_slices(&[
+        b"a b&c",
+        b"plain",
+    ])))
+    .unwrap();
+    let out = out.as_ref();
+    assert_eq!(read_u32(out, 0), 2);
+    let len0 = read_u32(out, 4) as usize;
+    assert_eq!(&out[8..8 + len0], b"a%20b%26c");
+}
+
+#[test]
+fn url_decode_batch_matches_scalar() {
+    let out = crate::http::url_codec::url_decode_batch_packed(Uint8Array::new(pack_slices(&[
+        b"a%20b",
+        b"plain",
+    ])))
+    .unwrap();
+    let out = out.as_ref();
+    assert_eq!(read_u32(out, 0), 2);
+    let len0 = read_u32(out, 4) as usize;
+    assert_eq!(&out[8..8 + len0], b"a b");
+
+    // Strict bytes decode (no UTF-8 validation): %C3%A9 → the two raw bytes.
+    let out = crate::http::url_codec::url_decode_bytes_batch_packed(Uint8Array::new(pack_slices(
+        &[b"%C3%A9"],
+    )))
+    .unwrap();
+    let out = out.as_ref();
+    let len0 = read_u32(out, 4) as usize;
+    assert_eq!(&out[8..8 + len0], &[0xc3, 0xa9]);
+}
+
+#[test]
+fn mime_from_extension_batch_matches_scalar() {
+    let out = crate::http::mime_lookup::mime_from_extension_batch_packed(Uint8Array::new(
+        pack_slices(&[b".js", b"PNG", b"nope"]),
+    ))
+    .unwrap();
+    let out = out.as_ref();
+    assert_eq!(read_u32(out, 0), 3);
+    let mut off = 4usize;
+    let expected = [
+        b"text/javascript".as_slice(),
+        b"image/png".as_slice(),
+        b"application/octet-stream".as_slice(),
+    ];
+    for exp in expected {
+        let len = read_u32(out, off) as usize;
+        off += 4;
+        assert_eq!(&out[off..off + len], exp);
+        off += len;
+    }
+}
+
+#[test]
+fn ws_accept_key_batch_matches_rfc6455() {
+    // Expected vector mirrors the repo's existing scalar test in
+    // rust/payload/websocket.rs (rfc6455_accept_key_vector).
+    let out = crate::payload::websocket::ws_accept_key_batch_packed(Uint8Array::new(
+        pack_slices(&[b"dGhlIHNhbXBsZSBub25jZQ=="]),
+    ))
+    .unwrap();
+    let out = out.as_ref();
+    let len0 = read_u32(out, 4) as usize;
+    assert_eq!(&out[8..8 + len0], b"mjqt7n322xkUQqCX5NPZbkSHHuk=");
+}
+
+#[test]
+fn password_verify_batch_matches_scalar() {
+    use crate::crypto::argon2::hash_password;
+    // Low-cost argon2id so the test stays fast; salt must be >= 8 bytes.
+    let phc = hash_password(b"hunter2", b"0123456789abcdef", 8, 1, 1, 16).unwrap();
+    let good = crate::crypto::argon2::password_verify_batch_packed(
+        Uint8Array::new(pack_slices(&[b"hunter2", b"wrong"])),
+        Uint8Array::new(pack_slices(&[phc.as_bytes(), phc.as_bytes()])),
+    )
+    .unwrap();
+    let good = good.as_ref();
+    // bitset: bit0 = true (correct password), bit1 = false.
+    assert_eq!(read_u32(good, 0), 2);
+    assert_eq!(good[4] & 0b01, 0b01);
+    assert_eq!(good[4] & 0b10, 0);
+}
+
+#[test]
+fn url_resolve_batch_matches_rfc3986() {
+    let base = b"http://a/b/c/d;p?q";
+    let out = crate::http::url_join::url_resolve_batch_packed(
+        Uint8Array::new(pack_slices(&[base.as_slice(), base.as_slice()])),
+        Uint8Array::new(pack_slices(&[b"g", b"../g"])),
+    )
+    .unwrap();
+    let out = out.as_ref();
+    assert_eq!(read_u32(out, 0), 2);
+    let len0 = read_u32(out, 4) as usize;
+    assert_eq!(&out[8..8 + len0], b"http://a/b/c/g");
+    let off = 8 + len0;
+    let len1 = read_u32(out, off) as usize;
+    assert_eq!(&out[off + 4..off + 4 + len1], b"http://a/b/g");
 }

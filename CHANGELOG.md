@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Public `loader` + `integration` surfaces**: `createLoader`/`loader` (HFC)
+  and `createPipeline`/`createWebSocketUpgrade`/`sseResponse` are now exported
+  from the package entry (`index.ts`) — previously tested + documented but
+  unreachable by consumers. The broken `docs/INGRESS.md` import example is now
+  valid.
+- **Test typechecking**: `tsconfig.test.json` + `bun run typecheck:test`
+  typechecks `test/` and `bench/` (unused locals/params on). Wired into
+  `test:all` and CI. Fixed ~20 pre-existing test type errors this surfaced.
+- **CI**: Node 24 added to the `node` matrix (locally caught a real `node
+  --test` directory-argument regression); a `typecheck:test` step runs in the
+  `typescript` job.
 - **New docs**: `docs/REPO_MAP.md` (the "what is where and why" navigation
   map), `docs/GETTING_STARTED.md` (intern-friendly tutorial), and a MIT
   `LICENSE`.
@@ -29,6 +40,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Silent no-op security options** (`fast.ts`): `createIngressFast` now throws
+  a clear `TypeError` when `security`/`enableSecurityHeaders` are set — the raw
+  fast path returns a decoded result (not a Response) and previously accepted
+  and ignored them. `createIngress` still applies them (strips them before
+  forwarding to the fast handler).
+- **Header-size guard divergence**: `packHeaders` (fast path) now applies the
+  same per-header size guards as `gatherRawHeadersPacked` (baked path), so an
+  oversized cookie/origin/xff is dropped consistently instead of pushing the
+  packed block past the native `max_headers_bytes` and 500-ing. Guards moved to
+  `src/ingress/packing/scratch.ts` (single source of truth).
+- **Reconstructed incomplete `src/rust-ffi/scalar/` split**: `hashing.ts`,
+  `json.ts`, `http.ts`, `crypto.ts` were empty files (the split landed but the
+  builders were never populated) — the package would not typecheck or load.
+  Rebuilt from the original `scalar.ts` and removed the stale `rustBatch` alias
+  re-export (removed upstream in 0.8.0).
+- **Working-tree `rust/lib.rs` regression**: the file had reverted to the old
+  flat module layout (E0583 — 71 compile errors against the domain-folder
+  tree); restored to the committed domain-folder declaration hub.
+- **`buildRouteHandlers` over-broad param type**: it required `port`, which it
+  never uses — narrowed to `BuildRouteHandlersOptions` (Pick of what it
+  consumes), fixing 6 latent test type errors.
 - **Ingress proxy-header plan divergence** (`handlers.ts`): the pre-baked path
   only forwarded X-Forwarded-For / X-Real-IP when rate limiting was ALSO
   enabled and ignored `trustedProxies`. Both paths now share a single
@@ -43,6 +75,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dead code / dead flows removed**: `HeaderRefs::has_cookie`/`has_acrh`,
+  provably-dead `unreachable!` arms in `json_ser.rs`, an `Option` dance in
+  `ip_trust.rs`, the empty `src/ffi/` dir, and the unregistered loader bench
+  tasks (now wired into `createComplexTasks` + the async loader benchmarks run
+  in `bun run check`).
+- **Named constant for the ingress body default**: `1_048_576` in `mod.rs` is
+  now `options::DEFAULT_MAX_BODY_BYTES` (mirrors `src/ingress/shared.ts`).
+- **Centralized env-var alias resolution**: `src/shared/env.ts`
+  (`resolveEnvVar`) + a Rust `read_env` helper in `threadpool.rs` replace five
+  duplicated/asymmetric `CASTRUM_*` + legacy alias chains.
+- **napi types pushed out of pure-core Rust**: `headers.rs`, `packed.rs`,
+  `ip_trust.rs`, `json_ser.rs` and `terminal.rs` now use `std::result::Result`
+  / plain return values (mapped at the napi boundary). Behavior unchanged
+  (callers only match Ok/Err).
+- **DRY packed-batch routing**: the copy-pasted `PackedIter::new →
+  count_and_total_bytes → should_parallelize → unpack` prelude in
+  `util/batch.rs` is now one `packed_routing` helper used by all 7 batch
+  functions.
+- **Typed `Bun.serve` config**: `createIngressServer` builds a typed
+  `BunServerOptions` instead of a `Record<string, unknown>` + `as any` (narrow
+  bridge to Bun's Serve type only).
 - **Path-2 ingress input marshaling** (`handlers.ts`): the pre-baked path now
   packs the request frame in JS (`IngressInputPacker` + packed headers with the
   same per-header size guards) and drives the identical native core as
@@ -72,6 +125,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by a new byte-parity test).
 - **Clippy-clean**: fixed all pre-existing clippy warnings (was ~29 warnings +
   1 error) across crypto/http/json/ingress/util — zero warnings now.
+
+### Performance
+
+- **Loader bulk path FFI friction cut** (`rust.batch.*`): packed inputs now go
+  through a reusable scratch pool (`withPackScratch`/`withPackScratch2`) and
+  native fns are resolved once and cached (`nativeFn`), eliminating the
+  per-call `packBatch` allocation and the lazy-addon/`withPoolInit` Proxy gets.
+  Public `rust.batch` return shapes unchanged.
+- **Zero-alloc coalesced `load()` flush**: boolean/number/bigint ops
+  (validateEmail/Uuid/Ipv4/Ipv6, jsonValid, jsonSumIds, crc32, fnv1a64) now
+  pack the coalesced group straight into a reusable scratch, write the native
+  result into a reusable output buffer via new `_into` batch variants, and read
+  each element out of it — no intermediate unpack array, no per-call native
+  `Vec`/JS allocation. Wire format and semantics identical to `rust.batch`.
+- **Reusable-output `_into` packed batch variants** (new native surface):
+  `*BatchPackedInto(input, output) -> u32` for the 8 scalar-kind ops above,
+  backed by bounds-checked generic writers (`write_bitset_batch_into`,
+  `write_sum_batch_into`, `write_u32_batch_into` in `util/packed.rs`) that
+  route through `run_packed_into` (input/output aliasing-guarded). Allocating
+  variants kept as compat wrappers.
+- **ETag batch direct-write**: `etag_batch_packed` writes the fixed 10/12-byte
+  ETags straight into the shared output (no per-item `String` allocation).
+- **Loader async benchmark persistence**: the 6 `load()` microbenchmarks now
+  persist to `bench/results/loader/latest.json` (gitignored) so coalescing /
+  cache-hit performance is comparable across runs.
 
 ### Added
 

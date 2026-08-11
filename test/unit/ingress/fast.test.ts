@@ -42,17 +42,10 @@ import {
   FLAG_HAS_COOKIES,
   FLAG_HAS_QUERY,
   FLAG_BODY_VALID_JSON,
-  FLAG_SCHEMA_VALID,
   FLAG_CORS_ALLOWED,
-  FLAG_IS_PREFLIGHT,
   FLAG_RATE_LIMITED,
   FLAG_HTTPS,
   FLAG_TRUSTED_PROXY,
-  FLAG_BODY_TRUNCATED,
-  HV_CORS_SIMPLE,
-  HV_CORS_PREFLIGHT,
-  HV_RATE_ACTIVE,
-  HV_RATE_LIMITED,
   HV_JSON,
   OUT_DATA_START,
   OUT_VERDICT,
@@ -131,17 +124,17 @@ function encoder(text: string): Uint8Array {
 // ── METHOD_KIND ───────────────────────────────────────────────────────
 describe("METHOD_KIND", () => {
   test("maps standard HTTP methods to correct values", () => {
-    expect(METHOD_KIND["GET"]).toBe(0);
-    expect(METHOD_KIND["HEAD"]).toBe(1);
-    expect(METHOD_KIND["POST"]).toBe(2);
-    expect(METHOD_KIND["PUT"]).toBe(3);
-    expect(METHOD_KIND["PATCH"]).toBe(4);
-    expect(METHOD_KIND["DELETE"]).toBe(5);
-    expect(METHOD_KIND["OPTIONS"]).toBe(6);
+    expect(METHOD_KIND.GET).toBe(0);
+    expect(METHOD_KIND.HEAD).toBe(1);
+    expect(METHOD_KIND.POST).toBe(2);
+    expect(METHOD_KIND.PUT).toBe(3);
+    expect(METHOD_KIND.PATCH).toBe(4);
+    expect(METHOD_KIND.DELETE).toBe(5);
+    expect(METHOD_KIND.OPTIONS).toBe(6);
   });
 
   test("unknown method returns undefined", () => {
-    expect(METHOD_KIND["TRACE"]).toBeUndefined();
+    expect(METHOD_KIND.TRACE).toBeUndefined();
   });
 });
 
@@ -564,7 +557,7 @@ describe("buildTerminalResponse", () => {
     }), "rid-001");
 
     expect(response).not.toBeNull();
-    expect(response!.status).toBe(204);
+    expect(response?.status).toBe(204);
   });
 
   test("returns JSON error for terminal error", () => {
@@ -586,8 +579,8 @@ describe("buildTerminalResponse", () => {
     const response = buildTerminalResponse(ctx, r, new Request("http://localhost"), "rid-002");
 
     expect(response).not.toBeNull();
-    expect(response!.status).toBe(413);
-    expect(response!.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(response?.status).toBe(413);
+    expect(response?.headers.get("content-type")).toBe("application/json; charset=utf-8");
   });
 
   test("includes x-request-id header when requestId is provided", () => {
@@ -607,7 +600,7 @@ describe("buildTerminalResponse", () => {
     };
 
     const response = buildTerminalResponse(ctx, r, new Request("http://localhost"), "req-abc");
-    expect(response!.headers.get("x-request-id")).toBe("req-abc");
+    expect(response?.headers.get("x-request-id")).toBe("req-abc");
   });
 });
 
@@ -640,6 +633,17 @@ describe("createIngressFast option validation", () => {
     expect(() =>
       createIngressFast({ parseQuery: true, parseCookies: true }),
     ).not.toThrow();
+  });
+
+  test("rejects security options on the raw fast path (no silent no-op)", () => {
+    // The fast path returns a decoded result, not a Response, so it cannot
+    // apply security headers. These used to be accepted + silently ignored.
+    expect(() => createIngressFast({ security: {} } as any)).toThrow(
+      /not supported on the raw fast path/,
+    );
+    expect(() => createIngressFast({ enableSecurityHeaders: true })).toThrow(
+      /not supported on the raw fast path/,
+    );
   });
 });
 

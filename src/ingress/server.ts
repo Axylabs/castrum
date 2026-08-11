@@ -146,7 +146,15 @@ export function gracefulShutdown(
  * Shared by `createIngressServer` (Bun.serve) and `createIngressServerNode`
  * (node:http) so both runtimes wire the exact same route handlers.
  */
-export function buildRouteHandlers(options: CreateIngressServerOptions): {
+
+/** Options `buildRouteHandlers` actually consumes (a subset of the server
+ *  options — it does not need `port` or the Node-only server fields). */
+export type BuildRouteHandlersOptions = Pick<
+  CreateIngressServerOptions,
+  "routes" | "fallback" | "getIp" | "copyBody"
+>;
+
+export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
   routes: Record<string, Record<string, unknown>>;
   baseOpts: BakedHandlerOptions;
 } {
@@ -197,24 +205,34 @@ export function buildRouteHandlers(options: CreateIngressServerOptions): {
   return { routes: serverRoutes, baseOpts };
 }
 
+/** Typed options forwarded to `Bun.serve`. */
+interface BunServerOptions {
+  hostname: string;
+  port: number;
+  idleTimeout: number;
+  routes: Record<string, Record<string, unknown>>;
+  maxRequestBodySize: number;
+  reusePort?: boolean;
+  fetch?: (req: Request) => Response | Promise<Response>;
+}
+
 /** Build a Bun.serve config from pre-baked route handlers. */
 export function createIngressServer(
   options: CreateIngressServerOptions,
 ): BakedServer {
   const { routes: serverRoutes, baseOpts } = buildRouteHandlers(options);
 
-  const serverOptions: Record<string, unknown> = {
+  const serverOptions: BunServerOptions = {
     hostname: options.hostname ?? "0.0.0.0",
     port: options.port,
     idleTimeout: options.idleTimeout ?? 30,
     routes: serverRoutes,
+    // Socket-level request-size guard. Bun's default is ~128 MiB; we default
+    // to 16 MiB so an oversized request is rejected at the socket without ever
+    // being buffered (route handlers enforce the tighter `maxBodyBytes`).
+    maxRequestBodySize:
+      options.maxRequestBodySize ?? DEFAULT_MAX_REQUEST_BODY_SIZE,
   };
-
-  // Socket-level request-size guard. Bun's default is ~128 MiB; we default to
-  // 16 MiB so an oversized request is rejected at the socket without ever
-  // being buffered (route handlers enforce the tighter `maxBodyBytes`).
-  serverOptions.maxRequestBodySize =
-    options.maxRequestBodySize ?? DEFAULT_MAX_REQUEST_BODY_SIZE;
   if (options.reusePort) {
     serverOptions.reusePort = true;
   }
@@ -222,13 +240,16 @@ export function createIngressServer(
     serverOptions.fetch = fallbackHandler(options.fallback, baseOpts);
   }
 
+  // Narrow bridge to Bun's (version-dependent) Serve type — Bun's Routes /
+  // FetchHandler shapes are complex, so we cast once instead of `as any`.
   let server: ReturnType<typeof Bun.serve>;
+  const init = serverOptions as Parameters<typeof Bun.serve>[0];
   try {
-    server = Bun.serve(serverOptions as any);
+    server = Bun.serve(init);
   } catch (err) {
     if (options.reusePort) {
       delete serverOptions.reusePort;
-      server = Bun.serve(serverOptions as any);
+      server = Bun.serve(serverOptions as Parameters<typeof Bun.serve>[0]);
     } else {
       throw err;
     }

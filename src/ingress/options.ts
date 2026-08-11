@@ -55,6 +55,15 @@ export interface IngressFastHandler {
   ): T;
 }
 
+/**
+ * Options accepted by `createIngressHandler` (path 2).
+ *
+ * Same native option surface as the fast path, minus `onError` — path 2
+ * reports native failures through `BakedIngressRuntime.onError` instead of the
+ * options bag.
+ */
+export type IngressHandlerOptions = Omit<IngressFastOptions, "onError">;
+
 import type { CorsOptions } from "./headers/cors";
 import type { SecurityHeadersOptions } from "./headers/hsts";
 import type { FastIngressResult } from "./decode/fast-result";
@@ -79,15 +88,26 @@ const KNOWN_INGRESS_OPTION_KEYS: ReadonlySet<string> = new Set([
   "outputBufferSize",
   "bodyTimeoutMs",
   "onError",
+  "onRequest",
+  "onResponse",
   "limits",
 ]);
 
-/** Throw if `options` contains a key the ingress pipeline does not know. */
-export function assertKnownIngressOptions(options: IngressFastOptions): void {
+/**
+ * Throw if `options` contains a key the ingress pipeline does not know.
+ *
+ * `label` names the calling factory in the error so a typo is easy to map
+ * back to the call site (both `createIngressFast` and `createIngressHandler`
+ * validate the same option surface).
+ */
+export function assertKnownIngressOptions(
+  options: IngressFastOptions,
+  label = "createIngressFast",
+): void {
   for (const key of Object.keys(options)) {
     if (!KNOWN_INGRESS_OPTION_KEYS.has(key)) {
       throw new TypeError(
-        `createIngressFast: unknown option '${key}'. ` +
+        `${label}: unknown option '${key}'. ` +
           `Known options: ${[...KNOWN_INGRESS_OPTION_KEYS].sort().join(", ")}`,
       );
     }

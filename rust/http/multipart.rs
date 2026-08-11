@@ -14,7 +14,6 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::util::bytes::trim_ascii_whitespace;
-use crate::util::{should_parallelize, total_bytes, unpack};
 
 // ── Pure-Rust core ─────────────────────────────────────────────
 
@@ -305,6 +304,24 @@ pub fn multipart_parse(
         .collect()
 }
 
+/// Parse a multipart/form-data body into the packed parts layout used by the
+/// batch API (`[u32 count]{[u32 name_len][name][has_filename][filename][ct][data]}`)
+/// — a zero-copy scalar sibling of the object-returning `multipart_parse`.
+/// Skips the per-part `String` allocations + data copy + N-API objects of the
+/// object path (the dominant cost of multipart parsing on the JS side).
+#[napi]
+pub fn multipart_parse_packed(
+    body: Uint8Array,
+    boundary: Uint8Array,
+    limits: Option<MultipartLimitsInput>,
+) -> Result<Buffer> {
+    let limits = limits.map(|l| l.resolve()).unwrap_or_default();
+    let parts = parse_multipart_limited(body.as_ref(), boundary.as_ref(), &limits);
+    let mut out = Vec::with_capacity(4 + parts.len() * 64);
+    parts_to_packed(&parts, &mut out);
+    Ok(Buffer::from(out))
+}
+
 /// Serialize parsed parts to the packed layout used by the batch API:
 /// `[u32 count] { [u32 name_len][name][u32 has_filename][u32 filename_len][filename][u32 ct_len][ct][u32 data_len][data] }`.
 pub fn parts_to_packed(parts: &[Part<'_>], out: &mut Vec<u8>) {
@@ -343,35 +360,12 @@ pub fn parts_to_packed(parts: &[Part<'_>], out: &mut Vec<u8>) {
 /// packed `[u32 count]{[u32 len][parts_packed]}` out (same boundary for all).
 #[napi]
 pub fn multipart_parse_batch_packed(data: Uint8Array, boundary: Uint8Array) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
-
-    let mut out = Vec::with_capacity(4 + items.len() * 32);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
-    if should_parallelize(items.len(), total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items
-            .par_iter()
-            .map(|body| {
-                let mut buf = Vec::new();
-                parts_to_packed(&parse_multipart(body, boundary.as_ref()), &mut buf);
-                buf
-            })
-            .collect();
-        for r in results {
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    } else {
-        for body in items {
-            let mut buf = Vec::new();
-            parts_to_packed(&parse_multipart(body, boundary.as_ref()), &mut buf);
-            out.extend_from_slice(&(buf.len() as u32).to_le_bytes());
-            out.extend_from_slice(&buf);
-        }
-    }
-
-    Ok(Buffer::from(out))
+    crate::util::run_packed_batch(data.as_ref(), |body| {
+        let mut buf = Vec::new();
+        parts_to_packed(&parse_multipart(body, boundary.as_ref()), &mut buf);
+        buf
+    })
+    .map(Buffer::from)
 }
 
 #[cfg(test)]
@@ -429,6 +423,34 @@ mod tests {
         assert_eq!(parts[0].data, b"alpha");
         assert_eq!(parts[1].name, b"field2");
         assert_eq!(parts[1].data, b"beta");
+    }
+
+    #[test]
+    fn packed_scalar_matches_parts() {
+        let mut b = body("file", Some("a.txt"), Some("text/plain"), b"file contents");
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        assert_eq!(parts.len(), 1);
+
+        let mut expected = Vec::new();
+        parts_to_packed(&parts, &mut expected);
+
+        // The scalar packed API writes exactly the same bytes as the object
+        // path's packed projection — a zero-copy sibling of `multipart_parse`.
+        let out = multipart_parse_packed(
+            Uint8Array::new(b.clone()),
+            Uint8Array::new(BOUNDARY.to_vec()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(out.to_vec(), expected);
+
+        // Layout: [count][name_len][name][has_filename][filename_len][filename][ct][data]
+        let packed = out.to_vec();
+        assert_eq!(&packed[..4], &1u32.to_le_bytes());
+        let name_len = u32::from_le_bytes(packed[4..8].try_into().unwrap()) as usize;
+        assert_eq!(&packed[8..8 + name_len], b"file");
+        assert_eq!(packed[8 + name_len], 1); // has filename
     }
 
     #[test]

@@ -10,6 +10,7 @@ import {
   writeCpuReport,
 } from "./report";
 import { createAllTasks, createComplexTasks, createConcurrentTasks, createStressTasks } from "./tasks";
+import { runLoaderAsyncBenchmarks, writeLoaderReport } from "./tasks/loader";
 
 export async function runBenchmark(): Promise<void> {
   const fixtures = createFixtures();
@@ -33,6 +34,18 @@ export async function runBenchmark(): Promise<void> {
     bench(task.name, task.run, task.iterations, task.warmup),
   );
   printResults(complexResults);
+
+  // ── Loader async microbenchmarks (load() coalescing + cache hits) ──
+  // Print-only: async `load()` results don't fit the sync CPU-report schema.
+  console.log("\n═══ Loader Async Benchmarks ═══");
+  const loaderAsync = await runLoaderAsyncBenchmarks(complexFixtures);
+  for (const r of loaderAsync) {
+    console.log(
+      `  ${r.name.padEnd(34)} ${r.opsPerSec.toFixed(0).padStart(9)} ops/s  ${r.nsPerOp.toFixed(1).padStart(8)} ns/op  checksum ${r.checksum}`,
+    );
+  }
+  const loaderReportPath = writeLoaderReport(loaderAsync);
+  console.log(`Loader report written to ${loaderReportPath}`);
 
   // ── Concurrent burst benchmarks ──
   console.log("\n═══ Concurrent Burst Benchmarks ═══");

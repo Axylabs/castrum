@@ -13,7 +13,7 @@
 // This module keeps `createIngressFast` and re-exports the full fast-path API
 // so existing importers keep working.
 
-import { getAddon, type IngressInstance } from "../native";
+import { getAddon } from "../native";
 import { OUT_DATA_START } from "./constants";
 import { IngressInputPacker } from "./packing/input-packer";
 import { packHeaders } from "./packing/header-packing";
@@ -29,6 +29,7 @@ import type {
 import {
   assertSyncCallback,
   buildHeaderPlan,
+  DEFAULT_FAST_OUTPUT_BUFFER_SIZE,
   DEFAULT_MAX_BODY_BYTES,
   METHOD_KIND,
   METHOD_KIND_UNKNOWN,
@@ -62,7 +63,6 @@ export { generateRequestId } from "../shared/request-id";
 
 // ── Local constants ───────────────────────────────────────────
 const EMPTY_BODY = new Uint8Array(0);
-const DEFAULT_OUTPUT_BUFFER_SIZE = 262_144;
 
 // ── Fast ingress factory ─────────────────────────────
 
@@ -83,6 +83,23 @@ export function createIngressFast(
   assertKnownIngressOptions(options);
   if (options.trustProxy === true) {
     warnTrustProxyDeprecated();
+  }
+  // The raw fast path returns a decoded result, not a Response — it cannot
+  // apply security headers. `security`/`enableSecurityHeaders` were previously
+  // accepted and silently ignored here (a dead option). Fail loudly instead:
+  // use `createIngress` (async) / `createIngressHandler` (pre-baked), or emit
+  // the headers yourself via `buildResponseContext` + `headersForResult`.
+  if (
+    options.security !== undefined ||
+    options.enableSecurityHeaders !== undefined
+  ) {
+    throw new TypeError(
+      "createIngressFast: `security` / `enableSecurityHeaders` are not " +
+        "supported on the raw fast path (it returns a decoded result, not a " +
+        "Response). Use `createIngress` or `createIngressHandler` to apply " +
+        "security headers, or emit them yourself via `buildResponseContext` " +
+        "and `headersForResult`.",
+    );
   }
 
   const rustOptions: Record<string, unknown> = {
@@ -132,7 +149,7 @@ export function createIngressFast(
 
   // Lazy: the native addon is only needed once a handler is created.
   const addon = getAddon();
-  const NativeIngress = (addon as any).Ingress as new (opts: Record<string, unknown>) => IngressInstance;
+  const NativeIngress = addon.Ingress;
   const handler = new NativeIngress(rustOptions);
 
   // Shared with the pre-baked handler path so cookie/cors/proxy/proto
@@ -141,7 +158,7 @@ export function createIngressFast(
 
   const outputBufSize = Math.max(
     OUT_DATA_START,
-    options.outputBufferSize ?? DEFAULT_OUTPUT_BUFFER_SIZE,
+    options.outputBufferSize ?? DEFAULT_FAST_OUTPUT_BUFFER_SIZE,
   );
   const outputBuf = new Uint8Array(outputBufSize);
   const inputPacker = new IngressInputPacker();

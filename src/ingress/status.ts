@@ -14,6 +14,7 @@ import {
   ERR_CODE_SCHEMA_VALIDATION,
   ERR_CODE_BAD_REQUEST,
   ERR_CODE_REQUEST_TOO_LARGE,
+  ERR_CODE_REQUEST_TIMEOUT,
   ERR_CODE_INTERNAL,
 } from "./constants";
 
@@ -43,6 +44,7 @@ export function statusForErrorCode(
     case ERR_CODE_SCHEMA_VALIDATION: return 422;
     case ERR_CODE_BAD_REQUEST: return 400;
     case ERR_CODE_REQUEST_TOO_LARGE: return 431;
+    case ERR_CODE_REQUEST_TIMEOUT: return 408;
     case ERR_CODE_INTERNAL: return 500;
     default: return 500;
   }

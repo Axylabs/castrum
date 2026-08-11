@@ -10,11 +10,42 @@
 export const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 
 /**
+ * Default native ingress output-buffer size (bytes) for the FAST path
+ * (`createIngressFast`).
+ *
+ * The fast path allocates a fresh output buffer per `run()` call, so a larger
+ * default reduces reallocation on large responses. Perf-sensitive — change
+ * only with benchmarking.
+ */
+export const DEFAULT_FAST_OUTPUT_BUFFER_SIZE = 262_144;
+
+/**
+ * Default native ingress output-buffer size (bytes) for the PRE-BAKED path
+ * (`createIngressHandler`).
+ *
+ * The pre-baked path POOLS output buffers across requests (`BufferPool`), so
+ * a smaller default keeps peak memory lower. Perf-sensitive — change only
+ * with benchmarking. The two paths intentionally differ (see above).
+ */
+export const DEFAULT_BAKED_OUTPUT_BUFFER_SIZE = 131_072;
+
+/**
  * Default overall deadline (ms) for reading a request body. Non-zero so the
  * async `createIngress` / route handlers are protected against slowloris and
  * trickling bodies by default. Set `bodyTimeoutMs: 0` to disable.
  */
 export const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+
+/**
+ * Convert a millisecond duration to whole seconds, rounding UP.
+ *
+ * Used everywhere a `ratelimit-reset` / `Retry-After` value is emitted: the
+ * native pipeline reports millisecond resolution, and HTTP rate-limit headers
+ * are whole-second integers (a partial second must not report 0).
+ */
+export function secondsFromMs(ms: number): number {
+  return Math.ceil(ms / 1000);
+}
 
 /** Maps HTTP methods to the native Ingress method-kind enum. */
 export const METHOD_KIND: Record<string, number> = {

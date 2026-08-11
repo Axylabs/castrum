@@ -16,17 +16,29 @@ use napi_derive::napi;
 const DEFAULT_MASK: [u8; 4] = [0x37, 0xfa, 0x21, 0x3d];
 
 /// Word-at-a-time masked copy (RFC 6455 §5.3 masking): XOR `src` with the
-/// 4-byte `mask`, writing the result into `dst` (same length). Processes 4
-/// bytes per u32 XOR (guaranteed vectorizable), with a byte tail for the last
-/// 1–3 bytes. Exactly equivalent to the per-byte `b ^ mask[i & 3]` loop.
+/// 4-byte `mask`, writing the result into `dst` (same length). Processes 8
+/// bytes per u64 XOR (guaranteed vectorizable), with 4-byte and byte tails.
+/// Exactly equivalent to the per-byte `b ^ mask[i & 3]` loop.
 #[inline]
 fn masked_copy(dst: &mut [u8], src: &[u8], mask: [u8; 4]) {
     debug_assert_eq!(dst.len(), src.len());
-    let mask_word = u32::from_le_bytes(mask);
+    // Replicate the 4-byte mask across the low/high 32 bits so one u64 word
+    // can be processed per iteration (2x the u32 throughput).
+    let mask64 = {
+        let m = u32::from_le_bytes(mask) as u64;
+        m | (m << 32)
+    };
     let mut i = 0usize;
+    while i + 8 <= src.len() {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(&src[i..i + 8]);
+        let x = u64::from_le_bytes(w) ^ mask64;
+        dst[i..i + 8].copy_from_slice(&x.to_le_bytes());
+        i += 8;
+    }
     while i + 4 <= src.len() {
         let w = u32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]]);
-        dst[i..i + 4].copy_from_slice(&(w ^ mask_word).to_le_bytes());
+        dst[i..i + 4].copy_from_slice(&(w ^ (mask64 as u32)).to_le_bytes());
         i += 4;
     }
     // Tail: `i` is a multiple of 4 here, so `i & 3 == 0` and the mask phase

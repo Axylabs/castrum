@@ -84,7 +84,7 @@ function capture(cmd, args, opts = {}) {
 function syncCargoToml(version) {
   const file = join(root, "Cargo.toml");
   const text = readFileSync(file, "utf8");
-  const next = text.replace(/(\[package\][^\[]*?version\s*=\s*")[^"]+(")/, `$1${version}$2`);
+  const next = text.replace(/(\[package\][^[]*?version\s*=\s*")[^"]+(")/, `$1${version}$2`);
   if (next === text) fail(`could not find the [package] version in ${file}`);
   writeFileSync(file, next);
   log(`Cargo.toml version -> ${version}`);

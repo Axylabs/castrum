@@ -3,8 +3,21 @@
 
 import type { OptimizedIngressHandler } from "../types";
 import { resolveIp, type BakedHandlerOptions } from "./common";
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from "../shared";
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, secondsFromMs } from "../shared";
 import { readBodyWithLimit } from "../body";
+import { getAddon } from "../../native";
+
+/**
+ * Zero-DOM JSON-validity check — the same native fast path the ingress
+ * pipeline uses internally (`json_valid_bytes`).
+ *
+ * Used by `jsonWriteHandler` as a fallback when the pipeline skipped JSON
+ * validation because neither `requireJsonBody` nor a `schema` is configured
+ * on the ingress (see the `bodyValidJson` handling in the route).
+ */
+function isValidJsonBytes(bytes: Uint8Array): boolean {
+  return getAddon().jsonValid(bytes);
+}
 
 /**
  * Pre-baked JSON-write handler (POST/PUT/PATCH): enforces Content-Type,
@@ -94,24 +107,32 @@ export function jsonWriteHandler(
         return ingress.internalErrorResponse(ctx, result);
       }
 
-      if (!result.bodyValidJson) {
+      // `bodyValidJson`/`schemaValid` are only computed when the pipeline ran
+      // JSON validation — i.e. when `requireJsonBody` is set or a `schema` is
+      // configured on the ingress. When `bodyValidJson` is false here,
+      // validation was skipped entirely (a genuine validation failure already
+      // short-circuits as a terminal 400 above). In that case enforce validity
+      // with the same zero-DOM native check, and schema validation trivially
+      // passes because no schema was configured (had one been, the pipeline
+      // would have run and set the flags).
+      if (result.bodyValidJson) {
+        if (!result.schemaValid) {
+          return ingress.errorResponse(
+            req,
+            result,
+            422,
+            "schema_validation_failed",
+            "Request body failed schema validation",
+            ctx,
+          );
+        }
+      } else if (!isValidJsonBytes(bodyBytes)) {
         return ingress.errorResponse(
           req,
           result,
           400,
           "invalid_json",
           "Invalid JSON body",
-          ctx,
-        );
-      }
-
-      if (!result.schemaValid) {
-        return ingress.errorResponse(
-          req,
-          result,
-          422,
-          "schema_validation_failed",
-          "Request body failed schema validation",
           ctx,
         );
       }
@@ -124,7 +145,7 @@ export function jsonWriteHandler(
           ctx.origin,
           result.rateRemaining,
           result.rateResetMs > 0
-            ? Math.ceil(result.rateResetMs / 1000)
+            ? secondsFromMs(result.rateResetMs)
             : undefined,
         ),
       };

@@ -82,17 +82,21 @@ fn is_valid_ipv4(b: &[u8]) -> bool {
     let mut parts = 0u8;
     let mut start = 0usize;
 
-    // Use memchr to find dots faster.
-    for dot_idx in b
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &c)| if c == b'.' { Some(i) } else { None })
-    {
+    // memchr-driven dot scan (the optimization the comment always promised;
+    // the previous code walked the bytes with enumerate/filter_map).
+    while let Some(rel) = memchr::memchr(b'.', &b[start..]) {
+        let dot_idx = start + rel;
         let part = &b[start..dot_idx];
         if !validate_ipv4_part(part) {
             return false;
         }
         parts += 1;
+        // 4 dots means 5 parts → always invalid; reject as soon as the 4th
+        // dot is consumed (identical boolean result to the old count-then-
+        // compare, with an earlier exit).
+        if parts > 3 {
+            return false;
+        }
         start = dot_idx + 1;
     }
 

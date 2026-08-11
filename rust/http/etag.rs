@@ -81,6 +81,28 @@ pub fn etag_into(input: Uint8Array, mut output: Uint8Array, weak: Option<bool>) 
     })
 }
 
+/// Packed ETag batch: `[u32 count]{[u32 len][data]}` in →
+/// `[u32 count]{[u32 len][etag]}` out (10 strong / 12 weak bytes each).
+#[napi]
+pub fn etag_batch_packed(input: Uint8Array, weak: Option<bool>) -> Result<Buffer> {
+    let weak = weak.unwrap_or(false);
+    let iter = crate::util::packed::PackedIter::new(input.as_ref())?;
+    let count = iter.len();
+    let per = if weak { 12 } else { 10 };
+    // Direct-write: ETags are fixed-size (10 strong / 12 weak), so no per-item
+    // `String`/`Vec` allocation.
+    let mut out = Vec::with_capacity(4 + count.saturating_mul(4 + per));
+    out.extend_from_slice(&(count as u32).to_le_bytes());
+    for item in iter {
+        let crc = crc32fast::hash(item);
+        out.extend_from_slice(&(per as u32).to_le_bytes());
+        let start = out.len();
+        out.resize(start + per, 0);
+        etag_from_crc32_into(crc, weak, &mut out[start..start + per])?;
+    }
+    Ok(Buffer::from(out))
+}
+
 // ── HTTP-date (IMF-fixdate) ──────────────────────────────────────
 
 const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

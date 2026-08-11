@@ -59,14 +59,32 @@ pub fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
 pub const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 pub const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
+/// 256-entry hex-digit lookup (single table load instead of a range-compare
+/// chain); -1 marks a non-hex byte. Shared by all `%XX` / hex decode paths.
+const HEX_VAL_LUT: [i8; 256] = {
+    let mut t = [-1i8; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let b = i as u8;
+        t[i] = match b {
+            b'0'..=b'9' => (b - b'0') as i8,
+            b'a'..=b'f' => (b - b'a' + 10) as i8,
+            b'A'..=b'F' => (b - b'A' + 10) as i8,
+            _ => -1,
+        };
+        i += 1;
+    }
+    t
+};
+
 /// Value of a single hex digit, or `None` if `b` is not a hex digit.
 #[inline(always)]
 pub fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
+    let v = HEX_VAL_LUT[b as usize];
+    if v < 0 {
+        None
+    } else {
+        Some(v as u8)
     }
 }
 
@@ -161,30 +179,52 @@ pub fn decode_form_component_into(
         out[..src.len()].copy_from_slice(src);
         return Ok(src.len());
     }
+    // Run-copy decode: bulk-copy plain runs up to the next '+'/'%', then
+    // decode the single special byte, instead of walking every byte. This is
+    // the same memchr2 discipline `url_decode` uses and avoids per-byte
+    // branches over the common long runs of unreserved characters. Capacity
+    // is still checked against the ACTUAL decoded length (a `%XX` shrinks 3
+    // input bytes to 1), preserving the existing semantics.
     let mut i = 0usize;
     let mut written = 0usize;
     while i < src.len() {
-        let b = match src[i] {
-            b'+' => {
-                i += 1;
-                b' '
-            }
-            b'%' => {
-                let (byte, next) =
-                    decode_percent_at(src, i).ok_or(FormDecodeError::Malformed)?;
+        match memchr::memchr2(b'+', b'%', &src[i..]) {
+            Some(rel) => {
+                let run_end = i + rel;
+                let run = &src[i..run_end];
+                if written + run.len() > out.len() {
+                    return Err(FormDecodeError::BufferTooSmall);
+                }
+                out[written..written + run.len()].copy_from_slice(run);
+                written += run.len();
+                i = run_end;
+
+                // Decode the '+' or '%XX' at position i.
+                let (b, next) = match src[i] {
+                    b'+' => (b' ', i + 1),
+                    _ => {
+                        let (byte, next) = decode_percent_at(src, i)
+                            .ok_or(FormDecodeError::Malformed)?;
+                        (byte, next)
+                    }
+                };
+                if written >= out.len() {
+                    return Err(FormDecodeError::BufferTooSmall);
+                }
+                out[written] = b;
+                written += 1;
                 i = next;
-                byte
             }
-            b => {
-                i += 1;
-                b
+            None => {
+                let run = &src[i..];
+                if written + run.len() > out.len() {
+                    return Err(FormDecodeError::BufferTooSmall);
+                }
+                out[written..written + run.len()].copy_from_slice(run);
+                written += run.len();
+                i = src.len();
             }
-        };
-        if written >= out.len() {
-            return Err(FormDecodeError::BufferTooSmall);
         }
-        out[written] = b;
-        written += 1;
     }
     Ok(written)
 }

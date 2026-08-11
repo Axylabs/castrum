@@ -112,3 +112,35 @@ describe("BufferPool", () => {
     b.release();
   });
 });
+
+describe("BufferPool maxInFlight", () => {
+  test("unlimited by default (maxInFlight 0)", () => {
+    const pool = new BufferPool({ initialSize: 16, maxBuffers: 1 });
+    const a = pool.acquire();
+    const b = pool.acquire(); // pool exhausted → temporary, still succeeds
+    a.release();
+    b.release();
+    expect(pool.freeCount).toBe(1);
+  });
+
+  test("throws a RangeError when the cap is exceeded", () => {
+    const pool = new BufferPool({ initialSize: 16, maxBuffers: 1, maxInFlight: 2 });
+    const a = pool.acquire();
+    const b = pool.acquire();
+    expect(() => pool.acquire()).toThrow(RangeError);
+    expect(() => pool.acquire()).toThrow(/maxInFlight/);
+
+    // Releasing frees the slot.
+    a.release();
+    expect(() => pool.acquire()).not.toThrow();
+    b.release();
+  });
+
+  test("release decrements in-flight exactly once", () => {
+    const pool = new BufferPool({ initialSize: 16, maxInFlight: 1 });
+    const a = pool.acquire();
+    a.release();
+    a.release(); // idempotent — must not double-decrement
+    expect(() => pool.acquire()).not.toThrow();
+  });
+});

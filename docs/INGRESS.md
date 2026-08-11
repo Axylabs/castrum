@@ -4,6 +4,30 @@
 
 The Ingress pipeline is the core HTTP request processing system in castrum. It handles incoming requests through a series of processing stages, writing decisions to a binary output buffer that is then interpreted by the TypeScript caller.
 
+The 8-stage native pipeline (shared by both consumption paths — see below):
+
+```mermaid
+flowchart TD
+    A["Request (packed frame:<br/>method kind, url, ip, rid, headers)"] --> S1
+    S1["1. Parse the packed input frame"] --> S2
+    S2["2. Trust, client IP, HTTPS"] --> S3
+    S3["3. CORS (may terminate on a preflight request)"] --> S4
+    S4["4. Rate limiting (may terminate with 429)"] --> S5
+    S5["5. Body size guard (may terminate with 413)"] --> S6
+    S6["6. JSON body validation &amp; schema (400 / 422)"] --> S7
+    S7["7. Serialize cookies / query / metadata"] --> S8
+    S8["8. Write the output header"]
+    S3 -.->|preflight 204 / 403| T["Terminal response"]
+    S4 -.->|429| T
+    S5 -.->|413| T
+    S6 -.->|400 / 422| T
+```
+
+Both the fast path (`createIngressFast`) and the pre-baked path
+(`createIngressHandler`) drive the **same** native core (`handle_packed`); they
+differ only in how the request frame is packed in JS and how the output buffer
+is decoded on the way out.
+
 ---
 
 ## Quick Start
@@ -54,7 +78,7 @@ Bun.serve({
 ## Pre-Baked Handlers (recommended for servers)
 
 The fastest way to consume ingress in **any** system. `src/ingress/handlers.ts`
-wraps the optimized native pipeline (`Ingress.handleRequestFullSync`) and
+wraps the optimized native pipeline (`Ingress.handleRequestPacked`) and
 provides ready-made route handlers, response builders, and a `Bun.serve`
 builder — no need to hand-build responses, header templates, or error bodies.
 
@@ -92,8 +116,10 @@ createIngressServer({
 
 ### `createIngressHandler(options, runtime?)`
 
-Creates an optimized ingress handler (uses `handleRequestFullSync`). `options`
-are the same native options as `createIngressFast` (`trustProxy`, `https`,
+Creates an optimized ingress handler (packs the request frame in JS via
+`IngressInputPacker` + `gatherRawHeadersPacked` and drives the SAME native
+core as `createIngressFast`, `handleRequestPacked`). `options` are the same
+native options as `createIngressFast` (`trustProxy`, `https`,
 `maxBodyBytes`, `enableBodySizeGuard`, `emitMetadataJson`, `cors`, `rateLimit`,
 `parseCookies`, `parseQuery`, `schema`, `trustedProxies`, …).
 
@@ -572,4 +598,89 @@ function getCorsHeaders(result: FastIngressResult): Record<string, string> {
     };
   }
   return {};
+}
+
+---
+
+## Framework Integration (Bun backend frameworks)
+
+`castrum` ships framework-agnostic adapters (`src/integration/`) so you can embed
+the ingress pipeline as a request stage in **Hono**, **Elysia**, or a plain
+`Bun.serve` handler — no router changes needed.
+
+### `createPipeline` — run the ingress as a request stage
+
+`createPipeline` wraps `createIngressHandler` (path 2) and exposes:
+
+- `handleRequest(req, ip?)` → `Promise<Response>` — a **fetch-compatible**
+  handler: terminal (rate-limited / CORS-denied / schema-failed / bad body)
+  requests get their error response, OK requests get a rendered response
+  (default `{"ok":true,"requestId":...}`, or your own `render`).
+- `preprocess(req, ip?)` → `Promise<PreprocessOutcome>` — the **middleware
+  seam**: `{ terminal, response, result, ctx }`. When `terminal`, serve
+  `response`; otherwise continue to your app handler with the snapshotted
+  `result` and a per-request `ctx` (`requestId`, `ip`, `locals` map).
+- `readBody(req)` — stream-read a body with the configured limits.
+
+```ts
+import { createPipeline } from "castrum";
+
+// Plain Bun.serve — the whole pipeline behind a fetch handler
+const pipeline = createPipeline({ options: { parseCookies: true } });
+Bun.serve({ port: 3000, fetch: (req) => pipeline.handleRequest(req) });
+```
+
+```ts
+// Hono-style middleware: short-circuit on terminal, else pass context through
+const pipeline = createPipeline({
+  options: { rateLimit: { limit: 100, windowMs: 60_000 } },
+});
+
+app.use("*", async (c, next) => {
+  const { terminal, response, ctx } = await pipeline.preprocess(c.req.raw);
+  if (terminal && response) return response; // 429 / 403 / 422 / 413
+  c.set("ingress", ctx); // requestId, ip, locals
+  await next();
+});
+```
+
+### `createWebSocketUpgrade` — RFC 6455 upgrade handshake
+
+`createWebSocketUpgrade(req, { protocols })` validates `Sec-WebSocket-Key`,
+computes the accept key (native `rust.wsAcceptKey`), negotiates a subprotocol,
+and returns `{ response, key, protocol }` or `null` when the request isn't a
+valid upgrade. Pair it with your framework's own WebSocket server:
+
+```ts
+import { createWebSocketUpgrade } from "castrum";
+
+Bun.serve({
+  port: 3000,
+  fetch(req, server) {
+    const up = createWebSocketUpgrade(req, { protocols: ["chat"] });
+    if (up && server.upgrade(req, { data: { protocol: up.protocol } })) {
+      return up.response; // 101 Switching Protocols
+    }
+    return new Response("Not a websocket", { status: 400 });
+  },
+  websocket: { message(ws, msg) { ws.send(msg); } },
+});
+```
+
+### `sseResponse` — server-sent events on the fast path
+
+`sseResponse(events, init)` frames an (async) iterable of events with the
+native `rust.sseEncodeEvent` and returns a `text/event-stream` `Response`:
+
+```ts
+import { sseResponse } from "castrum";
+
+async function* tick() {
+  for (let i = 0; i < 5; i++) {
+    await Bun.sleep(250);
+    yield { event: "tick", data: String(i) };
+  }
+}
+return sseResponse(tick());
+```
 }

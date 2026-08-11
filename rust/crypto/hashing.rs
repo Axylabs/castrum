@@ -35,9 +35,16 @@ pub fn fast_hash_bytes(input: &[u8]) -> u64 {
 
 // ── Napi exports ───────────────────────────────────────────────────
 
+/// CRC32 over a raw byte slice (pure core, shared by the napi boundary and
+/// the C ABI surface).
+#[inline]
+pub fn crc32_bytes(input: &[u8]) -> u32 {
+    crc32fast::hash(input)
+}
+
 #[napi]
 pub fn crc32(input: Uint8Array) -> u32 {
-    crc32fast::hash(input.as_ref())
+    crc32_bytes(input.as_ref())
 }
 
 #[napi(js_name = "fnv1a64")]
@@ -132,6 +139,16 @@ pub fn crc32_batch_packed(input: Uint8Array) -> Result<Buffer> {
     }
 
     Ok(Buffer::from(out))
+}
+
+/// Reusable-output CRC32 batch: writes `[u32 count][u32…]` into `output` and
+/// returns bytes written. Wire format is byte-identical to
+/// [`crc32_batch_packed`]; the JS loader uses this with a pooled buffer.
+#[napi]
+pub fn crc32_batch_packed_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
+    crate::util::run_packed_into(&input, &mut output, |data, out| {
+        crate::util::write_u32_batch_into(data, out, crc32_bytes)
+    })
 }
 
 #[cfg(test)]

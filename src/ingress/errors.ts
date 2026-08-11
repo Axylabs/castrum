@@ -13,6 +13,7 @@ import {
   ERR_CODE_SCHEMA_VALIDATION,
   ERR_CODE_BAD_REQUEST,
   ERR_CODE_REQUEST_TOO_LARGE,
+  ERR_CODE_REQUEST_TIMEOUT,
   ERR_CODE_INTERNAL,
 } from "./constants";
 
@@ -27,6 +28,7 @@ export function errorCodeName(code: number): string {
     case ERR_CODE_SCHEMA_VALIDATION: return "schema_validation";
     case ERR_CODE_BAD_REQUEST: return "bad_request";
     case ERR_CODE_REQUEST_TOO_LARGE: return "request_too_large";
+    case ERR_CODE_REQUEST_TIMEOUT: return "request_timeout";
     case ERR_CODE_INTERNAL: return "internal";
     default: return "unknown";
   }
@@ -42,6 +44,7 @@ export function errorMessage(status: number, code: number): string {
     case ERR_CODE_SCHEMA_VALIDATION: return "JSON schema validation failed";
     case ERR_CODE_BAD_REQUEST: return "Bad request";
     case ERR_CODE_REQUEST_TOO_LARGE: return "Request too large";
+    case ERR_CODE_REQUEST_TIMEOUT: return "Request body read timed out";
     case ERR_CODE_INTERNAL: return "Internal server error";
     default: return status >= 500 ? "Internal server error" : "Request rejected";
   }

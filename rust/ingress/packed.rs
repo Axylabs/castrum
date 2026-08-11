@@ -4,14 +4,15 @@
 // url/ip/rid/headers sections). This module owns the low-level section readers
 // and the builder that assembles the full frame from raw request components
 // (used by the `full_sync` family).
-
-use napi::{Error, Result};
+//
+// Pure core (no napi types): errors are plain `String` messages; the napi
+// boundary maps them to terminal responses / JS errors.
 
 /// Read a u32le length prefix, advancing `pos` on success.
 #[inline]
-pub(crate) fn read_u32_at(input: &[u8], pos: &mut usize) -> Result<usize> {
+pub(crate) fn read_u32_at(input: &[u8], pos: &mut usize) -> std::result::Result<usize, String> {
     if *pos + 4 > input.len() {
-        return Err(Error::from_reason("packed input: truncated u32"));
+        return Err("packed input: truncated u32".to_string());
     }
     let v = u32::from_le_bytes([
         input[*pos],
@@ -25,16 +26,20 @@ pub(crate) fn read_u32_at(input: &[u8], pos: &mut usize) -> Result<usize> {
 
 /// Read a length-prefixed section, enforcing `max` and bounds.
 #[inline]
-pub(crate) fn read_section<'a>(input: &'a [u8], pos: &mut usize, max: usize) -> Result<&'a [u8]> {
+pub(crate) fn read_section<'a>(
+    input: &'a [u8],
+    pos: &mut usize,
+    max: usize,
+) -> std::result::Result<&'a [u8], String> {
     let len = read_u32_at(input, pos)?;
     if len > max {
-        return Err(Error::from_reason("packed input: section too large"));
+        return Err("packed input: section too large".to_string());
     }
     let end = pos
         .checked_add(len)
-        .ok_or_else(|| Error::from_reason("packed input: length overflow"))?;
+        .ok_or_else(|| "packed input: length overflow".to_string())?;
     if end > input.len() {
-        return Err(Error::from_reason("packed input: truncated section"));
+        return Err("packed input: truncated section".to_string());
     }
     let slice = &input[*pos..end];
     *pos = end;

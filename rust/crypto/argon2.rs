@@ -14,8 +14,6 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::util::{should_parallelize, total_bytes, unpack};
-
 // ── Options ────────────────────────────────────────────────────
 
 /// argon2id parameters (defaults follow OWASP: 19 MiB, 2 iterations, 1 lane,
@@ -95,6 +93,31 @@ pub fn password_verify(password: Uint8Array, phc: Buffer) -> bool {
     verify_password(password.as_ref(), phc.as_ref())
 }
 
+/// Packed password-verify batch (two packed lists: passwords + PHC strings,
+/// zipped) → bitset of valid. Items with malformed PHC strings yield `false`.
+#[napi]
+pub fn password_verify_batch_packed(
+    passwords: Uint8Array,
+    phcs: Uint8Array,
+) -> Result<Buffer> {
+    use crate::util::packed::PackedIter;
+    let pws = passwords.as_ref();
+    let ph = phcs.as_ref();
+    let count = PackedIter::new(pws)?.len().min(PackedIter::new(ph)?.len());
+    let mut out = Vec::with_capacity(4 + count.div_ceil(8));
+    out.extend_from_slice(&(count as u32).to_le_bytes());
+    out.resize(4 + count.div_ceil(8), 0);
+    for (i, (pw, phc)) in PackedIter::new(pws)?
+        .zip(PackedIter::new(ph)?)
+        .enumerate()
+    {
+        if verify_password(pw, phc) {
+            out[4 + (i >> 3)] |= 1 << (i & 7);
+        }
+    }
+    Ok(Buffer::from(out))
+}
+
 /// Higher-order instance: precompiles the argon2id `Params`/`Argon2` once at
 /// construction (fixed m/t/p/out_len), so every `hash` skips the per-call
 /// parameter construction — the CPU/memory cost of the hash itself is
@@ -143,7 +166,6 @@ pub fn password_hash_batch_packed(
     salt: Uint8Array,
     options: Option<PasswordHashOptions>,
 ) -> Result<Buffer> {
-    let items = unpack(data.as_ref())?;
     let (m, t, p, out_len) = resolve_opts(options.as_ref());
 
     let phc_for = |password: &[u8]| -> Vec<u8> {
@@ -152,25 +174,7 @@ pub fn password_hash_batch_packed(
             .unwrap_or_default()
     };
 
-    let mut out = Vec::with_capacity(4 + items.len() * 96);
-    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-
-    if should_parallelize(items.len(), total_bytes(&items)) {
-        use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items.par_iter().map(|p| phc_for(p)).collect();
-        for r in results {
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    } else {
-        for p in items {
-            let r = phc_for(p);
-            out.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            out.extend_from_slice(&r);
-        }
-    }
-
-    Ok(Buffer::from(out))
+    crate::util::run_packed_batch(data.as_ref(), phc_for).map(Buffer::from)
 }
 
 #[cfg(test)]

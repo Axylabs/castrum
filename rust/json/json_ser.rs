@@ -3,18 +3,41 @@
 // Uses memchr-based skip for bulk unescaped bytes (~95% path)
 
 use crate::util::bytes::{cookie_pairs, HEX_LOWER as JSON_HEX_LOWER};
-use napi::{Error, Result};
+
+
+/// True when every byte is ASCII (< 0x80), checked word-at-a-time.
+///
+/// Equivalent to `bytes.iter().all(|&b| b < 0x80)` but skips the per-byte
+/// loop for the bulk of the buffer (one u64 high-bit test per 8 bytes).
+#[inline(always)]
+fn is_ascii(bytes: &[u8]) -> bool {
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        // SAFETY-free: chunks_exact guarantees exactly 8 bytes here.
+        let w = u64::from_le_bytes(
+            <[u8; 8]>::try_from(chunk).expect("chunks_exact yields 8 bytes"),
+        );
+        if (w & 0x8080_8080_8080_8080) != 0 {
+            return false;
+        }
+    }
+    for &b in chunks.remainder() {
+        if b >= 0x80 {
+            return false;
+        }
+    }
+    true
+}
 
 /// Determine whether bytes are valid UTF-8 (cached via a bit check).
 #[inline(always)]
 fn is_valid_utf8(bytes: &[u8]) -> bool {
-    // Fast path: small ASCII-only strings are very common
+    // Fast path: small ASCII-only strings are very common.
     if bytes.is_empty() {
         return true;
     }
-    // Check first byte — if >= 0x80, we need a real check
-    // For pure ASCII we can skip the full simdutf8 check
-    if bytes.iter().all(|&b| b < 0x80) {
+    // For pure ASCII we can skip the full simdutf8 check.
+    if is_ascii(bytes) {
         return true;
     }
     std::str::from_utf8(bytes).is_ok()
@@ -113,16 +136,27 @@ fn write_escaped_run(out: &mut [u8], pos: &mut usize, run: &[u8]) {
     while i < run.len() {
         let b = run[i];
         match b {
-            b'\r' | b'\t' | 0x08 | 0x0c => {
-                let esc = match b {
-                    b'\r' => b'r',
-                    b'\t' => b't',
-                    0x08 => b'b',
-                    0x0c => b'f',
-                    _ => unreachable!(),
-                };
+            b'\r' => {
                 out[*pos] = b'\\';
-                out[*pos + 1] = esc;
+                out[*pos + 1] = b'r';
+                *pos += 2;
+                i += 1;
+            }
+            b'\t' => {
+                out[*pos] = b'\\';
+                out[*pos + 1] = b't';
+                *pos += 2;
+                i += 1;
+            }
+            0x08 => {
+                out[*pos] = b'\\';
+                out[*pos + 1] = b'b';
+                *pos += 2;
+                i += 1;
+            }
+            0x0c => {
+                out[*pos] = b'\\';
+                out[*pos + 1] = b'f';
                 *pos += 2;
                 i += 1;
             }
@@ -171,23 +205,20 @@ fn write_json_escaped_utf8(out: &mut [u8], pos: &mut usize, bytes: &[u8]) {
         write_escaped_run(out, pos, &bytes[offset..idx]);
 
         let b = bytes[idx];
-        match b {
-            b'"' => {
-                out[*pos] = b'\\';
-                out[*pos + 1] = b'"';
-                *pos += 2;
-            }
-            b'\\' => {
-                out[*pos] = b'\\';
-                out[*pos + 1] = b'\\';
-                *pos += 2;
-            }
-            b'\n' => {
-                out[*pos] = b'\\';
-                out[*pos + 1] = b'n';
-                *pos += 2;
-            }
-            _ => unreachable!(),
+        if b == b'"' {
+            out[*pos] = b'\\';
+            out[*pos + 1] = b'"';
+            *pos += 2;
+        } else if b == b'\\' {
+            out[*pos] = b'\\';
+            out[*pos + 1] = b'\\';
+            *pos += 2;
+        } else {
+            // memchr3 only matches '"', '\\' and '\n'.
+            debug_assert_eq!(b, b'\n');
+            out[*pos] = b'\\';
+            out[*pos + 1] = b'n';
+            *pos += 2;
         }
 
         offset = idx + 1;
@@ -199,11 +230,13 @@ fn write_json_escaped_utf8(out: &mut [u8], pos: &mut usize, bytes: &[u8]) {
 
 /// Parse cookies from `input` and write JSON to `out` with max_pairs limit.
 #[inline]
-pub fn cookie_json_into_slice(input: &[u8], out: &mut [u8], max_pairs: usize) -> Result<usize> {
+pub fn cookie_json_into_slice(
+    input: &[u8],
+    out: &mut [u8],
+    max_pairs: usize,
+) -> std::result::Result<usize, String> {
     if out.len() < 2 {
-        return Err(Error::from_reason(
-            "output buffer too small for cookie JSON",
-        ));
+        return Err("output buffer too small for cookie JSON".to_string());
     }
 
     out[0] = b'{';
@@ -214,9 +247,7 @@ pub fn cookie_json_into_slice(input: &[u8], out: &mut [u8], max_pairs: usize) ->
             (if count == 0 { 0 } else { 1 }) + 5 + json_escaped_len(name) + json_escaped_len(value);
 
         if needed > out.len().saturating_sub(pos) {
-            return Err(Error::from_reason(
-                "output buffer too small for cookie JSON",
-            ));
+            return Err("output buffer too small for cookie JSON".to_string());
         }
 
         if count != 0 {
@@ -239,9 +270,7 @@ pub fn cookie_json_into_slice(input: &[u8], out: &mut [u8], max_pairs: usize) ->
     }
 
     if pos + 1 > out.len() {
-        return Err(Error::from_reason(
-            "output buffer too small for cookie JSON",
-        ));
+        return Err("output buffer too small for cookie JSON".to_string());
     }
 
     out[pos] = b'}';
@@ -255,11 +284,9 @@ pub fn packed_pairs_to_json_into_slice(
     packed: &[u8],
     out: &mut [u8],
     max_pairs: usize,
-) -> Result<usize> {
+) -> std::result::Result<usize, String> {
     if out.len() < 2 {
-        return Err(Error::from_reason(
-            "output buffer too small for packed pairs JSON",
-        ));
+        return Err("output buffer too small for packed pairs JSON".to_string());
     }
 
     if packed.len() < 4 {
@@ -267,7 +294,7 @@ pub fn packed_pairs_to_json_into_slice(
         return Ok(2);
     }
 
-    let count = crate::util::read_u32_le(packed, 0)? as usize;
+    let count = crate::util::read_u32_le(packed, 0).map_err(|e| e.to_string())? as usize;
 
     out[0] = b'{';
     let mut pos = 1usize;
@@ -278,21 +305,21 @@ pub fn packed_pairs_to_json_into_slice(
             break;
         }
 
-        let key_len = crate::util::read_u32_le(packed, src)? as usize;
+        let key_len = crate::util::read_u32_le(packed, src).map_err(|e| e.to_string())? as usize;
         src += 4;
 
         if src + key_len > packed.len() {
-            return Err(Error::from_reason("packed pairs: truncated key"));
+            return Err("packed pairs: truncated key".to_string());
         }
 
         let key = &packed[src..src + key_len];
         src += key_len;
 
-        let val_len = crate::util::read_u32_le(packed, src)? as usize;
+        let val_len = crate::util::read_u32_le(packed, src).map_err(|e| e.to_string())? as usize;
         src += 4;
 
         if src + val_len > packed.len() {
-            return Err(Error::from_reason("packed pairs: truncated value"));
+            return Err("packed pairs: truncated value".to_string());
         }
 
         let val = &packed[src..src + val_len];
@@ -304,9 +331,7 @@ pub fn packed_pairs_to_json_into_slice(
             + json_escaped_len(val);
 
         if needed > out.len().saturating_sub(pos) {
-            return Err(Error::from_reason(
-                "output buffer too small for packed pairs JSON",
-            ));
+            return Err("output buffer too small for packed pairs JSON".to_string());
         }
 
         if written_pairs != 0 {
@@ -329,9 +354,7 @@ pub fn packed_pairs_to_json_into_slice(
     }
 
     if pos + 1 > out.len() {
-        return Err(Error::from_reason(
-            "output buffer too small for packed pairs JSON",
-        ));
+        return Err("output buffer too small for packed pairs JSON".to_string());
     }
 
     out[pos] = b'}';
@@ -410,6 +433,41 @@ pub fn query_to_json_into_slice(
             Some(eq) => (&pair[..eq], &pair[eq + 1..]),
             None => (pair, &[][..]),
         };
+
+        // Percent-encoding fast path: a component with no `%` and no `+`
+        // decodes to itself (Cow::Borrowed), so we skip the decode scratch and
+        // both extra passes, writing the borrowed slices straight to JSON. This
+        // is the common case (`?page=1&limit=20`-style queries) and removes one
+        // heap allocation + decode per pair per request on the ingress hot path.
+        if memchr::memchr2(b'%', b'+', pair).is_none() {
+            let key_len = json_escaped_len(key);
+            let val_len = json_escaped_len(value);
+
+            let needed = (if written_pairs == 0 { 0 } else { 1 }) + 5 + key_len + val_len;
+            if needed > out.len().saturating_sub(pos) {
+                return Err(QueryJsonError::BufferTooSmall);
+            }
+
+            if written_pairs != 0 {
+                out[pos] = b',';
+                pos += 1;
+            }
+            out[pos] = b'"';
+            pos += 1;
+            write_json_escaped(out, &mut pos, key);
+            out[pos] = b'"';
+            pos += 1;
+            out[pos] = b':';
+            pos += 1;
+            out[pos] = b'"';
+            pos += 1;
+            write_json_escaped(out, &mut pos, value);
+            out[pos] = b'"';
+            pos += 1;
+
+            written_pairs += 1;
+            continue;
+        }
 
         // Single-pass percent-decode: decode each component ONCE into the
         // shared scratch as `[decoded_key][decoded_value]`, then derive the

@@ -2,6 +2,7 @@
 
 import type { OptimizedIngressHandler } from "../types";
 import { resolveIp, type BakedHandlerOptions } from "./common";
+import { secondsFromMs } from "../shared";
 
 /**
  * Pre-baked HEAD read handler: headers only, no body.
@@ -27,7 +28,7 @@ export function headHandler(
           ctx.origin,
           result.rateRemaining,
           result.rateResetMs > 0
-            ? Math.ceil(result.rateResetMs / 1000)
+            ? secondsFromMs(result.rateResetMs)
             : undefined,
         ),
       });

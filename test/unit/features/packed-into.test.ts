@@ -26,7 +26,7 @@ describe("rust.httpParseRequestPackedInto", () => {
     const out = new Uint8Array(expected.length);
     const written = rust.httpParseRequestPackedInto(HTTP_RAW, out);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 
   test("too-small output throws", () => {
@@ -40,7 +40,7 @@ describe("rust.queryParsePackedInto", () => {
     const out = new Uint8Array(expected.length);
     const written = rust.queryParsePackedInto(QUERY, out);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 
   test("too-small output throws", () => {
@@ -54,7 +54,7 @@ describe("rust.cookieParsePackedInto", () => {
     const out = new Uint8Array(expected.length);
     const written = rust.cookieParsePackedInto(COOKIE, out);
     expect(written).toBe(expected.length);
-    expect(out.slice(0, written)).toEqual(expected);
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected));
   });
 
   test("too-small output throws", () => {

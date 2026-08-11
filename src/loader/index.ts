@@ -1,0 +1,855 @@
+// src/loader/index.ts — Global higher-order-function data loader (HFC).
+//
+// `loader` is a CALLABLE object — a higher-order function over the curated op
+// set. `loader("validateEmail")` returns a specialized, pre-bound hot function
+// whose closure carries that op's spec, cost model and shared cache, so
+// repeated calls do NO registry dispatch.
+//
+// Runtime self-optimization ("bulk or single"):
+//   - single item  → scalar call (1 crossing, zero packing)
+//   - bulk items   → ONE packed batch call by default; the adaptive cost model
+//                    may route tiny batches to a scalar loop when measurement
+//                    shows it is actually cheaper
+//   - `load()`     → DataLoader-style: N calls in the same event-loop tick are
+//                    coalesced into ONE packed native call (N crossings → 1);
+//                    sustained LOW load drops the coalescer and dispatches
+//                    singles directly, switching back to bulk on a same-tick
+//                    burst (all automatic, per op)
+//   - caching      → bounded LRU ("Hot Function Cache"), default key =
+//                    fnv1a64(input) (skipped for sustained-unique workloads),
+//                    opt-in per call via `{ key, cache }`
+
+import {
+  LOADER_OPS,
+  type LoaderBulkArgs,
+  type LoaderOpArgs,
+  type LoaderOpName,
+  type LoaderOpSpec,
+  type LoaderScalar,
+  type LoaderBulk,
+} from "./ops";
+import { createCostModel, nowNs, type LoaderCostModel } from "./cost";
+import {
+  createLruCache,
+  createTickCoalescer,
+  type LoaderCache,
+  type LoadRequest,
+  type TickCoalescer,
+} from "./batch";
+import { rust } from "../rust-ffi";
+import { viewForArrayBuffer } from "../shared/bytes";
+import type { SchemaValidator } from "../shared/packed";
+
+// Re-export the op registry + types for introspection and authoring.
+export {
+  LOADER_OPS,
+  LOADER_OP_NAMES,
+  type LoaderOpName,
+  type LoaderOpArgs,
+  type LoaderBulkArgs,
+  type LoaderBulk,
+  type LoaderResultKind,
+  type ScalarResult,
+  type BulkResult,
+} from "./ops";
+
+// ── Public types ────────────────────────────────────────────────────────────
+
+/** Options for `createLoader()` / `loader.configure()`. */
+export interface LoaderOptions {
+  /** Let each op adapt `batchMin` from measured dispatch cost. Default true. */
+  adaptive?: boolean;
+  /** Initial batch threshold in [2, 8]. Default 2 (batch wins for n >= 2). */
+  batchMin?: number;
+  /** Max cached keys (bounded LRU). 0 disables caching. Default 256. */
+  maxCacheKeys?: number;
+  /** Default `cache` behavior for `load()`. Default true. */
+  caching?: boolean;
+  /** Sample timing every N dispatches (hot-path cost control). Default 32. */
+  sampleEvery?: number;
+  /**
+   * `load()` dispatch strategy. `"auto"` (default) switches each op between
+   * `"single"` (low load → direct scalar call, no coalescer) and
+   * `"coalesce"` (rising load → one packed batch call) from observed load.
+   */
+  loadStrategy?: LoadStrategy;
+}
+
+/** Options for `load()` / `opFn.load()`. */
+export interface LoadOptions {
+  /**
+   * Explicit cache key. When omitted (and caching is on) the default key is
+   * `fnv1a64(input)` — which costs one extra native call per load.
+   */
+  key?: string;
+  /** Override the loader-wide caching toggle for this call. Default true. */
+  cache?: boolean;
+}
+
+/** Per-op counters exposed on `opFn.stats`. */
+export interface LoaderOpStats {
+  scalarCalls: number;
+  batchCalls: number;
+  itemsDispatched: number;
+  cachedHits: number;
+  /** Current learned batch threshold for this op. */
+  batchMin: number;
+  /** Current `load()` strategy: "single" (low load) or "coalesce" (bulk). */
+  mode: "single" | "coalesce";
+}
+
+/** Aggregate loader statistics. */
+export interface LoaderStats {
+  scalarCalls: number;
+  batchCalls: number;
+  itemsDispatched: number;
+  flushes: number;
+  cachedHits: number;
+  cacheSize: number;
+  cacheEvictions: number;
+}
+
+/** A specialized, pre-bound op function returned by `loader(op)`. */
+export interface LoaderOpFn<K extends LoaderOpName> {
+  /** Single item → scalar result. */
+  (input: Uint8Array, ...rest: LoaderOpArgs[K]): LoaderScalar<K>;
+  /** Bulk items → ONE packed batch call; same shape as `rust.batch.<op>`. */
+  (inputs: Uint8Array[], ...rest: LoaderBulkArgs<K>): LoaderBulk<K>;
+  readonly name: K;
+  readonly stats: LoaderOpStats;
+  clear(): void;
+  /** Sync cache peek (default key `fnv1a64(input)` unless `key` given). */
+  cache(input: Uint8Array, key?: string): LoaderScalar<K> | undefined;
+  /**
+   * Coalesced, cache-aware load. Unavailable (`undefined`) on ops that require
+   * extra arguments (e.g. `hmacSha256`, `signCookie`) — use `run` for those.
+   */
+  load: K extends LoadableName ? LoaderLoadFn<K> : undefined;
+}
+
+type LoaderLoadFn<K extends LoaderOpName> = (
+  input: Uint8Array,
+  opts?: LoadOptions,
+) => Promise<LoaderScalar<K>>;
+
+/** Ops whose extra args are all optional/empty → they support `load()`. */
+type LoadableName = {
+  [K in LoaderOpName]: LoaderOpArgs[K] extends
+    | []
+    | [unknown?]
+    | [unknown?, unknown?]
+    | [unknown?, unknown?, unknown?]
+    ? K
+    : never;
+}[LoaderOpName];
+
+/** A validator-bound helper returned by `loader.schema(validator)`. */
+export interface LoaderSchemaFn {
+  /** Single JSON document → valid? */
+  (input: Uint8Array): boolean;
+  /** Bulk JSON documents → bitset (1 per doc). */
+  (inputs: Uint8Array[]): Uint8Array;
+  /** Count how many bulk documents are valid. */
+  count(inputs: Uint8Array[]): number;
+}
+
+/** The global callable loader. */
+export interface Loader {
+  /** Higher-order function: `loader(op)` → specialized hot op function. */
+  <K extends LoaderOpName>(op: K): LoaderOpFn<K>;
+  /** Single-item dispatch. */
+  run<K extends LoaderOpName>(
+    op: K,
+    input: Uint8Array,
+    ...rest: LoaderOpArgs[K]
+  ): LoaderScalar<K>;
+  /** Bulk dispatch (one packed batch call, or adaptive scalar loop). */
+  run<K extends LoaderOpName>(
+    op: K,
+    inputs: Uint8Array[],
+    ...rest: LoaderBulkArgs<K>
+  ): LoaderBulk<K>;
+  /** Coalesced, cache-aware load (ops with required extra args throw). */
+  load<K extends LoadableName>(
+    op: K,
+    input: Uint8Array,
+    opts?: LoadOptions,
+  ): Promise<LoaderScalar<K>>;
+  /** Sync cache peek. */
+  cache<K extends LoaderOpName>(
+    op: K,
+    input: Uint8Array,
+    key?: string,
+  ): LoaderScalar<K> | undefined;
+  /**
+   * Bind a `SchemaValidator` for repeated single/bulk JSON-schema validation
+   * plus a whole-batch `count`. The returned callable uses the loader's normal
+   * dispatch machinery (cost model + counters).
+   */
+  schema(validator: SchemaValidator): LoaderSchemaFn;
+  /** Clear the shared cache (pending coalesced loads still flush). */
+  clear(): void;
+  /** Update options at runtime. */
+  configure(options: LoaderOptions): void;
+  readonly stats: LoaderStats;
+  readonly opNames: LoaderOpName[];
+}
+
+// ── Internal state ──────────────────────────────────────────────────────────
+
+interface OpCounters {
+  scalarCalls: number;
+  batchCalls: number;
+  itemsDispatched: number;
+  cachedHits: number;
+}
+
+/** Load-dispatch strategy selector for `load()`. */
+type LoadStrategy = "auto" | "single" | "coalesce";
+
+/**
+ * Pre-bound per-op dispatch context — avoids Map lookups on the hot path.
+ * Holds the load-aware `load()` strategy plus its cheap integer signals so
+ * the single-vs-coalesce decision costs no Map lookup or allocation.
+ */
+interface OpDispatchCtx {
+  cost: LoaderCostModel;
+  counters: OpCounters;
+  sampleEvery: number;
+  /** Per-op sample tick counter (advances on every dispatch). */
+  counter: number;
+  /** Current `load()` strategy for this op. */
+  mode: "single" | "coalesce";
+  /** Consecutive single-load flushes observed (coalesce mode only). */
+  singleStreak: number;
+  /** A single-mode load is waiting on its microtask to dispatch. */
+  pendingSingle: boolean;
+  pendingInput: Uint8Array | null;
+  pendingResolve: ((value: unknown) => void) | null;
+  pendingReject: ((error: unknown) => void) | null;
+  pendingKey: string | undefined;
+  /** Default-key attempts (adaptive key computation). */
+  keyAttempts: number;
+  /** Default-key cache hits observed. */
+  keyHits: number;
+  /** Periodic re-probe counter for skipped default keys. */
+  keyProbeCounter: number;
+}
+
+/** A memoized op fn plus a hook to rebind its dispatch context on configure. */
+interface OpFnEntry {
+  op: LoaderOpName;
+  fn: LoaderOpFn<LoaderOpName>;
+  /** Rebind to a fresh context after `configure()` so dispatch + stats stay current. */
+  rebind(ctx: OpDispatchCtx): void;
+}
+
+interface LoaderState {
+  options: Required<
+    Pick<LoaderOptions, "adaptive" | "batchMin" | "maxCacheKeys" | "caching" | "sampleEvery" | "loadStrategy">
+  >;
+  ctxs: Map<LoaderOpName, OpDispatchCtx>;
+  cache: LoaderCache;
+  coalescer: TickCoalescer;
+  opFns: Map<LoaderOpName, OpFnEntry>;
+  flushes: number;
+  /** Reusable packed-input scratch for the zero-alloc fast flush (grows). */
+  packScratch: Uint8Array;
+  /** Reusable packed-output buffer for the zero-alloc fast flush (grows). */
+  outScratch: Uint8Array;
+}
+
+const KEY_SEP = "\u0000";
+
+// ── Load-aware `load()` strategy + adaptive-key tuning ──
+/** Consecutive single-load flushes before an op drops the coalescer. */
+const SINGLE_AFTER = 4;
+/** Default-key attempts before unique inputs stop paying the fnv1a64 key. */
+const KEY_WARMUP = 8;
+/** After warm-up with zero hits, re-probe the default key every N loads. */
+const KEY_PROBE_EVERY = 64;
+
+/** Get (or lazily create) the dispatch context for an op. */
+function ctxFor(state: LoaderState, op: LoaderOpName): OpDispatchCtx {
+  let ctx = state.ctxs.get(op);
+  if (!ctx) {
+    ctx = {
+      cost: createCostModel({
+        adaptive: state.options.adaptive,
+        batchMin: state.options.batchMin,
+      }),
+      counters: { scalarCalls: 0, batchCalls: 0, itemsDispatched: 0, cachedHits: 0 },
+      sampleEvery: state.options.sampleEvery,
+      counter: 0,
+      // Load-aware strategy: "auto" starts coalescing so bursts batch from
+      // the first tick; it drops to "single" after sustained single-load
+      // flushes and back to "coalesce" on a same-tick burst.
+      mode: state.options.loadStrategy === "single" ? "single" : "coalesce",
+      singleStreak: 0,
+      pendingSingle: false,
+      pendingInput: null,
+      pendingResolve: null,
+      pendingReject: null,
+      pendingKey: undefined,
+      keyAttempts: 0,
+      keyHits: 0,
+      keyProbeCounter: 0,
+    };
+    state.ctxs.set(op, ctx);
+  }
+  return ctx;
+}
+
+/** Build a bulk-shaped result by looping scalar calls (the adaptive fallback). */
+function scalarLoopBulk(
+  spec: LoaderOpSpec,
+  items: Uint8Array[],
+  rest: unknown[],
+): unknown {
+  const n = items.length;
+  const paired = spec.pairedRest ?? [];
+  // For paired ops the `rest` holds per-item companion ARRAYS; split them so
+  // each scalar call gets its own companion + the shared args. Non-paired ops
+  // take the `rest` array directly (zero allocation on the fallback path).
+  const itemRest = (i: number): unknown[] =>
+    paired.length === 0
+      ? rest
+      : rest.map((r, idx) =>
+          paired.includes(idx) ? (r as unknown[])[i] : r,
+        );
+  switch (spec.kind) {
+    case "boolean": {
+      const out = new Uint8Array(n);
+      let i = 0;
+      // NOTE: index the output with `i` (not `i++` inline) so `itemRest(i)`
+      // sees the CURRENT index — `out[i++] = f(...itemRest(i))` would read the
+      // already-incremented index (undefined companions for paired ops).
+      for (const item of items) {
+        out[i] = spec.scalar(item, ...itemRest(i)) ? 1 : 0;
+        i++;
+      }
+      return out;
+    }
+    case "number": {
+      const out = new Uint32Array(n);
+      let i = 0;
+      for (const item of items) {
+        out[i] = spec.scalar(item, ...itemRest(i)) as number;
+        i++;
+      }
+      return out;
+    }
+    case "bigint": {
+      const out = spec.unsigned ? new BigUint64Array(n) : new BigInt64Array(n);
+      let i = 0;
+      for (const item of items) {
+        out[i] = spec.scalar(item, ...itemRest(i)) as bigint;
+        i++;
+      }
+      return out;
+    }
+    case "bytes": {
+      const out = new Array<Uint8Array>(n);
+      let i = 0;
+      for (const item of items) {
+        out[i] = spec.scalar(item, ...itemRest(i)) as Uint8Array;
+        i++;
+      }
+      return out;
+    }
+  }
+}
+
+/** Single-item dispatch — no Map lookups; timed only on sample ticks. */
+function dispatchSingle(
+  ctx: OpDispatchCtx,
+  spec: LoaderOpSpec,
+  input: Uint8Array,
+  rest: unknown[],
+): unknown {
+  const c = ctx.counters;
+  c.scalarCalls++;
+  c.itemsDispatched++;
+  const t = ++ctx.counter % ctx.sampleEvery === 0 ? nowNs() : 0;
+  const out = rest.length === 0 ? spec.scalar(input) : spec.scalar(input, ...rest);
+  if (t !== 0) ctx.cost.recordScalar(1, nowNs() - t);
+  return out;
+}
+
+/** Bulk dispatch — packed batch, or adaptive scalar loop for tiny batches. */
+function dispatchBulk(
+  ctx: OpDispatchCtx,
+  spec: LoaderOpSpec,
+  items: Uint8Array[],
+  rest: unknown[],
+): unknown {
+  const n = items.length;
+  const c = ctx.counters;
+  c.itemsDispatched += n;
+
+  if (ctx.cost.decide(n)) {
+    const t = ++ctx.counter % ctx.sampleEvery === 0 ? nowNs() : 0;
+    const out = spec.batch(items, ...rest);
+    if (t !== 0) ctx.cost.recordBatch(n, nowNs() - t);
+    c.batchCalls++;
+    return out;
+  }
+
+  const t = ++ctx.counter % ctx.sampleEvery === 0 ? nowNs() : 0;
+  const out = scalarLoopBulk(spec, items, rest);
+  if (t !== 0) ctx.cost.recordScalar(n, nowNs() - t);
+  c.scalarCalls++;
+  return out;
+}
+
+/** Write a computed value into the cache when the request opted in. */
+function maybeCache(
+  state: LoaderState,
+  req: LoadRequest,
+  value: unknown,
+): void {
+  if (req.key !== undefined) state.cache.set(req.key, value);
+}
+
+/** Handle a coalesced flush group for one op. */
+function handleFlush(
+  state: LoaderState,
+  op: LoaderOpName,
+  requests: LoadRequest[],
+): void {
+  state.flushes++;
+  const ctx = ctxFor(state, op);
+  const spec: LoaderOpSpec = LOADER_OPS[op];
+  const n = requests.length;
+  if (n === 1) {
+    // Low load observed. After a sustained run of single flushes, drop the
+    // coalescer for this op and dispatch singles directly (mode: "single").
+    if (ctx.mode === "coalesce" && state.options.loadStrategy === "auto") {
+      ctx.singleStreak++;
+      if (ctx.singleStreak >= SINGLE_AFTER) ctx.mode = "single";
+    }
+    const req = requests[0];
+    if (req === undefined) return;
+    try {
+      const value = dispatchSingle(ctx, spec, req.input, []);
+      maybeCache(state, req, value);
+      req.resolve(value);
+    } catch (err) {
+      req.reject(err);
+    }
+    return;
+  }
+
+  // A real burst (n >= 2) keeps coalescing; reset the single-run counter.
+  ctx.singleStreak = 0;
+
+  // Zero-alloc fast flush (boolean/number/bigint ops): pack the inputs into a
+  // reusable scratch, write the packed native result straight into a reusable
+  // output buffer via the `_into` variants, and read each element out of it —
+  // no intermediate unpack array, no per-call native Vec or JS allocation.
+  if (spec.fast !== undefined) {
+    const c = ctx.counters;
+    c.batchCalls++;
+    c.itemsDispatched += n;
+
+    // Pack the requests directly (no `items.map`) into the reusable scratch.
+    let total = 4;
+    for (const req of requests) total += 4 + req.input.byteLength;
+    let scratch = state.packScratch;
+    if (scratch.byteLength < total) {
+      scratch = new Uint8Array(Math.max(256, total * 2));
+      state.packScratch = scratch;
+    }
+    const packView = viewForArrayBuffer(scratch.buffer, scratch.byteOffset);
+    packView.setUint32(0, n, true);
+    let pos = 4;
+    for (const req of requests) {
+      packView.setUint32(pos, req.input.byteLength, true);
+      pos += 4;
+      scratch.set(req.input, pos);
+      pos += req.input.byteLength;
+    }
+
+    // Size the reusable output buffer to the exact packed result.
+    const outSize = spec.fast.outSize(n);
+    let out = state.outScratch;
+    if (out.byteLength < outSize) {
+      out = new Uint8Array(outSize);
+      state.outScratch = out;
+    }
+    try {
+      spec.fast.batch(scratch.subarray(0, total), out);
+      const outView = viewForArrayBuffer(out.buffer, out.byteOffset);
+      for (let i = 0; i < n; i++) {
+        const req = requests[i];
+        if (req === undefined) continue;
+        const value = spec.fast.element(outView, out, i);
+        maybeCache(state, req, value);
+        req.resolve(value);
+      }
+    } catch (err) {
+      for (const req of requests) req.reject(err);
+    }
+    return;
+  }
+
+  const items = requests.map((r) => r.input);
+  try {
+    const bulk = dispatchBulk(ctx, spec, items, []);
+    for (let i = 0; i < n; i++) {
+      const req = requests[i];
+      if (req === undefined) continue;
+      const value = spec.element(bulk, i);
+      maybeCache(state, req, value);
+      req.resolve(value);
+    }
+  } catch (err) {
+    for (const req of requests) req.reject(err);
+  }
+}
+
+/**
+ * Decide whether to compute a default (`fnv1a64`) cache key for this call.
+ * Warm-up always computes (documented default). Once enough attempts show
+ * ZERO hits the inputs are unique — skip the key (one native crossing +
+ * string alloc) so `load()` stays cheap for unique workloads; a periodic
+ * probe re-enables it if inputs start repeating.
+ */
+function shouldComputeDefaultKey(ctx: OpDispatchCtx): boolean {
+  if (ctx.keyAttempts < KEY_WARMUP) return true;
+  if (ctx.keyHits > 0) return true;
+  return ++ctx.keyProbeCounter % KEY_PROBE_EVERY === 0;
+}
+
+/** Resolve a single-mode load: dispatch the scalar and (optionally) cache. */
+function flushSingle(
+  state: LoaderState,
+  op: LoaderOpName,
+  ctx: OpDispatchCtx,
+): void {
+  const spec = LOADER_OPS[op];
+  const input = ctx.pendingInput;
+  const resolve = ctx.pendingResolve;
+  const reject = ctx.pendingReject;
+  const key = ctx.pendingKey;
+  ctx.pendingSingle = false;
+  ctx.pendingInput = null;
+  ctx.pendingResolve = null;
+  ctx.pendingReject = null;
+  ctx.pendingKey = undefined;
+  // A same-tick burst moved this request to the coalescer — nothing to do.
+  if (input === null || resolve === null) return;
+  try {
+    const value = dispatchSingle(ctx, spec, input, []);
+    if (key !== undefined) state.cache.set(key, value);
+    resolve(value);
+  } catch (err) {
+    if (reject !== null) reject(err);
+  }
+}
+
+/** Shared `load` implementation used by `opFn.load` and `loader.load`. */
+function loadOne(
+  state: LoaderState,
+  op: LoaderOpName,
+  input: Uint8Array,
+  opts?: LoadOptions,
+): Promise<unknown> {
+  // Ops with required extra args cannot be coalesced (all group members must
+  // share the same args); surface a clear error instead of a broken batch.
+  if (hasRequiredRest(op)) {
+    return Promise.reject(
+      new TypeError(
+        `loader.load: op "${op}" requires extra arguments; use loader.run("${op}", …) instead`,
+      ),
+    );
+  }
+
+  const ctx = ctxFor(state, op);
+  const caching =
+    state.options.caching && state.options.maxCacheKeys > 0 && (opts?.cache ?? true);
+
+  let key: string | undefined;
+  if (caching) {
+    if (opts?.key !== undefined) {
+      key = op + KEY_SEP + opts.key;
+    } else if (shouldComputeDefaultKey(ctx)) {
+      ctx.keyAttempts++;
+      key = op + KEY_SEP + String(rust.fnv1a64(input));
+    }
+    if (key !== undefined) {
+      const hit = state.cache.get(key);
+      if (hit !== undefined) {
+        ctx.counters.cachedHits++;
+        if (opts?.key === undefined) ctx.keyHits++;
+        return Promise.resolve(hit);
+      }
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    // Load-time strategy: low load → single scalar call (no coalescer
+    // bookkeeping, no flush); a rising same-tick load → switch to bulk.
+    if (ctx.mode === "single") {
+      if (!ctx.pendingSingle) {
+        ctx.pendingSingle = true;
+        ctx.pendingInput = input;
+        ctx.pendingResolve = resolve;
+        ctx.pendingReject = reject;
+        ctx.pendingKey = key;
+        queueMicrotask(() => flushSingle(state, op, ctx));
+      } else {
+        // A second load in the same event-loop tick = rising load → coalesce.
+        ctx.mode = "coalesce";
+        const first: LoadRequest = {
+          input: ctx.pendingInput ?? input,
+          resolve: ctx.pendingResolve ?? resolve,
+          reject: ctx.pendingReject ?? reject,
+          key: ctx.pendingKey,
+        };
+        ctx.pendingSingle = false;
+        ctx.pendingInput = null;
+        ctx.pendingResolve = null;
+        ctx.pendingReject = null;
+        ctx.pendingKey = undefined;
+        state.coalescer.enqueue(op, first);
+        state.coalescer.enqueue(op, { input, resolve, reject, key });
+      }
+      return;
+    }
+    state.coalescer.enqueue(op, { input, resolve, reject, key });
+  });
+}
+
+function hasRequiredRest(op: LoaderOpName): boolean {
+  // Derived statically; a cheap runtime guard is unnecessary, so keep this
+  // allowlist aligned with `LoadableName` above. Ops with required extra args
+  // OR per-item companions cannot be coalesced (all group members must share
+  // the same args) — `load()` is unavailable for them.
+  switch (op) {
+    case "signCookie":
+    case "verifyCookie":
+    case "csrfVerify":
+    case "passwordHash":
+    case "passwordVerify":
+    case "hmacSha256":
+    case "hmacSha256Verify":
+    case "aeadEncrypt":
+    case "aeadDecrypt":
+    case "jwtSign":
+    case "jwtVerify":
+    case "jsonPatch":
+    case "urlResolve":
+    case "wsFrameEncode":
+    case "schemaValidate":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Build a specialized hot function for one op. */
+function makeOpFn<K extends LoaderOpName>(
+  op: K,
+  state: LoaderState,
+): OpFnEntry {
+  const spec = LOADER_OPS[op];
+  // `ctx` is rebound on `configure()` (see OpFnEntry.rebind) so the hot path
+  // stays a zero-lookup closure WITHOUT going stale after reconfiguration.
+  let ctx = ctxFor(state, op);
+
+  function opFn(input: Uint8Array | Uint8Array[], ...rest: unknown[]): unknown {
+    if (Array.isArray(input)) {
+      return dispatchBulk(ctx, spec, input as Uint8Array[], rest);
+    }
+    return dispatchSingle(ctx, spec, input as Uint8Array, rest);
+  }
+
+  const statsGetter = (): LoaderOpStats => {
+    const c = ctx.counters;
+    return {
+      scalarCalls: c.scalarCalls,
+      batchCalls: c.batchCalls,
+      itemsDispatched: c.itemsDispatched,
+      cachedHits: c.cachedHits,
+      batchMin: ctx.cost.batchMin,
+      mode: ctx.mode,
+    };
+  };
+
+  const loadFn = hasRequiredRest(op)
+    ? undefined
+    : (input: Uint8Array, opts?: LoadOptions) =>
+        loadOne(state, op, input, opts) as Promise<LoaderScalar<K>>;
+
+  Object.defineProperties(opFn, {
+    name: { value: op, enumerable: true },
+    stats: { get: statsGetter, enumerable: true },
+    clear: { value: () => state.cache.clear(), enumerable: true },
+    cache: {
+      value: (input: Uint8Array, key?: string) => {
+        const raw = key ?? String(rust.fnv1a64(input));
+        return state.cache.get(op + KEY_SEP + raw) as LoaderScalar<K> | undefined;
+      },
+      enumerable: true,
+    },
+    load: { value: loadFn, enumerable: true },
+  });
+
+  return {
+    op,
+    fn: opFn as unknown as LoaderOpFn<LoaderOpName>,
+    rebind(next: OpDispatchCtx) {
+      ctx = next;
+    },
+  };
+}
+
+// ── Factory + singleton ─────────────────────────────────────────────────────
+
+/** Create an isolated loader with the given defaults. */
+export function createLoader(options: LoaderOptions = {}): Loader {
+  const state: LoaderState = {
+    options: {
+      adaptive: options.adaptive !== false,
+      batchMin: Math.max(2, Math.min(8, options.batchMin ?? 2)),
+      maxCacheKeys: options.maxCacheKeys ?? 256,
+      caching: options.caching !== false,
+      sampleEvery: options.sampleEvery ?? 32,
+      loadStrategy: options.loadStrategy ?? "auto",
+    },
+    ctxs: new Map(),
+    cache: createLruCache(options.maxCacheKeys ?? 256),
+    coalescer: createTickCoalescer((op, requests) =>
+      handleFlush(state, op as LoaderOpName, requests),
+    ),
+    opFns: new Map(),
+    flushes: 0,
+    packScratch: new Uint8Array(0),
+    outScratch: new Uint8Array(0),
+  };
+
+  const loader = ((op: LoaderOpName): LoaderOpFn<LoaderOpName> => {
+    let entry = state.opFns.get(op);
+    if (!entry) {
+      entry = makeOpFn(op, state);
+      state.opFns.set(op, entry);
+    }
+    return entry.fn;
+  }) as unknown as Loader;
+
+  const runFn = (
+    op: LoaderOpName,
+    input: Uint8Array | Uint8Array[],
+    ...rest: unknown[]
+  ): unknown => {
+    const spec = LOADER_OPS[op];
+    const ctx = ctxFor(state, op);
+    if (Array.isArray(input)) {
+      return dispatchBulk(ctx, spec, input, rest);
+    }
+    return dispatchSingle(ctx, spec, input, rest);
+  };
+
+  const loadFn = <K extends LoadableName>(
+    op: K,
+    input: Uint8Array,
+    opts?: LoadOptions,
+  ) => loadOne(state, op, input, opts) as Promise<LoaderScalar<K>>;
+
+  const cacheFn = <K extends LoaderOpName>(
+    op: K,
+    input: Uint8Array,
+    key?: string,
+  ): LoaderScalar<K> | undefined => {
+    const raw = key ?? String(rust.fnv1a64(input));
+    return state.cache.get(op + KEY_SEP + raw) as LoaderScalar<K> | undefined;
+  };
+
+  const configureFn = (next: LoaderOptions) => {
+    const prev = state.options;
+    state.options = {
+      adaptive: next.adaptive ?? prev.adaptive,
+      batchMin: Math.max(2, Math.min(8, next.batchMin ?? prev.batchMin)),
+      maxCacheKeys: next.maxCacheKeys ?? prev.maxCacheKeys,
+      caching: next.caching ?? prev.caching,
+      sampleEvery: next.sampleEvery ?? prev.sampleEvery,
+      loadStrategy: next.loadStrategy ?? prev.loadStrategy,
+    };
+    // A config change invalidates learned thresholds; start fresh AND rebind
+    // every memoized op fn so its dispatch/stats keep using the current ctx.
+    state.ctxs.clear();
+    for (const entry of state.opFns.values()) {
+      entry.rebind(ctxFor(state, entry.op));
+    }
+    // Rebuild the cache if its capacity changed.
+    if (next.maxCacheKeys !== undefined && next.maxCacheKeys !== prev.maxCacheKeys) {
+      state.cache = createLruCache(state.options.maxCacheKeys);
+    }
+  };
+
+  const statsGetter = (): LoaderStats => {
+    let scalarCalls = 0;
+    let batchCalls = 0;
+    let itemsDispatched = 0;
+    let cachedHits = 0;
+    for (const ctx of state.ctxs.values()) {
+      const c = ctx.counters;
+      scalarCalls += c.scalarCalls;
+      batchCalls += c.batchCalls;
+      itemsDispatched += c.itemsDispatched;
+      cachedHits += c.cachedHits;
+    }
+    return {
+      scalarCalls,
+      batchCalls,
+      itemsDispatched,
+      flushes: state.flushes,
+      cachedHits,
+      cacheSize: state.cache.size,
+      cacheEvictions: state.cache.evictions,
+    };
+  };
+
+  const opNamesGetter = (): LoaderOpName[] =>
+    Object.keys(LOADER_OPS) as LoaderOpName[];
+
+  // Bind a SchemaValidator: single/bulk validate through the loader's normal
+  // dispatch machinery (shared cost model + counters), plus a whole-batch count.
+  const schemaFn = (validator: SchemaValidator): LoaderSchemaFn => {
+    const spec = LOADER_OPS.schemaValidate;
+    const ctx = ctxFor(state, "schemaValidate");
+    const fn = ((input: Uint8Array | Uint8Array[]) => {
+      if (Array.isArray(input)) {
+        return dispatchBulk(ctx, spec, input, [validator]) as Uint8Array;
+      }
+      return dispatchSingle(ctx, spec, input, [validator]) as boolean;
+    }) as LoaderSchemaFn;
+    Object.defineProperty(fn, "count", {
+      value: (inputs: Uint8Array[]) =>
+        rust.batch.schemaValidateCount(validator, inputs),
+      enumerable: true,
+    });
+    return fn;
+  };
+
+  Object.defineProperties(loader, {
+    run: { value: runFn, enumerable: true },
+    load: { value: loadFn, enumerable: true },
+    cache: { value: cacheFn, enumerable: true },
+    schema: { value: schemaFn, enumerable: true },
+    clear: { value: () => state.cache.clear(), enumerable: true },
+    configure: { value: configureFn, enumerable: true },
+    stats: { get: statsGetter, enumerable: true },
+    opNames: { get: opNamesGetter, enumerable: true },
+  });
+
+  return loader;
+}
+
+/**
+ * The global, ready-to-use loader. Most consumers just do
+ * `import { loader } from "castrum"` and either `loader("validateEmail")(…)`
+ * (higher-order function) or `loader.run("validateEmail", …)`.
+ */
+export const loader = createLoader();

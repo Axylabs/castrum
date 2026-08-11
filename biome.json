@@ -7,9 +7,9 @@
       "**/src/**",
       "**/test/**",
       "**/scripts/**",
-      "!**/dist/**",
-      "!**/node_modules/**",
-      "!**/bench/results/**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/bench/results",
       "!**/index.js",
       "!**/index.d.ts"
     ]

@@ -1,17 +1,17 @@
 // rust/http/headers.rs — HeaderRefs: zero-alloc packed header parser
 // Uses the shared word-at-a-time comparator from `bytes.rs`.
+//
+// Pure core (no napi types): errors are plain `String` messages; the napi
+// boundary maps them to JS errors.
 
 use crate::util::bytes::ascii_eq_ignore_case;
-use napi::{Error, Result};
 
 // ── Header presence flags ─────────────────────────────────────────
 const HAS_ORIGIN: u8 = 1 << 0;
-const HAS_COOKIE: u8 = 1 << 1;
-const HAS_XFF: u8 = 1 << 2;
-const HAS_X_REAL_IP: u8 = 1 << 3;
-const HAS_XFP: u8 = 1 << 4;
-const HAS_ACRM: u8 = 1 << 5;
-const HAS_ACRH: u8 = 1 << 6;
+const HAS_XFF: u8 = 1 << 1;
+const HAS_X_REAL_IP: u8 = 1 << 2;
+const HAS_XFP: u8 = 1 << 3;
+const HAS_ACRM: u8 = 1 << 4;
 
 /// Zero-alloc reference-based representation of interesting headers.
 #[derive(Clone, Copy)]
@@ -44,7 +44,11 @@ impl<'a> HeaderRefs<'a> {
     /// Parse packed headers from the input buffer.
     /// Format: [u16 count] repeated { [u16 name_len] [name] [u32 value_len] [value] }
     #[inline]
-    pub fn parse(packed: &'a [u8], is_options: bool, max_headers: usize) -> Result<Self> {
+    pub fn parse(
+        packed: &'a [u8],
+        is_options: bool,
+        max_headers: usize,
+    ) -> std::result::Result<Self, String> {
         let mut h = Self::empty();
 
         if packed.len() < 2 {
@@ -53,28 +57,28 @@ impl<'a> HeaderRefs<'a> {
 
         let count = u16::from_le_bytes([packed[0], packed[1]]) as usize;
         if count > max_headers {
-            return Err(Error::from_reason("too many headers"));
+            return Err("too many headers".to_string());
         }
 
         let mut pos = 2usize;
 
         for _ in 0..count {
             if pos + 2 > packed.len() {
-                return Err(Error::from_reason("malformed packed headers"));
+                return Err("malformed packed headers".to_string());
             }
 
             let name_len = u16::from_le_bytes([packed[pos], packed[pos + 1]]) as usize;
             pos += 2;
 
             if pos + name_len > packed.len() {
-                return Err(Error::from_reason("malformed packed header name"));
+                return Err("malformed packed header name".to_string());
             }
 
             let name = &packed[pos..pos + name_len];
             pos += name_len;
 
             if pos + 4 > packed.len() {
-                return Err(Error::from_reason("malformed packed header value length"));
+                return Err("malformed packed header value length".to_string());
             }
 
             let value_len = u32::from_le_bytes([
@@ -86,7 +90,7 @@ impl<'a> HeaderRefs<'a> {
             pos += 4;
 
             if pos + value_len > packed.len() {
-                return Err(Error::from_reason("malformed packed header value"));
+                return Err("malformed packed header value".to_string());
             }
 
             let value = &packed[pos..pos + value_len];
@@ -106,7 +110,6 @@ impl<'a> HeaderRefs<'a> {
                 }
             } else if first == b'c' && name.len() == 6 {
                 if ascii_eq_ignore_case(name, b"cookie") {
-                    h.flags |= HAS_COOKIE;
                     h.cookie = Some(value);
                 }
             } else if first == b'x' {
@@ -129,7 +132,6 @@ impl<'a> HeaderRefs<'a> {
                 } else if name.len() == 30
                     && ascii_eq_ignore_case(name, b"access-control-request-headers")
                 {
-                    h.flags |= HAS_ACRH;
                     h.acrh = Some(value);
                 }
             }
@@ -179,11 +181,6 @@ impl<'a> HeaderRefs<'a> {
     }
 
     #[inline(always)]
-    pub fn has_cookie(&self) -> bool {
-        (self.flags & HAS_COOKIE) != 0
-    }
-
-    #[inline(always)]
     pub fn has_xfp(&self) -> bool {
         (self.flags & HAS_XFP) != 0
     }
@@ -191,10 +188,5 @@ impl<'a> HeaderRefs<'a> {
     #[inline(always)]
     pub fn has_acrm(&self) -> bool {
         (self.flags & HAS_ACRM) != 0
-    }
-
-    #[inline(always)]
-    pub fn has_acrh(&self) -> bool {
-        (self.flags & HAS_ACRH) != 0
     }
 }

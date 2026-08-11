@@ -1,10 +1,9 @@
 // src/ingress/context.ts — Result snapshotting + synthetic/error context
 // builders for the async ingress API.
 
-import { type ResponseBuildContext } from "./headers/fast-templates";
+import type { ResponseBuildContext } from "./headers/fast-templates";
 import { buildTerminalResponse } from "./response/terminal";
 import {
-  ERR_CODE_BODY_TOO_LARGE,
   ERR_CODE_INTERNAL,
   ERR_CODE_RATE_LIMITED,
   HV_JSON,
@@ -18,7 +17,17 @@ import type {
 
 const EMPTY_BODY = new Uint8Array(0);
 
-/** Deep-snapshot a result so the caller can use it after `run()` returns. */
+/**
+ * Deep-snapshot a result so the caller can use it after `run()` returns.
+ *
+ * Note on aliasing: the returned `body` field aliases the request body buffer
+ * (`r.body`) — it is NOT copied — while `bodyJson()` returns a stable copy
+ * (captured once at snapshot time, safe after the live result is invalidated).
+ * In the async `createIngress` path the aliased buffer is the fully-
+ * materialized request body, which lives as long as the request and is never
+ * reused, so the alias is safe. Treat `body` as read-only; use `bodyJson()`
+ * for a defensive copy.
+ */
 export function snapshotResult(r: IngressResult): IngressResult {
   const cookies = r.cookiesJson();
   const query = r.queryJson();

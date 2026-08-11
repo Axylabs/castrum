@@ -194,9 +194,10 @@ function startMetricsReporter(): void {
 }
 
 // ── Optimized ingress instances ──
-// The optimized pipeline (native Ingress.handleRequestFullSync), the
-// zero-alloc result wrapper, header templates, error bodies and all route
-// handlers now live in src/ingress/handlers.ts. This file only wires config.
+// The optimized pipeline (JS packs the request frame → native
+// Ingress.handleRequestPacked), the zero-alloc result wrapper, header
+// templates, error bodies and all route handlers now live in
+// src/ingress/handlers.ts. This file only wires config.
 
 function ipFor(req: Request, srv: any): string | undefined {
   if (!NEED_SOCKET_IP) return undefined;

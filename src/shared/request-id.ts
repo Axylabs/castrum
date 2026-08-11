@@ -55,9 +55,9 @@ export function generateRequestId(): Uint8Array {
   BINARY[7] = COUNTER.lo & 0xff;
 
   for (let i = 0; i < 8; i++) {
-    const b = BINARY[i]!;
-    HEX[i * 2] = HEX_LOOKUP[b * 2]!;
-    HEX[i * 2 + 1] = HEX_LOOKUP[b * 2 + 1]!;
+    const b = BINARY[i] ?? 0;
+    HEX[i * 2] = HEX_LOOKUP[b * 2] ?? 0;
+    HEX[i * 2 + 1] = HEX_LOOKUP[b * 2 + 1] ?? 0;
   }
 
   return HEX;

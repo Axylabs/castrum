@@ -1,5 +1,10 @@
-import { decoder, encoder } from "./bytes";
-import { getAddon, lazyAddon, type SchemaValidatorInstance } from "../native";
+import { decoder, encoder, viewForArrayBuffer } from "./bytes";
+import {
+  getAddon,
+  lazyAddon,
+  type MultipartPart,
+  type SchemaValidatorInstance,
+} from "../native";
 
 // Lazy: importing this module does not dlopen the addon until first use.
 const addon = lazyAddon(getAddon);
@@ -92,6 +97,32 @@ export function unpackI64ArrayAsBigInt(bytes: Uint8Array): BigInt64Array {
   return out;
 }
 
+/**
+ * Unpack a packed i64 array as UNSIGNED `BigUint64Array`. Used by hash
+ * batches (e.g. `fnv1a64`) so the bulk result matches the unsigned `bigint`
+ * the scalar FFI returns.
+ */
+export function unpackU64ArrayAsBigInt(bytes: Uint8Array): BigUint64Array {
+  if (bytes.byteLength < 4) {
+    return new BigUint64Array(0);
+  }
+
+  const dv = dataView(bytes);
+  const count = readU32(dv, 0);
+
+  if (count > Math.floor((bytes.byteLength - 4) / 8)) {
+    throw new RangeError("packed buffer: invalid i64 count");
+  }
+
+  const out = new BigUint64Array(count);
+
+  for (let i = 0; i < count; i++) {
+    out[i] = dv.getBigUint64(4 + i * 8, true);
+  }
+
+  return out;
+}
+
 export function unpackByteResults(bytes: Uint8Array): Uint8Array[] {
   if (bytes.byteLength < 4) {
     return [];
@@ -111,6 +142,81 @@ export function unpackByteResults(bytes: Uint8Array): Uint8Array[] {
     offset += len;
 
     out.push(slice);
+  }
+
+  return out;
+}
+
+/**
+ * Decode a packed multipart batch: `[u32 item_count]{[u32 parts_len]
+ * [parts_packed]}` where each `parts_packed` is
+ * `[u32 part_count]{[u32 name_len][name][u8 has_filename][u32 filename_len]
+ * [filename][u8 has_ct][u32 ct_len][ct][u32 data_len][data]}`. Returns one
+ * array of parts per input item.
+ */
+export function unpackMultipartParts(bytes: Uint8Array): MultipartPart[][] {
+  if (bytes.byteLength < 4) {
+    return [];
+  }
+
+  const dv = dataView(bytes);
+  const itemCount = readU32(dv, 0);
+  const out: MultipartPart[][] = [];
+  let offset = 4;
+
+  for (let i = 0; i < itemCount; i++) {
+    const partsLen = readU32(dv, offset);
+    offset += 4;
+    const partsBytes = readSlice(bytes, offset, partsLen);
+    offset += partsLen;
+    out.push(readMultipartPartsPacked(partsBytes));
+  }
+
+  return out;
+}
+
+/** Decode a single `[u32 part_count]{…parts…}` packed buffer into objects. */
+function readMultipartPartsPacked(bytes: Uint8Array): MultipartPart[] {
+  if (bytes.byteLength < 4) {
+    return [];
+  }
+
+  const dv = dataView(bytes);
+  const count = readU32(dv, 0);
+  const out: MultipartPart[] = [];
+  let offset = 4;
+
+  for (let i = 0; i < count; i++) {
+    const nameLen = readU32(dv, offset);
+    offset += 4;
+    const name = decoder.decode(readSlice(bytes, offset, nameLen));
+    offset += nameLen;
+
+    const hasFilename = bytes[offset] ?? 0;
+    offset += 1;
+    const filenameLen = readU32(dv, offset);
+    offset += 4;
+    const filenameBytes = readSlice(bytes, offset, filenameLen);
+    offset += filenameLen;
+
+    const hasCt = bytes[offset] ?? 0;
+    offset += 1;
+    const ctLen = readU32(dv, offset);
+    offset += 4;
+    const ctBytes = readSlice(bytes, offset, ctLen);
+    offset += ctLen;
+
+    const dataLen = readU32(dv, offset);
+    offset += 4;
+    const data = readSlice(bytes, offset, dataLen);
+    offset += dataLen;
+
+    out.push({
+      name,
+      filename: hasFilename ? decoder.decode(filenameBytes) : null,
+      contentType: hasCt ? decoder.decode(ctBytes) : null,
+      data,
+    });
   }
 
   return out;
@@ -225,29 +331,116 @@ export function readHttpPacked(bytes: Uint8Array): ParsedHttpRequestPacked {
   };
 }
 
-export function packBatch(items: Uint8Array[]): Uint8Array {
+/** Total packed bytes for an item list: `[u32 count] { [u32 len][bytes] }`. */
+export function packedTotal(items: readonly Uint8Array[]): number {
   let total = 4;
-
   for (const item of items) {
     total += 4 + item.byteLength;
   }
+  return total;
+}
 
-  const out = new Uint8Array(total);
-  const dv = new DataView(out.buffer);
-
-  dv.setUint32(0, items.length, true);
-
-  let offset = 4;
-
-  for (const item of items) {
-    dv.setUint32(offset, item.byteLength, true);
-    offset += 4;
-
-    out.set(item, offset);
-    offset += item.byteLength;
+/**
+ * Write `[u32 count] { [u32 len][bytes] }` for `items` into `target` starting
+ * at `offset`, returning the offset just past the written bytes. Throws
+ * `RangeError` when `target` is too small. Pass a reusable `DataView` (see
+ * `viewForArrayBuffer`) to avoid re-creating one per hot call.
+ */
+export function writePack(
+  items: readonly Uint8Array[],
+  target: Uint8Array,
+  offset = 0,
+  dv?: DataView,
+): number {
+  const end = offset + packedTotal(items);
+  if (end > target.byteLength) {
+    throw new RangeError(
+      `packed buffer: target too small (${target.byteLength} < ${end})`,
+    );
   }
+  const view = dv ?? viewForArrayBuffer(target.buffer, target.byteOffset);
+  view.setUint32(offset, items.length, true);
+  let pos = offset + 4;
+  for (const item of items) {
+    view.setUint32(pos, item.byteLength, true);
+    pos += 4;
+    target.set(item, pos);
+    pos += item.byteLength;
+  }
+  return end;
+}
 
+/**
+ * Build a packed batch buffer. Returns an OWNED buffer (safe to hold across
+ * later calls) — this is the public entry point. Hot internal paths that can
+ * guarantee synchronous consumption should use `withPackScratch` instead.
+ */
+export function packBatch(items: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(packedTotal(items));
+  writePack(items, out);
   return out;
+}
+
+// ── Reusable packed-input scratch (hot batch path) ──────────────────
+// Native batch calls read the packed buffer synchronously and return an
+// independent result, so the input buffer may be reused across calls. A small
+// free-list keeps the steady-state hot path allocation-free. The caller MUST
+// NOT retain the subarray handed to `fn` past that call.
+
+const packScratchFree: Uint8Array[] = [];
+
+function acquirePackScratch(min: number): Uint8Array {
+  const buf = packScratchFree.pop() ?? new Uint8Array(0);
+  if (buf.byteLength < min) {
+    let size = Math.max(256, buf.byteLength * 2);
+    while (size < min) size *= 2;
+    return new Uint8Array(size);
+  }
+  return buf;
+}
+
+function releasePackScratch(buf: Uint8Array): void {
+  packScratchFree.push(buf);
+}
+
+/**
+ * Pack `items` into a reusable scratch and call `fn(packed)`, returning its
+ * result. The scratch is returned to the pool when `fn` returns (or throws).
+ */
+export function withPackScratch<T>(
+  items: readonly Uint8Array[],
+  fn: (packed: Uint8Array) => T,
+): T {
+  const buf = acquirePackScratch(packedTotal(items));
+  const end = writePack(items, buf);
+  try {
+    return fn(buf.subarray(0, end));
+  } finally {
+    releasePackScratch(buf);
+  }
+}
+
+/**
+ * Pack TWO item lists into two reusable scratches and call `fn(a, b)` — for
+ * paired ops (jsonPatch / hmacSha256Verify / passwordVerify / urlResolve) that
+ * feed two packed lists to one native call. Safe because the native call
+ * consumes both inputs synchronously.
+ */
+export function withPackScratch2<T>(
+  a: readonly Uint8Array[],
+  b: readonly Uint8Array[],
+  fn: (packedA: Uint8Array, packedB: Uint8Array) => T,
+): T {
+  const bufA = acquirePackScratch(packedTotal(a));
+  const bufB = acquirePackScratch(packedTotal(b));
+  const endA = writePack(a, bufA);
+  const endB = writePack(b, bufB);
+  try {
+    return fn(bufA.subarray(0, endA), bufB.subarray(0, endB));
+  } finally {
+    releasePackScratch(bufA);
+    releasePackScratch(bufB);
+  }
 }
 
 export function packPairs(pairs: Array<[string, string]>): Uint8Array {
@@ -287,14 +480,18 @@ export function schemaValidateBatch(
   validator: SchemaValidator,
   items: Uint8Array[],
 ): Uint8Array {
-  return unpackBitset(validator.validateBatchPackedBitset(packBatch(items)));
+  return withPackScratch(items, (packed) =>
+    unpackBitset(validator.validateBatchPackedBitset(packed)),
+  );
 }
 
 export function schemaValidateBatchCount(
   validator: SchemaValidator,
   items: Uint8Array[],
 ): number {
-  return validator.validateBatchPackedCount(packBatch(items));
+  return withPackScratch(items, (packed) =>
+    validator.validateBatchPackedCount(packed),
+  );
 }
 
 // ── High-level string parsers (convenience) ──────────────────────

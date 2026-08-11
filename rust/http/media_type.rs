@@ -155,6 +155,33 @@ pub fn parse_media_type(input: Uint8Array) -> Result<MediaTypeResult> {
     })
 }
 
+/// Zero-alloc media-type split: returns the `(type, subtype)` byte slices from
+/// `input`, replicating `parse_media_type_core`'s type/subtype acceptance
+/// rules (parameters stripped, whitespace-trimmed, non-empty, RFC 7230 token
+/// chars) WITHOUT building the lowercase `String`s or the params `Vec`. The
+/// caller compares case-insensitively against a precompiled lowercase expected
+/// side. Any non-token byte (including non-ASCII / invalid UTF-8) is rejected,
+/// exactly like the parser.
+#[inline]
+fn split_type_subtype(input: &[u8]) -> Option<(&[u8], &[u8])> {
+    let semi = input.iter().position(|&b| b == b';');
+    let main = match semi {
+        Some(i) => &input[..i],
+        None => input,
+    };
+    let main = trim_ascii_whitespace(main);
+    let slash = main.iter().position(|&b| b == b'/')?;
+    let ty = &main[..slash];
+    let subtype = &main[slash + 1..];
+    if ty.is_empty() || subtype.is_empty() {
+        return None;
+    }
+    if !ty.iter().all(|&b| is_token_char(b)) || !subtype.iter().all(|&b| is_token_char(b)) {
+        return None;
+    }
+    Some((ty, subtype))
+}
+
 /// Higher-order instance: provides a reusable `matches` (wildcard negotiation)
 /// helper and a consistent instance-based API for content-type handling.
 #[napi]
@@ -179,15 +206,23 @@ impl MediaTypeParser {
     }
 
     /// Wildcard match: `expected` may be `*/*`, `type/*`, or exact `type/subtype`.
+    /// Zero-alloc: both sides are split into byte slices and compared
+    /// case-insensitively (no String / params-Vec allocation per call).
     #[napi]
     pub fn matches(&self, actual: Uint8Array, expected: Uint8Array) -> bool {
-        let (Ok(a), Ok(e)) = (
-            parse_media_type_core(actual.as_ref()),
-            parse_media_type_core(expected.as_ref()),
+        let (Some((aty, ast)), Some((ety, est))) = (
+            split_type_subtype(actual.as_ref()),
+            split_type_subtype(expected.as_ref()),
         ) else {
             return false;
         };
-        (e.ty == "*" || e.ty == a.ty) && (e.subtype == "*" || e.subtype == a.subtype)
+        let ty_ok =
+            crate::util::bytes::ascii_eq_ignore_case(ety, b"*")
+                || crate::util::bytes::ascii_eq_ignore_case(ety, aty);
+        let st_ok =
+            crate::util::bytes::ascii_eq_ignore_case(est, b"*")
+                || crate::util::bytes::ascii_eq_ignore_case(est, ast);
+        ty_ok && st_ok
     }
 }
 
@@ -214,14 +249,18 @@ impl MediaTypeMatcher {
     }
 
     /// Wildcard match against the precompiled expected type. Only `actual` is
-    /// parsed per call — `expected` was normalized once at construction.
+    /// inspected per call — `expected` was normalized once at construction, and
+    /// the actual side is split into byte slices (no String / params-Vec alloc).
     #[napi]
     pub fn matches(&self, actual: Uint8Array) -> bool {
-        let Ok(a) = parse_media_type_core(actual.as_ref()) else {
+        let Some((ty, subtype)) = split_type_subtype(actual.as_ref()) else {
             return false;
         };
-        (self.expected_ty == "*" || self.expected_ty == a.ty)
-            && (self.expected_subtype == "*" || self.expected_subtype == a.subtype)
+        let ty_ok = self.expected_ty == "*"
+            || crate::util::bytes::ascii_eq_ignore_case(ty, self.expected_ty.as_bytes());
+        let st_ok = self.expected_subtype == "*"
+            || crate::util::bytes::ascii_eq_ignore_case(subtype, self.expected_subtype.as_bytes());
+        ty_ok && st_ok
     }
 }
 

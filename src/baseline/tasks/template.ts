@@ -81,8 +81,8 @@ function render(src: string, ctx: Record<string, unknown>): string {
     // Tag handling: `{% for %}` … `{% endfor %}`.
     const forMatch = /^for\s+(\w+)\s+in\s+(.+)$/.exec(inner);
     if (forMatch) {
-      const itemName = forMatch[1]!;
-      const expr = forMatch[2]!;
+      const itemName = forMatch[1] ?? "";
+      const expr = forMatch[2] ?? "";
       const endToken = "{% endfor %}";
       const endIdx = src.indexOf(endToken, close + 2);
       if (endIdx === -1) {

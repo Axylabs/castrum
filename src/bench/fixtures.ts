@@ -457,7 +457,7 @@ export function createComplexFixtures(): ComplexFixtures {
 
   const urlLarge = encoder.encode(
     "https://example.com/path/to/resource?search=" +
-      encodeURIComponent("hello world & foo=bar " + "x".repeat(2000)),
+      encodeURIComponent(`hello world & foo=bar ${String("x").repeat(2000)}`),
   );
 
   const batchJsonDocs = Array.from({ length: 100 }, (_, i) =>

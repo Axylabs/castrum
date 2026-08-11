@@ -41,7 +41,7 @@ export function nativeWsFrameEncode(
 
   if (mask) {
     for (const b of MASK_KEY) out[pos++] = b;
-    for (let i = 0; i < len; i++) out[pos++] = (payload[i] ?? 0) ^ MASK_KEY[i & 3]!;
+    for (let i = 0; i < len; i++) out[pos++] = (payload[i] ?? 0) ^ (MASK_KEY[i & 3] ?? 0);
   } else {
     out.set(payload, pos);
   }
@@ -54,10 +54,10 @@ export function nativeWsFrameDecode(data: Uint8Array): WsFrame | null {
   if (data.length < 2) return null;
   const buf = Buffer.from(data);
 
-  const fin = (buf[0]! & 0x80) !== 0;
-  const opcode = buf[0]! & 0x0f;
-  const masked = (buf[1]! & 0x80) !== 0;
-  let len = buf[1]! & 0x7f;
+  const fin = ((buf[0] ?? 0) & 0x80) !== 0;
+  const opcode = (buf[0] ?? 0) & 0x0f;
+  const masked = ((buf[1] ?? 0) & 0x80) !== 0;
+  let len = (buf[1] ?? 0) & 0x7f;
   let pos = 2;
 
   if (len === 126) {
@@ -74,7 +74,7 @@ export function nativeWsFrameDecode(data: Uint8Array): WsFrame | null {
   const maskKey: [number, number, number, number] = [0, 0, 0, 0];
   if (masked) {
     if (buf.length < pos + 4) return null;
-    for (let i = 0; i < 4; i++) maskKey[i] = buf[pos + i]!;
+    for (let i = 0; i < 4; i++) maskKey[i] = buf[pos + i] ?? 0;
     pos += 4;
   }
 
@@ -83,7 +83,9 @@ export function nativeWsFrameDecode(data: Uint8Array): WsFrame | null {
 
   const payload = new Uint8Array(len);
   for (let i = 0; i < len; i++) {
-    payload[i] = masked ? (payloadBuf[i]! ^ maskKey[i & 3]!) : payloadBuf[i]!;
+    payload[i] = masked
+      ? ((payloadBuf[i] ?? 0) ^ (maskKey[i & 3] ?? 0))
+      : (payloadBuf[i] ?? 0);
   }
 
   return { fin, opcode, payload };

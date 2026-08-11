@@ -18,7 +18,7 @@ const root = process.cwd();
 const tmp = mkdtempSync(join(tmpdir(), "castrum-install-"));
 try {
   // 1. Pack (partial: only the host-platform .node is present in this repo).
-  const packOut = execSync("npm pack --pack-destination " + JSON.stringify(tmp) + " --json", {
+  const packOut = execSync(`npm pack --pack-destination ${JSON.stringify(tmp)} --json`, {
     cwd: root,
     env: { ...process.env, CASTRUM_PUBLISH_ALLOW_PARTIAL: "1" },
     encoding: "utf8",

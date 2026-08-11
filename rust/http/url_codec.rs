@@ -5,18 +5,33 @@ use memchr::memchr;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-#[inline(always)]
-fn is_unreserved(b: u8) -> bool {
+const fn is_unreserved_char(b: u8) -> bool {
     matches!(b,
         b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
         | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | 0x27 | b'(' | b')'
     )
 }
 
-#[napi]
-pub fn url_encode(input: Uint8Array) -> Buffer {
-    let input = input.as_ref();
+/// 256-entry lookup for RFC 3986 unreserved characters — one table load per
+/// byte instead of a chain of range compares on the hot encoding loop.
+static UNRESERVED_LUT: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        t[i] = is_unreserved_char(i as u8);
+        i += 1;
+    }
+    t
+};
 
+#[inline(always)]
+fn is_unreserved(b: u8) -> bool {
+    UNRESERVED_LUT[b as usize]
+}
+
+/// Percent-encode a raw byte slice (RFC 3986 unreserved set). Shared by the
+/// scalar napi path and the packed batch path.
+fn url_encode_bytes(input: &[u8]) -> Vec<u8> {
     // Worst case: every byte is encoded → 3x. Use len + len/4 + 8 for typical.
     let mut out = Vec::with_capacity(input.len() + input.len() / 4 + 8);
     let mut start = 0usize;
@@ -34,14 +49,58 @@ pub fn url_encode(input: Uint8Array) -> Buffer {
     }
 
     out.extend_from_slice(&input[start..]);
-    Buffer::from(out)
+    out
+}
+
+#[napi]
+pub fn url_encode(input: Uint8Array) -> Buffer {
+    Buffer::from(url_encode_bytes(input.as_ref()))
+}
+
+/// Packed percent-encode batch: `[u32 count]{[u32 len][data]}` in →
+/// `[u32 count]{[u32 len][encoded]}` out.
+#[napi]
+pub fn url_encode_batch_packed(input: Uint8Array) -> Result<Buffer> {
+    crate::util::run_packed_batch(input.as_ref(), url_encode_bytes).map(Buffer::from)
 }
 
 #[napi]
 pub fn url_decode(input: Uint8Array) -> Result<Buffer> {
-    let out = url_decode_bytes_vec(input.as_ref())?;
-    simdutf8::basic::from_utf8(&out).map_err(|e| Error::from_reason(e.to_string()))?;
+    let (out, saw_high) = url_decode_bytes_vec(input.as_ref())?;
+    // The single decode pass already told us whether any output byte is
+    // >= 0x80. ASCII output is trivially valid UTF-8, so the full simdutf8
+    // validation pass is only needed when a high bit was observed.
+    if saw_high {
+        simdutf8::basic::from_utf8(&out).map_err(|e| Error::from_reason(e.to_string()))?;
+    }
     Ok(Buffer::from(out))
+}
+
+/// Packed percent-decode batch (UTF-8 validated). Items that fail decoding
+/// (malformed %XX or invalid UTF-8) yield an empty result — skip-on-error,
+/// matching the other decode batches.
+#[napi]
+pub fn url_decode_batch_packed(input: Uint8Array) -> Result<Buffer> {
+    crate::util::run_packed_batch(input.as_ref(), |v| match url_decode_bytes_vec(v) {
+        Ok((out, saw_high)) => {
+            if saw_high && simdutf8::basic::from_utf8(&out).is_err() {
+                Vec::new()
+            } else {
+                out
+            }
+        }
+        Err(_) => Vec::new(),
+    })
+    .map(Buffer::from)
+}
+
+/// Packed strict percent-decode batch (no UTF-8 validation).
+#[napi]
+pub fn url_decode_bytes_batch_packed(input: Uint8Array) -> Result<Buffer> {
+    crate::util::run_packed_batch(input.as_ref(), |v| {
+        url_decode_bytes_vec(v).map(|(out, _)| out).unwrap_or_default()
+    })
+    .map(Buffer::from)
 }
 
 pub fn url_encode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
@@ -70,28 +129,42 @@ pub fn url_encode_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32>
 }
 
 #[inline]
-fn url_decode_bytes_vec(input: &[u8]) -> Result<Vec<u8>> {
+fn url_decode_bytes_vec(input: &[u8]) -> Result<(Vec<u8>, bool)> {
     let mut out = Vec::with_capacity(input.len());
     let mut pos = 0usize;
+    let mut saw_high = false;
 
     while let Some(rel) = memchr(b'%', &input[pos..]) {
         let i = pos + rel;
-        out.extend_from_slice(&input[pos..i]);
+        let run = &input[pos..i];
+        // Copied runs are passed through verbatim; check them for high bytes.
+        if !run.is_ascii() {
+            saw_high = true;
+        }
+        out.extend_from_slice(run);
 
         let (byte, next) = decode_percent_at(input, i)
             .ok_or_else(|| Error::from_reason("invalid %-encoding: malformed %XX sequence"))?;
-
+        // `%XX` can decode to a non-ASCII byte (e.g. `%C3%A9`); track it.
+        if byte >= 0x80 {
+            saw_high = true;
+        }
         out.push(byte);
         pos = next;
     }
 
-    out.extend_from_slice(&input[pos..]);
-    Ok(out)
+    let tail = &input[pos..];
+    if !tail.is_ascii() {
+        saw_high = true;
+    }
+    out.extend_from_slice(tail);
+    Ok((out, saw_high))
 }
 
 #[napi]
 pub fn url_decode_bytes(input: Uint8Array) -> Result<Buffer> {
-    Ok(Buffer::from(url_decode_bytes_vec(input.as_ref())?))
+    let (out, _saw_high) = url_decode_bytes_vec(input.as_ref())?;
+    Ok(Buffer::from(out))
 }
 
 pub fn url_decode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
