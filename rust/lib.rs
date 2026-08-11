@@ -49,6 +49,7 @@ pub mod http;
 pub mod ingress;
 pub mod json;
 pub mod payload;
+pub mod selection;
 pub mod util;
 
 // ── Unit tests (cargo test) ───────────────────────────────────────

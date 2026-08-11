@@ -220,6 +220,15 @@ export interface NativeAddon {
   HmacSigner: new (key: Uint8Array) => HmacSignerInstance;
   Ingress: new (options: Record<string, unknown>) => IngressInstance;
 
+  /**
+   * Benchmark-driven native-vs-JS decision (single source of truth:
+   * `rust/selection.rs`, audited by `scripts/select-native.ts --check`).
+   * Returns `"native"` when the Rust addon is the recommended impl for `op`,
+   * `"js"` when a pure-JS implementation wins, or `null` for unknown ops.
+   * Consumers read this ONCE at load time and bind each op to a fixed impl.
+   */
+  opImpl(op: string): "native" | "js" | null;
+
   // ── Ingress binary-layout constants (single source of truth: rust/ingress_constants.rs) ──
   INGRESS_OUT_VERDICT: number;
   INGRESS_OUT_ERROR_CODE: number;

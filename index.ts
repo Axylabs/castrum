@@ -1,5 +1,13 @@
 export * from "./src/rust-ffi";
 
+// Native-vs-JS selection (OWNED HERE, not by consumers): `opImpl(op)` is the
+// benchmark-driven recommendation for which operations should use the Rust
+// addon vs a pure-JS implementation. Consumers read it once at load time and
+// bind each op to a fixed impl. Source: rust/selection.rs (audited by
+// `bun run check:selection`). See src/selection.ts.
+export { opImpl, isNativeOp, opDecision } from "./src/selection";
+export type { OpImpl, OpDecision } from "./src/selection";
+
 // Performance-proven surface: only `rust.*` functions that beat their JS
 // baseline in benchmarks. See src/shared/proven.ts for the registry.
 export {
