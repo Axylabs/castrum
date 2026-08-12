@@ -170,7 +170,9 @@ object used for `requestIP` when `getIp` is provided.
 | `headHandler(ingress, opts?)` | HEAD | Same as read, no body |
 | `jsonWriteHandler(ingress, opts?)` | POST/PUT/PATCH | Enforces `Content-Type`, body-size, JSON validity and schema; returns body JSON or 415/413/400/422 |
 | `echoHandler(ingress, opts?)` | POST | Streams the request body back with the client's Content-Type |
-| `fallbackHandler(ingress, opts?)` | any | 404 for unmatched routes / OPTIONS |
+| `deleteHandler(ingress, opts?)` | DELETE | Read-style handler for DELETE requests (same as `readHandler`) |
+| `optionsHandler(ingress, opts?)` | OPTIONS | CORS preflight → 204 (allowed) / 403 from the native pipeline |
+| `fallbackHandler(ingress, opts?)` | any | 404 for unmatched routes |
 
 `BakedHandlerOptions`:
 
@@ -179,6 +181,7 @@ object used for `requestIP` when `getIp` is provided.
 | `getIp` | `(req, srv) => string \| undefined` | — | Resolve client IP from the server object (e.g. `srv.requestIP`) |
 | `copyBody` | `boolean` | `true` | Copy body slices instead of sharing the native buffer (safe) |
 | `maxBodyBytes` | `number` | `1,048,576` | Body limit for write/echo handlers |
+| `bodyTimeoutMs` | `number` | `30,000` | Overall body-read deadline for write/echo routes (0 = disabled) |
 | `fallback` | `OptimizedIngressHandler` | `ingress` | Handler used for write error paths |
 
 ### `createIngressServer(options)` — Bun.serve builder
@@ -199,9 +202,10 @@ interface CreateIngressServerOptions {
 
 interface BakedRoute {
   read?: OptimizedIngressHandler;      // -> GET + HEAD
-  write?: OptimizedIngressHandler;     // -> POST/PUT/PATCH (+ OPTIONS via fallback)
+  write?: OptimizedIngressHandler;     // -> POST/PUT/PATCH
   echo?: OptimizedIngressHandler;      // -> POST
   cookies?: OptimizedIngressHandler;   // -> GET
+  delete?: OptimizedIngressHandler;    // -> DELETE (read-style)
   maxBodyBytes?: number;               // override for this route's write/echo
   bodyTimeoutMs?: number;              // overall body-read deadline (0 = disabled)
 }

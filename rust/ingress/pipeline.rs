@@ -166,12 +166,30 @@ impl IngressInner {
         let mut flags: u32 = 0;
         let rate_active = self.rate.as_limiter().is_some();
 
-        let (resolved_ip, peer_trusted) = crate::ingress::ip_trust::resolve_client_ip(
-            &self.proxy_trust,
-            ip_bytes,
-            headers.xff(),
-            headers.x_real_ip(),
-        );
+        // The resolved IP is consumed ONLY by the rate limiter (stage 4). When
+        // rate limiting is disabled we still need `peer_trusted` (for the
+        // FLAG_TRUSTED_PROXY bit + HTTPS detection), but we can skip the full
+        // socket-IP `IpAddr` parse entirely — `socket_is_trusted` returns
+        // false immediately when no trusted-proxy mode is configured (the
+        // common case) and only parses when it actually matters. This removes
+        // a `str::parse::<IpAddr>` + `trim` per request off the hot path.
+        let (resolved_ip, peer_trusted) = if rate_active {
+            crate::ingress::ip_trust::resolve_client_ip(
+                &self.proxy_trust,
+                ip_bytes,
+                headers.xff(),
+                headers.x_real_ip(),
+            )
+        } else {
+            let peer_trusted =
+                crate::ingress::ip_trust::socket_is_trusted(&self.proxy_trust, ip_bytes);
+            (
+                crate::ingress::ip_trust::ResolvedIp::Raw(
+                    crate::util::trim_ascii_whitespace(ip_bytes),
+                ),
+                peer_trusted,
+            )
+        };
 
         if peer_trusted {
             flags |= FLAG_TRUSTED_PROXY;

@@ -126,6 +126,23 @@ fn parse_ip_bytes(bytes: &[u8]) -> Option<IpAddr> {
     s.parse::<IpAddr>().ok()
 }
 
+/// Cheap "is the socket peer a trusted proxy" check for the common case where
+/// the caller only needs `peer_trusted` and not the resolved client IP (i.e.
+/// rate limiting is disabled). Skips the `IpAddr` parse entirely when no
+/// trusted-proxy mode is configured (where `peer_trusted` is always false).
+#[inline]
+pub fn socket_is_trusted(mode: &ProxyTrustMode, socket_ip: &[u8]) -> bool {
+    if mode.is_none() {
+        return false;
+    }
+    socket_parsed_is_trusted(mode, parse_ip_bytes(socket_ip))
+}
+
+#[inline]
+fn socket_parsed_is_trusted(mode: &ProxyTrustMode, parsed: Option<IpAddr>) -> bool {
+    parsed.map(|ip| mode.is_trusted(ip)).unwrap_or(false)
+}
+
 pub fn resolve_client_ip<'a>(
     mode: &ProxyTrustMode,
     socket_ip: &'a [u8],
@@ -135,7 +152,7 @@ pub fn resolve_client_ip<'a>(
     let socket_trim = trim_ascii_whitespace(socket_ip);
     let socket_parsed = parse_ip_bytes(socket_trim);
 
-    let peer_trusted = socket_parsed.map(|ip| mode.is_trusted(ip)).unwrap_or(false);
+    let peer_trusted = socket_parsed_is_trusted(mode, socket_parsed);
 
     if mode.is_none() || !peer_trusted {
         return (

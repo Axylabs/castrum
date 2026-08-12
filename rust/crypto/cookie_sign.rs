@@ -10,6 +10,23 @@ use napi_derive::napi;
 
 use crate::util::bytes::{hex_decode_32, hex_encode_32};
 
+/// Zero-alloc core: `value` ++ "." ++ 64-hex into `out`. Returns the bytes
+/// written, or `None` on a too-small buffer. Used by the C-ABI (`bun:ffi`)
+/// path to avoid the signed-cookie Vec + copy.
+pub fn sign_cookie_into(value: &[u8], key: &hmac::Key, out: &mut [u8]) -> Option<usize> {
+    let need = value.len() + 1 + 64;
+    if out.len() < need {
+        return None;
+    }
+    let tag = hmac::sign(key, value);
+    let mut sig = [0u8; 64];
+    hex_encode_32(tag.as_ref(), &mut sig);
+    out[..value.len()].copy_from_slice(value);
+    out[value.len()] = b'.';
+    out[value.len() + 1..need].copy_from_slice(&sig);
+    Some(need)
+}
+
 /// `value` ++ "." ++ lowercase-hex(HMAC-SHA256(secret, value)).
 pub fn sign_cookie_bytes(value: &[u8], key: &hmac::Key) -> Vec<u8> {
     let tag = hmac::sign(key, value);
@@ -20,6 +37,27 @@ pub fn sign_cookie_bytes(value: &[u8], key: &hmac::Key) -> Vec<u8> {
     out.push(b'.');
     out.extend_from_slice(&sig);
     out
+}
+
+/// Zero-alloc core: constant-time verify into `out` (the value without its
+/// signature). Returns the value length, or `None` on invalid signature /
+/// too-small buffer. Used by the C-ABI (`bun:ffi`) path to avoid the Vec.
+pub fn verify_cookie_into(signed: &[u8], key: &hmac::Key, out: &mut [u8]) -> Option<usize> {
+    let dot = signed.iter().rposition(|&b| b == b'.')?;
+    let (value, sig) = signed.split_at(dot);
+    let sig = &sig[1..];
+    if sig.len() != 64 {
+        return None;
+    }
+    let sig_bytes = hex_decode_32(sig)?;
+    if hmac::verify(key, value, &sig_bytes).is_err() {
+        return None;
+    }
+    if out.len() < value.len() {
+        return None;
+    }
+    out[..value.len()].copy_from_slice(value);
+    Some(value.len())
 }
 
 /// Constant-time verify; returns the signed value without its signature.

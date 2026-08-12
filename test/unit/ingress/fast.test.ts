@@ -657,6 +657,21 @@ describe("createIngressFast option validation", () => {
       /not supported on the raw fast path/,
     );
   });
+
+  test("accepts warmOnCreate and primes a probe request without breaking the handler", () => {
+    // warmOnCreate runs one probe GET at construction (JIT-warming the run()
+    // closure + packed pipeline + FFI ingress call). The handler must still
+    // serve normal requests correctly afterwards.
+    const fast = createIngressFast({ warmOnCreate: true, parseQuery: true });
+    const status = fast.run(
+      new Request("http://localhost/api/users?page=2", { method: "GET" }),
+      "127.0.0.1",
+      null,
+      "req-1",
+      (r) => r.status,
+    );
+    expect(status).toBe(200);
+  });
 });
 
 describe("shared rate limiter across instances", () => {

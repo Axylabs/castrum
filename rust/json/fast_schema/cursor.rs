@@ -5,6 +5,8 @@
 // string helpers decode escaped string bodies (only needed for the rare
 // escaped-key path and for counting Unicode scalar values).
 
+use super::errors::MAX_DEPTH;
+
 /// A cursor over raw JSON bytes.
 pub(crate) struct Cursor<'a> {
     pub(crate) data: &'a [u8],
@@ -128,7 +130,14 @@ impl<'a> Cursor<'a> {
     }
 
     /// Skip one complete JSON value (for `true`/`{}`/`additionalProperties: true`).
-    pub(crate) fn skip_value(&mut self) -> bool {
+    ///
+    /// `depth` is the current nesting depth (bounded by `MAX_DEPTH`) so hostile
+    /// deeply-nested JSON cannot exhaust the native stack through this path
+    /// either (see `Ctx::enter_depth`).
+    pub(crate) fn skip_value(&mut self, depth: u32) -> bool {
+        if depth > MAX_DEPTH {
+            return false;
+        }
         self.skip_ws();
         let Some(b) = self.peek() else {
             return false;
@@ -148,7 +157,7 @@ impl<'a> Cursor<'a> {
                     if !self.eat(b':') {
                         return false;
                     }
-                    if !self.skip_value() {
+                    if !self.skip_value(depth + 1) {
                         return false;
                     }
                     self.skip_ws();
@@ -168,7 +177,7 @@ impl<'a> Cursor<'a> {
                     return true;
                 }
                 loop {
-                    if !self.skip_value() {
+                    if !self.skip_value(depth + 1) {
                         return false;
                     }
                     self.skip_ws();

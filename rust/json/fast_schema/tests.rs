@@ -428,6 +428,23 @@ fn multiple_of_parity() {
 }
 
 #[test]
+fn multiple_of_non_finite_no_panic() {
+    // `1e999` parses to f64::INFINITY in `Cursor::number`. `is_multiple_of`
+    // must not panic (a panic through the raw C ABI crashes the host process)
+    // and must agree with the DOM validator, whose serde parse of `1e999`
+    // fails → invalid.
+    let schemas = [
+        json!({"type":"number","multipleOf":2}),
+        json!({"type":"number","multipleOf":0.1}),
+        json!({"type":"integer","multipleOf":3}),
+    ];
+    let docs = ["1e999", "-1e999", "1e308", "1.7976931348623157e308", "2"];
+    for s in &schemas {
+        assert_parity(s.clone(), &docs);
+    }
+}
+
+#[test]
 fn combinators_parity() {
     let schemas = [
         json!({"allOf":[{"type":"number"},{"minimum":0}]}),
@@ -947,4 +964,74 @@ fn email_format_property_parity_with_reference() {
         checked += 1;
     }
     assert!(checked >= 3000);
+}
+
+// ── hostile nesting depth (stack-overflow guard) ─────────────────
+
+#[test]
+// The repeated `push` of the same structural literal is deliberate — it
+// builds a deeply-nested document to exercise the stack-overflow guard.
+#[allow(clippy::same_item_push)]
+fn deeply_nested_documents_are_bounded_not_crashing() {
+    // A ~10K-deep document must be REJECTED, not recursed into a stack overflow
+    // (a stack overflow aborts the whole process — panic=unwind + napi
+    // catch_unwind do NOT catch it). The any-schema walks every nested value
+    // via Cursor::skip_value, which is exactly the recursion path a hostile
+    // body would drive.
+    let any = FastNode::any();
+
+    let mut deep_arr = Vec::with_capacity(20_000);
+    for _ in 0..10_000 {
+        deep_arr.push(b'[');
+    }
+    deep_arr.push(b'0');
+    for _ in 0..10_000 {
+        deep_arr.push(b']');
+    }
+    assert!(!any.is_valid_bytes(&deep_arr));
+
+    let mut deep_obj = Vec::with_capacity(60_000);
+    for _ in 0..10_000 {
+        deep_obj.extend_from_slice(b"{\"a\":");
+    }
+    deep_obj.push(b'0');
+    for _ in 0..10_000 {
+        deep_obj.push(b'}');
+    }
+    assert!(!any.is_valid_bytes(&deep_obj));
+
+    // Sanity: an ordinary payload is still valid — the cap must not reject
+    // normal documents.
+    assert!(any.is_valid_bytes(b"{\"a\":[1,{\"b\":2}]}"));
+}
+
+#[test]
+fn deep_nesting_parity_with_reference() {
+    // The fast path caps at MAX_DEPTH (128), matching sonic-rs (the ingress
+    // gate) and serde_json (the DOM reference): deeper documents parse-fail in
+    // the reference too, so validity must agree.
+    let schema = json!({ "type": "object", "additionalProperties": true });
+    let fast = compile(&schema).unwrap();
+    let v = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .build(&schema)
+        .unwrap();
+
+    // 100-deep (below the cap) and 200-deep (above it) — both must agree with
+    // the reference.
+    for depth in [100usize, 200] {
+        let mut doc = String::new();
+        for _ in 0..depth {
+            doc.push_str("{\"a\":");
+        }
+        doc.push('0');
+        for _ in 0..depth {
+            doc.push('}');
+        }
+        let expected = serde_json::from_str::<Value>(&doc)
+            .map(|x| v.is_valid(&x))
+            .unwrap_or(false);
+        let got = fast.is_valid_bytes(doc.as_bytes());
+        assert_eq!(got, expected, "depth={depth}");
+    }
 }

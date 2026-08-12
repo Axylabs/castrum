@@ -43,9 +43,27 @@ Legend: ✅ done · 🔜 planned · ⏳ in progress · 💤 not started
 
 ## 6. Governance (🔜)
 - ✅ CODE_OF_CONDUCT, issue/PR templates, ROADMAP.
-- 🔜 ADRs (two-wire-format, zero-DOM fast path, Bun-builtins delegation) —
-  see `docs/adr/`.
+- ✅ ADRs (two-wire-format, zero-DOM fast path, Bun-builtins delegation) —
+  see `docs/adr/` (0001-two-wire-formats, 0002-zero-dom-fast-schema,
+  0003-bun-builtins-delegation).
 - 🔜 API-reference site generated from `dist/index.d.ts`.
+
+## 7. Runtime self-optimization (🔜)
+- ✅ Higher-order loader (44 ops) wired into the integration layer
+  (`validateMany` / `validateCount` / `runMany` / `runOne`) + `examples/loader-demo.ts`.
+- ✅ `warmOnCreate` first-request priming + persisted startup baseline
+  (`bench/results/startup/`).
+- ✅ `AdaptiveEstimate` (bounded EWMA) + `BufferPool` adaptive sizing.
+- 🔜 **Worker-thread offload for CPU-heavy ops** — a persistent Bun Worker pool
+  behind a NEW additive async surface (e.g. `rust.offload.*`: compression,
+  big batches, schema) that keeps the existing synchronous contracts
+  unchanged. The loader's coalescing + the worker pool in
+  `src/bench/concurrent-worker.ts` are the reference patterns. Deferred: it is
+  the largest additive surface and must not perturb the sync hot path or the
+  wire format (AGENTS.md).
+- 🔜 Runtime-managed multi-process scaling (`SO_REUSEPORT`): auto-spawn N
+  workers keyed to core count (per-worker `INGRESS_WORKER_ID`), currently
+  manual — see docs/INGRESS.md.
 
 ## Out of scope (deliberate)
 - Live `npm publish` (manual gate; requires `NPM_TOKEN`).

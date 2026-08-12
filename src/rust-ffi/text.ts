@@ -4,7 +4,7 @@
 // functions. Pure wrappers: encode input, call native, decode output.
 
 import { decoder, encoder } from "../shared/bytes";
-import type { RustClientContext } from "./context";
+import { resolveNative, type RustClientContext } from "./context";
 
 /** String-oriented FFI namespace. */
 export interface RustText {
@@ -20,32 +20,40 @@ export interface RustText {
 
 /** Build the `text` namespace for a client context. */
 export function buildText(ctx: RustClientContext): RustText {
-  const { addon } = ctx;
+  // String memo: the byte path already caches the native bytes; this avoids the
+  // encode → native lookup → slice → decode round-trip for repeated extension
+  // strings (the common case) — 0 allocations on a cache hit.
+  const mimeStrCache = new Map<string, string>();
 
   return {
     mimeFromExtension(ext) {
-      return decoder.decode(ctx.cachedMime(encoder.encode(ext)));
+      let mime = mimeStrCache.get(ext);
+      if (mime === undefined) {
+        mime = decoder.decode(ctx.cachedMime(encoder.encode(ext)));
+        mimeStrCache.set(ext, mime);
+      }
+      return mime;
     },
     urlEncode(input) {
-      return addon.urlEncodeStr(input);
+      return resolveNative(ctx, "urlEncodeStr")(input) as string;
     },
     urlDecode(input) {
-      return addon.urlDecodeStr(input);
+      return resolveNative(ctx, "urlDecodeStr")(input) as string;
     },
     wsAcceptKey(key) {
-      return decoder.decode(addon.wsAcceptKey(encoder.encode(key)));
+      return decoder.decode(resolveNative(ctx, "wsAcceptKey")(encoder.encode(key)) as Uint8Array);
     },
     validateEmail(input) {
-      return addon.validateEmail(encoder.encode(input));
+      return resolveNative(ctx, "validateEmail")(encoder.encode(input)) as boolean;
     },
     validateUuid(input) {
-      return addon.validateUuid(encoder.encode(input));
+      return resolveNative(ctx, "validateUuid")(encoder.encode(input)) as boolean;
     },
     validateIpv4(input) {
-      return addon.validateIpv4(encoder.encode(input));
+      return resolveNative(ctx, "validateIpv4")(encoder.encode(input)) as boolean;
     },
     validateIpv6(input) {
-      return addon.validateIpv6(encoder.encode(input));
+      return resolveNative(ctx, "validateIpv6")(encoder.encode(input)) as boolean;
     },
   };
 }

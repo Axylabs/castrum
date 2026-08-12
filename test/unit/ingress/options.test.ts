@@ -4,7 +4,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { assertKnownIngressOptions } from "../../../src/ingress/options";
+import {
+  assertKnownIngressOptions,
+  assertIngressOptionValues,
+} from "../../../src/ingress/options";
 
 const VALID_OPTIONS: Record<string, unknown> = {
   trustProxy: false,
@@ -62,5 +65,36 @@ describe("assertKnownIngressOptions", () => {
     expect(() =>
       assertKnownIngressOptions({ parseCookie: true } as never),
     ).toThrow(/unknown option 'parseCookie'/);
+  });
+});
+
+describe("assertIngressOptionValues", () => {
+  test("accepts valid and zero values (0 is meaningful: rateLimit.limit=0 disables)", () => {
+    expect(() =>
+      assertIngressOptionValues({
+        maxBodyBytes: 0,
+        outputBufferSize: 0,
+        rateLimit: { limit: 0, windowMs: 60_000 },
+        limits: { maxHeadersBytes: 4096 },
+      } as never),
+    ).not.toThrow();
+  });
+
+  test("rejects a negative maxBodyBytes", () => {
+    expect(() =>
+      assertIngressOptionValues({ maxBodyBytes: -1 } as never),
+    ).toThrow(/maxBodyBytes/);
+  });
+
+  test("rejects a negative nested limits value and names the path", () => {
+    expect(() =>
+      assertIngressOptionValues({ limits: { maxHeadersBytes: -100 } } as never),
+    ).toThrow(/limits\.maxHeadersBytes/);
+  });
+
+  test("rejects a NaN rateLimit.windowMs", () => {
+    expect(() =>
+      assertIngressOptionValues({ rateLimit: { windowMs: NaN } } as never),
+    ).toThrow(/rateLimit\.windowMs/);
   });
 });

@@ -13,56 +13,56 @@
 // This module keeps `createIngressFast` and re-exports the full fast-path API
 // so existing importers keep working.
 
-import { getAddon } from "../native";
-import { OUT_DATA_START } from "./constants";
-import { IngressInputPacker } from "./packing/input-packer";
-import { packHeaders } from "./packing/header-packing";
+import { getAddon } from '../native'
+import { getBunFFI } from '../native/ffi'
+import { OUT_DATA_START } from './constants'
+import { FastIngressResult } from './decode/fast-result'
+import type { IngressFastHandler, IngressFastOptions } from './options'
 import {
+  assertIngressOptionValues,
   assertKnownIngressOptions,
   warnTrustProxyDeprecated,
-} from "./options";
-import { FastIngressResult } from "./decode/fast-result";
-import type {
-  IngressFastOptions,
-  IngressFastHandler,
-} from "./options";
+} from './options'
+import { packHeaders } from './packing/header-packing'
+import { IngressInputPacker } from './packing/input-packer'
 import {
   assertSyncCallback,
   buildHeaderPlan,
+  clampIngressBufferSize,
   DEFAULT_FAST_OUTPUT_BUFFER_SIZE,
   DEFAULT_MAX_BODY_BYTES,
+  type HeaderPlan,
   METHOD_KIND,
   METHOD_KIND_UNKNOWN,
-  type HeaderPlan,
-} from "./shared";
+} from './shared'
 
-// ── Re-exports (back-compat: preserve fast.ts's original public surface) ──
-export {
-  isValidResponseStatus,
-  statusForErrorCode,
-  normalizeResponseStatus,
-  safeTerminalStatus,
-} from "./status";
-export { errorCodeName, errorMessage } from "./errors";
-export {
-  buildResponseContext,
-  headersForResult,
-} from "./headers/fast-templates";
+export { generateRequestId } from '../shared/request-id'
+export { FastIngressResult } from './decode/fast-result'
+export { errorCodeName, errorMessage } from './errors'
+export type { CorsOptions, CorsStaticStrings } from './headers/cors'
 export type {
   HeaderTemplate,
   ResponseBuildContext,
-} from "./headers/fast-templates";
-export type { CorsStaticStrings, CorsOptions } from "./headers/cors";
-export type { SecurityHeadersOptions } from "./headers/hsts";
-export { FastIngressResult } from "./decode/fast-result";
-export { buildTerminalResponse } from "./response/terminal";
-export { DEFAULT_MAX_BODY_BYTES, METHOD_KIND } from "./shared";
-export type { HeaderPlan } from "./shared";
-export type { IngressFastOptions, IngressFastHandler } from "./options";
-export { generateRequestId } from "../shared/request-id";
+} from './headers/fast-templates'
+export {
+  buildResponseContext,
+  headersForResult,
+} from './headers/fast-templates'
+export type { SecurityHeadersOptions } from './headers/hsts'
+export type { IngressFastHandler, IngressFastOptions } from './options'
+export { buildTerminalResponse } from './response/terminal'
+export type { HeaderPlan } from './shared'
+export { DEFAULT_MAX_BODY_BYTES, METHOD_KIND } from './shared'
+// ── Re-exports (back-compat: preserve fast.ts's original public surface) ──
+export {
+  isValidResponseStatus,
+  normalizeResponseStatus,
+  safeTerminalStatus,
+  statusForErrorCode,
+} from './status'
 
 // ── Local constants ───────────────────────────────────────────
-const EMPTY_BODY = new Uint8Array(0);
+const EMPTY_BODY = new Uint8Array(0)
 
 // ── Fast ingress factory ─────────────────────────────
 
@@ -77,29 +77,25 @@ const EMPTY_BODY = new Uint8Array(0);
  * yourself with a **synchronous** callback. For ready-made route handlers and a
  * server builder, use `createIngressHandler` (path 2).
  */
-export function createIngressFast(
-  options: IngressFastOptions = {},
-): IngressFastHandler {
-  assertKnownIngressOptions(options);
+export function createIngressFast(options: IngressFastOptions = {}): IngressFastHandler {
+  assertKnownIngressOptions(options)
+  assertIngressOptionValues(options)
   if (options.trustProxy === true) {
-    warnTrustProxyDeprecated();
+    warnTrustProxyDeprecated()
   }
   // The raw fast path returns a decoded result, not a Response — it cannot
   // apply security headers. `security`/`enableSecurityHeaders` were previously
   // accepted and silently ignored here (a dead option). Fail loudly instead:
   // use `createIngress` (async) / `createIngressHandler` (pre-baked), or emit
   // the headers yourself via `buildResponseContext` + `headersForResult`.
-  if (
-    options.security !== undefined ||
-    options.enableSecurityHeaders !== undefined
-  ) {
+  if (options.security !== undefined || options.enableSecurityHeaders !== undefined) {
     throw new TypeError(
-      "createIngressFast: `security` / `enableSecurityHeaders` are not " +
-        "supported on the raw fast path (it returns a decoded result, not a " +
-        "Response). Use `createIngress` or `createIngressHandler` to apply " +
-        "security headers, or emit them yourself via `buildResponseContext` " +
-        "and `headersForResult`.",
-    );
+      'createIngressFast: `security` / `enableSecurityHeaders` are not ' +
+        'supported on the raw fast path (it returns a decoded result, not a ' +
+        'Response). Use `createIngress` or `createIngressHandler` to apply ' +
+        'security headers, or emit them yourself via `buildResponseContext` ' +
+        'and `headersForResult`.',
+    )
   }
 
   const rustOptions: Record<string, unknown> = {
@@ -145,54 +141,58 @@ export function createIngressFast(
           maxPairs: options.limits.maxPairs,
         }
       : undefined,
-  };
+  }
 
   // Lazy: the native addon is only needed once a handler is created.
-  const addon = getAddon();
-  const NativeIngress = addon.Ingress;
-  const handler = new NativeIngress(rustOptions);
+  const addon = getAddon()
+  const NativeIngress = addon.Ingress
+  const handler = new NativeIngress(rustOptions)
+
+  // Bun fast path: run the native pipeline through `bun:ffi` (opaque inner
+  // handle) to cut the per-request N-API crossing. The handle is valid only
+  // while `handler` is alive — this closure holds it, so it can never dangle.
+  // Falls back to napi when ffi is unavailable / the pointer method is absent.
+  const bunFFI = getBunFFI()
+  const ingressPtr =
+    bunFFI !== null && typeof handler.ingressInnerPtr === 'function'
+      ? handler.ingressInnerPtr()
+      : 0n
 
   // Shared with the pre-baked handler path so cookie/cors/proxy/proto
   // extraction decisions can never silently diverge between the two paths.
-  const headerPlan: HeaderPlan = buildHeaderPlan(options);
+  const headerPlan: HeaderPlan = buildHeaderPlan(options)
 
-  const outputBufSize = Math.max(
-    OUT_DATA_START,
+  const outputBufSize = clampIngressBufferSize(
     options.outputBufferSize ?? DEFAULT_FAST_OUTPUT_BUFFER_SIZE,
-  );
-  const outputBuf = new Uint8Array(outputBufSize);
-  const inputPacker = new IngressInputPacker();
-  const result = new FastIngressResult();
+    OUT_DATA_START,
+  )
+  const outputBuf = new Uint8Array(outputBufSize)
+  const inputPacker = new IngressInputPacker()
+  const result = new FastIngressResult()
 
   return {
     run(req, ip, body, requestId, fn) {
       try {
-        const methodKind = METHOD_KIND[req.method] ?? METHOD_KIND_UNKNOWN;
+        const methodKind = METHOD_KIND[req.method] ?? METHOD_KIND_UNKNOWN
 
-        const headers = packHeaders(req, headerPlan);
+        const headers = packHeaders(req, headerPlan)
 
-        const input = inputPacker.packFromStrings(
-          methodKind,
-          req.url,
-          ip,
-          requestId,
-          headers,
-        );
+        const input = inputPacker.packFromStrings(methodKind, req.url, ip, requestId, headers)
 
         // handleRequestPacked returns the number of bytes it wrote; decode only
         // the written prefix (mirrors handlers.ts) so stale bytes past `written`
-        // in the reused buffer can never be misread.
-        const written = handler.handleRequestPacked(input, body, outputBuf);
-        result.refresh(
-          outputBuf.subarray(0, written),
-          body ?? EMPTY_BODY,
-          requestId,
-        );
+        // in the reused buffer can never be misread. Under Bun with a live ffi
+        // handle this runs the pipeline through `bun:ffi` instead of napi.
+        const written =
+          bunFFI !== null && ingressPtr !== 0n
+            ? bunFFI.ingressHandlePacked(ingressPtr, input, body, outputBuf)
+            : handler.handleRequestPacked(input, body, outputBuf)
+        result.refresh(outputBuf.subarray(0, written), body ?? EMPTY_BODY, requestId)
       } catch (err) {
-        result.setInternalError(requestId);
+        result.setInternalError(requestId)
         if (options.onError) {
           try {
-            options.onError(err instanceof Error ? err : new Error(String(err)));
+            options.onError(err instanceof Error ? err : new Error(String(err)))
           } catch {
             // hook must never crash the handler
           }
@@ -200,12 +200,12 @@ export function createIngressFast(
       }
 
       try {
-        const out = fn(result);
-        assertSyncCallback(out, "createIngressFast().run()");
-        return out;
+        const out = fn(result)
+        assertSyncCallback(out, 'createIngressFast().run()')
+        return out
       } finally {
-        result.invalidate();
+        result.invalidate()
       }
     },
-  };
+  }
 }

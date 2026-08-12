@@ -2,7 +2,7 @@
 
 ## Overview
 
-castrum is a **hybrid Bun + Rust** runtime benchmark package that provides high-performance backend primitives through a NAPI (Native API) bridge. The architecture is designed for zero-copy data transfer between TypeScript and Rust, with batching support for high-throughput scenarios.
+castrum is a **hybrid Bun + Rust** runtime benchmark package that provides high-performance backend primitives through a native bridge with **two transports**: `bun:ffi` (the C-ABI fast path, PRIMARY under Bun) and NAPI via napi-rs (the fallback — Node, forced `CASTRUM_FFI_MODE=napi`, or a failed ffi self-test). The architecture is designed for zero-copy data transfer between TypeScript and Rust, with batching support for high-throughput scenarios.
 
 ---
 
@@ -15,7 +15,7 @@ castrum is a **hybrid Bun + Rust** runtime benchmark package that provides high-
 │  Purpose: API ergonomics, runtime safety, async handling    │
 │  Runtime: Bun (JavaScriptCore)                               │
 │  Pattern: Factory functions, lazy evaluation, batching       │
-└──────────────────↕ NAPI Bridge (napi-rs) ↕─────────────────┘
+└──────────↕ Native Bridge: bun:ffi (Bun, primary) + NAPI (fallback) ↕──────────┘
 │                                                             │
 │                    Rust Layer (cdylib)                       │
 │                                                             │
@@ -25,9 +25,22 @@ castrum is a **hybrid Bun + Rust** runtime benchmark package that provides high-
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### NAPI Bridge
+### Native Bridge (two transports)
 
-The bridge between TypeScript and Rust is provided by [napi-rs](https://napi.rs/) v3. Key characteristics:
+The bridge between TypeScript and Rust has **two transports**, both loading the SAME
+cdylib (built with napi-rs):
+
+- **`bun:ffi` (PRIMARY on Bun)** — `src/native/ffi.ts` `dlopen`s the addon's
+  `extern "C"` exports (`rust/ffi.rs`, 45 `castrum_*` symbols) and Bun JIT-calls them
+  directly (~10-20ns crossing vs ~100-350ns N-API). A bind-time self-test guards
+  correctness: on ANY failure the layer is disabled and calls fall back to napi.
+  `CASTRUM_FFI_MODE=auto|ffi|napi` selects the transport (default `auto`).
+- **NAPI (napi-rs v3) — the fallback** — used under Node.js, when `bun:ffi` is
+  unavailable (self-test failure, `CASTRUM_FFI_MODE=napi`), and for surfaces with no
+  C-ABI export (stateful instances, `rust.batch.*` / `rust.packed.*`, `text.*`, and
+  structured-return scalars like `jsonParse` / `jwtVerify`).
+
+Shared characteristics:
 
 - **Zero-copy buffer sharing**: `Uint8Array` objects are passed by reference to Rust, avoiding serialization
 - **Synchronous calls**: All functions are synchronous, running on the main JS thread
@@ -149,9 +162,11 @@ src/
 │   ├── packed.ts          ── packed-wire unpackers + packers
 │   └── proven.ts          ── PROVEN_SURFACE registry (single source for `proven`)
 │
-├── native/                ── Native addon loading
+├── native/                ── Native transport: bun:ffi (primary on Bun) + NAPI fallback
 │   ├── types.ts           ── NativeAddon interface + instance types
 │   ├── loader.ts          ── Path resolution (multi-root + env override) + getAddon/lazyAddon
+│   ├── ffi.ts             ── bun:ffi C-ABI bindings (Bun-only; bind-time self-test +
+│   │                        CASTRUM_FFI_MODE gating; castrum_ingress_layout blob)
 │   └── index.ts           ── Barrel
 │
 ├── rust-ffi/              ── Rust FFI bindings
@@ -161,16 +176,16 @@ src/
 │   ├── text.ts            ── string namespace
 │   ├── batch.ts           ── array-of-bytes namespace
 │   ├── packed.ts          ── raw packed-wire namespace
-│   ├── scalar.ts          ── scalar/feature methods
+│   ├── scalar/           ── scalar/feature methods (interface + per-domain builders)
 │   ├── client.ts          ── createRust factory + default `rust`
 │   └── index.ts           ── Barrel
 │
 ├── baseline/              ── JS baseline implementations
 │   ├── index.ts           ── Aggregator
-│   └── tasks/             ── 19 baseline tasks (cookie, hashing, hmac, http, json,
+│   └── tasks/             ── 21 baseline tasks (cookie, hashing, hmac, http, json,
 │                              json-patch, mime, query, token, url, validation,
 │                              websocket, aead, compress, jwt, multipart, password,
-│                              streaming, template) — full list in docs/REPO_MAP.md
+│                              streaming, template, pbkdf2, bun-builtins) — full list in docs/REPO_MAP.md
 │
 ├── bench/                 ── Benchmark framework
 │   ├── index.ts           ── Benchmark orchestrator
@@ -185,12 +200,13 @@ src/
 │   ├── report.ts          ── Report generation
 │   ├── run.ts             ── Benchmark runner
 │   ├── types.ts           ── Type definitions
-│   └── tasks/             ── 30 benchmark tasks (complex, concurrent, cookie,
+│   └── tasks/             ── 33 benchmark tasks (complex, concurrent, cookie,
 │                              hashing, hmac, http, json, json-patch, mime, query,
 │                              stress, token, url, validation, websocket, aead,
 │                              compress, jwt, password, streaming, template,
 │                              json-schema, media-type, form, etag, accept,
-│                              encoding, cookie-sign, csrf, url-join) — see docs/REPO_MAP.md
+│                              encoding, cookie-sign, csrf, url-join, multipart,
+│                              loader, bun-builtins) — see docs/REPO_MAP.md
 │
 ├── data/                  ── Benchmark-fixture data (internal)
 │   └── json-rows.ts       ── JSON row serialization

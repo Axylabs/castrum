@@ -1,6 +1,8 @@
 // bench/run-bench.ts — updated to show scenario groups
 import { PORTS, type ServerKind } from "./servers/shared";
 import { HTTP_SCENARIO_NAMES, runHttpScenario } from "./load";
+import { getBunFFI } from "../src/native/ffi";
+import { isBun } from "../src/shared/runtime";
 
 const SERVERS: ServerKind[] = ["bun", "elysia", "ingress"];
 
@@ -74,6 +76,27 @@ async function startServer(kind: ServerKind): Promise<ServerHandle> {
 }
 
 async function main() {
+  // ── Transport guard (FFI is PRIMARY on Bun) ─────────────────────
+  // The ingress server's per-request path runs through bun:ffi on Bun. When
+  // the ffi transport is unavailable (Node, forced CASTRUM_FFI_MODE=napi, or a
+  // failed bind-time self-test) this HTTP bench would silently measure the
+  // napi fallback — print a warning so the report is never mistaken for the
+  // primary path. CASTRUM_BENCH_FFI=1 turns that into a hard failure for CI
+  // that must guarantee FFI-primary HTTP measurements (mirrors src/bench/run.ts).
+  const ffiActive = getBunFFI() !== null;
+  if (isBun() && !ffiActive) {
+    const msg =
+      "bun:ffi is NOT active on Bun — the ingress server will run through the " +
+      "napi fallback. Unset CASTRUM_FFI_MODE (or set it to auto) and ensure the " +
+      "addon bind-time self-test passes.";
+    if (process.env.CASTRUM_BENCH_FFI === "1") {
+      throw new Error(`CASTRUM_BENCH_FFI=1: ${msg}`);
+    }
+    console.warn(`\u26a0\ufe0f  ${msg}`);
+  } else if (isBun()) {
+    console.log("bun:ffi active — ingress runs through the primary FFI transport.");
+  }
+
   const filterScenario = process.env.SCENARIO || process.argv[2];
   const filterServer = process.env.SERVER || process.argv[3];
 

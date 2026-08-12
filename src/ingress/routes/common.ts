@@ -18,6 +18,14 @@ export interface BakedHandlerOptions {
   bodyTimeoutMs?: number;
   /** Fallback handler used for write error paths. Defaults to the write ingress. */
   fallback?: OptimizedIngressHandler;
+  /**
+   * When true, route the JSON-validity fallback check through the higher-order
+   * loader (`loader("jsonValid")`) instead of the direct native call —
+   * exercising the loader's dispatch + counters on the real request path.
+   * Default: false (the direct call is marginally faster for a single request;
+   * the loader pays off for same-tick bursts / bulk work, see src/integration/batch.ts).
+   */
+  enableLoader?: boolean;
 }
 
 /** Resolve the client IP for a route request via the configured getter. */

@@ -9,8 +9,17 @@ use napi_derive::napi;
 
 use std::sync::Arc;
 
-use crate::ingress::output::OUT_DATA_START;
+use crate::ingress::output::{MAX_OUTPUT_BUFFER_SIZE, OUT_DATA_START};
 use crate::ingress::rate_limit::RateLimiterState;
+
+/// Clamp an ingress output-buffer size into `[OUT_DATA_START, MAX_OUTPUT_BUFFER_SIZE]`
+/// so a misconfigured (huge/negative) `outputBufferSize` can never trigger a
+/// multi-GB native allocation (OOM) in the allocating full_sync entry.
+fn clamp_output_size(output_buffer_size: Option<u32>) -> usize {
+    output_buffer_size
+        .unwrap_or(262_144)
+        .clamp(OUT_DATA_START as u32, MAX_OUTPUT_BUFFER_SIZE) as usize
+}
 
 // ── Ingress submodules (task-focused split of the former single-file module) ──
 //   - pipeline:    the core request pipeline — `IngressInner::handle_packed`
@@ -150,6 +159,23 @@ impl Ingress {
         })
     }
 
+    /// Opaque handle to the inner pipeline state, for the `bun:ffi` C-ABI fast
+    /// path (`castrum_ingress_handle_packed` in rust/ffi.rs).
+    ///
+    /// # Safety / lifetime
+    /// The returned value is a raw pointer into the `Arc<IngressInner>` and is
+    /// ONLY valid while THIS `Ingress` instance is alive (napi keeps the native
+    /// state alive while the JS object is referenced; it is dropped on GC). It
+    /// must be treated as an opaque handle — JS must never dereference it, and
+    /// it must be discarded if the instance is dropped. The internal wrapper
+    /// (`src/native/ffi.ts`) holds the instance for the lifetime of the ingress
+    /// handler, so in practice the handle never outlives the state it points
+    /// to. Exposed for the internal fast path only; not part of the public API.
+    #[napi]
+    pub fn ingress_inner_ptr(&self) -> u64 {
+        self.inner.as_ref() as *const IngressInner as u64
+    }
+
     /// Production API:
     ///   input = packed metadata frame
     ///   body = separate zero-copy body
@@ -199,9 +225,7 @@ impl Ingress {
         body: Option<Uint8Array>,
         output_buffer_size: Option<u32>,
     ) -> Result<Uint8Array> {
-        let output_size = output_buffer_size
-            .unwrap_or(262_144)
-            .max(OUT_DATA_START as u32) as usize;
+        let output_size = clamp_output_size(output_buffer_size);
 
         // The fresh `out` vec cannot alias `body` (a distinct JS buffer), so it
         // is safe to borrow the body without copying.

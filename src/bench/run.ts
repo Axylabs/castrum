@@ -11,8 +11,32 @@ import {
 } from "./report";
 import { createAllTasks, createComplexTasks, createConcurrentTasks, createStressTasks } from "./tasks";
 import { runLoaderAsyncBenchmarks, writeLoaderReport } from "./tasks/loader";
+import { getBunFFI } from "../native/ffi";
+import { isBun } from "../shared/runtime";
 
 export async function runBenchmark(): Promise<void> {
+  // ── Transport guard (FFI is PRIMARY on Bun) ─────────────────────
+  // The `rust:*` tasks below run through `rust.*`, which on Bun dispatches to
+  // bun:ffi. When the ffi transport is unavailable (Node, forced
+  // `CASTRUM_FFI_MODE=napi`, or a failed bind-time self-test) the bench still
+  // runs on the napi fallback, but a warning is printed so the report is never
+  // mistaken for the primary (ffi) path. `CASTRUM_BENCH_FFI=1` turns that
+  // warning into a hard failure for CI that must guarantee FFI-primary
+  // measurements.
+  const ffiActive = getBunFFI() !== null;
+  if (isBun() && !ffiActive) {
+    const msg =
+      "bun:ffi is NOT active on Bun — rust:* tasks will run through the napi " +
+      "fallback. Unset CASTRUM_FFI_MODE (or set it to auto) and ensure the " +
+      "addon bind-time self-test passes.";
+    if (process.env.CASTRUM_BENCH_FFI === "1") {
+      throw new Error(`CASTRUM_BENCH_FFI=1: ${msg}`);
+    }
+    console.warn(`\u26a0\ufe0f  ${msg}`);
+  } else if (isBun()) {
+    console.log("bun:ffi active — rust:* tasks run through the primary FFI transport.");
+  }
+
   const fixtures = createFixtures();
   const complexFixtures = createComplexFixtures();
 

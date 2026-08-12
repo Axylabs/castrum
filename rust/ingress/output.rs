@@ -2,8 +2,6 @@
 // The canonical numeric source for the ingress binary output layout.
 // `ingress_constants.rs` re-exports these values to JS via NAPI.
 
-use std::ptr;
-
 // ── Output buffer binary layout ───────────────────────────────────
 pub const OUT_VERDICT: usize = 0;
 pub const OUT_ERROR_CODE: usize = 1;
@@ -18,6 +16,11 @@ pub const OUT_QUERY_JSON_LEN: usize = 36;
 pub const OUT_HEADER_VARIANT: usize = 40;
 pub const OUT_BODY_JSON_LEN: usize = 44;
 pub const OUT_DATA_START: usize = 48;
+
+/// Upper bound for the allocating `handle_request_full_sync` output buffer
+/// (64 MiB) — a misconfigured huge `outputBufferSize` would otherwise allocate
+/// gigabytes and OOM the process.
+pub const MAX_OUTPUT_BUFFER_SIZE: u32 = 64 * 1024 * 1024;
 
 // ── Flags ─────────────────────────────────────────────────────────
 pub const FLAG_HAS_COOKIES: u32 = 1 << 0;
@@ -49,57 +52,6 @@ pub const ERR_CODE_SCHEMA_VALIDATION: u8 = 5;
 pub const ERR_CODE_BAD_REQUEST: u8 = 6;
 pub const ERR_CODE_REQUEST_TOO_LARGE: u8 = 7;
 pub const ERR_CODE_INTERNAL: u8 = 8;
-
-// ── Unsafe output helpers ─────────────────────────────────────────
-
-/// Panic-safe capacity check for the unsafe writers. This makes each write
-/// self-checking instead of resting on a single upstream `out.len() >= 48`
-/// guard — with `panic = "unwind"` a miscalculation becomes a clean JS error
-/// (napi catch_unwind) rather than a silent OOB write.
-#[inline(always)]
-fn check_capacity(out: &[u8], pos: usize, n: usize) {
-    let end = pos
-        .checked_add(n)
-        .unwrap_or_else(|| panic!("castrum output position overflow at {pos} (n={n})"));
-    assert!(
-        end <= out.len(),
-        "castrum output buffer overflow at {pos} (n={n}, len={})",
-        out.len()
-    );
-}
-
-/// Write a u16 at the given position in little-endian format.
-///
-/// # Safety
-/// `pos + 2` must be within `out` (enforced by `check_capacity`, which panics
-/// on overflow — with `panic = "unwind"` napi converts that to a clean JS error).
-#[inline(always)]
-pub unsafe fn write_u16(out: &mut [u8], pos: usize, value: u16) {
-    check_capacity(out, pos, 2);
-    ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), out.as_mut_ptr().add(pos), 2);
-}
-
-/// Write a u32 at the given position in little-endian format.
-///
-/// # Safety
-/// `pos + 4` must be within `out` (enforced by `check_capacity`, which panics
-/// on overflow — with `panic = "unwind"` napi converts that to a clean JS error).
-#[inline(always)]
-pub unsafe fn write_u32(out: &mut [u8], pos: usize, value: u32) {
-    check_capacity(out, pos, 4);
-    ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), out.as_mut_ptr().add(pos), 4);
-}
-
-/// Write a u64 at the given position in little-endian format.
-///
-/// # Safety
-/// `pos + 8` must be within `out` (enforced by `check_capacity`, which panics
-/// on overflow — with `panic = "unwind"` napi converts that to a clean JS error).
-#[inline(always)]
-pub unsafe fn write_u64(out: &mut [u8], pos: usize, value: u64) {
-    check_capacity(out, pos, 8);
-    ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), out.as_mut_ptr().add(pos), 8);
-}
 
 // ── Output header writer ──────────────────────────────────────────
 
@@ -259,22 +211,39 @@ pub fn write_output_header(
         500
     };
 
+    // Defense-in-depth: the writer stores directly into the header slots; a
+    // SINGLE upfront check (instead of per-field `write_u16/32/64` capacity
+    // asserts) requires the full header, so a too-small buffer still fails
+    // loudly (→ JS 500 via catch_unwind) but the hot path pays one bounds
+    // check for the whole 48-byte header instead of seven. The header layout
+    // is fixed and power-of-two aligned, so all stores below are in-bounds
+    // after the check.
+    assert!(
+        out.len() >= OUT_DATA_START,
+        "output buffer too small for the ingress decision header"
+    );
+
     unsafe {
-        out[OUT_VERDICT] = verdict;
-        out[OUT_ERROR_CODE] = error_code;
-        write_u16(out, OUT_STATUS, status);
-        write_u32(out, OUT_FLAGS, flags);
-        write_u32(out, OUT_RATE_LIMIT, rate_limit);
-        write_u32(out, OUT_RATE_REMAINING, rate_remaining);
-        write_u64(out, OUT_RATE_RESET, rate_reset_ms);
-        write_u64(out, OUT_RETRY_AFTER, retry_after_ms);
-        write_u32(out, OUT_COOKIES_JSON_LEN, cookies_json_len);
-        write_u32(out, OUT_QUERY_JSON_LEN, query_json_len);
-        out[OUT_HEADER_VARIANT] = header_variant;
-        out[OUT_HEADER_VARIANT + 1] = 0;
-        out[OUT_HEADER_VARIANT + 2] = 0;
-        out[OUT_HEADER_VARIANT + 3] = 0;
-        write_u32(out, OUT_BODY_JSON_LEN, body_json_len);
+        let p = out.as_mut_ptr();
+        // # Safety: `p` points into `out`, which has been verified to hold at
+        // least `OUT_DATA_START` bytes above; every offset written below is a
+        // compile-time constant within `[0, OUT_DATA_START)`, so all these
+        // stores are in-bounds. No other reference to `out` is live here.
+        *p.add(OUT_VERDICT) = verdict;
+        *p.add(OUT_ERROR_CODE) = error_code;
+        (p.add(OUT_STATUS) as *mut u16).write_unaligned(status);
+        (p.add(OUT_FLAGS) as *mut u32).write_unaligned(flags);
+        (p.add(OUT_RATE_LIMIT) as *mut u32).write_unaligned(rate_limit);
+        (p.add(OUT_RATE_REMAINING) as *mut u32).write_unaligned(rate_remaining);
+        (p.add(OUT_RATE_RESET) as *mut u64).write_unaligned(rate_reset_ms);
+        (p.add(OUT_RETRY_AFTER) as *mut u64).write_unaligned(retry_after_ms);
+        (p.add(OUT_COOKIES_JSON_LEN) as *mut u32).write_unaligned(cookies_json_len);
+        (p.add(OUT_QUERY_JSON_LEN) as *mut u32).write_unaligned(query_json_len);
+        *p.add(OUT_HEADER_VARIANT) = header_variant;
+        *p.add(OUT_HEADER_VARIANT + 1) = 0;
+        *p.add(OUT_HEADER_VARIANT + 2) = 0;
+        *p.add(OUT_HEADER_VARIANT + 3) = 0;
+        (p.add(OUT_BODY_JSON_LEN) as *mut u32).write_unaligned(body_json_len);
     }
 
     OUT_DATA_START + cookies_json_len as usize + query_json_len as usize + body_json_len as usize

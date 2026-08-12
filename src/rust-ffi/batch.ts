@@ -17,7 +17,7 @@ import {
   withPackScratch2,
   type SchemaValidator,
 } from "../shared/packed";
-import type { RustClientContext } from "./context";
+import { resolvePoolNative, type RustClientContext } from "./context";
 import type { MultipartPart, PasswordHashOptions } from "../native";
 
 /** Array-of-bytes FFI namespace. */
@@ -86,9 +86,9 @@ export interface RustBatch {
     algorithm?: string | null,
   ): Uint8Array[];
   gzipCompress(items: Uint8Array[], level?: number | null): Uint8Array[];
-  gzipDecompress(items: Uint8Array[]): Uint8Array[];
+  gzipDecompress(items: Uint8Array[], maxDecompressed?: number | null): Uint8Array[];
   brotliCompress(items: Uint8Array[], quality?: number | null): Uint8Array[];
-  brotliDecompress(items: Uint8Array[]): Uint8Array[];
+  brotliDecompress(items: Uint8Array[], maxDecompressed?: number | null): Uint8Array[];
   jwtVerify(
     tokens: Uint8Array[],
     secret: Uint8Array,
@@ -140,24 +140,16 @@ export interface RustBatch {
   templateRender(source: string, contexts: Uint8Array[]): Uint8Array[];
 }
 
-// Native batch fns are process-wide singletons (one lazy addon). Resolve each
-// once — triggering pool init + addon load on first use — and cache it so the
-// hot path skips the lazy-addon Proxy get on every call. This also makes the
-// `withPoolInit` Proxy unnecessary for the batch namespace (pool init happens
-// here on first native use).
-const nativeFns = new Map<string, unknown>();
-
+// Native batch fns are process-wide singletons (one lazy addon). `resolvePoolNative`
+// resolves each once (triggering pool init + addon load on first use) and caches
+// it, so the hot path skips the lazy-addon Proxy get on every call — the same
+// cache `resolveNative`/packed use (context.ts), with pool init for the
+// rayon-backed batch surface.
 function nativeFn(
   ctx: RustClientContext,
   name: string,
 ): (...args: unknown[]) => unknown {
-  let f = nativeFns.get(name);
-  if (f === undefined) {
-    ctx.ensurePool();
-    f = (ctx.addon as unknown as Record<string, unknown>)[name];
-    nativeFns.set(name, f);
-  }
-  return f as (...args: unknown[]) => unknown;
+  return resolvePoolNative(ctx, name);
 }
 
 /** Build the `batch` namespace for a client context. */
@@ -419,10 +411,13 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
         ),
       );
     },
-    gzipDecompress(items) {
+    gzipDecompress(items, maxDecompressed) {
       return withPackScratch(items, (packed) =>
         unpackByteResults(
-          nativeFn(ctx, "gzipDecompressBatchPacked")(packed) as Buffer,
+          nativeFn(ctx, "gzipDecompressBatchPacked")(
+            packed,
+            maxDecompressed ?? null,
+          ) as Buffer,
         ),
       );
     },
@@ -436,10 +431,13 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
         ),
       );
     },
-    brotliDecompress(items) {
+    brotliDecompress(items, maxDecompressed) {
       return withPackScratch(items, (packed) =>
         unpackByteResults(
-          nativeFn(ctx, "brotliDecompressBatchPacked")(packed) as Buffer,
+          nativeFn(ctx, "brotliDecompressBatchPacked")(
+            packed,
+            maxDecompressed ?? null,
+          ) as Buffer,
         ),
       );
     },

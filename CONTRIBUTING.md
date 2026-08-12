@@ -41,8 +41,8 @@ bun run check
 
 1. **Make changes to Rust code** → `cargo build --release` (or `bun run build`)
 2. **Make changes to TypeScript code** → No build step needed (Bun runs TS directly)
-3. **Run Rust tests** → `cargo test` (~250 tests)
-4. **Run TypeScript tests** → `bun test` (~255 tests)
+3. **Run Rust tests** → `cargo test` (~440 tests)
+4. **Run TypeScript tests** → `bun test` (~540 tests)
 5. **Typecheck** → `bun run typecheck`
 6. **Format + lint** → `bun run format` / `bun run lint`
 7. **Run benchmarks** → `bun run check` (CPU) / `bun run bench:http:smoke` (HTTP wire-format guard)
@@ -165,11 +165,13 @@ test/
 ├── integration/           # Node.js compatibility tests (node --test)
 │   ├── node-smoke.test.mjs
 │   └── node-enterprise.test.mjs
-├── property/              # Property-style parity tests
-│   └── pool-parity.test.ts
-└── fixtures/              # Test fixtures
-    └── ...
+└── property/              # Property-style parity tests
+    └── pool-parity.test.ts
 ```
+
+(`test/fixtures/` and `test/unit/ffi/` are empty leftover dirs from the old
+`src/ffi/` layout — do not add fixtures there; put data under `src/data/` or
+inline fixtures in the test file.)
 
 ### Writing Tests
 

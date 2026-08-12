@@ -58,7 +58,27 @@ impl FastNode {
         ctx.into_errors()
     }
 
+    /// Validate `c` against this schema (bool or detailed mode). Every
+    /// recursion of the schema walk (members, tuple items, combinator
+    /// sub-schemas) routes through this method, so it is the single choke point
+    /// for the nesting-depth cap: `MAX_DEPTH` bounds how deep the walk can
+    /// recurse, preventing hostile deeply-nested JSON from exhausting the
+    /// native stack (an uncatchable abort — see `Ctx::enter_depth`).
     fn validate(&self, c: &mut Cursor, ctx: &mut Ctx) -> bool {
+        if !ctx.enter_depth() {
+            ctx.record(
+                "",
+                "maxDepth",
+                "maximum JSON nesting depth exceeded".to_string(),
+            );
+            return false;
+        }
+        let ok = self.validate_inner(c, ctx);
+        ctx.leave_depth();
+        ok
+    }
+
+    fn validate_inner(&self, c: &mut Cursor, ctx: &mut Ctx) -> bool {
         let base = self.schema_path.as_deref().unwrap_or("");
         if self.never {
             ctx.record(
@@ -106,7 +126,7 @@ impl FastNode {
         //    replicating jsonschema's cmp::equal).
         if let Some(value) = &self.value {
             let data = c.data;
-            if !c.skip_value() {
+            if !c.skip_value(ctx.depth) {
                 ctx.record(base, "parse", "malformed JSON value".to_string());
                 return false;
             }
@@ -157,11 +177,11 @@ impl FastNode {
         match b {
             b'{' => match &self.obj {
                 Some(o) => validate_object(o, c, ctx, base),
-                None => c.skip_value(),
+                None => c.skip_value(ctx.depth),
             },
             b'[' => match &self.arr {
                 Some(a) => validate_array(a, c, ctx, base),
-                None => c.skip_value(),
+                None => c.skip_value(ctx.depth),
             },
             b'"' => {
                 let Some(inner) = c.raw_string() else {
@@ -417,6 +437,15 @@ fn type_names(mask: u8) -> String {
 /// `multipleOf` exactness, replicating jsonschema's `is_multiple_of_float`:
 /// exact rational division via fraction::BigFraction, denominator must be 1.
 fn is_multiple_of(value: f64, multiple: f64) -> bool {
+    // `fraction::BigFraction::from(f64)` cannot represent non-finite values
+    // (`1e999` parses to `f64::INFINITY` in `Cursor::number`) and PANICS on
+    // them. Via the raw C-ABI (bun:ffi) path a panic is a whole-process crash
+    // (no catch_unwind equivalent), so guard up front and report "not a
+    // multiple" — consistent with the DOM validator, which also yields
+    // schema-invalid for such a body (its serde parse of `1e999` fails).
+    if !value.is_finite() || !multiple.is_finite() {
+        return false;
+    }
     if value == 0.0 {
         return true;
     }
@@ -625,7 +654,7 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
             match prop_node {
                 Some(node) => node.validate(c, ctx),
                 None => match &o.additional {
-                    Additional::Allow => c.skip_value(),
+                    Additional::Allow => c.skip_value(ctx.depth),
                     Additional::Deny => {
                         ctx.record(
                             base,
@@ -652,7 +681,7 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
                 // Collect every failing property: realign past this value and
                 // continue validating the remaining members.
                 obj_ok = false;
-                realign(c, vstart);
+                realign(c, vstart, ctx.depth);
             } else {
                 return false;
             }
@@ -765,7 +794,7 @@ pub(crate) fn validate_array(a: &FastArray, c: &mut Cursor, ctx: &mut Ctx, base:
         let ok = match &a.tuple_items {
             Some(tuple) if idx < tuple.len() => validate_element(&tuple[idx], c, ctx, idx),
             Some(_) => match &a.additional_items {
-                Some(Additional::Allow) | None => c.skip_value(),
+                Some(Additional::Allow) | None => c.skip_value(ctx.depth),
                 Some(Additional::Deny) => {
                     ctx.push_idx(idx);
                     ctx.record(
@@ -780,13 +809,13 @@ pub(crate) fn validate_array(a: &FastArray, c: &mut Cursor, ctx: &mut Ctx, base:
             },
             None => match &a.items {
                 Some(node) => validate_element(node, c, ctx, idx),
-                None => c.skip_value(),
+                None => c.skip_value(ctx.depth),
             },
         };
         if !ok {
             if ctx.is_detailed() {
                 arr_ok = false;
-                realign(c, elem_start);
+                realign(c, elem_start, ctx.depth);
             } else {
                 return false;
             }
@@ -832,10 +861,10 @@ pub(crate) fn validate_array(a: &FastArray, c: &mut Cursor, ctx: &mut Ctx, base:
 /// In detailed mode, skip the remainder of a failed value so validation can
 /// continue to the next property/element (collecting every error). No-op if the
 /// value is malformed (can't safely resync).
-fn realign(c: &mut Cursor, vstart: usize) {
+fn realign(c: &mut Cursor, vstart: usize, depth: u32) {
     let data = c.data;
     let mut sc = Cursor::new(&data[vstart..]);
-    if sc.skip_value() {
+    if sc.skip_value(depth) {
         c.pos = vstart + sc.pos;
     }
 }
@@ -852,12 +881,12 @@ fn validate_element(node: &FastNode, c: &mut Cursor, ctx: &mut Ctx, idx: usize) 
 /// capture the value's raw bytes and re-scan each on a fresh cursor.
 fn validate_all(nodes: &[Arc<FastNode>], c: &mut Cursor, ctx: &mut Ctx) -> bool {
     match nodes {
-        [] => c.skip_value(),
+        [] => c.skip_value(ctx.depth),
         [node] => node.validate(c, ctx),
         _ => {
             let vstart = c.pos;
             let data = c.data;
-            if !c.skip_value() {
+            if !c.skip_value(ctx.depth) {
                 return false;
             }
             let raw = &data[vstart..c.pos];

@@ -63,32 +63,67 @@ pub fn encode_frame(opcode: u8, payload: &[u8], mask: bool, fin: bool) -> Vec<u8
         } else {
             0
         } + if mask { 4 } else { 0 };
+    let mut out = vec![0u8; header_len + payload.len()];
+    encode_frame_into(opcode, payload, mask, fin, &mut out).expect("exact-size frame buffer");
+    out
+}
 
-    let mut out = Vec::with_capacity(header_len + payload.len());
-    out.push((if fin { 0x80 } else { 0 }) | (opcode & 0x0f));
+/// Zero-alloc core: encode a WebSocket frame directly into `out`. Returns the
+/// bytes written, or `None` when `out` is too small. Byte-identical to
+/// [`encode_frame`]; used by the C-ABI (`bun:ffi`) path to avoid the header
+/// Vec + copy.
+pub fn encode_frame_into(
+    opcode: u8,
+    payload: &[u8],
+    mask: bool,
+    fin: bool,
+    out: &mut [u8],
+) -> Option<usize> {
+    let header_len =
+        2 + if payload.len() > 125 {
+            if payload.len() > 65_535 {
+                8
+            } else {
+                2
+            }
+        } else {
+            0
+        } + if mask { 4 } else { 0 };
+    let need = header_len + payload.len();
+    if out.len() < need {
+        return None;
+    }
+    let mut pos = 0usize;
+    out[pos] = (if fin { 0x80 } else { 0 }) | (opcode & 0x0f);
+    pos += 1;
 
     let len = payload.len();
     let mask_bit = if mask { 0x80 } else { 0 };
     if len <= 125 {
-        out.push(mask_bit | len as u8);
+        out[pos] = mask_bit | len as u8;
+        pos += 1;
     } else if len <= 65_535 {
-        out.push(mask_bit | 126);
-        out.extend_from_slice(&(len as u16).to_be_bytes());
+        out[pos] = mask_bit | 126;
+        pos += 1;
+        out[pos..pos + 2].copy_from_slice(&(len as u16).to_be_bytes());
+        pos += 2;
     } else {
-        out.push(mask_bit | 127);
-        out.extend_from_slice(&(len as u64).to_be_bytes());
+        out[pos] = mask_bit | 127;
+        pos += 1;
+        out[pos..pos + 8].copy_from_slice(&(len as u64).to_be_bytes());
+        pos += 8;
     }
 
     if mask {
-        out.extend_from_slice(&DEFAULT_MASK);
-        let start = out.len();
-        out.resize(start + payload.len(), 0);
-        masked_copy(&mut out[start..], payload, DEFAULT_MASK);
+        out[pos..pos + 4].copy_from_slice(&DEFAULT_MASK);
+        pos += 4;
+        masked_copy(&mut out[pos..pos + payload.len()], payload, DEFAULT_MASK);
+        pos += payload.len();
     } else {
-        out.extend_from_slice(payload);
+        out[pos..pos + payload.len()].copy_from_slice(payload);
+        pos += payload.len();
     }
-
-    out
+    Some(pos)
 }
 
 /// A decoded WebSocket frame.

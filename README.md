@@ -14,14 +14,14 @@ A high-performance Bun backend framework with Rust-accelerated FFI functions, pr
 │                                                                  │
 │  index.ts (entry point)                                          │
 │    ├── src/rust-ffi/     Raw Rust FFI bindings                   │
-│    ├── src/native/       NAPI native addon loader                │
+│    ├── src/native/       bun:ffi (primary on Bun) + NAPI loader  │
 │    ├── src/ingress/      High-performance HTTP ingress pipeline  │
 │    ├── src/integration/  Framework-agnostic pipeline/WS/SSE      │
 │    ├── src/loader/       Higher-order loader (HFC)               │
 │    ├── src/baseline/     JS baseline (benchmark reference)       │
 │    └── src/shared/       Shared constants and helpers            │
 │                                                                  │
-├─────────────────── NAPI Bridge (napi-rs) ──────────────────────┤
+├──────── Native Bridge: bun:ffi (Bun, primary) + NAPI (fallback) ────────┤
 │                                                                  │
 │                     Rust (cdylib) Layer                          │
 │                                                                  │
@@ -36,9 +36,10 @@ A high-performance Bun backend framework with Rust-accelerated FFI functions, pr
 │    ├── json/       json_ops, json_ser, json_patch_ops,           │
 │    │               json_schema, fast_schema/ (zero-DOM)          │
 │    ├── payload/    compress, sse, ws_frames, websocket, template │
-│    └── ingress/    mod.rs (napi boundary), pipeline.rs (core),   │
-│                    options/time/packed, cors, proxy, ip_trust,   │
-│                    rate_limit, terminal, output, constants       │
+│    ├── ingress/    mod.rs (napi boundary), pipeline.rs (core),   │
+│    │               options/time/packed, cors, proxy, ip_trust,   │
+│    │               rate_limit, terminal, output, constants       │
+│    └── ffi.rs      extern "C" exports (castrum_*) for bun:ffi     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,14 +73,23 @@ bun run test:node
 - Bun resolves the `bun` exports condition → `index.ts` (native TS execution).
 - Node.js resolves the `node`/`default` condition → `dist/index.js` (compiled ESM,
   requires Node.js >= 20.3). The bundled `dist/index.d.ts` covers the full API.
-- The native addon is a standard N-API binary — the same `.node` file is loaded by both
-  runtimes through `src/native/loader.ts`.
+- **One cdylib, two transports.** The addon is built with napi-rs (a standard N-API
+  binary) but ALSO exports `extern "C"` symbols (`rust/ffi.rs`) that Bun loads directly:
+  - **Bun** — `bun:ffi` is the PRIMARY transport. `src/native/ffi.ts` `dlopen`s the same
+    `.node` file and JIT-calls the C ABI exports (~10-20ns crossing), covering the whole
+    stateless scalar API + the ingress per-request pipeline + the ingress layout
+    constants. NAPI is the fallback (Node, `CASTRUM_FFI_MODE=napi`, or a failed bind-time
+    self-test).
+  - **Node.js** — the N-API addon (`src/native/loader.ts`) is the fallback transport.
+- `rust.transport()` returns `"ffi"` / `"napi"` (the resolved transport) and
+  `rust.ffiActive()` reports whether the bun:ffi transport is live; `CASTRUM_FFI_MODE`
+  overrides the selection (see docs/ENVIRONMENT.md).
 
 ```ts
 // Node.js (ESM)
 import { rust, createIngressHandler, readHandler, createIngressServerNode } from "castrum";
 
-rust.crc32(new Uint8Array([104, 105])); // native FFI works identically
+rust.crc32(new Uint8Array([104, 105])); // native FFI works identically (napi fallback)
 
 // Serve the SAME pre-baked ingress handlers over node:http
 const srv = createIngressServerNode({ port: 3000, routes: { "/health": { read: handler } } });
@@ -125,7 +135,7 @@ bun run bench:http:spike    # spike test
 bun run bench:http:soak     # soak (endurance) test
 bun run bench:http:storm    # storm (burst) test
 bun run bench:http:boundary # boundary conditions
-bun run bench:http:all-heavy # all heavy-JSON scenarios (01-11 + heavy)
+bun run bench:http:all-heavy # heavy-JSON scenarios (substring filter "1": 01-smoke, 10-12, 13-20)
 ```
 
 ### Bun built-ins comparison ("don't reinvent the wheel")
@@ -162,29 +172,33 @@ Full table + per-op decisions: [`docs/bun-builtins-decision-matrix.md`](docs/bun
 import { rust, proven } from "castrum";
 
 // `rust`    — All Rust FFI native implementations (flat, complete API)
-// `proven`  — ONLY the `rust.*` functions that prove performance in benchmarks
+// `proven`  — The same full `rust.*` surface, with performance annotations
 ```
 
-## Performance-proven surface
+## Performance-annotated surface
 
 Not every `rust.*` function beats its JavaScript baseline — e.g. `rust.jsonParse`
 loses ~5x to Bun's `JSON.parse` (DOM + napi marshaling), and the native schema
-validator is slower than `ajv` for small documents. The package exposes a
-**curated, performance-justified entry point** so consumers can opt into only
-the functions that prove performance:
+validator is slower than `ajv` for small documents. `proven` exposes the **full
+`rust.*` surface** (it is literally the same object as `rust`); performance is
+communicated by `@performance` / `@deprecated` JSDoc annotations rather than by
+filtering, so a function's classification is visible in your editor and in
+`PROVEN_SURFACE`:
 
 ```ts
 import { proven, PROVEN_SURFACE } from "castrum";
 
 proven.jsonValid(bytes);   // ✓ proven — Rust wins vs the JS baseline
 proven.fnv1a64(bytes);     // ✓ proven — Rust wins ~9-16x
-proven.jsonParse(bytes);   // ✗ TS error — not in the proven surface (use `rust.jsonParse`)
+proven.jsonParse(bytes);   // ✗ @deprecated — loses ~5x to JSON.parse
 ```
 
-- `proven` is a subset of `rust` restricted to functions whose status is
-  `proven` in `PROVEN_SURFACE` (the single source of truth in
-  `src/shared/proven.ts`). Statuses: `proven` / `parity` / `not-competitive` /
-  `unmeasured`.
+- `proven` is the full `rust.*` client (`export const proven = rust`). Each
+  exported function's JSDoc carries its measured performance vs the JS baseline
+  (`@performance`) and is marked `@deprecated` when it loses — so the editor
+  steers you to the JS/Bun baseline for those. The single source of truth for the
+  classifications is `PROVEN_SURFACE` (`src/shared/proven.ts`). Statuses:
+  `proven` / `parity` / `not-competitive` / `unmeasured`.
 - The full surface is unchanged — `rust.jsonParse`, `rust.createSchemaValidator`,
   etc. remain available for completeness; they just aren't advertised as
   performance wins.
@@ -203,6 +217,30 @@ The audit compares each registry entry against the latest benchmark report and
 fails (with `--fail`) when a `proven` function loses to its baseline by more
 than the tolerance — catching real performance regressions (and wrong
 classifications) before they ship.
+
+### Native-vs-JS selection surface
+
+For framework consumers that want to bind each operation to a fixed
+implementation at load time (instead of calling `rust.*` directly), castrum
+exposes an auto-selected decision surface:
+
+```ts
+import { opImpl, isNativeOp, opDecision } from "castrum";
+
+opImpl("gzipCompress");   // "native" | "js" | null
+isNativeOp("crc32");      // boolean
+opDecision("fnv1a64");    // { impl, note? } | null
+```
+
+- The single source of truth is `rust/selection.rs`, which embeds the
+  benchmark-generated `src/selection.json` (produced by
+  `scripts/select-native.ts --write`, audited by `--check` in CI). Under Bun,
+  ops where the Bun built-in beats the Rust addon (gzip, crc32, xxh3, HMAC,
+  random tokens — see `docs/bun-builtins-decision-matrix.md`) are selected as
+  `"js"` (a JS path that delegates to the Bun built-in); under Node the base
+  benchmark decision stands.
+- Consumers read `opImpl(op)` **once at startup** and bind each op to a fixed
+  implementation — they do not swap native↔js per call.
 
 ### Rust Utility API
 
@@ -365,6 +403,12 @@ schema.count(docs);       // number of valid docs
 // Fine-grained control: createLoader({ adaptive, batchMin, maxCacheKeys, ... })
 ```
 
+The loader is also surfaced through the integration layer for bulk workloads
+(`src/integration/batch.ts`, exported): `validateMany` / `validateCount`
+(batch JSON-schema validation) and generic `runMany` / `runOne`. See
+`examples/loader-demo.ts` (single / bulk / schema / hash routes against a real
+Bun.serve server) for end-to-end usage.
+
 #### Configuring defaults
 
 Defaults are selected automatically, and can be overridden:
@@ -437,7 +481,17 @@ const handler = createIngressFast({
   rateLimit: { limit: 100, windowMs: 60_000 },
   parseCookies: true,
   parseQuery: true,
+  // warmOnCreate: true   // prime the hot path once at construction (see below)
 });
+```
+
+**Cold-start priming**: pass `warmOnCreate: true` to `createIngressFast` /
+`createIngressHandler` to run one probe GET at construction so the `run()`
+closure + packed pipeline + FFI ingress call are JIT-warmed before the first
+real request (cuts cold-invocation tail latency in serverless-style
+deployments). For instant execution in fresh processes, compile the server to a
+standalone Bun binary (`bun build --compile ./server.ts --outfile server`) or
+use Bun's compile cache — see [docs/GETTING_STARTED.md §8](./docs/GETTING_STARTED.md).
 
 // Inside a Bun server:
 Bun.serve({
@@ -522,7 +576,7 @@ castrum/
 │   ├── ingress/             # Ingress pipeline (TS layer), decomposed by task
 │   │   ├── index.ts         # Public API barrel + async factory
 │   │   ├── fast.ts          # Thin: createIngressFast (packed input)
-│   │   ├── handlers.ts      # Thin: createIngressHandler (full_sync, pre-baked)
+│   │   ├── handlers.ts      # Thin: createIngressHandler (JS-packs frame → handleRequestPacked, pre-baked)
 │   │   ├── server.ts        # createIngressServer (Bun.serve builder)
 │   │   ├── server-node.ts   # createIngressServerNode (node:http adapter)
 │   │   ├── constants.ts     # Layout constants (from Rust)
@@ -537,10 +591,11 @@ castrum/
 │   │   ├── headers/         # cors, hsts, fast-templates, baked-templates
 │   │   ├── decode/          # fast-result, baked-result
 │   │   ├── response/        # terminal, error-bodies
-│   │   └── routes/          # read/head/json-write/echo/fallback factories
-│   ├── native/              # Native addon loader
+│   │   └── routes/          # read/head/json-write/echo/delete/options/fallback factories
+│   ├── native/              # Native transport: bun:ffi (primary on Bun) + NAPI fallback
 │   │   ├── types.ts         # NativeAddon interface + instance types
 │   │   ├── loader.ts        # getAddon/lazyAddon path resolution
+│   │   ├── ffi.ts           # bun:ffi C-ABI bindings (Bun-only; bind-time self-test)
 │   │   └── index.ts         # Barrel
 │   ├── rust-ffi/            # Rust FFI bindings
 │   │   ├── options.ts       # RustOptions + input-normalization helpers
@@ -549,9 +604,9 @@ castrum/
 │   │   ├── text.ts          # string namespace
 │   │   ├── batch.ts         # array-of-bytes namespace
 │   │   ├── packed.ts        # raw packed-wire namespace
-│   │   ├── scalar.ts        # scalar/feature methods
+│   │   ├── scalar/          # scalar/feature methods (interface + per-domain builders)
 │   │   ├── client.ts        # createRust factory + default `rust`
-│   │   ├── proven.ts        # `proven` client (derived from PROVEN_SURFACE)
+│   │   ├── proven.ts        # `proven` client (full surface, annotated)
 │   │   └── index.ts         # Barrel
 │   ├── baseline/            # JS baseline implementations
 │   │   ├── index.ts         # Aggregator
@@ -585,7 +640,8 @@ All Rust FFI functions are designed for **zero-allocation** paths where possible
 - **Ingress pipeline**: Single output buffer written by Rust, read by JS — minimal copies
 - **Validation functions**: Pure CPU-bound, 10-100x faster than JS equivalents
 - **Hashing**: SIMD-optimized crates under the hood
-- **Batch operations**: Packed binary format minimizes NAPI boundary crossings
+- **Batch operations**: Packed binary format minimizes boundary crossings
+  (the batch/packed namespaces use the NAPI fallback — no C-ABI batch symbols)
 - **JSON parsing**: Uses `sonic-rs` (Rust) — one of the fastest JSON parsers available
 
 ---

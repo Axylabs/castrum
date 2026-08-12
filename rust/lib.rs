@@ -45,6 +45,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 // ingress::handle_request_full_sync{,_into}, util::init_thread_pool,
 // util::batch, ingress::ingress_constants.
 pub mod crypto;
+pub mod ffi;
 pub mod http;
 pub mod ingress;
 pub mod json;

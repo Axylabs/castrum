@@ -61,28 +61,50 @@ export function createIngressMetrics(): IngressMetrics {
 
   const statusLabel = (status: number): string => String(status);
 
+  // Per-request in-flight accounting keyed by the request id (also surfaced in
+  // logs/metrics). This makes the gauge EXACTLY-ONCE per request, which matters
+  // because the baked handler can fire both `onError` and `onResponse` for the
+  // same request (native pipeline failure), or only `onError` (a throwing route
+  // callback). Without it the gauge either double-decrements or leaks, and the
+  // latency histogram reads 0 (result.startTime was never set anywhere).
+  // NOTE: error-ended requests (onError fired) are counted via requestsTotal +
+  // errorsTotal but not latency-sampled — the duration histogram only observes
+  // requests that complete through onResponse.
+  const active = new Map<string, number>();
+
   return {
     registry,
     runtime: {
-      onRequest(_req, _requestId, _ip) {
+      onRequest(_req, requestId, _ip) {
+        if (requestId) {
+          active.set(requestId, performance.now());
+        }
         inFlight.inc();
       },
-      onResponse(req, result: BakedIngressResult, status, _requestId) {
-        inFlight.dec();
+      onResponse(req, result: BakedIngressResult, status, requestId) {
         const method = req.method ?? "unknown";
         const statusKey = statusLabel(status);
         requestsTotal.inc({ method, status: statusKey });
-        const started = (result as BakedIngressResult & { startTime?: number })
-          .startTime;
-        const durationMs = started ? Date.now() - started : 0;
-        requestDuration.observe(Math.max(durationMs, 0) / 1000, {
-          method,
-          status: statusKey,
-        });
+        // Only a request that has not already ended (via onError) records its
+        // latency and decrements the gauge here.
+        const started = requestId ? active.get(requestId) : undefined;
+        if (started !== undefined) {
+          active.delete(requestId);
+          inFlight.dec();
+          requestDuration.observe(
+            Math.max(performance.now() - started, 0) / 1000,
+            { method, status: statusKey },
+          );
+        }
         if (result.rateLimited) rateLimitedTotal.inc();
       },
-      onError(_req, _requestId, error) {
-        inFlight.dec();
+      onError(_req, requestId, error) {
+        // Ends the request's gauge accounting exactly once (a later onResponse
+        // for the same request id becomes a no-op for the gauge). When only
+        // onError fires (throwing callback), this is what un-leaks inFlight.
+        if (requestId && active.delete(requestId)) {
+          inFlight.dec();
+        }
         errorsTotal.inc({ code: error?.name ?? "internal" });
       },
     },

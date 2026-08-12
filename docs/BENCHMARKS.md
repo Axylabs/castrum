@@ -6,7 +6,7 @@ This document describes the benchmark framework, how to run benchmarks, and how 
 
 ## Overview
 
-The benchmark system compares Rust FFI implementations against pure JavaScript/Bun baseline implementations. It measures throughput (ops/sec), latency (mean/percentiles), and memory allocation.
+The benchmark system compares the Rust implementations against pure JavaScript/Bun baseline implementations. It measures throughput (ops/sec), latency (mean/percentiles), and memory allocation. Under Bun the `rust:*` side runs through the PRIMARY `bun:ffi` transport (NAPI is the fallback); the CPU bench warns — or hard-fails with `CASTRUM_BENCH_FFI=1` — if the ffi transport is not live.
 
 ### Benchmark Types
 

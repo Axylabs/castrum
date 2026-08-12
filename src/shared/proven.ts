@@ -79,7 +79,7 @@ export const PROVEN_SURFACE = [
   { name: "randomToken", label: "Random token", nativeTask: "native:random_token", rustTask: "rust:random_token", status: "parity", typicalRatio: 1.1 },
   { name: "validateUuid", label: "UUID validation", nativeTask: "native:validate_uuid", rustTask: "rust:validate_uuid", status: "parity", typicalRatio: 1 },
   { name: "validateIpv4", label: "IPv4 validation", nativeTask: "native:validate_ipv4", rustTask: "rust:validate_ipv4", status: "parity", typicalRatio: 1.05 },
-  { name: "mimeFromExtension", label: "MIME lookup", nativeTask: "native:mime", rustTask: "rust:mime", status: "parity", typicalRatio: 1.2, note: "Noisy sub-µs op: wins ~1.6x on good runs, loses on bad runs; phf table lookup." },
+  { name: "mimeFromExtension", label: "MIME lookup", nativeTask: "native:mime", rustTask: "rust:mime", status: "parity", typicalRatio: 1.4, note: "Consistently ~1.38-1.44x rust after the 2026-08-12 marshal reduction (cachedMime no longer per-call slices; text.mimeFromExtension memoizes the decoded string). phf table lookup." },
   { name: "gzipCompress", label: "Gzip compress", nativeTask: "native:gzip_compress", rustTask: "rust:gzip_compress", status: "parity", typicalRatio: 1 },
   { name: "sseEncodeEvent", label: "SSE encode", nativeTask: "native:sse_encode", rustTask: "rust:sse_encode", status: "parity", typicalRatio: 1.1 },
 

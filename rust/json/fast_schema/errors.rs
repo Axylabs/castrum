@@ -12,6 +12,14 @@
 // failing branch is only a cause if the whole combinator fails, at which point
 // a summary error is recorded instead.
 
+/// Maximum JSON nesting depth accepted by the fast path. Matches the default
+/// recursion limits of sonic-rs (the ingress `json_valid_bytes` gate) and
+/// serde_json (the DOM fallback), so rejecting deeper documents keeps the fast
+/// path byte-parity with the reference AND prevents hostile deeply-nested JSON
+/// from exhausting the native stack (a stack overflow is an UNCATCHABLE process
+/// abort — `panic = "unwind"` + napi `catch_unwind` do NOT catch it).
+pub(crate) const MAX_DEPTH: u32 = 128;
+
 /// A single validation error, mirroring the field structure of
 /// `jsonschema::ValidationError` (instance path, schema path, keyword, message)
 /// but with our own message wording.
@@ -43,6 +51,8 @@ pub(crate) struct Ctx {
     pub(crate) suppress: bool,
     /// Instance path stack (only maintained in detailed mode).
     pub(crate) path: Vec<PathStep>,
+    /// Current recursion depth of the validate walk (guarded by `MAX_DEPTH`).
+    pub(crate) depth: u32,
 }
 
 impl Ctx {
@@ -52,6 +62,7 @@ impl Ctx {
             max_errors: usize::MAX,
             suppress: false,
             path: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -61,6 +72,7 @@ impl Ctx {
             max_errors,
             suppress: false,
             path: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -100,6 +112,21 @@ impl Ctx {
         let r = f(self);
         self.suppress = saved;
         r
+    }
+
+    /// Enter one nesting level of the validate walk. Returns false once the
+    /// walk exceeds `MAX_DEPTH`; the caller must then fail validation WITHOUT
+    /// recursing further (see `FastNode::validate`).
+    #[inline]
+    pub(crate) fn enter_depth(&mut self) -> bool {
+        self.depth += 1;
+        self.depth <= MAX_DEPTH
+    }
+
+    /// Leave one nesting level of the validate walk (mirrors `enter_depth`).
+    #[inline]
+    pub(crate) fn leave_depth(&mut self) {
+        self.depth -= 1;
     }
 
     #[inline]

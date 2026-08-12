@@ -101,11 +101,19 @@ export function gatherRawHeaders(
  * the packed-input pipeline: identical header selection and per-header size
  * guards, but no `[string, string][]` array and no napi string marshaling.
  * The returned view is valid only until the next call on this call site.
+ *
+ * @param originValue - When provided (non-undefined), the already-fetched
+ *   `Origin` header value to pack, avoiding a second `req.headers.get('origin')`
+ *   native→JS string conversion per request on the hot path (the caller, e.g.
+ *   `handlers.ts::run`, already fetched it once for `ctx.origin`). When
+ *   omitted, the origin is fetched here as before (back-compat). The same
+ *   `MAX_SMALL_HEADER_BYTES` size guard still applies either way.
  */
 export function gatherRawHeadersPacked(
   req: Request,
   plan: HeaderPlan,
   methodKind: number,
+  originValue?: string | null,
 ): Uint8Array {
   let [buf, view] = getHeaderBuf();
   let pos = 2;
@@ -121,7 +129,8 @@ export function gatherRawHeadersPacked(
   }
 
   if (plan.cors) {
-    const originV = h.get("origin");
+    const originV =
+      originValue !== undefined ? originValue : h.get("origin");
     if (originV !== null && originV.length <= MAX_SMALL_HEADER_BYTES) {
       [pos, buf, view] = writeHeaderPair(buf, view, pos, HDR_ORIGIN, originV);
       count++;

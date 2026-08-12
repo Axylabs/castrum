@@ -6,6 +6,7 @@ import { resolveIp, type BakedHandlerOptions } from "./common";
 import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, secondsFromMs } from "../shared";
 import { readBodyWithLimit } from "../body";
 import { getAddon } from "../../native";
+import { getBunFFI } from "../../native/ffi";
 
 /**
  * Zero-DOM JSON-validity check — the same native fast path the ingress
@@ -14,9 +15,13 @@ import { getAddon } from "../../native";
  * Used by `jsonWriteHandler` as a fallback when the pipeline skipped JSON
  * validation because neither `requireJsonBody` nor a `schema` is configured
  * on the ingress (see the `bodyValidJson` handling in the route).
+ *
+ * bun:ffi is primary on Bun; the napi addon is the fallback (Node, forced
+ * `CASTRUM_FFI_MODE=napi`, or a failed ffi self-test).
  */
 function isValidJsonBytes(bytes: Uint8Array): boolean {
-  return getAddon().jsonValid(bytes);
+  const ffi = getBunFFI();
+  return ffi ? ffi.jsonValid(bytes) : getAddon().jsonValid(bytes);
 }
 
 /**

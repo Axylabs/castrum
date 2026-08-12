@@ -417,15 +417,27 @@ fn output_write_header_clamps_out_of_range_status() {
 }
 
 #[test]
-#[should_panic(expected = "output buffer overflow")]
-fn output_write_u32_panics_on_undersized() {
-    // Enterprise guard: the unsafe writers self-check so a miscalculated
-    // buffer becomes a clean panic (→ napi catch_unwind → JS 500) instead of
-    // a silent OOB write.
-    let mut out = vec![0u8; 3];
-    unsafe {
-        crate::ingress::output::write_u32(&mut out, 0, 0xDEADBEEF);
-    }
+#[should_panic(expected = "output buffer too small")]
+fn output_header_panics_on_undersized() {
+    // Enterprise guard: `write_output_header` self-checks the full 48-byte
+    // header up front so a miscalculated buffer becomes a clean panic (→ napi
+    // catch_unwind → JS 500) instead of a silent OOB write.
+    let mut out = vec![0u8; crate::ingress::output::OUT_DATA_START - 1];
+    crate::ingress::output::write_output_header(
+        &mut out,
+        0,
+        0,
+        200,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    );
 }
 
 #[test]

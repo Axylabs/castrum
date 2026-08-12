@@ -7,7 +7,324 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Loader-backed bulk helpers** (`src/integration/batch.ts`, exported from the
+  package): `validateMany` / `validateCount` (batch JSON-schema validation via
+  `loader.schema`), and generic `runMany` / `runOne` (packed batch / single
+  loader dispatch). These wire the higher-order loader into the integration
+  layer — the loader was previously exported + benchmarked but had no
+  production call sites. `LoaderScalar` is now re-exported from the loader
+  barrel. See `examples/loader-demo.ts` for single/bulk/schema/hash usage.
+- **`enableLoader` option on the pre-baked write routes** (`BakedHandlerOptions`):
+  when set, the JSON-validity fallback check routes through
+  `loader("jsonValid")` instead of the direct native call — exercising the
+  loader's dispatch + counters on the real request path. Default off (the
+  direct call is marginally faster for a single request).
+- **`warmOnCreate` option** on `createIngressFast` / `createIngressHandler`:
+  runs one probe GET at construction so the `run()` closure + packed pipeline +
+  FFI ingress call are JIT-warmed before the first real request — cuts
+  cold-invocation tail latency in serverless-style deployments.
+- **Startup benchmark baseline persisted** to `bench/results/startup/latest.json`
+  (`bun run bench:startup`) so cold-start regressions are catchable like the
+  CPU report.
+- **`AdaptiveEstimate`** (`src/shared/adaptive.ts`, exported): a bounded EWMA
+  adaptive-estimate utility (generalized from the loader's cost model) for
+  runtime self-optimization decisions, plus a `BufferPool` `adaptive` option
+  that learns the observed request size to pre-size future buffers.
+
+### Security
+
+- **Decompression-bomb cap**: `rust.gzipDecompress` / `rust.brotliDecompress`
+  (and their `batch.*` variants) now cap decompressed output at 64 MiB by
+  default (new `maxDecompressed?: number` param; exceeding it errors). A few
+  hundred compressed bytes could previously expand to gigabytes (zero-run
+  deflate/brotli), OOM-aborting the process.
+- **`fast_schema` nesting-depth cap**: the zero-DOM JSON Schema fast path now
+  bounds recursion at 128 levels (`MAX_DEPTH`, matching sonic-rs/serde_json).
+  `SchemaValidator.validate` on a ~100K-deep hostile document previously
+  overflowed the native stack — an UNCATCHABLE process abort (`panic = "unwind"`
+  + napi `catch_unwind` do not catch stack overflow). Both the schema walk and
+  the structural `skip_value` path are guarded; deeper documents are rejected
+  (byte-parity with the DOM reference, which also caps at 128).
+
+### Fixed
+
+- **Metrics `in_flight` gauge desync**: `createIngressMetrics` double-decremented
+  the gauge on native pipeline failures (both `onError` and `onResponse` fire
+  for the same request) and the latency histogram always read 0 (`result.startTime`
+  was never set). Request accounting is now exactly-once, keyed by the request
+  id, with the start time recorded in `onRequest`. A throwing route callback now
+  also reports via `onError` (previously neither hook fired, leaking the gauge).
+- **`zeroCopyResponse`-then-throw pooled-buffer leak**: a route callback that
+  borrowed the pooled output buffer and then threw left the buffer in flight
+  forever (the owning Response was never delivered). `run()` now releases the
+  handle on the throwing path.
+- **`full_sync` output-buffer clamp**: `handle_request_full_sync` now clamps
+  `outputBufferSize` to `[OUT_DATA_START, 64 MiB]` — a misconfigured huge value
+  (e.g. `u32::MAX` ≈ 4 GiB) previously triggered a multi-GB allocation (OOM).
+- **Option-value validation**: `createIngressFast` / `createIngressHandler` now
+  fail-fast on non-finite/negative numeric option values (`maxBodyBytes`,
+  `bodyTimeoutMs`, `outputBufferSize`, `rateLimit.*`, `limits.*`) — a negative
+  value previously silenced the pipeline. `outputBufferSize` is also clamped to
+  the safe range in both factories.
+- **Raw C-ABI panic containment (whole-process crash fix)**: the `bun:ffi`
+  `extern "C"` exports had no `catch_unwind` — unlike the napi path (where
+  napi-rs turns a Rust panic into a JS exception/500), a panic in any
+  `castrum_*` FFI function unwound through the C ABI into Bun = UB =
+  whole-process crash. This is what took the ingress HTTP server down under
+  burst load (`11-concurrent-burst` → the process died at ~2.5 s and stayed
+  down, yielding 91% network errors). Every fallible/allocating FFI export
+  (`castrum_ingress_handle_packed`, gzip/brotli compress+decompress,
+  `jsonPatch`, `multipart`, `jwtSign`, argon2/bcrypt, AEAD) now routes its core
+  through `panic_guard` (`catch_unwind`), reporting the error sentinel (`0` /
+  `None`) on panic — so a panic becomes a JS 500, never a crash. `handle_packed`
+  borrows `&self` with no interior mutability on the hot path, so the instance
+  stays consistent after an unwind.
+- **Fixed a latent "panic on any input" in `fast_schema`**: `is_multiple_of`
+  passed non-finite numbers (`1e999` → `f64::INFINITY` via `Cursor::number`) to
+  `fraction::BigFraction::from`, which panics — a crash vector via the raw
+  C-ABI for any schema with `multipleOf`. It now guards `is_finite()` and
+  reports "not a multiple" (consistent with the DOM validator, whose serde
+  parse of such a body fails). Pinned by a new parity test.
+- **FFI ingress entry now guards `input↔out` aliasing**: `castrum_ingress_handle_packed`
+  only copied the body when it overlapped `out`; the packed input frame was
+  passed as a shared `&[u8]` even when it aliased the `&mut [u8]` output (instant
+  UB). It now mirrors the napi path (`util::run_packed_into`) and copies the
+  input too. Covered by a new C-ABI unit test.
+- **Bind-time self-test now exercises `castrum_ingress_handle_packed`**: a null
+  (0) inner handle must throw — a signature/ABI drift surfaces at bind time
+  (→ napi fallback) instead of crashing under load. The bind-time self-test
+  previously covered `castrum_ingress_layout` but not the ingress handle call.
+- **`passwordHash` double-run from salt-size miscalc**: `argon2PhcLength`
+  hardcoded a 22-char salt base64 (a 16-byte salt). Any other salt length
+  (the ffi bench uses a 19-byte salt) made the pre-sized buffer too small, so
+  `growExact` re-ran the whole argon2 hash — `passwordHash(m=8)` measured
+  **0.52x** vs napi. It now derives the salt b64 from the actual `salt.length`
+  → single native pass (measured **1.04x**).
+- **gzip/brotli compress double-run from the 16 KiB initial cap**: the streaming
+  core writes directly into the caller buffer, so the old `min(len+64, 16 KiB)`
+  cap caused a grow-retry re-run of the whole compression whenever the output
+  exceeded 16 KiB (any large/incompressible payload). The initial is now
+  `len + len/8 + 64` (single-pass; verified on a 64 KiB incompressible input
+  at ~1.1x vs napi instead of ~2x).
+- **`jsonSumIds` legit zero-sum no longer re-dispatches to napi**: the scalar-
+  i64 C ABI returned `0` for BOTH a zero-sum and invalid input, so every legit
+  `0n` result triggered a second napi crossing. The C ABI now writes a packed
+  `[u8 ok][i64 sum LE]` output (9 bytes) that disambiguates; the builder only
+  re-dispatches to napi on actual invalid input (preserving the exact error
+  message). Measured `jsonSumIds(200 rows)` 0.90x → 0.99x.
+- **Repeated same-secret HMAC/CSRF/cookie FFI calls no longer rebuild the key**: a
+  per-thread bounded LRU (`rust/ffi.rs` `HMAC_KEY_CACHE`) caches the compiled
+  `hmac::Key` — the C-ABI equivalent of the compiled-once `HmacSigner` NAPI
+  instance, without an opaque-handle lifetime hazard (the cache owns the keys
+  and LRU-evicts). Zero lock contention across Bun Worker threads
+  (`hmac_sha256_concurrent_*`).
+
+### Changed
+
+- **`bun:ffi` is now the PRIMARY transport under Bun; NAPI is the fallback.**
+  The public `rust.*` scalar API, the ingress per-request pipeline, and now the
+  ingress binary-layout constants all route through `bun:ffi` on Bun — NAPI is
+  used only as the fallback (Node, a failed bind-time self-test, or an explicit
+  opt-out). New `rust.transport()` / `rust.ffiActive()` report the resolved
+  transport, and the CPU bench harness asserts the ffi transport is live under
+  Bun (`CASTRUM_BENCH_FFI=1` turns the warning into a hard failure).
+  `import "castrum"` no longer dlopens the napi addon on Bun: the ingress
+  layout constants are read through a new `castrum_ingress_layout` C-ABI blob
+  (single numeric source `rust/ingress/output.rs`; drift pinned by a Rust unit
+  test + the bun:ffi bind-time self-test).
+- **New `CASTRUM_FFI_MODE=auto|ffi|napi` env var** (legacy alias
+  `RUST_FFI_MODE`) selects the native transport: `auto` (default) = bun:ffi on
+  Bun with a silent napi fallback; `ffi` = force bun:ffi and throw if the
+  bind/self-test fails; `napi` = always use the napi addon (exercises the
+  fallback on Bun). See `docs/ENVIRONMENT.md`.
+- `write_output_header` now asserts the output buffer is at least
+  `OUT_DATA_START` bytes (defense-in-depth; a too-small buffer fails loudly
+  instead of an out-of-bounds store).
+- `readBodyWithLimit`'s body-timeout timer is `unref()`ed (Node) so a pending
+  timeout no longer holds the event loop open.
+- **`rust.hmacSha256` / `rust.hmacSha256Verify` now route through `bun:ffi` on
+  Bun** (previously they always went through the NAPI `HmacSigner` instance).
+  The C ABI builds the HMAC key per call but skips the NAPI instance
+  construction + crossing; the precompiled-key `HmacSigner` instance remains
+  the napi fallback (identity semantics unchanged). The `ffi-all.ts` HMAC rows
+  therefore now measure the real FFI path (they previously measured NAPI as
+  "ffi").
+- **`rust.packed.*` / `rust.batch.*` resolve native fns through a shared
+  first-use cache** (`resolvePoolNative`, context.ts) instead of the
+  `withPoolInit` per-access Proxy + a duplicate batch cache — the packed
+  namespace no longer pays a Proxy `get` on every call, and the rayon pool
+  still initializes on first use so `rust.configure({ rayonThreads })` keeps
+  working.
+- **FFI-active guard added to the HTTP bench**: `bench/run-bench.ts` warns (or
+  hard-fails under `CASTRUM_BENCH_FFI=1`) when bun:ffi is not live on Bun, so
+  HTTP measurements are never silently taken on the napi fallback (mirrors
+  `src/bench/run.ts`).
+- **FFI-backed `create*` instances** — the codec/crypto/form instance methods
+  no longer cross NAPI on Bun. `createHmacSigner`, `createBase64Codec`,
+  `createCookieSigner`, `createCsrfProtector`, `createArgon2Hasher`,
+  `createAeadCipher`, and `createFormParser` now return wrappers that drive the
+  existing stateless C-ABI ops (`castrum_hmac_sha256`, `base64`, `sign/verify`
+  cookie, `csrf`, `password_hash`, `aead`, `form_parse_packed`) — a ~20ns
+  crossing instead of ~300ns per method call. Byte-for-byte parity with the
+  NAPI instances is pinned by the ffi cross-check suite; NAPI instances remain
+  the fallback. The `createAeadCipher` wrapper mirrors the constructor's
+  algorithm validation (`resolve_algorithm`) so an unsupported algorithm still
+  throws at construction. Instances with genuinely stateful precompiled cores
+  (SchemaValidator, TemplateRenderer, AcceptNegotiator, ConditionalRequest,
+  MediaTypeMatcher/Parser, UrlBuilder, RateLimiter) stay NAPI — they need
+  opaque handles (deferred). Measured (release build, noisy host):
+  `csrf_create` ~11x, `cookie_verify` ~2x, `form_parse` ~5x faster vs the JS
+  baseline.
+
+### Performance
+
+- **FFI-vs-NAPI regression sweep** (the fixes above, measured on `bench/ffi-all.ts`
+  before/after on the same noisy host): `passwordHash(m=8)` **0.52x → 1.04x**,
+  `jsonSumIds(200 rows)` **0.90x → 0.99x**, `aeadEncrypt` 0.84x → 1.08x
+  (confirmed noise), and gzip/brotli compress on a 64 KiB incompressible input
+  single-pass at ~1.1x (was ~2x from the grow-retry re-run). The post-fix run
+  reports **3** ops slower than napi (all compression rows on a 1.2 KiB
+  medium input — already single-pass before/after, host noise) vs **6** before;
+  `check:proven --fail` is clean, with hmacSha256 1.31x, passwordHash 20.95x,
+  aeadEncrypt 2.29x, hmacSha256Verify 2.77x.
+- **FFI-primary tuning closes the remaining Bun regressions** (the fast path is
+  now the primary transport — see Changed):
+  - gzip/brotli `growWrite` pre-sizes its output buffer: gzip decompress reads
+    the ISIZE trailer (exact size for a single-member stream), brotli
+    decompress starts at 32× (capped 4 MiB), and compress initial buffers are
+    capped at 16 KiB (the C ABI builds the compressed output internally, so a
+    full-size JS buffer was pure overhead). Measured on Bun: gzipDecompress
+    0.54x → 1.09x, brotliDecompress 0.36x → 1.01x, gzipCompress(64 KiB)
+    0.64x → ≥0.95x.
+  - `jwtSignBytes` initial buffer is now `2 × claims + 128` with a 256-byte
+    floor — the old `claims.length + 128` under-sized a typical token
+    (168 B for a 30 B claim) and paid a grow-retry double-run. Measured on
+    Bun: 0.73x → 1.28x.
+- **Ingress per-request hot-path trim** (pre-baked handler path):
+  - The `Origin` header is fetched ONCE in `run()` (for `ctx.origin`) and the
+    value is passed into `gatherRawHeadersPacked`, removing a second
+    `req.headers.get('origin')` native→JS string conversion per Origin-bearing
+    request (same `MAX_SMALL_HEADER_BYTES` guard still applies).
+  - The single-slot CORS Origin header memo in `responseHeaders` is replaced
+    with a per-`(variant, origin)` cache: clients that alternate between
+    allowed origins (e.g. the benchmark's two configured origins) no longer
+    allocate a fresh header array on every switch — each distinct origin is
+    reused after its first hit, and the cache stays bounded by the allowed
+    origin list (the native pipeline gates the CORS variant on approval).
+  - `readBodyWithLimit` skips the redundant `reader.cancel()` await on the
+    normal `done` path (the stream is already closed), saving an async
+    round-trip per POST; the timeout/error path still cancels (the documented
+    reject-then-cancel race is preserved).
+- **Bun `bun:ffi` C-ABI fast path covers the entire stateless scalar API + the
+  ingress request handler** — the N-API crossing + output-marshaling cost is
+  cut on ~35 functions when running under Bun:
+  - The cdylib now exports 46 `extern "C"` symbols (`rust/ffi.rs`, incl. the
+    `castrum_gzip_isize` trailer-size probe): hashing,
+    validators, hex/base64/url codecs, HMAC / signed-cookies / CSRF / password
+    hashing / PBKDF2 / AEAD, WebSocket accept-key + frames, ETag, gzip/brotli,
+    JSON sum/patch, the packed parsers, JWT sign, WS frame decode, multipart /
+    form packed parsing, AND `castrum_ingress_handle_packed` (the whole ingress
+    pipeline in one call) — loadable via `bun:ffi` `dlopen` alongside the napi
+    registration. Node is unaffected (it keeps using the napi addon).
+  - `src/native/ffi.ts` binds these lazily (first use) with a **bind-time
+    self-test** against known vectors — if any check fails (ABI mismatch,
+    platform quirk, a future Bun regression) the whole ffi layer is disabled
+    and every call falls back to the napi addon. The public API never observes
+    a wrong result.
+  - Wired into the `rust.*` scalar surface (`hashing`/`json`/`crypto`/`http`/
+    `payload` builders): validators, `jsonSumIds`, decoders, cookies/CSRF/
+    passwords/PBKDF2/AEAD, compression, WS frames, the packed-parser `Into`
+    variants, `jwtSignBytes`, `wsFrameDecode` (via a packed `[flags][opcode]
+    [len][payload]` C-ABI + JS decode), `multipartParsePacked`, and
+    `formParsePacked` (shares the query core). The allocating variants reuse
+    the `Into` path with an `input.length * 9 + 16` buffer, matching the Rust
+    allocator's bound.
+  - Output writers use fixed worst-case buffers where possible and a
+    **needed-size** helper (`growExact`: exact one-buffer retry on a too-small
+    output, immediate throw on a real error — no doubling re-run loop) for
+    variable-size outputs (gzip/brotli decompress, jsonPatch, argon2). Error
+    semantics mirror napi: decoders throw on a `0`
+    write for non-empty input; `verifyCookie`/`aeadDecrypt` return `null`;
+    `jsonPatch`/`jsonSumIds` re-dispatch to napi on ambiguity to preserve the
+    exact contextual messages (`"invalid document"`, `"expected an array"`);
+    `urlDecode` re-applies napi's UTF-8 validation on high-byte output, while
+    `urlDecodeBytes`/`urlDecodeInto` (which napi leaves unchecked) stay
+    byte-faithful.
+  - **Ingress handler**: `createIngressFast` / `createIngressHandler` now run
+    the native pipeline through `bun:ffi` under Bun, via an opaque handle from
+    the new `Ingress.ingressInnerPtr()` napi method (valid only while the
+    instance is alive — the wrapper holds it for the handler's lifetime). The
+    per-request `handleRequestPacked` N-API crossing is eliminated; output is
+    byte-identical to napi (pinned by a cross-check test). Falls back to napi
+    when ffi is unavailable or the addon lacks the pointer method.
+  - Measured (Bun, min-of-trials): crc32 0.37→0.17µs, fnv1a64 0.34→0.08µs,
+    xxh3→0.04µs, hexEncode 1.0→0.11µs, jsonPatch 1.85→1.27µs.
+    `check:proven` now flags hexEncode / urlEncode / urlDecode PROMOTABLE.
+  - The bind-time self-test is the safety net for the PRIMARY `bun:ffi`
+    transport — on any failure the napi addon remains the fallback, so the
+    public API never observes a wrong result.
+- **Ingress per-request cost down ~10%** (native `handle_request_packed`):
+  - The socket IP is no longer parsed (`str::parse::<IpAddr>`) on the hot path
+    when rate limiting is disabled — the resolved IP is only consumed by the
+    rate limiter, so a cheap `socket_is_trusted` (immediate `false` when no
+    trusted-proxy mode is configured) replaces the full `resolve_client_ip`
+    walk (`pipeline.rs` + `ip_trust.rs`). `peer_trusted` semantics are unchanged.
+  - `write_output_header` does ONE upfront `OUT_DATA_START` bounds check and
+    then uses unchecked `write_unaligned` stores for the whole 48-byte header,
+    instead of seven per-field capacity asserts (`output.rs`). Behavior is
+    identical; the removed `write_u16/32/64` helpers were only used here.
+- **gzip/brotli decompress faster** (measured -20% brotli, -78% on the
+  Bun-diag gzip comparison vs the prior release report): the decompressed
+  output `Vec` is pre-sized (`data.len() * 8`/`*16`, capped by
+  `max_decompressed`) so `read_to_end` no longer realloc-copies through
+  doubling growth. The decompression-bomb cap is unchanged.
+- **FFI marshal reduction** (`src/rust-ffi`): scalar/packed/text wrappers now
+  resolve native addon functions through a shared first-use cache
+  (`resolveNative` in context.ts), skipping the lazy-addon Proxy `get` trap (a
+  branch + `Reflect.get`) on every call — the same pattern the batch namespace
+  already used. `cachedMime` no longer returns a per-call defensive copy
+  (documented aliasing contract, matching `generateRequestId`), and
+  `rust.text.mimeFromExtension` memoizes the decoded string (0 allocs on hit).
+  Measured (release build): MIME lookup flipped from noisy parity to a
+  consistent ~1.4x Rust win; media-type parse narrowed its loss (~0.71-0.81x →
+  ~1.1-1.5x baseline).
+- **C-ABI "needed"-size convention kills grow-retry re-runs** (the largest
+  remaining FFI-vs-napi gap). Variable-size ops (`gzip/brotli` compress +
+  decompress, `jsonPatch`, `multipartParsePacked`, `jwtSignBytes`,
+  `passwordHash`) now return the EXACT required byte count on a too-small
+  buffer (`0` stays a real error), so the JS wrapper allocates exactly once and
+  retries at most once — no doubling loop that re-ran the whole (de)compression
+  on every miss, and invalid compressed input now throws immediately instead of
+  grow-allocating up to 64 MiB per bad call. `passwordHash` pre-sizes with the
+  exact PHC string length (computable from m/t/p/out_len); `gzipDecompress`
+  pre-sizes from the new `castrum_gzip_isize` C probe (replaces the JS
+  `DataView` trailer read).
+- **Zero-alloc C-ABI output** (`rust/ffi.rs`): `base64Encode`/`base64Decode`
+  now use the existing `encode/decode_into_slice` cores (no intermediate `Vec`
+  + copy), and `wsAcceptKey`, `signCookie`/`verifyCookie`, `wsFrameEncode`
+  write directly into the caller buffer via new `*_into` cores in
+  `websocket.rs` / `cookie_sign.rs` / `ws_frames.rs`.
+- **Streaming gzip/brotli cores** (`rust/payload/compress.rs`): the C-ABI path
+  now compresses/decompresses DIRECTLY into the caller's buffer — no internal
+  `Vec` + memcpy. A too-small buffer reports the exact `needed` size in a
+  single pass (a `CountingWriter` for compress; a scratch-read overflow count
+  for decompress), preserving the needed-size retry with no re-run. Measured
+  (release build): `gzipCompress` flipped from a ~1.19x LOSS to a ~1.5x WIN
+  vs the native baseline; `gzipDecompress` also improved. brotli stays
+  CPU-bound (the `brotli` crate is slower than Bun's native codec — a
+  transport-independent property, not a marshaling cost).
+- **New reusable-output `*Into` variants** (pooled buffers, no per-call alloc):
+  `rust.hmacSha256Into`, `rust.signCookieInto`, `rust.aeadEncryptInto`,
+  `rust.wsFrameEncodeInto`, `rust.gzipCompressInto`, `rust.brotliCompressInto`
+  — FFI-first with a napi allocate+copy fallback. Lets hot loops reuse a
+  caller-provided buffer (the same escape hatch as the existing
+  `hexEncodeInto`/`base64EncodeInto`), cutting GC churn under sustained load.
+- **Ingress CORS steady state**: `responseHeaders` memoizes the Origin-augmented
+  header array (per-handler, read-only contract), removing a per-request array
+  alloc + copy when an `Origin` header is present (the common browser/bench
+  case).
 
 ## [0.9.0] — 2026-08-11
 
@@ -319,7 +636,7 @@ _No unreleased changes yet._
   413 with `Connection: close`, concurrent multi-socket requests, and
   `idleTimeout` closing idle keep-alive sockets.
 
-### Removed (breaking — next release 0.8.0)
+### Removed (breaking)
 
 - Public benchmark-only exports: `native` (JS baselines), `jsonRowsBytes` /
   `createJsonRows` / `JsonRow`, and the deprecated `rustBatch` alias (use
@@ -510,14 +827,16 @@ _No unreleased changes yet._
   correctness checks and comparison entries. Findings: Bun's `JSON.parse` beats the
   Rust DOM+marshaling path (~5x), and `ajv` beats the jsonschema path for small docs —
   Rust's wins are in the zero-DOM workloads (`jsonValid`/`jsonSum`/ingress).
-- **Performance-proven surface.** New curated `proven` export (`castrum.proven`) that
-  exposes ONLY the `rust.*` functions whose status is `proven` in `PROVEN_SURFACE`
-  (`src/shared/proven.ts` — the single source of truth, statuses
+- **Performance-annotated surface.** Added `castrum.proven` — an export of the FULL
+  `rust.*` surface (`export const proven = rust`) whose JSDoc carries each function's
+  measured performance vs its JS baseline via `@performance`/`@deprecated` annotations
+  (generated by `bun run check:annotate`). `PROVEN_SURFACE` (`src/shared/proven.ts`)
+  is the single source of truth for the classifications (statuses
   proven/parity/not-competitive/unmeasured). Functions that lose to their JS baseline
   (e.g. `jsonParse` vs `JSON.parse`, schema validation vs `ajv`, `urlEncode`/`urlDecode`
-  on the baseline CPU, `jwtSign`, `brotliCompress`, `templateRender`) are excluded from
-  `proven` but remain on the full `rust` surface. New `scripts/check-proven.ts` audits
-  the registry against `bench/results/cpu/latest.json` (`bun run check:proven`, with
+  on the baseline CPU, `jwtSign`, `brotliCompress`, `templateRender`) are marked
+  `@deprecated` rather than filtered out. New `scripts/check-proven.ts` audits the
+  registry against `bench/results/cpu/latest.json` (`bun run check:proven`, with
   `--fail` for CI) — it fails if a proven function regresses past the tolerance. New CI
   `proven` job builds the release addon, runs the benchmark, and gates on the audit.
 

@@ -214,6 +214,30 @@ export interface RustScalar {
   hexEncodeInto(input: Uint8Array, output: Uint8Array): number;
   /** Reusable-output hex decode; returns bytes written. Throws on bad input. */
   hexDecodeInto(input: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output HMAC-SHA256 hex (64 bytes); returns bytes written. Throws on too-small buffer. */
+  hmacSha256Into(key: Uint8Array, data: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output cookie sign (`value.<64-hex>`); returns bytes written. Throws on too-small buffer. */
+  signCookieInto(value: Uint8Array, secret: Uint8Array, output: Uint8Array): number;
+  /** Reusable-output AEAD encrypt (ct + 16-byte tag); returns bytes written. Throws on too-small buffer. */
+  aeadEncryptInto(
+    key: Uint8Array,
+    nonce: Uint8Array,
+    plaintext: Uint8Array,
+    output: Uint8Array,
+    algorithm?: string | null,
+  ): number;
+  /** Reusable-output WS frame encode; returns bytes written. Throws on too-small buffer. */
+  wsFrameEncodeInto(
+    opcode: number,
+    payload: Uint8Array,
+    mask: boolean,
+    fin: boolean,
+    output: Uint8Array,
+  ): number;
+  /** Reusable-output gzip compress; returns bytes written. Throws on too-small buffer. */
+  gzipCompressInto(data: Uint8Array, output: Uint8Array, level?: number | null): number;
+  /** Reusable-output brotli compress; returns bytes written. Throws on too-small buffer. */
+  brotliCompressInto(data: Uint8Array, output: Uint8Array, quality?: number | null): number;
   /**
    * Sign a cookie value as `value.signature` (HMAC-SHA256 hex).
    * @performance Cookie sign: ~1.0x faster than the JS baseline [check:annotate]
@@ -385,8 +409,10 @@ export interface RustScalar {
   /**
    * @performance Gzip decompress: ~1.0x faster than the JS baseline [check:annotate]
    * @remarks zlib-rs vs node zlib; swings 1.0-1.4x run-to-run. [check:annotate]
+   * @param maxDecompressed Caps decompressed output (default 64 MiB) as a
+   *   decompression-bomb guard; a larger value errors.
    */
-  gzipDecompress(data: Uint8Array): Uint8Array;
+  gzipDecompress(data: Uint8Array, maxDecompressed?: number | null): Uint8Array;
   /**
    * @performance Brotli compress: ~1.7x slower than the JS baseline [check:annotate]
    * @deprecated Slower than the native JS baseline (~1.7x) — prefer the JS/Bun baseline. [check:annotate]
@@ -397,8 +423,10 @@ export interface RustScalar {
    * @performance Brotli decompress: ~1.4x slower than the JS baseline [check:annotate]
    * @deprecated Slower than the native JS baseline (~1.4x) — prefer the JS/Bun baseline. [check:annotate]
    * @remarks Auto-deprecated: 1/1 benchmarks failed in the latest run (static classification was proven). [check:annotate]
+   * @param maxDecompressed Caps decompressed output (default 64 MiB) as a
+   *   decompression-bomb guard; a larger value errors.
    */
-  brotliDecompress(data: Uint8Array): Uint8Array;
+  brotliDecompress(data: Uint8Array, maxDecompressed?: number | null): Uint8Array;
   /**
    * @performance Multipart parse: ~1.9x faster than the JS baseline [check:annotate]
    */

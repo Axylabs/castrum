@@ -42,6 +42,10 @@ export async function readBodyWithLimit(
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  // True when the stream was fully read to `done` — on that path the reader is
+  // already closed, so the `cancel()` in `finally` is a wasted async round-trip
+  // per request. It is still required when the loop exits early (timeout/error).
+  let completed = false;
 
   const deadline = timeoutMs && timeoutMs > 0 ? timeoutMs : 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -52,6 +56,9 @@ export async function readBodyWithLimit(
       err.code = "REQUEST_TIMEOUT";
       reject(err);
     }, deadline);
+    // Don't let a pending body timeout keep the event loop alive once the
+    // request has otherwise completed (Node; a no-op under Bun).
+    timer.unref?.();
   });
 
   try {
@@ -61,7 +68,10 @@ export async function readBodyWithLimit(
           ? await Promise.race([reader.read(), timeout])
           : await reader.read();
 
-      if (done) break;
+      if (done) {
+        completed = true;
+        break;
+      }
       if (!value) continue;
 
       total += value.byteLength;
@@ -80,8 +90,11 @@ export async function readBodyWithLimit(
     // pending (the timeout case) can resolve that pending read() as `done`
     // and RACE the timeout rejection — so reject first, cancel only AFTER
     // the loop has settled. The `.catch` keeps the cancel from masking a
-    // thrown REQUEST_TIMEOUT / BODY_TOO_LARGE.
-    await reader.cancel().catch(() => {});
+    // thrown REQUEST_TIMEOUT / BODY_TOO_LARGE. On the normal `done` path the
+    // stream is already closed, so skip the cancel entirely.
+    if (!completed) {
+      await reader.cancel().catch(() => {});
+    }
   }
 
   return concatUint8Arrays(chunks, total);

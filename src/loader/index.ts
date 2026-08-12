@@ -49,6 +49,7 @@ export {
   type LoaderOpArgs,
   type LoaderBulkArgs,
   type LoaderBulk,
+  type LoaderScalar,
   type LoaderResultKind,
   type ScalarResult,
   type BulkResult,

@@ -4,7 +4,7 @@
 // receive the raw packed output, plus the batch metadata/count helpers.
 
 import { asNumber } from "./options";
-import type { RustClientContext } from "./context";
+import { resolvePoolNative, type RustClientContext } from "./context";
 import type { PasswordHashOptions } from "../native";
 
 /** Raw packed-wire FFI namespace. */
@@ -107,9 +107,18 @@ export interface RustPacked {
 
 /** Build the `packed` namespace for a client context. */
 export function buildPacked(ctx: RustClientContext): RustPacked {
-  const { addon, withPoolInit } = ctx;
+  // Packed ops are rayon-backed NAPI calls (no C ABI). Resolve each native fn
+  // on first use — ensuring the process-wide pool initializes at that point so
+  // `rust.configure({ rayonThreads })` still takes effect — and cache it via
+  // `resolvePoolNative` (shared with `resolveNative`/batch, context.ts). This
+  // removes BOTH the lazy-addon Proxy `get` and the old `withPoolInit`
+  // per-access Proxy from the packed hot path. The object keeps the
+  // `NativeAddon` type so the method bodies below typecheck unchanged.
+  const addon = new Proxy(ctx.addon, {
+    get: (_target, name) => resolvePoolNative(ctx, String(name)),
+  }) as typeof ctx.addon;
 
-  return withPoolInit<RustPacked>({
+  return {
     crc32BatchPacked(input) {
       return addon.crc32BatchPacked(input);
     },
@@ -263,5 +272,5 @@ export function buildPacked(ctx: RustClientContext): RustPacked {
     wsFrameDecodeBatchPacked(input) {
       return addon.wsFrameDecodeBatchPacked(input);
     },
-  });
+  };
 }

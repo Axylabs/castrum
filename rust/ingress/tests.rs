@@ -229,6 +229,18 @@ fn full_sync_into_rejects_tiny_output_buffer() {
     assert!(err.is_err());
 }
 
+#[test]
+fn clamp_output_size_bounds() {
+    // Regression: a misconfigured huge `outputBufferSize` (e.g. u32::MAX ≈ 4 GiB)
+    // must be clamped to MAX_OUTPUT_BUFFER_SIZE instead of OOM-ing the process.
+    assert_eq!(clamp_output_size(None), 262_144); // default
+    assert_eq!(clamp_output_size(Some(0)), OUT_DATA_START); // floor
+    assert_eq!(clamp_output_size(Some(4096)), 4096); // passthrough
+    // u32::MAX (≈ 4 GiB) is capped to MAX_OUTPUT_BUFFER_SIZE (64 MiB = 67_108_864).
+    // (Literal avoids clippy 0.1.97's const-cast false positive.)
+    assert_eq!(clamp_output_size(Some(u32::MAX)), 67_108_864);
+}
+
 // ── Enabled-feature pipeline e2e (schema / rate limit / CORS / limits) ──
 
 /// Build a packed input frame including a headers section:

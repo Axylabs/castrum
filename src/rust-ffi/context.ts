@@ -12,6 +12,51 @@ import { normalizeExt } from "./options";
 import type { RustOptions } from "./options";
 import type { HmacSignerInstance } from "../native";
 
+// Module-level cache of resolved native fns. The native addon is a process
+// singleton, so the resolved function is identical across all client contexts;
+// caching it here lets scalar/packed/text wrappers skip the lazy-addon Proxy
+// `get` trap (a branch + `Reflect.get`) on every call — the same pattern
+// batch.ts uses for its packed entries.
+const nativeFnCache = new Map<string, unknown>();
+
+/**
+ * Resolve a native addon function on first use and cache it for all subsequent
+ * calls. Preserves the lazy-load contract (the addon is only loaded on the
+ * first real native call) while removing per-call Proxy overhead.
+ */
+export function resolveNative(
+  ctx: RustClientContext,
+  name: string,
+): (...args: unknown[]) => unknown {
+  let f = nativeFnCache.get(name);
+  if (f === undefined) {
+    f = (ctx.addon as unknown as Record<string, unknown>)[name];
+    nativeFnCache.set(name, f);
+  }
+  return f as (...args: unknown[]) => unknown;
+}
+
+/**
+ * Resolve a native fn and ensure the process-wide rayon pool is initialized
+ * on first use — the rayon-backed `batch`/`packed` surfaces need this, while
+ * `resolveNative` (plain scalars) must NOT init the pool so
+ * `rust.configure({ rayonThreads })` can still take effect at startup.
+ * Shares the SAME `nativeFnCache` as `resolveNative` (the batch fn names are
+ * disjoint from the scalar names, so the shared cache is safe).
+ */
+export function resolvePoolNative(
+  ctx: RustClientContext,
+  name: string,
+): (...args: unknown[]) => unknown {
+  let f = nativeFnCache.get(name);
+  if (f === undefined) {
+    ctx.ensurePool();
+    f = (ctx.addon as unknown as Record<string, unknown>)[name];
+    nativeFnCache.set(name, f);
+  }
+  return f as (...args: unknown[]) => unknown;
+}
+
 /** Shared per-instance state passed to the namespace/scalar builders. */
 export interface RustClientContext {
   /** The shared lazy addon proxy. */
@@ -29,10 +74,7 @@ export interface RustClientContext {
   setPendingThreads(threads: number | undefined): void;
   /** Mark the pool state as established (explicit initThreadPool calls). */
   markPoolInitialized(): void;
-
-  /** Wrap a rayon-backed object so pool init happens on first access. */
-  withPoolInit<T extends object>(target: T): T;
-  /** Cached MIME lookup (returns a defensive copy). */
+  /** Cached MIME lookup (returns the cached bytes by reference — do not mutate). */
   cachedMime(ext: Uint8Array): Uint8Array;
   /** Cached HMAC signer lookup. */
   hmacSigner(key: Uint8Array): HmacSignerInstance;
@@ -73,16 +115,6 @@ export function createContext(options: RustOptions): RustClientContext {
     poolInitialized = true;
   }
 
-  // Any access to a rayon-backed namespace triggers pool init exactly once.
-  function withPoolInit<T extends object>(target: T): T {
-    return new Proxy(target, {
-      get(obj, prop, receiver) {
-        ensurePool();
-        return Reflect.get(obj, prop, receiver);
-      },
-    });
-  }
-
   function cachedMime(ext: Uint8Array): Uint8Array {
     if (!state.mimeCache) {
       return addon.mimeFromExtension(ext);
@@ -96,8 +128,10 @@ export function createContext(options: RustOptions): RustClientContext {
       mimeByText.set(key, val);
     }
 
-    // Return a copy so callers cannot mutate cached bytes.
-    return val.slice();
+    // Return the cached bytes BY REFERENCE (no per-call defensive copy — a
+    // measurable win on the MIME parity op). The returned slice aliases the
+    // cache: callers must NOT mutate it (same contract as `generateRequestId`).
+    return val;
   }
 
   function hmacSigner(key: Uint8Array): HmacSignerInstance {
@@ -124,7 +158,6 @@ export function createContext(options: RustOptions): RustClientContext {
     isPoolInitialized,
     setPendingThreads,
     markPoolInitialized,
-    withPoolInit,
     cachedMime,
     hmacSigner,
   };

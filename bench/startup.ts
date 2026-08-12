@@ -1,7 +1,9 @@
 // bench/startup.ts — "instant execution" measurement for Bun.
 //
 // Each sample runs in a FRESH `bun` process and measures:
-//   1. Time to `import castrum` (module load, incl. native addon dlopen)
+//   1. Time to `import castrum` (module load — on Bun this binds the PRIMARY
+//      bun:ffi transport; the ingress layout constants are read via the C-ABI
+//      blob, so the napi addon is NOT dlopened at import)
 //   2. First native call latency (crc32)
 //   3. First ingress handler construction + request latency
 //
@@ -21,7 +23,8 @@ interface Sample {
 const PROBE = `
 import { performance } from "node:perf_hooks";
 
-// 1) Import the package (this is where the native addon is (d)loaded).
+// 1) Import the package (on Bun this binds bun:ffi + reads the ingress layout
+//    via the C-ABI blob; no napi dlopen at import).
 const t0 = performance.now();
 const mod = await import(${JSON.stringify(`${ROOT}index.ts`)});
 const importMs = performance.now() - t0;
@@ -76,7 +79,7 @@ console.log("\n═══ Startup / first-call (Bun, fresh process per run) ═�
 console.log(`Iterations: ${ITERATIONS}\n`);
 
 const rows: Array<[string, keyof Sample]> = [
-  ["import (module + addon dlopen)", "importMs"],
+  ["import (module + FFI transport bind)", "importMs"],
   ["first native call (crc32)", "firstCrc32Ms"],
   ["first ingress handler + request", "firstIngressMs"],
 ];

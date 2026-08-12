@@ -8,6 +8,7 @@ import { buildText, type RustText } from "./text";
 import { buildBatch, type RustBatch } from "./batch";
 import { buildPacked, type RustPacked } from "./packed";
 import { buildScalar, type RustScalar } from "./scalar";
+import { getBunFFI } from "../native/ffi";
 import type { RustOptions } from "./options";
 
 /** The full Rust FFI client (scalar methods + namespaces + configuration). */
@@ -16,6 +17,16 @@ export interface RustClient extends RustScalar {
   text: RustText;
   batch: RustBatch;
   packed: RustPacked;
+
+  // ── Transport introspection ──
+  /**
+   * Resolve the native transport in use on this runtime: `"ffi"` (bun:ffi —
+   * the PRIMARY transport under Bun) or `"napi"` (Node, forced
+   * `CASTRUM_FFI_MODE=napi`, or a failed ffi bind-time self-test).
+   */
+  transport(): "ffi" | "napi";
+  /** Whether the bun:ffi transport is live (equivalent to `transport() === "ffi"`). */
+  ffiActive(): boolean;
 
   // ── Configuration ──
   /**
@@ -42,6 +53,14 @@ export function createRust(options: RustOptions = {}): RustClient {
     text: buildText(ctx),
     batch: buildBatch(ctx),
     packed: buildPacked(ctx),
+
+    // ── Transport introspection (FFI-primary on Bun; napi is the fallback) ──
+    transport() {
+      return getBunFFI() !== null ? "ffi" : "napi";
+    },
+    ffiActive() {
+      return getBunFFI() !== null;
+    },
 
     // ── Configuration ──
     configure(next) {

@@ -58,6 +58,34 @@ describe("brotli", () => {
   });
 });
 
+describe("decompression cap (zip-bomb guard)", () => {
+  test("gzip output over the cap errors", () => {
+    // 2 MiB of zeros compresses to a few KB but inflates past a 64 KiB cap.
+    const bomb = new Uint8Array(2 * 1024 * 1024);
+    const compressed = rust.gzipCompress(bomb);
+    expect(compressed.byteLength).toBeLessThan(bomb.byteLength / 100);
+    expect(() => rust.gzipDecompress(compressed, 64 * 1024)).toThrow();
+  });
+
+  test("brotli output over the cap errors", () => {
+    const bomb = new Uint8Array(2 * 1024 * 1024);
+    const compressed = rust.brotliCompress(bomb, 0);
+    expect(compressed.byteLength).toBeLessThan(bomb.byteLength / 100);
+    expect(() => rust.brotliDecompress(compressed, 64 * 1024)).toThrow();
+  });
+
+  test("batch decompress caps each item independently", () => {
+    const bomb = new Uint8Array(2 * 1024 * 1024);
+    const ok = rust.gzipCompress(new Uint8Array([1, 2, 3]));
+    const [a, b] = rust.batch.gzipDecompress(
+      [ok, rust.gzipCompress(bomb)],
+      64 * 1024,
+    );
+    expect(a.byteLength).toBe(3);
+    expect(b.byteLength).toBe(0); // over-cap item becomes empty
+  });
+});
+
 describe("batch", () => {
   test("gzip batch roundtrips", () => {
     const items = Array.from({ length: 8 }, (_, i) =>

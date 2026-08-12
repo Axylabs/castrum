@@ -33,6 +33,13 @@ export interface BufferPoolOptions {
    * zero-copy consumer — set this to bound it).
    */
   maxInFlight?: number;
+  /**
+   * When true, learn the observed request size (EWMA over `minSize` at each
+   * take) and pre-size new buffers to at least the learned estimate (bounded
+   * by `maxBuffers` retention). Helps workloads with varying request sizes
+   * converge on one buffer size instead of re-growing each time. Default false.
+   */
+  adaptive?: boolean;
 }
 
 export interface PooledBuffer {
@@ -51,6 +58,8 @@ export interface PooledBuffer {
    */
   release(): void;
 }
+
+import { AdaptiveEstimate } from "./adaptive";
 
 /**
  * A pool of reusable `Uint8Array` buffers.
@@ -73,6 +82,7 @@ export class BufferPool {
   private readonly initialSize: number;
   private readonly maxBuffers: number;
   private readonly maxInFlight: number;
+  private readonly estimate: AdaptiveEstimate | null;
   private created = 0;
   private inFlight = 0;
 
@@ -80,6 +90,8 @@ export class BufferPool {
     this.initialSize = Math.max(1, Math.floor(options.initialSize ?? 131_072));
     this.maxBuffers = Math.max(1, Math.floor(options.maxBuffers ?? 16));
     this.maxInFlight = Math.max(0, Math.floor(options.maxInFlight ?? 0));
+    this.estimate =
+      options.adaptive === true ? new AdaptiveEstimate({ alpha: 0.25, min: this.initialSize }) : null;
     this.free.push(new Uint8Array(this.initialSize));
     this.created = 1;
   }
@@ -132,6 +144,9 @@ export class BufferPool {
 
   /** Take a buffer of at least `minSize` bytes out of circulation. */
   private take(minSize: number): Uint8Array {
+    // Learn the observed demand so future allocations pre-size to it.
+    this.estimate?.sample(minSize);
+
     // 1) Reuse a free buffer that is already large enough.
     for (let i = 0; i < this.free.length; i++) {
       const candidate = this.free[i] as Uint8Array;
@@ -187,6 +202,9 @@ export class BufferPool {
   }
 
   private nextSize(minSize: number): number {
-    return Math.max(this.initialSize, minSize);
+    const floor = this.estimate
+      ? Math.max(this.initialSize, Math.ceil(this.estimate.estimate))
+      : this.initialSize;
+    return Math.max(floor, minSize);
   }
 }

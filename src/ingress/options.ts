@@ -34,6 +34,13 @@ export interface IngressFastOptions {
    * Native failures are otherwise silent in the fast path. Never throws.
    */
   onError?: (error: Error) => void;
+  /**
+   * When true, run one probe GET at construction so the `run()` closure,
+   * packed pipeline and FFI ingress call are JIT-warmed before the first real
+   * request (cuts cold-invocation tail latency in serverless-style
+   * deployments). Opt-in; default false. Not forwarded to the native addon.
+   */
+  warmOnCreate?: boolean;
   limits?: {
     maxUrlBytes?: number;
     maxQueryBytes?: number;
@@ -91,6 +98,7 @@ const KNOWN_INGRESS_OPTION_KEYS: ReadonlySet<string> = new Set([
   "onRequest",
   "onResponse",
   "limits",
+  "warmOnCreate",
 ]);
 
 /**
@@ -110,6 +118,58 @@ export function assertKnownIngressOptions(
         `${label}: unknown option '${key}'. ` +
           `Known options: ${[...KNOWN_INGRESS_OPTION_KEYS].sort().join(", ")}`,
       );
+    }
+  }
+}
+
+/** Numeric options that must be finite and non-negative (0 is meaningful, e.g.
+ * `rateLimit.limit: 0` disables the limiter). Dotted = nested option. */
+const NON_NEGATIVE_NUMBER_OPTIONS: ReadonlyArray<readonly [path: string, root: string]> = [
+  ["maxBodyBytes", "maxBodyBytes"],
+  ["bodyTimeoutMs", "bodyTimeoutMs"],
+  ["outputBufferSize", "outputBufferSize"],
+  ["rateLimit.limit", "rateLimit"],
+  ["rateLimit.windowMs", "rateLimit"],
+  ["rateLimit.maxEntries", "rateLimit"],
+  ["limits.maxUrlBytes", "limits"],
+  ["limits.maxQueryBytes", "limits"],
+  ["limits.maxCookieBytes", "limits"],
+  ["limits.maxHeadersBytes", "limits"],
+  ["limits.maxHeaders", "limits"],
+  ["limits.maxPairs", "limits"],
+];
+
+function assertNonNegativeNumber(
+  value: unknown,
+  path: string,
+  label: string,
+): void {
+  if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) {
+    throw new TypeError(
+      `${label}: option '${path}' must be a finite, non-negative number (got ${value}).`,
+    );
+  }
+}
+
+/**
+ * Fail-fast on non-finite / negative numeric option values. `assertKnownIngressOptions`
+ * only checks the key set; a misconfigured negative value (e.g. `maxBodyBytes: -1`)
+ * would otherwise silently corrupt the pipeline (a napi marshal error or an
+ * always-rejecting limit).
+ */
+export function assertIngressOptionValues(
+  options: IngressFastOptions,
+  label = "createIngressFast",
+): void {
+  for (const [path, root] of NON_NEGATIVE_NUMBER_OPTIONS) {
+    if (path.includes(".")) {
+      const [, inner] = path.split(".");
+      const obj = (options as Record<string, unknown>)[root] as
+        | Record<string, unknown>
+        | undefined;
+      assertNonNegativeNumber(obj?.[inner ?? ""], path, label);
+    } else {
+      assertNonNegativeNumber((options as Record<string, unknown>)[path], path, label);
     }
   }
 }

@@ -4,7 +4,7 @@
 //   - options.ts   RustOptions + input-normalization helpers
 //   - addon.ts     shared lazy addon proxy
 //   - context.ts   per-instance state + shared namespace helpers
-//   - scalar.ts    scalar/feature methods
+//   - scalar/      scalar/feature methods (hashing, json, http, crypto, payload, factories)
 //   - text.ts      string namespace
 //   - batch.ts     array-of-bytes namespace
 //   - packed.ts    raw packed-wire namespace

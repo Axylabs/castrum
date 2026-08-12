@@ -23,7 +23,7 @@ const CLOCK_SKEW_LEEWAY_SECS: i64 = 60;
 /// re-serializing the constant header on every call.
 static JWT_HEADER_B64: OnceLock<Vec<u8>> = OnceLock::new();
 
-fn jwt_header_b64() -> &'static [u8] {
+pub(crate) fn jwt_header_b64() -> &'static [u8] {
     JWT_HEADER_B64.get_or_init(|| {
         let header = serde_json::json!({ "alg": "HS256", "typ": "JWT" });
         b64url_encode(&serde_json::to_vec(&header).expect("constant JWT header serializes"))
@@ -155,7 +155,7 @@ pub fn verify_signature_with_key(token: &[u8], key: &aws_lc_rs::hmac::Key) -> bo
 /// Inject `iat`/`exp` into object claims when `ttl_seconds` is set, then
 /// serialize + base64url-encode the payload. Shared by the scalar, instance,
 /// and byte-JSON sign paths so the injection semantics can't drift.
-fn inject_and_payload_b64(
+pub(crate) fn inject_and_payload_b64(
     claims: &mut serde_json::Value,
     ttl_seconds: Option<i64>,
     now_seconds: i64,

@@ -47,6 +47,13 @@
 > (4 MiB, 1 iter) matching the rust bench cost (`mCost 4096 / tCost 1`) — the
 > rust argon2id win is cost-for-cost, not a cost cheat.
 
+> Transport note: "FFI-crossing Rust op" below means any Rust call over the
+> native bridge. Under Bun that bridge is now `bun:ffi` (the PRIMARY transport);
+> under Node it is the napi fallback. This Bun-builtin-vs-Rust axis is
+> independent of the ffi-vs-napi transport axis — these decisions recommend
+> WHICH implementation to call (`rust.*` vs a Bun built-in), not which transport
+> carries the call.
+
 ## Decisions
 
 ### → Delegate to Bun at the `@flux/native` wrapper layer (Bun wins)

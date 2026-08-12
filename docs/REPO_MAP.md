@@ -12,9 +12,12 @@ agent editing this repo, [`AGENTS.md`](../AGENTS.md) is the agent-facing map.
 
 `castrum` is a hybrid **Bun (TypeScript) + Rust** package:
 
-- A **Rust cdylib** (`castrum.<platform>-<arch>.node`, built with napi-rs)
-  provides the performance-critical primitives (parsers, crypto, hashing,
-  JSON, compression, and the HTTP **ingress pipeline**).
+- A **Rust cdylib** (`castrum.<platform>-<arch>.node`, built with napi-rs,
+  ALSO exporting `extern "C"` symbols for Bun's `bun:ffi` — see
+  `rust/ffi.rs`) provides the performance-critical primitives (parsers,
+  crypto, hashing, JSON, compression, and the HTTP **ingress pipeline**).
+  Under Bun, `bun:ffi` is the PRIMARY transport; NAPI is the fallback
+  (Node, `CASTRUM_FFI_MODE=napi`, or a failed ffi self-test).
 - **TypeScript** (`src/`) provides the ergonomic public API: the flat `rust.*`
   FFI client, the `proven` performance surface, and the ingress layer.
 - It ships benchmarks: a **CPU benchmark** (`bench.ts` → `src/bench`) and an
@@ -34,8 +37,8 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 | Build Rust addon (LOCAL max perf) | `bun run build:perf` | x86-64-v3 + AVX2 — **never for publish** |
 | Build Rust addon (debug) | `bun run build:debug` | |
 | Build compiled JS entry (Node) | `bun run build:js` | bundle + types → `dist/` (gitignored) |
-| TS unit tests | `bun test` | ~255 tests, `test/unit/**` |
-| Rust unit tests | `bun run test:rust` | `cargo test`, ~250 tests |
+| TS unit tests | `bun test` | ~540 tests, `test/unit/**` |
+| Rust unit tests | `bun run test:rust` | `cargo test`, ~440 tests |
 | Node smoke tests | `bun run test:node` | explicit `.mjs` paths (Node 24 rejects dir arg) |
 | Installed-tarball e2e | `bun run verify:install` | pack → install → import from `node_modules` |
 | Typecheck | `bun run typecheck` | `bunx tsc --noEmit` (only `index.ts`, `bench.ts`, `src/`) |
@@ -66,17 +69,19 @@ examples/                 Runnable sample app (basic-server.ts + README) — see
   basic-server.ts         Minimal pre-baked ingress server + rust.* primitives.
 
 src/
-  native/                 The native-addon layer (types + loader).
+  native/                 The native transport layer: bun:ffi (primary on Bun) + NAPI fallback.
     types.ts              NativeAddon interface + every instance type (mirrors index.d.ts).
     loader.ts             Addon path resolution (multi-root) + getAddon()/lazyAddon().
+    ffi.ts                bun:ffi C-ABI bindings (Bun-only): lazy bind + bind-time self-test,
+                          CASTRUM_FFI_MODE gating, castrum_ingress_layout blob for constants.ts.
     index.ts              Barrel.
   rust-ffi/               The flat `rust.*` FFI client (TS wrappers over the addon).
     client.ts             createRust() factory + the default `rust` instance + configure().
-    scalar.ts / text.ts / batch.ts / packed.ts   namespaces (buildScalar, buildText, ...).
+    scalar/ / text.ts / batch.ts / packed.ts   namespaces (buildScalar, buildText, ...).
     context.ts            Per-instance state (caches, rayon-pool bookkeeping).
     options.ts            RustOptions + rayon-thread resolution + coercion helpers.
     addon.ts              The single shared lazy addon proxy.
-    proven.ts             `proven` client, derived from the registry (single source).
+    proven.ts             `proven` client — the FULL rust.* surface, annotated (same object as `rust`).
     index.ts              Barrel (exports rust, createRust, types).
   shared/                 Cross-cutting helpers.
     runtime.ts            THE ONLY place `typeof Bun` is checked (isBun/isNode).
@@ -125,6 +130,8 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
   ingress/                THE ingress pipeline: mod.rs (napi boundary), pipeline.rs (core 8-stage),
                           options/time/packed, cors, proxy, ip_trust, rate_limit, terminal,
                           output.rs (single numeric layout source), ingress_constants.rs (napi projection).
+  ffi.rs                  #[no_mangle] extern "C" exports (45 castrum_* symbols) for Bun's bun:ffi
+                          primary transport, incl. castrum_ingress_layout (the layout blob).
   unit_tests.rs / test_support.rs   Cross-module Rust test suites.
 ```
 
@@ -145,10 +152,14 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
 ## 4. How the pieces connect (the 5 cross-cutting flows)
 
 ### 4.1 Constants never drift (single numeric source)
-`rust/ingress/output.rs` defines every ingress layout constant once →
-`rust/ingress/ingress_constants.rs` re-exports them to JS via `#[napi] const` →
-`src/ingress/constants.ts` reads them at runtime. **Never hardcode a layout
-value** — if you change the layout, change `output.rs` and nothing else.
+`rust/ingress/output.rs` defines every ingress layout constant once → projected
+to JS two ways: `rust/ingress/ingress_constants.rs` via `#[napi] const` (NAPI)
+AND `rust/ffi.rs` `IngressLayout` via `castrum_ingress_layout` (C ABI, primary
+on Bun) → `src/ingress/constants.ts` reads them at runtime (ffi blob on Bun,
+napi on Node). Drift is pinned by the Rust unit test
+`ingress_layout_c_abi_matches_output_source` and the bun:ffi bind-time
+self-test. **Never hardcode a layout value** — if you change the layout, change
+`output.rs` and nothing else.
 
 ### 4.2 The TWO ingress paths (do not conflate)
 1. **`src/ingress/fast.ts`** — `createIngressFast(options)`. JS packs request

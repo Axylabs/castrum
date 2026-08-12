@@ -21,3 +21,9 @@ export {
   type WebSocketUpgradeResult,
 } from "./websocket";
 export { sseResponse, type SseEvent } from "./streaming";
+export {
+  validateMany,
+  validateCount,
+  runMany,
+  runOne,
+} from "./batch";

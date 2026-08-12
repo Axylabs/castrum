@@ -234,4 +234,27 @@ describe("pooled ingress output buffers (handlers.ts)", () => {
       /zeroCopyResponse/,
     );
   });
+
+  test("zeroCopyResponse-then-throw releases the pooled buffer (no leak)", () => {
+    // Regression: a callback that borrows the pooled output buffer via
+    // zeroCopyResponse and THEN throws used to leave the buffer in flight
+    // forever (the Response owning it was never delivered). With maxInFlight=1
+    // the very next request would then fail pool acquisition (500).
+    const h = createIngressHandler(
+      { ...baseOptions },
+      { outputBufferSize: 131072, maxInFlight: 1 },
+    );
+
+    expect(() =>
+      h.run<Response>(req("/health"), undefined, null, (result, ctx) => {
+        h.zeroCopyResponse(result, ctx, { status: 200 });
+        throw new Error("route boom");
+      }),
+    ).toThrow("route boom");
+
+    // The buffer must have been released — a second request still succeeds
+    // (readHandler returns a Response synchronously).
+    const res = readHandler(h, { copyBody: true })(req("/api/users"));
+    expect(res.status).toBe(200);
+  });
 });

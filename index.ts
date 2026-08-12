@@ -22,6 +22,10 @@ export type { ProvenClient, ProvenKey } from "./src/rust-ffi/proven";
 export type { PerformanceStatus, ProvenEntry } from "./src/shared/proven";
 
 export { encoder, decoder } from "./src/shared/bytes";
+// Bounded EWMA adaptive-estimate utility (drives BufferPool adaptive sizing
+// and reusable runtime self-optimization decisions).
+export { AdaptiveEstimate } from "./src/shared/adaptive";
+export type { AdaptiveEstimateOptions } from "./src/shared/adaptive";
 // UUIDv7 generation — delegates to Bun.randomUUIDv7, crypto.randomUUID on Node.
 export { uuidv7 } from "./src/shared/uuid";
 // Zero-dep metrics registry (counters/gauges/histograms + Prometheus render).

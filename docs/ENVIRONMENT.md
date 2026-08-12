@@ -31,6 +31,17 @@ for false; anything else is warned about and falls back to the default.
 | `CASTRUM_MAX_RAYON_THREADS` (legacy `RUST_BENCH_MAX_RAYON_THREADS`) | int | `cores` | Hard cap on rayon threads (native). |
 | `CASTRUM_PIN_CORES` (legacy `RUST_BENCH_PIN_CORES`) | (presence) | — | When set (Linux), pin rayon worker threads to distinct cores. |
 
+## Native transport selection (`src/native/ffi.ts`)
+
+`bun:ffi` is the PRIMARY transport under Bun; NAPI is the fallback (Node,
+`CASTRUM_FFI_MODE=napi`, or a failed bind-time self-test). `rust.transport()`
+reports the resolved transport (`"ffi"` / `"napi"`); `rust.ffiActive()` reports
+whether the ffi transport is live.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `CASTRUM_FFI_MODE` (legacy `RUST_FFI_MODE`) | string | `auto` | Native transport selection: `auto` (default) — use `bun:ffi` on Bun, silently fall back to napi on bind/self-test failure (and always on Node); `ffi` — force `bun:ffi` on Bun and THROW if it cannot bind or the self-test fails (for benches/CI that must run the primary transport; invalid on Node); `napi` — never bind, every call goes through the napi addon (exercises the fallback on Bun). |
+
 ## Native addon loader (`src/native/loader.ts`)
 
 | Variable | Type | Default | Description |

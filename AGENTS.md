@@ -23,8 +23,8 @@ HTTP **ingress pipeline** for Bun servers.
 | Build compiled JS entry (Node) | `bun run build:js` (bundle + types → `dist/`) |
 | Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
-| Rust unit tests | `cargo test` (~250 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
-| TS unit tests | `bun test` (~255 tests, `test/unit/**`) |
+| Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
+| TS unit tests | `bun test` (~540 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts), NEVER audited by check:proven; decision matrix in docs/bun-builtins-decision-matrix.md |
 | Proven-surface audit | `bun run check:proven` (report) / `bun run check:proven:fail` (CI gate) |
@@ -103,8 +103,13 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   │                       JS via IngressInputPacker + gatherRawHeadersPacked, driven by
   │                       handleRequestPacked, pooled output); used by the bench server
   └── index.ts            barrel: public API + async createIngress + re-exports
-src/native/               addon layer: types.ts (NativeAddon + instance types) + loader.ts (getAddon/lazyAddon) + index.ts barrel
-src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts + text.ts + batch.ts + packed.ts + scalar/ (interface + hashing/json/http/crypto/payload/factories builders) + client.ts + proven.ts + index.ts barrel
+src/native/               native transport layer: types.ts (NativeAddon + instance types) + loader.ts (getAddonPath/getAddon/lazyAddon) +
+                          ffi.ts (Bun PRIMARY bun:ffi C-ABI transport over rust/ffi.rs; lazy bind + bind-time self-test +
+                          CASTRUM_FFI_MODE gating + castrum_ingress_layout blob + growExact needed-size retry for variable-size
+                          outputs; napi is the FALLBACK) + index.ts barrel
+src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts (resolveNative/resolvePoolNative
+                          shared first-use caches) + text.ts + batch.ts + packed.ts + scalar/ (interface + hashing/json/http/crypto/
+                          payload/factories builders) + client.ts + proven.ts + index.ts barrel
 src/shared/request-id.ts  shared zero-alloc request ID generator (both ingress paths) — aliased buffer hazard documented
 src/shared/metrics.ts     zero-dep metrics registry (counters/gauges/histograms + Prometheus render)
 src/shared/trace.ts       W3C traceparent/span-id helpers (tracing correlation)
@@ -126,6 +131,13 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
+  ├── ffi.rs              `#[no_mangle] extern "C"` exports (46 castrum_* incl. the
+                          castrum_gzip_isize size probe) for Bun's `bun:ffi` C-ABI PRIMARY
+                          transport (scalar hot fns + ingress layout blob; SAME cdylib serves
+                          both napi on Node/fallback and bun:ffi on Bun — see src/native/ffi.ts).
+                          VARIABLE-SIZE convention: return the EXACT required byte count on a
+                          too-small buffer (0 = real error) so JS allocates once and retries at
+                          most once (no grow-retry re-run loop).
   ├── util/               SHARED INFRASTRUCTURE (mod.rs re-exports keep `crate::util::*`)
   │   ├── bytes.rs        byte primitives: word-compare, hex, %XX decode, cookie_pairs
   │   ├── packed.rs       zero-alloc packed iterators + byte writers (VecWriter, PackedIter)
@@ -271,6 +283,19 @@ success and `error.code` / `error.message` on errors (path 2's format).
   Detailed errors: `SchemaValidator.validateDetailed` / `validateFirstError`
   return jsonschema-style errors (instance + schema JSON pointers, keyword,
   message) from the zero-DOM path (`validate_errors`).
+  **Nesting-depth cap**: the fast path bounds recursion at 128 levels
+  (`MAX_DEPTH`, rust/json/fast_schema/errors.rs) — matching sonic-rs (the
+  ingress `json_valid_bytes` gate) and serde_json (the DOM reference), so deeper
+  documents are rejected rather than stack-overflowing the process (an
+  uncatchable abort). Both the schema walk (`validate`) and the structural
+  `skip_value` path are guarded. Do NOT raise the cap without matching the
+  reference — deeper docs would diverge from the DOM path's parse-fail → invalid.
+- **Decompression cap**: `rust.gzipDecompress` / `rust.brotliDecompress` (and
+  `batch.*`) cap decompressed output at 64 MiB by default (`maxDecompressed` napi
+  param, `Option<u32>`, rust/payload/compress.rs). This is a decompression-bomb
+  guard — do not remove it or raise the default without benchmarking. Keep the
+  `.take(cap + 1)` bounded read + length check (post-read length checks alone
+  still allocate the full bomb).
 - **`tsconfig.json`** sets `noUncheckedIndexedAccess: true`. Indexed access on
   `Record<string, Uint8Array>` (e.g. `ERROR_BODIES.internal`) is
   `Uint8Array | undefined` — `handlers.ts` uses `!` where the key is guaranteed.
@@ -285,7 +310,24 @@ success and `error.code` / `error.message` on errors (path 2's format).
   the reusable-output variant; keep `handleRequestFullSync` as the allocating
   compat wrapper), `rust/ingress/ingress_constants.rs`, sync `util/batch.rs`,
   `util/mod.rs::init_thread_pool`, and the scalar NAPI fns used by
-  `src/bench/tasks/*`.
+  `src/bench/tasks/*`. ALSO `rust/ffi.rs` (`castrum_*` C ABI exports) +
+  `src/native/ffi.ts` (Bun `bun:ffi` — the PRIMARY transport on Bun; NAPI is
+  the fallback for Node / `CASTRUM_FFI_MODE=napi` / self-test failure): the
+  bind-time self-test is the safety net — do not remove it, `CASTRUM_FFI_MODE`
+  gating, or the napi fallback. Any `castrum_*` export that runs a fallible /
+  allocating core MUST route it through `panic_guard` (`catch_unwind` in
+  rust/ffi.rs): the raw C ABI has no napi-style unwind guard, so an uncaught
+  panic unwinds through `extern "C"` and kills the whole Bun process (this is
+  how the ingress server died under `11-concurrent-burst`). The bind-time
+  self-test must cover any new C-ABI symbol.
+  - `castrum_json_sum_ids` uses a **packed `[u8 ok][i64 sum LE]` output** (9 B:
+    1 = valid array — the sum may be 0 —, 0 = invalid; return 9/1/0 bytes): the
+    old scalar-i64 ABI (0 for both a legit zero-sum and invalid input) forced
+    the JS builder to re-dispatch to napi on every 0n. Keep the ok byte.
+  - Repeated same-secret HMAC/CSRF/cookie calls reuse a compiled key via the
+    **per-thread `HMAC_KEY_CACHE` LRU** (rust/ffi.rs, cap 16): the C-ABI
+    equivalent of the compiled-once `HmacSigner`. Keep it thread-local (zero
+    lock contention across Bun Worker threads) and owned (no dangling handles).
 - **Rust crate history**: it is ONE cdylib crate (Cargo `[lib]` → `rust/lib.rs`).
   `rust/core/`, `export.rs`, `async_tasks.rs`, `ingress_async.rs` and the direct
   `tokio` dependency were **removed** — do not resurrect them.
@@ -333,17 +375,20 @@ success and `error.code` / `error.message` on errors (path 2's format).
   sub-µs ops; default 64), `HTTP_NO_SHAPE=1` (load generator skips response-shape
   `JSON.parse` for pure-throughput runs). `bun run check` persists a
   machine-readable CPU report to `bench/results/cpu/` (gitignored).
-- **Performance-proven surface**: `src/shared/proven.ts` (`PROVEN_SURFACE`) is the
-  single source of truth for which `rust.*` functions are exported via `proven`
-  (only status === "proven"). The registry is PURE DATA (no addon imports) so
-  `scripts/check-proven.ts` can audit it without dlopening. When you add/change a
-  public function, update the registry and run `bun run check:proven:fail` on a
-  RELEASE build (debug builds inflate rust timings). Classifications must reflect
-  the shipped baseline-CPU release build, not the local SIMD `build:perf`.
+- **Performance-annotated surface**: `src/shared/proven.ts` (`PROVEN_SURFACE`) is the
+  single source of truth for the benchmark classifications. `proven`
+  (`src/rust-ffi/proven.ts`) exports the FULL `rust.*` surface (`export const proven =
+  rust`) — the `@performance`/`@deprecated` JSDoc annotations (generated by
+  `bun run check:annotate`) are what communicate performance now, NOT a curated
+  subset. The registry is PURE DATA (no addon imports) so `scripts/check-proven.ts`
+  can audit it without dlopening. When you add/change a public function, update the
+  registry and run `bun run check:proven:fail` on a RELEASE build (debug builds
+  inflate rust timings). Classifications must reflect the shipped baseline-CPU
+  release build, not the local SIMD `build:perf`.
 
 ## Testing
 
-- **TS**: `bun test` (~255). Add tests under `test/unit/<area>/` (`ingress/`,
+- **TS**: `bun test` (~540). Add tests under `test/unit/<area>/` (`ingress/`,
   `shared/`, `features/`).
 - **Rust**: `cargo test`. New logic ships with a `#[cfg(test)] mod tests` block in
   the SAME module file (ingress.rs, url_codec.rs, validation.rs, proxy.rs,

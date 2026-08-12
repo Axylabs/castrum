@@ -6,20 +6,26 @@ use napi_derive::napi;
 
 const WS_MAGIC: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/// RFC 6455 Sec-WebSocket-Accept core over a raw key slice. Shared by the
-/// scalar napi path and the packed batch path.
-pub fn ws_accept_key_bytes(key: &[u8]) -> Result<Vec<u8>> {
+/// Zero-alloc core: RFC 6455 Sec-WebSocket-Accept (exactly 28 bytes) into a
+/// caller-provided buffer. Shared by the C-ABI (`bun:ffi`) path so it never
+/// allocates the accept string.
+pub fn ws_accept_key_into(key: &[u8], out: &mut [u8]) -> Result<usize> {
     let mut ctx = digest::Context::new(&digest::SHA1_FOR_LEGACY_USE_ONLY);
     ctx.update(key);
     ctx.update(WS_MAGIC);
 
     let hash = ctx.finish();
 
-    let mut out = [0u8; 28];
-    let n = BASE64
-        .encode_slice(hash.as_ref(), &mut out)
-        .map_err(|e| Error::from_reason(e.to_string()))?;
+    BASE64
+        .encode_slice(hash.as_ref(), out)
+        .map_err(|e| Error::from_reason(e.to_string()))
+}
 
+/// RFC 6455 Sec-WebSocket-Accept core over a raw key slice. Shared by the
+/// scalar napi path and the packed batch path.
+pub fn ws_accept_key_bytes(key: &[u8]) -> Result<Vec<u8>> {
+    let mut out = [0u8; 28];
+    let n = ws_accept_key_into(key, &mut out)?;
     Ok(out[..n].to_vec())
 }
 

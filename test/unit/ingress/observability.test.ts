@@ -14,6 +14,7 @@ import {
   readinessHandler,
   healthHandler,
 } from "../../../src/ingress/health";
+import type { BakedIngressResult } from "../../../src/ingress/decode/baked-result";
 
 const baseOptions = {
   parseQuery: true,
@@ -63,6 +64,51 @@ describe("createIngressMetrics", () => {
     expect(hit().status).toBe(429); // second request over the limit of 1
     const out = m.render();
     expect(out).toContain("castrum_http_rate_limited_total 1");
+  });
+
+  test("exactly-once gauge across onError + onResponse (native failure)", () => {
+    // A native pipeline failure fires onError AND onResponse for the SAME
+    // request id. The gauge must return to 0 exactly (the old code
+    // double-decremented to -1), and the 500 must still be counted.
+    const m = createIngressMetrics();
+    const { onRequest, onResponse, onError } = m.runtime;
+    if (onRequest === undefined || onResponse === undefined || onError === undefined) {
+      throw new Error("expected metrics runtime hooks");
+    }
+    const id = "rid-native-failure";
+
+    onRequest(req("/health"), id, "1.2.3.4");
+    onError(req("/health"), id, new Error("native boom"));
+    onResponse(
+      req("/health"),
+      { rateLimited: false } as unknown as BakedIngressResult,
+      500,
+      id,
+    );
+
+    const out = m.render();
+    expect(out).toContain("castrum_http_in_flight_requests 0");
+    expect(out).toContain(
+      'castrum_http_requests_total{method="GET",status="500"} 1',
+    );
+    expect(out).toContain('castrum_http_errors_total{code="Error"} 1');
+  });
+
+  test("a throwing route callback ends accounting exactly once (onError only)", () => {
+    const m = createIngressMetrics();
+    const h = createIngressHandler({ ...baseOptions }, { ...m.runtime });
+
+    // The route callback throws AFTER onRequest — only onError fires. The
+    // gauge must not leak (old code fired neither hook).
+    expect(() =>
+      h.run<Response>(req("/health"), undefined, null, () => {
+        throw new Error("route boom");
+      }),
+    ).toThrow("route boom");
+
+    const out = m.render();
+    expect(out).toContain("castrum_http_in_flight_requests 0");
+    expect(out).toContain('castrum_http_errors_total{code="Error"} 1');
   });
 });
 
