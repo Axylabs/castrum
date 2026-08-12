@@ -180,6 +180,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Bun-builtin delegation for FFI-bound scalar ops (mix-and-match)**: the
+  `rust.*` surface now binds four ops to Bun's in-process native built-ins
+  **under Bun** (skipping the C-ABI/FFI crossing entirely; the rust addon
+  remains the Node/non-Bun path), matching the `BUN_WINS` decision set in
+  `src/selection.ts` (`urlEncode`, `urlDecode`, `base64Encode` added; docs in
+  `docs/bun-builtins-decision-matrix.md`):
+  - `rust.urlEncode` / `rust.text.urlEncode` → `encodeURIComponent` (~3–4×
+    faster than the FFI crossing; RFC 3986 unreserved set is byte-identical).
+  - `rust.urlDecode` / `rust.text.urlDecode` → `decodeURIComponent` (~4–8×
+    faster; strict UTF-8 semantics match — both throw on malformed/invalid).
+    Raw-bytes `urlDecodeBytes` and the pooled `*Into` variants stay native.
+  - `rust.httpDate` → `Date.toUTCString()` (~3.7× faster; byte-identical
+    RFC 1123 across epoch/leap/2100).
+  - `rust.base64Encode` → `Buffer` base64 for the standard padded,
+    non-url-safe case (~2× faster); url-safe/unpadded stays native.
+  - `hexEncode` **kept on rust** (measured 1.35× faster than `Buffer` hex —
+    the "remove the ones that don't improve" half of the decision).
+  - Byte parity between the Bun-binding and the napi addon is pinned by new
+    cross-transport tests in `test/unit/features/url.test.ts`; the existing
+    `encoding.test.ts` / `etag.test.ts` baselines now cover the bindings.
 - **FFI-vs-NAPI regression sweep** (the fixes above, measured on `bench/ffi-all.ts`
   before/after on the same noisy host): `passwordHash(m=8)` **0.52x → 1.04x**,
   `jsonSumIds(200 rows)` **0.90x → 0.99x**, `aeadEncrypt` 0.84x → 1.08x

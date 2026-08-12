@@ -4,6 +4,7 @@
 // functions. Pure wrappers: encode input, call native, decode output.
 
 import { decoder, encoder } from "../shared/bytes";
+import { isBun } from "../shared/runtime";
 import { resolveNative, type RustClientContext } from "./context";
 
 /** String-oriented FFI namespace. */
@@ -35,9 +36,16 @@ export function buildText(ctx: RustClientContext): RustText {
       return mime;
     },
     urlEncode(input) {
+      // Bun's native encodeURIComponent beats the rust+FFI/NAPI string crossing
+      // (~4x, measured) with byte-for-byte parity (RFC 3986 unreserved set) —
+      // see docs/bun-builtins-decision-matrix.md.
+      if (isBun()) return encodeURIComponent(input);
       return resolveNative(ctx, "urlEncodeStr")(input) as string;
     },
     urlDecode(input) {
+      // decodeURIComponent matches the rust decoder on valid input and also
+      // throws on malformed/invalid UTF-8 (URIError, an Error subclass).
+      if (isBun()) return decodeURIComponent(input);
       return resolveNative(ctx, "urlDecodeStr")(input) as string;
     },
     wsAcceptKey(key) {

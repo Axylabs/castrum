@@ -5,6 +5,7 @@
 
 import type { PasswordHashOptions } from '../../native'
 import { getBunFFI } from '../../native/ffi'
+import { isBun } from '../../shared/runtime'
 import type { RustClientContext } from '../context'
 
 const encoder = new TextEncoder()
@@ -21,6 +22,13 @@ export function buildCrypto(ctx: RustClientContext) {
       return addon.randomToken(byteLen)
     },
     base64Encode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array {
+      // Bun's Buffer base64 (SIMD) beats the rust+FFI crossing (~2x, measured)
+      // for the standard (url-safe=false, padded) case; byte-parity pinned by
+      // test/unit/features/encoding.test.ts. url-safe/unpadded falls through to
+      // the native path (Buffer can't express base64url without string surgery).
+      if (isBun() && !urlSafe && padding !== false) {
+        return encoder.encode(Buffer.from(input).toString('base64'))
+      }
       const ffi = getBunFFI()
       if (ffi) return ffi.base64Encode(input, urlSafe, padding)
       return addon.base64Encode(input, urlSafe ?? undefined, padding ?? undefined)

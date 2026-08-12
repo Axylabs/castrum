@@ -6,6 +6,8 @@
 
 import type { EncodingPrefResult, MediaTypeResult } from '../../native'
 import { getBunFFI } from '../../native/ffi'
+import { decoder, encoder } from '../../shared/bytes'
+import { isBun } from '../../shared/runtime'
 import { type RustClientContext, resolveNative } from '../context'
 
 // Mirror napi `url_decode`'s UTF-8 validation (rust/http/url_codec.rs): only
@@ -37,11 +39,22 @@ export function buildHttp(ctx: RustClientContext) {
       return ctx.cachedMime(ext)
     },
     urlEncode(input: Uint8Array): Uint8Array {
+      // Under Bun, Bun's native `encodeURIComponent` beats the rust+FFI/NAPI
+      // crossing (~4x on the string path, ~1.3x on bytes) and skips the C-ABI
+      // call entirely — see docs/bun-builtins-decision-matrix.md. Parity is
+      // pinned by test/unit/features/url.test.ts (byte-for-byte, incl.
+      // unicode/emoji); `urlEncode` is always applied to text, so the
+      // bytes→string→encode→bytes round-trip is lossless.
+      if (isBun()) return encoder.encode(encodeURIComponent(decoder.decode(input)))
       const ffi = getBunFFI()
       if (ffi) return ffi.urlEncode(input)
       return n('urlEncode')(input) as Uint8Array
     },
     urlDecode(input: Uint8Array): Uint8Array {
+      // Same rationale as `urlEncode`; the strict `urlDecode` already throws on
+      // invalid UTF-8 (ensureValidUtf8 below), matching decodeURIComponent's
+      // URIError (a subclass of Error), so the JS path is behavior-equivalent.
+      if (isBun()) return encoder.encode(decodeURIComponent(decoder.decode(input)))
       const ffi = getBunFFI()
       if (ffi) {
         const out = ffi.urlDecode(input)
@@ -166,6 +179,12 @@ export function buildHttp(ctx: RustClientContext) {
       return n('etagInto')(data, output, weak ?? undefined) as number
     },
     httpDate(secs?: number): Uint8Array {
+      // Bun's Date.toUTCString (RFC 1123 IMF-fixdate) beats the rust+FFI
+      // crossing (~3.7x, measured); output is byte-identical for HTTP timestamps.
+      if (isBun()) {
+        const t = secs ?? Math.floor(Date.now() / 1000)
+        return encoder.encode(new Date(t * 1000).toUTCString())
+      }
       return n('httpDate')(secs ?? undefined) as Uint8Array
     },
     httpDateInto(secs: number | undefined, output: Uint8Array): number {

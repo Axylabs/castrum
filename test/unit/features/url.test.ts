@@ -5,6 +5,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { getAddon } from "../../../src/native";
 import { rust } from "../../../src/rust-ffi";
 import { decoder, encoder } from "../../../src/shared/bytes";
 
@@ -63,5 +64,43 @@ describe("urlEncode / urlDecode", () => {
 
   test("malformed percent-encoding in urlDecode throws", () => {
     expect(() => rust.urlDecode(encoder.encode("%ZZ"))).toThrow();
+  });
+
+  test("Bun-builtin binding matches the napi addon byte-for-byte", () => {
+    // Under Bun, rust.urlEncode/urlDecode delegate to encodeURIComponent/
+    // decodeURIComponent (skipping the FFI crossing); this pins byte-parity
+    // with the napi transport so the two can never drift.
+    const addon = getAddon();
+    if (!addon) return;
+    const inputs = [
+      "a b&c=d",
+      "héllo wörld",
+      "emoji 🚀 test",
+      "reserved /?:@&=+$,#%",
+      "~!*'()_-.0",
+    ];
+    for (const input of inputs) {
+      const bytes = encoder.encode(input);
+      expect(Array.from(rust.urlEncode(bytes))).toEqual(
+        Array.from(addon.urlEncode(bytes)),
+      );
+      const encoded = addon.urlEncode(bytes);
+      expect(Array.from(rust.urlDecode(encoded))).toEqual(
+        Array.from(addon.urlDecode(encoded)),
+      );
+    }
+  });
+
+  test("text namespace Bun-binding matches the napi addon", () => {
+    const addon = getAddon();
+    if (!addon) return;
+    for (const input of ["a b&c=d", "héllo 🚀", "~!*'()"]) {
+      expect(rust.text.urlEncode(input)).toBe(
+        decoder.decode(addon.urlEncode(encoder.encode(input))),
+      );
+      expect(rust.text.urlDecode("a%20b%26c%3Dd")).toBe(
+        decoder.decode(addon.urlDecode(encoder.encode("a%20b%26c%3Dd"))),
+      );
+    }
   });
 });

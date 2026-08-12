@@ -39,6 +39,9 @@ const BUN_WINS = new Set([
   "randomToken",
   "hmacSha256",
   "xxh3",
+  "urlEncode",
+  "urlDecode",
+  "base64Encode",
 ]);
 
 // Lazy: importing this module does NOT dlopen the addon; `opImpl` reads the
