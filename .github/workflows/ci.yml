@@ -242,6 +242,6 @@ jobs:
       # SLSA3 provenance: records the repo/commit that produced this release so
       # consumers can verify the artifact's supply chain.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: '${{ github.workspace }}/artifacts/*.node'
