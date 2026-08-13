@@ -50,6 +50,7 @@ export const nowNs: () => number =
     ? () => Number(process.hrtime.bigint())
     : () => performance.now() * 1e6
 
+/** Options for `createCostModel` (adaptive batch-threshold learning). */
 export interface CostModelOptions {
   /** Allow the model to adjust `batchMin` from measurement. Default true. */
   adaptive?: boolean

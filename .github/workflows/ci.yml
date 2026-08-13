@@ -77,6 +77,12 @@ jobs:
         run: bun run lint:ci
       - name: Correctness checks (native vs baseline)
         run: bun run check
+      # Native-vs-JS selection completeness: `scripts/select-native.ts` OPS array
+      # is the source of truth for what stays in src/selection.json — any op
+      # with a baked decision MUST be in OPS (or skip+pinned) or --write would
+      # drop it. Guards consumers silently binding JS instead of the addon.
+      - name: Native-vs-JS selection drift
+        run: bun run check:selection
       # Wire-format guard: the HTTP load generator validates the ingress
       # response SHAPE (ok===true + requestId, error.code/message) — this is
       # the only check that catches accidental wire-format breakage.

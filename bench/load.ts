@@ -1,4 +1,3 @@
-// @ts-nocheck
 // bench/load.ts
 import { mkdirSync } from "node:fs";
 
@@ -16,7 +15,8 @@ type Outcome =
 
 interface LoadPhase {
   durationSec: number;
-  rate: number;
+  /** Requests per second. 0 = idle phase (fires nothing); omitted = fire as fast as possible. */
+  rate?: number;
   name?: string;
 }
 
@@ -141,7 +141,7 @@ function complexUserPayload(depth: number = 3): unknown {
         geo: { lat: Math.random() * 180 - 90, lng: Math.random() * 360 - 180 },
       })),
     },
-    orders: Array.from({ length: 5 }, (_, i) => ({
+    orders: Array.from({ length: 5 }, () => ({
       orderId: `ORD-${randomString(12).toUpperCase()}`,
       total: Math.random() * 500 + 10,
       currency: "USD",
@@ -154,26 +154,6 @@ function complexUserPayload(depth: number = 3): unknown {
       shipping: nested(depth),
     })),
     nested,
-  };
-}
-
-// Helper: generate a large batch payload
-function batchPayload(count: number): unknown {
-  return {
-    batch: Array.from({ length: count }, (_, i) => ({
-      id: i,
-      action: ["create", "update", "delete"][randomInt(0, 2)],
-      data: {
-        name: `item_${randomString(10)}`,
-        value: Math.random() * 1000,
-        tags: Array.from({ length: 3 }, () => randomString(5)),
-      },
-    })),
-    metadata: {
-      requestId: crypto.randomUUID(),
-      timestamp: Date.now(),
-      source: "load-test",
-    },
   };
 }
 
@@ -660,6 +640,13 @@ function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+/** Pick a random element from a non-empty array (type-safe under noUncheckedIndexedAccess). */
+function pickOne<T>(arr: T[]): T {
+  const item = arr[randomInt(0, arr.length - 1)];
+  if (item === undefined) throw new Error("pickOne: empty array");
+  return item;
+}
+
 function randomString(len: number): string {
   const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
   let out = "";
@@ -678,7 +665,9 @@ function pickWeighted(items: WeightedFlow[]): WeightedFlow {
     if (roll < 0) return item;
   }
 
-  return items[items.length - 1];
+  const last = items[items.length - 1];
+  if (last === undefined) throw new Error("pickWeighted: empty flows");
+  return last;
 }
 
 function sleep(seconds: number): Promise<void> {
@@ -869,7 +858,7 @@ async function send(
   path: string,
   opts: SendOpts = {},
 ): Promise<void> {
-  const route = opts.routeTag ?? path.split("?")[0];
+  const route = opts.routeTag ?? path.split("?")[0] ?? "";
   const url = ctx.base + path;
 
   const headers: Record<string, string> = {
@@ -1342,7 +1331,7 @@ function buildReport(recorder: Recorder) {
         max: st.max,
       };
     })
-    .sort((a, b) => b.p95 - a.p95 || b.count - a.count);
+    .sort((a, b) => (b.p95 ?? 0) - (a.p95 ?? 0) || b.count - a.count);
 
   const errorGroups = [...recorder.errorGroups.values()].sort(
     (a, b) => b.count - a.count,
@@ -1428,28 +1417,33 @@ async function executeScenario(
 
     const flow = pickWeighted(def.flows).fn;
 
-    const p = (async () => {
+    // Track the in-flight request so the concurrency gate (`active`) can
+    // release it when it settles. `p` is captured before the promise resolves
+    // (the `finally` runs only after an await), so the guard is belt-and-braces.
+    let p: Promise<void> | undefined;
+    const tracked = (async () => {
       try {
         await flow(ctx);
       } catch (err) {
         env.recorder.recordUnhandled(ctx, err);
       } finally {
-        active.delete(p);
+        if (p) active.delete(p);
       }
     })();
-
+    p = tracked;
     active.add(p);
   }
 
   for (const phase of def.phases) {
     const durationNs = phase.durationSec * 1_000_000_000;
+    const rate = phase.rate;
 
-    if (phase.rate <= 0) {
+    if (rate !== undefined && rate <= 0) {
       await Bun.sleep(phase.durationSec * 1000);
       continue;
     }
 
-    const intervalNs = 1_000_000_000 / phase.rate;
+    const intervalNs = rate === undefined ? 0 : 1_000_000_000 / rate;
 
     let phaseStart = Bun.nanoseconds();
     let next = phaseStart;
@@ -2014,7 +2008,7 @@ export const HTTP_SCENARIOS: Record<string, LoadScenarioDef> = {
       {
         weight: 50,
         fn: async (ctx) => {
-          const size = largeSizes[randomInt(0, largeSizes.length - 1)];
+          const size = pickOne(largeSizes);
           await echoRaw(ctx, largePayloadBytes(size), "application/octet-stream");
         },
       },
@@ -2040,7 +2034,7 @@ export const HTTP_SCENARIOS: Record<string, LoadScenarioDef> = {
             "https://admin.example.com",
           ];
 
-          const origin = origins[randomInt(0, origins.length - 1)];
+          const origin = pickOne(origins);
 
           await health(ctx, [200], { Origin: origin });
           await sleep(0.2);

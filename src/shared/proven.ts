@@ -15,8 +15,10 @@
 // so the audit script (`scripts/check-proven.ts`) can load it without dlopening
 // the native addon.
 
+/** How a `rust.*` function performs against its JS baseline in the CPU bench. */
 export type PerformanceStatus = 'proven' | 'parity' | 'not-competitive' | 'unmeasured'
 
+/** One entry in the performance-proven registry (a public `rust.*` function). */
 export interface ProvenEntry {
   /** Public `rust.<name>` method key. */
   name: string

@@ -45,6 +45,7 @@ export interface PipelineContext {
   readonly locals: Map<string, unknown>
 }
 
+/** Result of running `preprocess`: terminal short-circuit or pass-through. */
 export interface PreprocessOutcome {
   /** True when the pipeline short-circuited (error/denied) — serve `response`. */
   readonly terminal: boolean
@@ -53,6 +54,7 @@ export interface PreprocessOutcome {
   readonly ctx: PipelineContext
 }
 
+/** Options for `createPipeline`. */
 export interface CreatePipelineOptions {
   /** Ingress options (same surface as `createIngressHandler`). */
   options?: IngressHandlerOptions
@@ -74,6 +76,7 @@ export interface CreatePipelineOptions {
   render?: (result: PipelineResult, ctx: PipelineContext) => Response | Promise<Response>
 }
 
+/** The composed ingress pipeline: preprocess / handleRequest / readBody. */
 export interface IngressPipeline {
   /** The underlying pre-baked handler (custom route factories / responses). */
   readonly ingress: OptimizedIngressHandler

@@ -84,10 +84,12 @@ export type { IngressHandlerOptions } from './options'
 export { ERROR_BODIES } from './response/error-bodies'
 export type { BakedHandlerOptions } from './routes'
 export {
+  deleteHandler,
   echoHandler,
   fallbackHandler,
   headHandler,
   jsonWriteHandler,
+  optionsHandler,
   readHandler,
 } from './routes'
 export type {
@@ -163,6 +165,7 @@ function buildBakedSecurityEntries(
 // (shared with the route factories) and re-exported here for back-compat.
 export type { BakedContext, OptimizedIngressHandler } from './types'
 
+/** Runtime configuration for the pre-baked handler path (`createIngressHandler`). */
 export interface BakedIngressRuntime {
   /** Emit an `x-request-id` header on responses. Default: false. */
   emitRequestIdHeader?: boolean
@@ -400,6 +403,8 @@ export function createIngressHandler(
     const needsRetry = (variant & HV_RATE_LIMITED) !== 0
 
     if (!needsRequestId && !needsOrigin && !needsRate && !needsRetry) {
+      // Frozen-readonly → mutable: callers only ever read the baked template
+      // (zero-copy steady-state path), so the widening is safe in practice.
       return template as unknown as [string, string][]
     }
 
@@ -480,6 +485,7 @@ export function createIngressHandler(
     // terminal template (JSON + `cache-control: no-store`) directly with zero
     // per-response array allocation/copy.
     if (!needsRequestId && !needsOrigin && !needsRate && !needsRetry) {
+      // Frozen-readonly → mutable: the baked terminal template is only read.
       return terminalTemplates[v & 31] as unknown as [string, string][]
     }
 

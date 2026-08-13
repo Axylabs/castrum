@@ -5,6 +5,7 @@
 // branch on `isBun()` / `isNode()` without sprinkling `typeof Bun` checks
 // everywhere. Importing this module has zero side effects.
 
+/** Host runtime identifier. */
 export type RuntimeName = 'bun' | 'node' | 'unknown'
 
 /** Whether the current runtime is Bun (the primary target). */

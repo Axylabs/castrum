@@ -72,6 +72,7 @@
         "deny": "cargo deny check",
         "check:version": "bun scripts/check-version.mjs",
         "check:jsdoc": "bun scripts/check-jsdoc.ts",
+        "check:selection": "bun scripts/select-native.ts --check",
         "audit": "bun audit",
         "publish:manual": "node scripts/publish-manual.mjs",
         "publish:manual:dry": "node scripts/publish-manual.mjs --dry-run",

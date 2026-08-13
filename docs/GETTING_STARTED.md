@@ -203,7 +203,9 @@ bun run test:node # Node.js integration tests (node --test) — run `bun run bui
 
 ## Next steps
 
-- [`REPO_MAP.md`](./REPO_MAP.md) — where everything is and how it connects
+- [`API.md`](./API.md) — the complete public API reference
 - [`INGRESS.md`](./INGRESS.md) — the full pre-baked ingress API
+- [`CASE_STUDY.md`](./CASE_STUDY.md) — the story behind the numbers (how castrum was built)
+- [`REPO_MAP.md`](./REPO_MAP.md) — where everything is and how it connects
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — deep-dive internals
 - [`AGENTS.md`](../AGENTS.md) — agent/contributor guidance

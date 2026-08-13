@@ -4,6 +4,13 @@
 // (src/rust-ffi), the runtime selection hints (src/selection), the
 // performance-proven registry (src/shared/proven), and the higher-order
 // loader (src/loader). See AGENTS.md for the layout map.
+//
+// EAGER-DLOPEN CONTRACT: this barrel unconditionally re-exports `src/ingress`
+// → `src/ingress/constants.ts`, which is the ONE module that touches native at
+// import time (it reads the Rust binary layout and runs the bind-time
+// self-test). This is intentional — even `import { rust }` pays the eager
+// load. Do NOT add more eager-native modules; keep everything else lazy (see
+// test/unit/features/import-contract.test.ts).
 
 export * from './src/rust-ffi'
 

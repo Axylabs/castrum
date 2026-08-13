@@ -1,31 +1,28 @@
-// src/native/ffi.ts — Bun-only C-ABI fast path via `bun:ffi`.
+// src/native/ffi.ts — Bun-only C-ABI fast path via `bun:ffi` (transport core).
 //
 // Bun JIT-compiles `bun:ffi` calls down to direct native calls (~10-20ns
 // crossing), versus ~100-350ns for a Node-API call. The same cdylib that Node
 // loads through napi-rs ALSO exports `extern "C"` symbols (`rust/ffi.rs`), so
-// under Bun we can `dlopen` it and call the hot scalar functions directly —
-// skipping the N-API marshaling that dominates the sub-µs operations.
+// under Bun we can `dlopen` it and call the hot scalar functions directly.
+//
+// Structure: this file is the transport CORE (dlopen + symbol binding +
+// per-call wrappers). The pure pieces live beside it: `ffi/types.ts` (BunFFI /
+// FfiMode / Raw signatures), `ffi/constants.ts` (caps + sizing + self-test
+// vectors), `ffi/selftest.ts` (the bind-time self-test). This file re-exports
+// `getBunFFI` + `BunFFI` so existing importers keep working unchanged.
 //
 // Safety / correctness strategy:
 //   - Lazily bound (no addon/ffi work until first use).
-//   - A one-time SELF-TEST runs at bind time: every bound function is checked
-//     against known-good vectors. If ANY check fails (ABI mismatch, platform
-//     quirk, a future Bun regression), the whole ffi layer is disabled and the
-//     caller falls back to the napi addon — the public API never sees a wrong
-//     result. `bun:ffi` is experimental; this is the safety net.
-//   - Decoders that can fail (hexDecode / urlDecode / base64Decode) ARE exposed
-//     here with parity error semantics: a `0` write on non-empty input throws
-//     (the napi decoders throw rather than return a short buffer). The only
-//     unavoidable divergence is decompressing a stream that yields exactly 0
-//     bytes, which the C ABI can't distinguish from "too small" (napi returns
-//     an empty buffer; ffi throws) — degenerate and not exercised by tests.
+//   - A one-time SELF-TEST runs at bind time (ffi/selftest.ts); any failure
+//     disables ffi and falls back to the napi addon.
+//   - Decoders that can fail ARE exposed with parity error semantics: a `0`
+//     write on non-empty input throws (the napi decoders throw rather than
+//     return a short buffer).
 //   - Never called under Node (falls back to napi immediately).
 //
 // Buffer ABI: input/out pointers are `(ptr, len)` pairs; the JS wrapper passes
 // `(view, view.length)` and bun:ffi converts the TypedArray to its pointer.
 
-// Type-only: erased at compile time (no runtime import of `bun:ffi` — that
-// stays lazy inside `bind()`). `FFITypeOrString` is the dlopen ABI-string union.
 import type { FFITypeOrString } from 'bun:ffi'
 import { resolveEnvVar } from '../shared/env'
 import { isBun } from '../shared/runtime'
@@ -33,236 +30,43 @@ import { isBun } from '../shared/runtime'
 // dlopen), so this adds zero import-time cost while letting `bind()` reuse the
 // exact same resolved `.node` path the napi fallback uses (the shared seam).
 import { getAddonPath } from './loader'
+import {
+  EMPTY_VIEW,
+  MAX_DECOMPRESSED,
+  MAX_JSON_PATCH_OUTPUT,
+  COMPRESS_INITIAL_CAP,
+  COMPRESS_MAX_CAP,
+  COMPRESS_HEADROOM,
+  DECOMPRESS_GUESS_MULTIPLIER_GZIP,
+  DECOMPRESS_GUESS_MULTIPLIER_BROTLI,
+  DECOMPRESS_FALLBACK_CAP,
+  DECOMPRESS_MIN_INITIAL,
+  JWT_INITIAL_MULTIPLIER,
+  JWT_INITIAL_EXTRA,
+  JWT_INITIAL_FLOOR,
+} from './ffi/constants'
+import { selfTest } from './ffi/selftest'
+import type {
+  BunFFI,
+  FfiMode,
+  Raw2,
+  Raw3,
+  Raw4,
+  Raw5,
+  Raw6,
+  Raw7,
+  Raw8,
+  Raw9,
+  Raw10,
+} from './ffi/types'
 
-const encoder = new TextEncoder()
-
-/** The set of C-ABI functions this layer can accelerate on Bun. */
-export interface BunFFI {
-  crc32(input: Uint8Array): number
-  fnv1a64(input: Uint8Array): bigint
-  xxh3(input: Uint8Array): bigint
-  jsonValid(input: Uint8Array): boolean
-  /** Lowercase-hex encode into a fresh `Uint8Array` (size `input.length * 2`). */
-  hexEncode(input: Uint8Array): Uint8Array
-  /** Lowercase-hex encode into `output`; returns bytes written. */
-  hexEncodeInto(input: Uint8Array, output: Uint8Array): number
-  /** RFC 3986 percent-encode into a fresh buffer (size `input.length * 3`). */
-  urlEncode(input: Uint8Array): Uint8Array
-  /** RFC 3986 percent-encode into `output`; returns bytes written. */
-  urlEncodeInto(input: Uint8Array, output: Uint8Array): number
-
-  // ── Validators (u8 → boolean) ─────────────────────────────────────
-  validateEmail(input: Uint8Array): boolean
-  validateUuid(input: Uint8Array): boolean
-  validateIpv4(input: Uint8Array): boolean
-  validateIpv6(input: Uint8Array): boolean
-  /** Sum of `id` fields across a JSON array → bigint (throws on non-array input). */
-  jsonSumIds(input: Uint8Array): bigint
-
-  // ── Constant-time verify (u8 → boolean) ───────────────────────────
-  hmacSha256Verify(key: Uint8Array, data: Uint8Array, signature: Uint8Array): boolean
-  csrfVerify(token: Uint8Array, secret: Uint8Array): boolean
-  passwordVerify(password: Uint8Array, phc: Uint8Array): boolean
-  passwordVerifyBcrypt(password: Uint8Array, phc: Uint8Array): boolean
-
-  // ── Decoders (throw on malformed input — napi `Result` parity) ──
-  /** Hex-decode into a fresh buffer (size `input.length / 2`). */
-  hexDecode(input: Uint8Array): Uint8Array
-  /** Hex-decode into `output`; returns bytes written (throws if too small). */
-  hexDecodeInto(input: Uint8Array, output: Uint8Array): number
-  /** Percent-decode into a fresh buffer (size `input.length`). */
-  urlDecode(input: Uint8Array): Uint8Array
-  /** Percent-decode into `output`; returns bytes written (throws if too small). */
-  urlDecodeInto(input: Uint8Array, output: Uint8Array): number
-  /** base64-decode into a fresh buffer (size `ceil(len/4)*3`). */
-  base64Decode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array
-  /** base64-decode into `output`; returns bytes written (throws if too small). */
-  base64DecodeInto(
-    input: Uint8Array,
-    output: Uint8Array,
-    urlSafe?: boolean,
-    padding?: boolean,
-  ): number
-
-  // ── Fixed-size output writers ─────────────────────────────────────
-  /** RFC 6455 Sec-WebSocket-Accept (28 bytes) into a fresh buffer. */
-  wsAcceptKey(key: Uint8Array): Uint8Array
-  /** crc32 ETag (10 strong / 12 weak bytes) into a fresh buffer. */
-  etag(data: Uint8Array, weak?: boolean): Uint8Array
-  /** crc32 ETag into `output`; returns bytes written. */
-  etagInto(data: Uint8Array, output: Uint8Array, weak?: boolean): number
-  /** `byteLen` random bytes → `byteLen * 2` hex chars. */
-  randomToken(byteLen: number): Uint8Array
-  /** base64-encode into a fresh buffer (size `ceil(len/3)*4`). */
-  base64Encode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array
-  /** base64-encode into `output`; returns bytes written. */
-  base64EncodeInto(
-    input: Uint8Array,
-    output: Uint8Array,
-    urlSafe?: boolean,
-    padding?: boolean,
-  ): number
-  /** HMAC-SHA256 hex (64 chars) into a fresh buffer. */
-  hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array
-  /** HMAC-SHA256 hex into `output`; returns bytes written (throws if too small). */
-  hmacSha256Into(key: Uint8Array, data: Uint8Array, output: Uint8Array): number
-  /** Sign cookie `value` as `value.<64-hex>` into a fresh buffer. */
-  signCookie(value: Uint8Array, secret: Uint8Array): Uint8Array
-  /** Sign cookie into `output`; returns bytes written (throws if too small). */
-  signCookieInto(value: Uint8Array, secret: Uint8Array, output: Uint8Array): number
-  /** Verify a signed cookie → value bytes, or `null` on bad signature. */
-  verifyCookie(signed: Uint8Array, secret: Uint8Array): Uint8Array | null
-  /** CSRF token (129 bytes: 64 rnd-hex + '.' + 64 sig-hex). */
-  csrfToken(secret: Uint8Array): Uint8Array
-  /** Argon2id PHC hash bytes (m/t/p/out_len params). */
-  passwordHash(
-    password: Uint8Array,
-    salt: Uint8Array,
-    mCost: number,
-    tCost: number,
-    pCost: number,
-    outLen: number,
-  ): Uint8Array
-  /** bcrypt `$2b$` PHC string bytes (cost clamped 4..=31). */
-  passwordHashBcrypt(password: Uint8Array, cost: number): Uint8Array
-  /** PBKDF2-HMAC-SHA256 → `dkLen` bytes (rounds, dkLen clamped). */
-  pbkdf2Sha256(password: Uint8Array, salt: Uint8Array, rounds: number, dkLen: number): Uint8Array
-  /** AEAD encrypt (0 = AES-256-GCM, 1 = ChaCha20-Poly1305) → ct+tag. */
-  aeadEncrypt(
-    key: Uint8Array,
-    nonce: Uint8Array,
-    plaintext: Uint8Array,
-    algorithm?: number,
-  ): Uint8Array
-  /** AEAD encrypt into `output` (ct + 16-byte tag); returns bytes written. */
-  aeadEncryptInto(
-    key: Uint8Array,
-    nonce: Uint8Array,
-    plaintext: Uint8Array,
-    output: Uint8Array,
-    algorithm?: number,
-  ): number
-  /** AEAD decrypt → plaintext, or `null` on auth failure. */
-  aeadDecrypt(
-    key: Uint8Array,
-    nonce: Uint8Array,
-    ciphertext: Uint8Array,
-    algorithm?: number,
-  ): Uint8Array | null
-
-  // ── Frame / patch / compression (variable-size → grow-retry) ─────
-  /** RFC 6455 frame encode into a fresh buffer. */
-  wsFrameEncode(opcode: number, payload: Uint8Array, mask: boolean, fin: boolean): Uint8Array
-  /** RFC 6455 frame encode into `output`; returns bytes written (throws if too small). */
-  wsFrameEncodeInto(
-    opcode: number,
-    payload: Uint8Array,
-    mask: boolean,
-    fin: boolean,
-    output: Uint8Array,
-  ): number
-  /** RFC 6902 JSON patch into a fresh buffer. */
-  jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array
-  /** gzip-compress into a fresh buffer (level clamped 0..=9, default 6). */
-  gzipCompress(data: Uint8Array, level?: number): Uint8Array
-  /** gzip-compress into `output`; returns bytes written (throws if too small). */
-  gzipCompressInto(data: Uint8Array, output: Uint8Array, level?: number): number
-  /** gzip-decompress into a fresh buffer (capped by `maxDecompressed`). */
-  gzipDecompress(data: Uint8Array, maxDecompressed?: number): Uint8Array
-  /** brotli-compress into a fresh buffer (quality clamped 0..=11, default 5). */
-  brotliCompress(data: Uint8Array, quality?: number): Uint8Array
-  /** brotli-compress into `output`; returns bytes written (throws if too small). */
-  brotliCompressInto(data: Uint8Array, output: Uint8Array, quality?: number): number
-  /** brotli-decompress into a fresh buffer (capped by `maxDecompressed`). */
-  brotliDecompress(data: Uint8Array, maxDecompressed?: number): Uint8Array
-
-  // ── Packed parsers (into caller buffers) ─────────────────────────
-  /** HTTP request parse → packed output into `output`; returns bytes written. */
-  httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number
-  /** Query string parse → packed output into `output`; returns bytes written. */
-  queryParsePackedInto(input: Uint8Array, output: Uint8Array): number
-  /** Cookie header parse → packed output into `output`; returns bytes written. */
-  cookieParsePackedInto(input: Uint8Array, output: Uint8Array): number
-
-  // ── Excluded-surface additions (packed / opaque-handle) ─────────
-  /** Sign JWT (HS256) from pre-serialized claim JSON (ttl<=0 → no iat/exp). */
-  jwtSignBytes(claimsJson: Uint8Array, secret: Uint8Array, ttl: number, now: number): Uint8Array
-  /** Decode a WS frame into packed `[flags][opcode][u32 len][payload]`; null on malformed. */
-  wsFrameDecodePacked(data: Uint8Array): Uint8Array | null
-  /** Parse multipart/form-data into the packed parts layout. */
-  multipartParsePacked(body: Uint8Array, boundary: Uint8Array): Uint8Array
-  /** Parse x-www-form-urlencoded into packed pairs into `output`. */
-  formParsePackedInto(input: Uint8Array, output: Uint8Array): number
-  /**
-   * Run the ingress pipeline on a packed frame via the opaque inner handle from
-   * `Ingress.ingressInnerPtr()` (valid only while the instance is alive — the
-   * caller must hold it). Returns bytes written; throws on error / too-small.
-   */
-  ingressHandlePacked(
-    inner: number,
-    input: Uint8Array,
-    body: Uint8Array | null,
-    output: Uint8Array,
-  ): number
-  /**
-   * Write the ingress binary-layout constants (38 × u32 LE — `rust/ffi.rs`
-   * `IngressLayout`, numeric source `rust/ingress/output.rs`) into `output`;
-   * returns bytes written. Lets `src/ingress/constants.ts` read the layout via
-   * bun:ffi on Bun so importing the package does NOT dlopen the napi addon.
-   */
-  ingressLayout(out: Uint8Array): number
-}
-
-// ── Caps mirrored from the Rust napi layer ────────────────────────
-// rust/payload/compress.rs DEFAULT_MAX_DECOMPRESSED (64 MiB decompression bomb
-// guard — must stay in sync; do not raise without benchmarking).
-const MAX_DECOMPRESSED = 64 * 1024 * 1024
-// rust/json/json_patch_ops.rs MAX_JSON_PATCH_OUTPUT (128 MiB).
-const MAX_JSON_PATCH_OUTPUT = 128 * 1024 * 1024
-
-// ── Output-buffer sizing heuristics (measured) ─────────────────────
-// These are ALLOCATION caps only, not correctness bounds: `growExact` covers
-// any residual miss with at most one exact-size retry (no re-run loop), so a
-// guess that is too small costs one extra native pass, never a wrong result.
-//
-// Compress: a 75 KiB input compresses to <1 KiB, so a 16 KiB initial is
-// plenty and single-pass; the 1 MiB ceiling bounds incompressible data.
-const COMPRESS_INITIAL_CAP = 16 * 1024
-const COMPRESS_MAX_CAP = 1024 * 1024
-const COMPRESS_HEADROOM = 64 // small-input slack above `data.length`
-// Decompress (no trailer / expensive trailer): typical JSON/text ratios.
-const DECOMPRESS_GUESS_MULTIPLIER_GZIP = 16
-const DECOMPRESS_GUESS_MULTIPLIER_BROTLI = 32
-const DECOMPRESS_FALLBACK_CAP = 4 * 1024 * 1024 // 4 MiB over-alloc bound
-const DECOMPRESS_MIN_INITIAL = 1024
-// JWT: token ≈ header(~36) + payload(≈4/3× claims) + sig(~43) + 2 dots. The
-// old `claims.length + 128` under-sized a typical token (measured 168 B for a
-// 30 B claim → grow-retry double-run, making ffi slower than napi). 2×+128
-// with a 256-byte floor covers typical claims in one pass.
-const JWT_INITIAL_MULTIPLIER = 2
-const JWT_INITIAL_EXTRA = 128
-const JWT_INITIAL_FLOOR = 256
-
-// ── Known-good vectors for the bind-time self-test ───────────────
-// These mirror the Rust `#[cfg(test)]` vectors in rust/ffi.rs.
-const SELFTEST_HEX = encoder.encode('hello') // -> 68656c6c6f
-const SELFTEST_JSON = encoder.encode('{"a":1}')
-
-// Empty view for `null` body slots in (ptr, len) pairs — the C side treats
-// len 0 as "no body" regardless of the pointer value.
-const EMPTY_VIEW = new Uint8Array(0)
+// Re-export the type surface so `import type { BunFFI } from '../native/ffi'`
+// keeps working (existing call sites).
+export type { BunFFI, FfiMode } from './ffi/types'
 
 let cached: BunFFI | null | undefined
 
 // ── Transport selection (CASTRUM_FFI_MODE) ───────────────────────
-// auto  (default): use bun:ffi on Bun, silently fall back to napi when the
-//                  bind or self-test fails (and always on Node).
-// ffi   : force bun:ffi on Bun — throw a clear error if it can't bind or the
-//                  self-test fails (use in benches/CI that MUST run ffi).
-// napi  : never bind — every call goes through the napi addon (the fallback;
-//                  useful for exercising the fallback path on Bun).
-// The legacy alias `RUST_FFI_MODE` is accepted too (see src/shared/env.ts).
-export type FfiMode = 'auto' | 'ffi' | 'napi'
 
 function resolveFfiMode(): FfiMode {
   const raw = resolveEnvVar('CASTRUM_FFI_MODE', ['RUST_FFI_MODE'])
@@ -493,60 +297,6 @@ function bind(): BunFFI | null {
 
 // Types for the raw dlopen'd functions (bun:ffi converts Uint8Array -> ptr for
 // `ptr` args; `usize`/`u64`/`i64` returns surface as BigInt).
-type Raw2 = (a: unknown, b: unknown) => number | bigint
-type Raw3 = (a: unknown, b: unknown, c: unknown) => number | bigint
-type Raw4 = (a: unknown, b: unknown, c: unknown, d: unknown) => number | bigint
-type Raw5 = (a: unknown, b: unknown, c: unknown, d: unknown, e: unknown) => number | bigint
-type Raw6 = (
-  a: unknown,
-  b: unknown,
-  c: unknown,
-  d: unknown,
-  e: unknown,
-  f: unknown,
-) => number | bigint
-type Raw7 = (
-  a: unknown,
-  b: unknown,
-  c: unknown,
-  d: unknown,
-  e: unknown,
-  f: unknown,
-  g: unknown,
-) => number | bigint
-type Raw8 = (
-  a: unknown,
-  b: unknown,
-  c: unknown,
-  d: unknown,
-  e: unknown,
-  f: unknown,
-  g: unknown,
-  h: unknown,
-) => number | bigint
-type Raw9 = (
-  a: unknown,
-  b: unknown,
-  c: unknown,
-  d: unknown,
-  e: unknown,
-  f: unknown,
-  g: unknown,
-  h: unknown,
-  i: unknown,
-) => number | bigint
-type Raw10 = (
-  a: unknown,
-  b: unknown,
-  c: unknown,
-  d: unknown,
-  e: unknown,
-  f: unknown,
-  g: unknown,
-  h: unknown,
-  i: unknown,
-  j: unknown,
-) => number | bigint
 
 const flag = (v?: boolean): number => (v ? 1 : 0)
 
@@ -1240,302 +990,3 @@ function build(
   }
 }
 
-/** Verify every bound function against known-good results; false disables ffi. */
-function selfTest(b: BunFFI): boolean {
-  const dec = new TextDecoder()
-  const enc = encoder
-
-  if (b.crc32(enc.encode('123456789')) !== 0xcbf4_3926) {
-    return false
-  }
-  if (b.fnv1a64(enc.encode('foobar')) !== 0x8594_4171_f739_67e8n) {
-    return false
-  }
-  // XXH3-64 of empty input = 0x2d06800538d394c2 (standard reference vector).
-  if (b.xxh3(new Uint8Array(0)) !== 0x2d06800538d394c2n) {
-    return false
-  }
-  if (b.jsonValid(SELFTEST_JSON) !== true || b.jsonValid(enc.encode('{not json')) !== false) {
-    return false
-  }
-  const hexOut = new Uint8Array(SELFTEST_HEX.length * 2)
-  if (b.hexEncodeInto(SELFTEST_HEX, hexOut) !== 10 || dec.decode(hexOut) !== '68656c6c6f') {
-    return false
-  }
-  const urlInput = enc.encode('a b/c')
-  const urlOut = new Uint8Array(9)
-  if (b.urlEncodeInto(urlInput, urlOut) !== 9 || dec.decode(urlOut) !== 'a%20b%2Fc') {
-    return false
-  }
-
-  // Ingress layout blob (38 × u32 LE). The pinned values catch a reordered
-  // `#[repr(C)] IngressLayout` (drift → self-test fails → napi fallback); the
-  // Rust unit test `ingress_layout_c_abi_matches_output_source` pins every
-  // field against output.rs. Slot order mirrors the struct field order.
-  const layoutBuf = new Uint8Array(38 * 4)
-  b.ingressLayout(layoutBuf)
-  const layoutView = new DataView(layoutBuf.buffer, layoutBuf.byteOffset, layoutBuf.byteLength)
-  if (
-    layoutView.getUint32(0, true) !== 0 || // OUT_VERDICT
-    layoutView.getUint32(2 * 4, true) !== 2 || // OUT_STATUS
-    layoutView.getUint32(12 * 4, true) !== 48 || // OUT_DATA_START
-    layoutView.getUint32(13 * 4, true) !== 1 || // FLAG_HAS_COOKIES
-    layoutView.getUint32(28 * 4, true) !== 32 || // HV_COUNT
-    layoutView.getUint32(37 * 4, true) !== 8 // ERR_INTERNAL
-  ) {
-    return false
-  }
-
-  // Ingress pipeline C-ABI: with a null (0) inner handle the Rust side returns
-  // 0 immediately and the wrapper throws. This exercises the symbol's ABI (arg
-  // count/types/return) at bind time — a signature drift would surface here
-  // instead of crashing under load. Real frame→output parity is covered by
-  // ffi.test.ts against a live napi instance.
-  try {
-    b.ingressHandlePacked(0, enc.encode('/'), null, new Uint8Array(64))
-    return false // a null handle must throw, not return
-  } catch {
-    // expected: null inner handle → 0 → throw
-  }
-
-  // ── New bindings ───────────────────────────────────────────────────
-  const a = enc.encode('a@b.com')
-  const uuid = enc.encode('550e8400-e29b-41d4-a716-446655440000')
-  if (
-    !b.validateEmail(a) ||
-    !b.validateUuid(uuid) ||
-    !b.validateIpv4(enc.encode('192.168.0.1')) ||
-    !b.validateIpv6(enc.encode('2001:db8::1')) ||
-    b.validateEmail(enc.encode('not-an-email')) ||
-    b.validateUuid(enc.encode('not-a-uuid'))
-  ) {
-    return false
-  }
-  if (b.jsonSumIds(enc.encode(`[{"id":1},{"id":2}]`)) !== 3n) {
-    return false
-  }
-  // The packed [u8 ok][i64 sum LE] ABI: a legit zero-sum is ok, invalid input throws.
-  if (b.jsonSumIds(enc.encode(`[{"id":0},{"id":0}]`)) !== 0n) {
-    return false
-  }
-  let sumInvalidThrew = false
-  try {
-    b.jsonSumIds(enc.encode('nope'))
-  } catch {
-    sumInvalidThrew = true
-  }
-  if (!sumInvalidThrew) {
-    return false
-  }
-
-  // HMAC RFC 4231 test case 1 (0x0b × 20 key, "Hi There" data).
-  const hmacKey = new Uint8Array(20).fill(0x0b)
-  const hmacData = enc.encode('Hi There')
-  const hmacSig = enc.encode('b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7')
-  const hmacHex = b.hmacSha256(hmacKey, hmacData)
-  if (dec.decode(hmacHex) !== 'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7') {
-    return false
-  }
-  if (!b.hmacSha256Verify(hmacKey, hmacData, hmacSig)) {
-    return false
-  }
-
-  // Decoders round-trip.
-  const decoded = b.hexDecode(enc.encode('68656c6c6f'))
-  if (
-    dec.decode(decoded) !== 'hello' ||
-    dec.decode(b.urlDecode(enc.encode('a%20b%2Fc'))) !== 'a b/c'
-  ) {
-    return false
-  }
-
-  // WebSocket accept key (RFC 6455 sample).
-  if (
-    dec.decode(b.wsAcceptKey(enc.encode('dGhlIHNhbXBsZSBub25jZQ=='))) !==
-    's3pPLMBiTxaQ9kYGzzhZRbK+xOo='
-  ) {
-    return false
-  }
-
-  // ETag: strong = 10 bytes, weak = 12 bytes.
-  if (b.etag(SELFTEST_HEX).length !== 10 || b.etag(SELFTEST_HEX, true).length !== 12) {
-    return false
-  }
-
-  // base64.
-  if (dec.decode(b.base64Encode(SELFTEST_HEX)) !== 'aGVsbG8=') {
-    return false
-  }
-  if (dec.decode(b.base64Decode(enc.encode('aGVsbG8='))) !== 'hello') {
-    return false
-  }
-
-  // Signed cookie round-trip.
-  const secret = enc.encode('s3cr3t-secret')
-  const signed = b.signCookie(SELFTEST_HEX, secret)
-  const verified = b.verifyCookie(signed, secret)
-  if (verified === null || dec.decode(verified) !== 'hello') {
-    return false
-  }
-  if (b.verifyCookie(enc.encode('tampered.0000'), secret) !== null) {
-    return false
-  }
-
-  // CSRF token round-trip (issued token verifies against the same secret).
-  const csrfTokenBytes = b.csrfToken(secret)
-  if (csrfTokenBytes.length !== 129 || !b.csrfVerify(csrfTokenBytes, secret)) {
-    return false
-  }
-
-  // Argon2id round-trip at minimum cost (fast) — full defaults would take ~50ms.
-  const pw = enc.encode('correct horse battery staple')
-  const salt = enc.encode('salty-salt-16b')
-  const phc = b.passwordHash(pw, salt, 8, 1, 1, 16)
-  if (phc.length === 0 || !b.passwordVerify(pw, phc)) {
-    return false
-  }
-
-  // bcrypt round-trip at minimum cost (fast).
-  const bcryptPhc = b.passwordHashBcrypt(pw, 4)
-  if (bcryptPhc.length === 0 || !b.passwordVerifyBcrypt(pw, bcryptPhc)) {
-    return false
-  }
-
-  // PBKDF2-HMAC-SHA256: password="password", salt="salt", c=1, dkLen=32.
-  // The C ABI writes the RAW derived key; hex-encode before comparing.
-  const dk = b.pbkdf2Sha256(enc.encode('password'), enc.encode('salt'), 1, 32)
-  if (
-    dec.decode(b.hexEncode(dk)) !==
-    '120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b'
-  ) {
-    return false
-  }
-
-  // AEAD AES-256-GCM round-trip (key 32B, nonce 12B).
-  const aeadKey = new Uint8Array(32).fill(0x42)
-  const nonce = new Uint8Array(12).fill(0x07)
-  const ct = b.aeadEncrypt(aeadKey, nonce, SELFTEST_HEX, 0)
-  const pt = b.aeadDecrypt(aeadKey, nonce, ct, 0)
-  if (pt === null || dec.decode(pt) !== 'hello') {
-    return false
-  }
-
-  // WebSocket frame: text frame, FIN, no mask → first byte 0x81.
-  const frame = b.wsFrameEncode(1, SELFTEST_HEX, false, true)
-  if (frame.length === 0 || frame[0] !== 0x81) {
-    return false
-  }
-
-  // JSON patch: add a key.
-  const patched = b.jsonPatch(
-    enc.encode(`{"a":"b"}`),
-    enc.encode(`[{"op":"add","path":"/c","value":"d"}]`),
-  )
-  if (!dec.decode(patched).includes(`"c":"d"`)) {
-    return false
-  }
-
-  // gzip / brotli round-trips.
-  const gz = b.gzipCompress(SELFTEST_HEX)
-  if (dec.decode(b.gzipDecompress(gz)) !== 'hello') {
-    return false
-  }
-  const br = b.brotliCompress(SELFTEST_HEX)
-  if (dec.decode(b.brotliDecompress(br)) !== 'hello') {
-    return false
-  }
-
-  // Needed-size convention: invalid compressed input throws IMMEDIATELY (the C
-  // ABI returns 0 = real error, so the JS wrapper does NOT grow-retry re-runs
-  // or allocate up to the 64 MiB decompression cap per bad input).
-  let decompressThrew = false
-  try {
-    b.gzipDecompress(enc.encode('not-a-gzip-stream'))
-  } catch {
-    decompressThrew = true
-  }
-  if (!decompressThrew) {
-    return false
-  }
-  decompressThrew = false
-  try {
-    b.brotliDecompress(enc.encode('not-brotli-stream'))
-  } catch {
-    decompressThrew = true
-  }
-  if (!decompressThrew) {
-    return false
-  }
-
-  // Packed parsers (non-empty output). Packed output is LARGER than input (each
-  // component gets a u32 length prefix), so size with the Rust allocator's
-  // conservative upper bound (`input.len() * 9 + 16` in query_parser.rs).
-  const req = enc.encode('GET /a?b=1 HTTP/1.1\r\nHost: example.com\r\n\r\n')
-  const reqOut = new Uint8Array(req.length * 9 + 16)
-  if (b.httpParseRequestPackedInto(req, reqOut) === 0) {
-    return false
-  }
-  const qIn = enc.encode('a=1&b=2')
-  const qOut = new Uint8Array(qIn.length * 9 + 16)
-  if (b.queryParsePackedInto(qIn, qOut) === 0) {
-    return false
-  }
-  const cIn = enc.encode('a=1; b=2')
-  const cOut = new Uint8Array(cIn.length * 9 + 16)
-  if (b.cookieParsePackedInto(cIn, cOut) === 0) {
-    return false
-  }
-
-  // ── Excluded-surface additions ────────────────────────────────────
-  // form parse shares the query core → 2 pairs.
-  const fIn = enc.encode('a=1&b=2')
-  const fOut = new Uint8Array(fIn.length * 9 + 16)
-  if (b.formParsePackedInto(fIn, fOut) === 0 || fOut[0] !== 2) {
-    return false
-  }
-
-  // multipart parse → 1 part named "field".
-  const boundary = enc.encode('----boundary')
-  // Wire format is `--{boundary}` — boundary is `----boundary`, so the body
-  // must open with `------boundary`.
-  const mBody = enc.encode(
-    '------boundary\r\nContent-Disposition: form-data; name="field"\r\n\r\nvalue\r\n------boundary--',
-  )
-  const mOut = b.multipartParsePacked(mBody, boundary)
-  if (mOut[0] !== 1) {
-    return false
-  }
-  // Packed layout: [u32 count][u32 name_len][name]... → name_len at offset 4.
-  const mNameLen = (mOut[4] ?? 0) | ((mOut[5] ?? 0) << 8) | ((mOut[6] ?? 0) << 16) | ((mOut[7] ?? 0) << 24)
-  if (dec.decode(mOut.subarray(8, 8 + mNameLen)) !== 'field') {
-    return false
-  }
-
-  // WS frame decode: encode("hello") → decode → fin=1, opcode=1, payload="hello".
-  const wf = b.wsFrameEncode(1, SELFTEST_HEX, true, true)
-  const wd = b.wsFrameDecodePacked(wf)
-  if (wd === null || wd[0] !== 1 || wd[1] !== 1 || dec.decode(wd.subarray(6)) !== 'hello') {
-    return false
-  }
-  if (b.wsFrameDecodePacked(enc.encode('\x80')) !== null) {
-    return false
-  }
-
-  // JWT sign with ttl=0 (deterministic — no iat/exp), then verify the
-  // signature with the FFI HMAC to prove the binding is real.
-  const jwtSecret = enc.encode('my-secret')
-  const jwt = b.jwtSignBytes(enc.encode('{"sub":"user-1"}'), jwtSecret, 0, 0)
-  const jwtStr = dec.decode(jwt)
-  const segs = jwtStr.split('.')
-  if (segs.length !== 3 || segs[0] === '' || segs[1] === '' || segs[2] === '') {
-    return false
-  }
-  const signingInput = enc.encode(`${segs[0]}.${segs[1]}`)
-  const sigHex = dec.decode(b.hmacSha256(jwtSecret, signingInput))
-  const sigBytes = b.base64Decode(enc.encode(segs[2]), true, false)
-  if (sigBytes === null || dec.decode(b.hexEncode(sigBytes)) !== sigHex) {
-    return false
-  }
-
-  return true
-}

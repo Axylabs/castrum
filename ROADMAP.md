@@ -17,14 +17,15 @@ Legend: ✅ done · 🔜 planned · ⏳ in progress · 💤 not started
 - ✅ `docs/bun-builtins-decision-matrix.md` — keep/delegate/add decisions.
 - ✅ New primitives: `rust.xxh3`, `rust.passwordHashBcrypt`/`verifyBcrypt`,
   `rust.pbkdf2Sha256`, `uuidv7()` (TS delegate).
-- 🔜 `@flux/native` prefer-Bun delegation table (flux-core repo).
+- ✅ Selection layer (`opImpl` / `isNativeOp` / `opDecision`, `src/selection.ts`)
+  applies the keep/delegate decisions at load time.
 
-## 3. Enterprise observability (✅ core primitives, 🔜 wiring)
+## 3. Enterprise observability (✅ v0.9.0)
 - ✅ Zero-dep metrics registry (`createMetrics`) + Prometheus render.
 - ✅ Ingress metrics wiring (`createIngressMetrics`) + `/metrics` route factory.
 - ✅ Health probes (`livenessHandler` / `readinessHandler` / `healthHandler`).
 - ✅ W3C trace context (`parseTraceParent` / `createTraceId` / `createSpanId`).
-- 🔜 Wire `/metrics` + `/healthz` `/readyz` `/livez` into the benchmark server
+- ✅ Wire `/metrics` + `/healthz` `/readyz` `/livez` into the benchmark server
   and the example app.
 - 🔜 Optional OpenTelemetry exporter adapter over the same registry.
 
@@ -38,8 +39,8 @@ Legend: ✅ done · 🔜 planned · ⏳ in progress · 💤 not started
 ## 5. Distribution & supply chain (🔜)
 - ✅ musl targets added to `napi.targets` + CI build matrix.
 - ✅ SLSA build-provenance attestation + SBOM on the publish job (CI config).
-- 🔜 Cut v0.9.0 (tag + publish dry-run), flip flux-core's `file:` dep to a real
-  version range, verify the installed-tarball native path in CI.
+- 🔜 Cut v0.9.0 (tag + publish dry-run), flip local consumers' `file:` dev deps
+  to a real version range, verify the installed-tarball native path in CI.
 
 ## 6. Governance (🔜)
 - ✅ CODE_OF_CONDUCT, issue/PR templates, ROADMAP.
@@ -69,4 +70,4 @@ Legend: ✅ done · 🔜 planned · ⏳ in progress · 💤 not started
 - Live `npm publish` (manual gate; requires `NPM_TOKEN`).
 - Removing/deprecating any hot-path napi API (see AGENTS.md — hard constraint).
 - Distributed rate-limit/jobs stores in the engine itself (per-process documented
-  behavior preserved; pluggable stores belong to the flux-core framework layer).
+  behavior preserved; pluggable stores belong to the framework layer).

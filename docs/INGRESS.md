@@ -518,6 +518,7 @@ interface SyncIngressHandler {
 
 | Code | HTTP Status | Description |
 |------|-------------|-------------|
+| `ERR_CODE_REQUEST_TIMEOUT` (-1) | 408 | Body-read deadline exceeded on a write/echo route (`bodyTimeoutMs`, default 30 s) |
 | `ERR_CODE_NONE` (0) | 200 / varies | No error |
 | `ERR_CODE_CORS_PREFLIGHT` (1) | 403 / 204 | CORS preflight rejected (or allowed → 204) |
 | `ERR_CODE_RATE_LIMITED` (2) | 429 | Rate limit exceeded |
@@ -742,4 +743,3 @@ async function* tick() {
 }
 return sseResponse(tick());
 ```
-}

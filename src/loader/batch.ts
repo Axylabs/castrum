@@ -94,6 +94,10 @@ export interface TickCoalescer {
   readonly pending: number
 }
 
+/**
+ * Create a microtask-based coalescer: `enqueue` schedules one flush that
+ * drains ALL pending ops; each op group is delivered to `flush` once.
+ */
 export function createTickCoalescer(
   flush: (op: string, requests: LoadRequest[]) => void,
 ): TickCoalescer {

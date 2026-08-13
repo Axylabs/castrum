@@ -130,7 +130,7 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
   ingress/                THE ingress pipeline: mod.rs (napi boundary), pipeline.rs (core 8-stage),
                           options/time/packed, cors, proxy, ip_trust, rate_limit, terminal,
                           output.rs (single numeric layout source), ingress_constants.rs (napi projection).
-  ffi.rs                  #[no_mangle] extern "C" exports (45 castrum_* symbols) for Bun's bun:ffi
+  ffi.rs                  #[no_mangle] extern "C" exports (47 castrum_* symbols) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).
   unit_tests.rs / test_support.rs   Cross-module Rust test suites.
 ```
@@ -251,9 +251,11 @@ consumed.
 | Doc | Purpose |
 |-----|---------|
 | [`GETTING_STARTED.md`](./GETTING_STARTED.md) | Beginner tutorial (intern-friendly) |
+| [`API.md`](./API.md) | The complete public API reference |
+| [`CASE_STUDY.md`](./CASE_STUDY.md) | Data-driven case study: how castrum was built and measured |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Deep-dive: modules, data flow, output layout, memory, concurrency |
 | [`INGRESS.md`](./INGRESS.md) | The pre-baked ingress API + route factories + servers |
 | [`BENCHMARKS.md`](./BENCHMARKS.md) | Benchmark scenarios, report format, how to run |
 | [`ENVIRONMENT.md`](./ENVIRONMENT.md) | All `CASTRUM_*` env vars (+ legacy aliases) |
 | [`AGENTS.md`](../AGENTS.md) | AI-agent editing guidance (commands, constraints, gotchas) |
-| `README.md` | Public-facing quick start + API reference |
+| `README.md` | Public-facing overview + quick start |

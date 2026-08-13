@@ -101,7 +101,7 @@ export async function benchConcurrent(task: ConcurrentBenchTask): Promise<Concur
         workers.push(worker)
 
         await new Promise<void>((resolve, reject) => {
-          worker.onmessage = (e: any) => {
+          worker.onmessage = (e: MessageEvent) => {
             const msg = e.data
             if (msg?.type === 'ready') {
               resolve()
@@ -110,7 +110,7 @@ export async function benchConcurrent(task: ConcurrentBenchTask): Promise<Concur
             }
           }
 
-          worker.onerror = (e: any) => {
+          worker.onerror = (e: ErrorEvent) => {
             reject(new Error(e?.message ?? 'worker error'))
           }
 
@@ -127,7 +127,7 @@ export async function benchConcurrent(task: ConcurrentBenchTask): Promise<Concur
     const resultPromises = workers.map(
       (worker) =>
         new Promise<bigint>((resolve, reject) => {
-          worker.onmessage = (e: any) => {
+          worker.onmessage = (e: MessageEvent) => {
             const msg = e.data
             if (msg?.type === 'result') {
               resolve(BigInt(msg.checksum ?? '0'))
@@ -136,7 +136,7 @@ export async function benchConcurrent(task: ConcurrentBenchTask): Promise<Concur
             }
           }
 
-          worker.onerror = (e: any) => {
+          worker.onerror = (e: ErrorEvent) => {
             reject(new Error(e?.message ?? 'worker error'))
           }
         }),

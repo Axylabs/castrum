@@ -14,6 +14,13 @@
  *   bun scripts/select-native.ts --check   # CI gate: exit 1 on decisive drift
  *   bun scripts/select-native.ts --write   # persist bench/results/selection.json
  *
+ * GOTCHA (--write): the OPS array below is the source of truth for what stays
+ * in src/selection.json. ANY op with a baked native/js decision MUST be listed
+ * here (or as a skip+pinned entry) or --write DELETES it from the selection —
+ * e.g. jwtSign/jwtVerify/passwordVerify/createTemplate/createSchemaValidator
+ * were once dropped this way, silently un-binding consumers to JS. If you add
+ * an op to rust/selection.rs, add it to OPS here too.
+ *
  * Selection rule (deterministic): native iff `nativeRatio >= 1.05`; js iff
  * `nativeRatio <= 0.95`; inside the band the current wiring is kept (parity).
  * `--check` only fails on DECISIVE drift (castrum-wired loses >15% / js-wired

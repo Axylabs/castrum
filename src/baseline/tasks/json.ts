@@ -10,7 +10,9 @@ import { decoder, encoder } from '../../shared/bytes'
  */
 const JSON_PARSE_BYTES_SUPPORTED: boolean = (() => {
   try {
-    JSON.parse(encoder.encode('{"a":1}') as any)
+    // Bun's JSON.parse accepts a Uint8Array directly; the cast is a deliberate
+    // boundary widening (bytes treated as text) for the feature probe.
+    JSON.parse(encoder.encode('{"a":1}') as unknown as string)
     return true
   } catch {
     return false
@@ -18,7 +20,7 @@ const JSON_PARSE_BYTES_SUPPORTED: boolean = (() => {
 })()
 
 const parseJsonBytes: (bytes: Uint8Array) => unknown = JSON_PARSE_BYTES_SUPPORTED
-  ? (bytes) => JSON.parse(bytes as any)
+  ? (bytes) => JSON.parse(bytes as unknown as string)
   : (bytes) => JSON.parse(decoder.decode(bytes))
 
 export function nativeJsonValid(bytes: Uint8Array): boolean {

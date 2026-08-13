@@ -21,7 +21,15 @@ const SRC_DIR = join(ROOT, "src");
 const ENTRY = join(ROOT, "index.ts");
 
 /** Coverage floor (%): a regression below this fails CI. */
-const COVERAGE_FLOOR = 70;
+const COVERAGE_FLOOR = 95;
+
+/**
+ * Internal directories excluded from the gate. These are benchmark/baseline
+ * scaffolding that is NOT shipped (mirrors package.json `files`:
+ * `"!src/bench"`, `"!src/baseline"`) — counting them only diluted the floor
+ * for the real public API.
+ */
+const EXCLUDED_DIRS = new Set(["bench", "baseline"]);
 
 /** All `.ts` files under a directory (non-recursive, recursive scan). */
 function collectTsFiles(dir: string): string[] {
@@ -30,6 +38,7 @@ function collectTsFiles(dir: string): string[] {
     const full = join(dir, entry);
     const st = statSync(full);
     if (st.isDirectory()) {
+      if (EXCLUDED_DIRS.has(entry)) continue;
       out.push(...collectTsFiles(full));
     } else if (entry.endsWith(".ts") && !entry.endsWith(".d.ts")) {
       out.push(full);

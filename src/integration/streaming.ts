@@ -1,8 +1,7 @@
 // src/integration/streaming.ts — SSE response helper.
 
 import { rust } from '../rust-ffi'
-
-export interface SseEvent {
+/** One SSE event to frame via `sseResponse` (event/id/retry/data). */export interface SseEvent {
   /** Optional `event:` field. */
   event?: string | null
   /** Optional `id:` field. */

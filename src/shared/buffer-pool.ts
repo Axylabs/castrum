@@ -11,8 +11,7 @@
 // hold the buffer past the call). Memory is bounded by `maxBuffers` retained
 // buffers; under heavy concurrency, extra temporary buffers are allocated and
 // discarded on release.
-
-export interface BufferPoolOptions {
+/** Options for configuring a reusable byte-buffer pool. */export interface BufferPoolOptions {
   /**
    * Initial buffer size in bytes. Default: 131072.
    */
@@ -42,6 +41,7 @@ export interface BufferPoolOptions {
   adaptive?: boolean
 }
 
+/** A borrowed buffer handle handed out by a pool; `release()` returns it. */
 export interface PooledBuffer {
   /**
    * The underlying buffer. Its byteLength is guaranteed to be at least the

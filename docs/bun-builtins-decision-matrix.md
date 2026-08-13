@@ -2,7 +2,7 @@
 
 > **Question this answers**: for the same workload, does a Bun native built-in
 > beat the castrum Rust op? Where it does, castrum should stop reinventing the
-> wheel and `@flux/native` should delegate to Bun; where castrum wins (or Bun
+> wheel and delegate to Bun; where castrum wins (or Bun
 > has no sync equivalent), the Rust op stands.
 
 ## Methodology
@@ -56,7 +56,7 @@
 
 ## Decisions
 
-### → Delegate to Bun at the `@flux/native` wrapper layer (Bun wins)
+### → Delegate to Bun at the selection layer (Bun wins)
 These rust ops lose to Bun's native implementation on the SAME workload — the
 FFI crossing cannot beat Bun's in-process C++:
 
@@ -83,19 +83,19 @@ ops where rust genuinely wins or Bun has no equivalent.
 | `validateEmail` / `validateUuid` / `validateIpv4` / `validateIpv6` | `Bun.validators` absent in 1.4; keep rust. Re-check when Bun adds it. |
 | `jsonValid` / `jsonSumIds` / packed parsers / ingress | No Bun sync equivalent for the zero-DOM / zero-copy semantics; keep rust. |
 
-### → Add primitives that close gaps (Phase 2)
-| Gap | Plan |
+### → Implemented primitives (gaps closed)
+| Primitive | Outcome |
 |---|---|
-| Public XXH3-64 (`rust.xxh3`) | **Done** — exposed; measured Bun.hash.xxHash3 4.15× faster → classify `not-competitive`, prefer Bun under Bun. |
-| bcrypt | **Done** — `rust.passwordHashBcrypt`/`passwordVerifyBcrypt`; hash parity, verify rust 1.49×. |
-| PBKDF2 | **Done** — `rust.pbkdf2Sha256`; parity with node:crypto, only sync option in Bun. |
-| UUIDv7 | `Bun.randomUUIDv7` already wins — **do not** build a rust UUIDv7; use Bun. |
+| `rust.xxh3` (XXH3-64) | Exposed; measured `Bun.hash.xxHash3` 4.15× faster → classified `not-competitive` in `PROVEN_SURFACE`; prefer Bun under Bun. |
+| `rust.passwordHashBcrypt` / `rust.passwordVerifyBcrypt` | bcrypt `$2b$` PHC; hash parity, verify rust 1.49×. |
+| `rust.pbkdf2Sha256` | PBKDF2-HMAC-SHA256; parity with `node:crypto`, the only sync option in Bun. |
+| UUIDv7 (`uuidv7()`) | `Bun.randomUUIDv7` already wins — delegated to Bun (`crypto.randomUUID` on Node), not built in Rust. |
 
 ## Summary
 
 **The "don't reinvent the wheel" takeaway:** for non-cryptographic hashing,
 random tokens, and gzip, Bun 1.4's built-ins are already faster than any
-FFI-crossing Rust op — `@flux/native` should prefer them. Rust retains a clear,
+FFI-crossing Rust op — the selection layer should prefer them. Rust retains a clear,
 defensible moat exactly where it matters: **argon2id password hashing
 (≈1.9× vs Bun)**, the **zero-DOM / zero-copy parsers and JSON paths** (no Bun
 sync equivalent), and **brotli** (no Bun sync API).

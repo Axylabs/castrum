@@ -15,6 +15,7 @@ import { isBun } from './shared/runtime'
 /** Recommended implementation for an operation. */
 export type OpImpl = 'native' | 'js'
 
+/** A selection decision: recommended implementation + rationale note. */
 export interface OpDecision {
   /** The recommended implementation when the addon is available. */
   readonly impl: OpImpl

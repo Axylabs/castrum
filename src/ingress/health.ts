@@ -15,6 +15,7 @@
 // The readiness probe runs the optional `check` (deps up? -> 200/503).
 // The health probe is an alias of liveness (process up) plus optional check.
 
+/** Outcome of a readiness check: HTTP status + plain-text body. */
 export interface ReadinessResult {
   status: number
   body: string

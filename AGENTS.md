@@ -138,7 +138,7 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi.rs              `#[no_mangle] extern "C"` exports (46 castrum_* incl. the
+  ├── ffi.rs              `#[no_mangle] extern "C"` exports (47 castrum_* incl. the
                           castrum_gzip_isize size probe) for Bun's `bun:ffi` C-ABI PRIMARY
                           transport (scalar hot fns + ingress layout blob; SAME cdylib serves
                           both napi on Node/fallback and bun:ffi on Bun — see src/native/ffi.ts).

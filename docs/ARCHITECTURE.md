@@ -31,7 +31,7 @@ The bridge between TypeScript and Rust has **two transports**, both loading the 
 cdylib (built with napi-rs):
 
 - **`bun:ffi` (PRIMARY on Bun)** — `src/native/ffi.ts` `dlopen`s the addon's
-  `extern "C"` exports (`rust/ffi.rs`, 45 `castrum_*` symbols) and Bun JIT-calls them
+  `extern "C"` exports (`rust/ffi.rs`, 47 `castrum_*` symbols) and Bun JIT-calls them
   directly (~10-20ns crossing vs ~100-350ns N-API). A bind-time self-test guards
   correctness: on ANY failure the layer is disabled and calls fall back to napi.
   `CASTRUM_FFI_MODE=auto|ffi|napi` selects the transport (default `auto`).

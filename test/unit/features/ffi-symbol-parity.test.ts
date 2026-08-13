@@ -16,6 +16,12 @@ import { readFileSync } from 'node:fs'
 
 const rustSource = readFileSync(new URL('../../../rust/ffi.rs', import.meta.url), 'utf8')
 const ffiSource = readFileSync(new URL('../../../src/native/ffi.ts', import.meta.url), 'utf8')
+// The bind-time self-test lives in its own module (src/native/ffi/selftest.ts)
+// after the transport-core decomposition — scan IT for wrapper coverage.
+const selftestSource = readFileSync(
+  new URL('../../../src/native/ffi/selftest.ts', import.meta.url),
+  'utf8',
+)
 
 /** All `castrum_*` C-ABI export names declared in rust/ffi.rs. */
 function rustExports(src: string): Set<string> {
@@ -80,7 +86,7 @@ describe('FFI symbol parity (source-level)', () => {
   })
 
   test('the bind-time self-test exercises a broad set of wrappers', () => {
-    const covered = selfTestCovers(ffiSource)
+    const covered = selfTestCovers(selftestSource)
     // Current coverage is ~40 of 47 wrappers; floor guards against the
     // self-test being gutted (a silent loss of the ffi value backstop).
     expect(covered.size).toBeGreaterThanOrEqual(30)

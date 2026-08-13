@@ -1,12 +1,12 @@
 // src/integration/websocket.ts — WebSocket upgrade handshake helper.
 
 import { rust } from '../rust-ffi'
-
-export interface WebSocketUpgradeOptions {
+/** Options for `createWebSocketUpgrade` (supported subprotocols). */export interface WebSocketUpgradeOptions {
   /** Subprotocols this server supports; the first client-requested match wins. */
   protocols?: ReadonlyArray<string>
 }
 
+/** The WebSocket upgrade handshake result (101 response + negotiation info). */
 export interface WebSocketUpgradeResult {
   /** The 101 Switching Protocols response — return it from your fetch handler. */
   readonly response: Response

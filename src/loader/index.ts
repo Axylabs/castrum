@@ -18,6 +18,11 @@
 //   - caching      → bounded LRU ("Hot Function Cache"), default key =
 //                    fnv1a64(input) (skipped for sustained-unique workloads),
 //                    opt-in per call via `{ key, cache }`
+//
+// Structure: this file is the DISPATCH CORE + factory. The pure pieces live
+// beside it: `types.ts` (public type surface), `state.ts` (internal dispatch
+// state), `ops.ts` (op registry), `cost.ts` (adaptive cost model), `batch.ts`
+// (LRU cache + tick coalescer). Public types are re-exported below.
 
 import {
   LOADER_OPS,
@@ -37,6 +42,17 @@ import {
   type LoadRequest,
   type TickCoalescer,
 } from './batch'
+import type {
+  LoadOptions,
+  LoaderOpFn,
+  LoaderOpStats,
+  LoaderOptions,
+  LoaderSchemaFn,
+  LoaderStats,
+  LoadStrategy,
+} from './types'
+import { KEY_SEP } from './state'
+import type { OpDispatchCtx, OpFnEntry, LoaderState } from './state'
 import { rust } from '../rust-ffi'
 import { viewForArrayBuffer } from '../shared/bytes'
 import type { SchemaValidator } from '../shared/packed'
@@ -55,220 +71,10 @@ export {
   type BulkResult,
 } from './ops'
 
-// ── Public types ────────────────────────────────────────────────────────────
+// Re-export the public type surface so `import type { LoaderOptions } from
+// '../loader'` keeps working (existing call sites).
+export * from './types'
 
-/** Options for `createLoader()` / `loader.configure()`. */
-export interface LoaderOptions {
-  /** Let each op adapt `batchMin` from measured dispatch cost. Default true. */
-  adaptive?: boolean
-  /** Initial batch threshold in [2, 8]. Default 2 (batch wins for n >= 2). */
-  batchMin?: number
-  /** Max cached keys (bounded LRU). 0 disables caching. Default 256. */
-  maxCacheKeys?: number
-  /** Default `cache` behavior for `load()`. Default true. */
-  caching?: boolean
-  /** Sample timing every N dispatches (hot-path cost control). Default 32. */
-  sampleEvery?: number
-  /**
-   * `load()` dispatch strategy. `"auto"` (default) switches each op between
-   * `"single"` (low load → direct scalar call, no coalescer) and
-   * `"coalesce"` (rising load → one packed batch call) from observed load.
-   */
-  loadStrategy?: LoadStrategy
-}
-
-/** Options for `load()` / `opFn.load()`. */
-export interface LoadOptions {
-  /**
-   * Explicit cache key. When omitted (and caching is on) the default key is
-   * `fnv1a64(input)` — which costs one extra native call per load.
-   */
-  key?: string
-  /** Override the loader-wide caching toggle for this call. Default true. */
-  cache?: boolean
-}
-
-/** Per-op counters exposed on `opFn.stats`. */
-export interface LoaderOpStats {
-  scalarCalls: number
-  batchCalls: number
-  itemsDispatched: number
-  cachedHits: number
-  /** Current learned batch threshold for this op. */
-  batchMin: number
-  /** Current `load()` strategy: "single" (low load) or "coalesce" (bulk). */
-  mode: 'single' | 'coalesce'
-}
-
-/** Aggregate loader statistics. */
-export interface LoaderStats {
-  scalarCalls: number
-  batchCalls: number
-  itemsDispatched: number
-  flushes: number
-  cachedHits: number
-  cacheSize: number
-  cacheEvictions: number
-}
-
-/** A specialized, pre-bound op function returned by `loader(op)`. */
-export interface LoaderOpFn<K extends LoaderOpName> {
-  /** Single item → scalar result. */
-  (input: Uint8Array, ...rest: LoaderOpArgs[K]): LoaderScalar<K>
-  /** Bulk items → ONE packed batch call; same shape as `rust.batch.<op>`. */
-  (inputs: Uint8Array[], ...rest: LoaderBulkArgs<K>): LoaderBulk<K>
-  readonly name: K
-  readonly stats: LoaderOpStats
-  clear(): void
-  /** Sync cache peek (default key `fnv1a64(input)` unless `key` given). */
-  cache(input: Uint8Array, key?: string): LoaderScalar<K> | undefined
-  /**
-   * Coalesced, cache-aware load. Unavailable (`undefined`) on ops that require
-   * extra arguments (e.g. `hmacSha256`, `signCookie`) — use `run` for those.
-   */
-  load: K extends LoadableName ? LoaderLoadFn<K> : undefined
-}
-
-type LoaderLoadFn<K extends LoaderOpName> = (
-  input: Uint8Array,
-  opts?: LoadOptions,
-) => Promise<LoaderScalar<K>>
-
-/** Ops whose extra args are all optional/empty → they support `load()`. */
-type LoadableName = {
-  [K in LoaderOpName]: LoaderOpArgs[K] extends
-    | []
-    | [unknown?]
-    | [unknown?, unknown?]
-    | [unknown?, unknown?, unknown?]
-    ? K
-    : never
-}[LoaderOpName]
-
-/** A validator-bound helper returned by `loader.schema(validator)`. */
-export interface LoaderSchemaFn {
-  /** Single JSON document → valid? */
-  (input: Uint8Array): boolean
-  /** Bulk JSON documents → bitset (1 per doc). */
-  (inputs: Uint8Array[]): Uint8Array
-  /** Count how many bulk documents are valid. */
-  count(inputs: Uint8Array[]): number
-}
-
-/** The global callable loader. */
-export interface Loader {
-  /** Higher-order function: `loader(op)` → specialized hot op function. */
-  <K extends LoaderOpName>(op: K): LoaderOpFn<K>
-  /** Single-item dispatch. */
-  run<K extends LoaderOpName>(op: K, input: Uint8Array, ...rest: LoaderOpArgs[K]): LoaderScalar<K>
-  /** Bulk dispatch (one packed batch call, or adaptive scalar loop). */
-  run<K extends LoaderOpName>(
-    op: K,
-    inputs: Uint8Array[],
-    ...rest: LoaderBulkArgs<K>
-  ): LoaderBulk<K>
-  /** Coalesced, cache-aware load (ops with required extra args throw). */
-  load<K extends LoadableName>(
-    op: K,
-    input: Uint8Array,
-    opts?: LoadOptions,
-  ): Promise<LoaderScalar<K>>
-  /** Sync cache peek. */
-  cache<K extends LoaderOpName>(op: K, input: Uint8Array, key?: string): LoaderScalar<K> | undefined
-  /**
-   * Bind a `SchemaValidator` for repeated single/bulk JSON-schema validation
-   * plus a whole-batch `count`. The returned callable uses the loader's normal
-   * dispatch machinery (cost model + counters).
-   */
-  schema(validator: SchemaValidator): LoaderSchemaFn
-  /** Clear the shared cache (pending coalesced loads still flush). */
-  clear(): void
-  /** Update options at runtime. */
-  configure(options: LoaderOptions): void
-  readonly stats: LoaderStats
-  readonly opNames: LoaderOpName[]
-}
-
-// ── Internal state ──────────────────────────────────────────────────────────
-
-interface OpCounters {
-  scalarCalls: number
-  batchCalls: number
-  itemsDispatched: number
-  cachedHits: number
-}
-
-/** Load-dispatch strategy selector for `load()`. */
-type LoadStrategy = 'auto' | 'single' | 'coalesce'
-
-/**
- * Pre-bound per-op dispatch context — avoids Map lookups on the hot path.
- * Holds the load-aware `load()` strategy plus its cheap integer signals so
- * the single-vs-coalesce decision costs no Map lookup or allocation.
- */
-interface OpDispatchCtx {
-  cost: LoaderCostModel
-  counters: OpCounters
-  sampleEvery: number
-  /** Per-op sample tick counter (advances on every dispatch). */
-  counter: number
-  /** Current `load()` strategy for this op. */
-  mode: 'single' | 'coalesce'
-  /** Consecutive single-load flushes observed (coalesce mode only). */
-  singleStreak: number
-  /** A single-mode load is waiting on its microtask to dispatch. */
-  pendingSingle: boolean
-  pendingInput: Uint8Array | null
-  pendingResolve: ((value: unknown) => void) | null
-  pendingReject: ((error: unknown) => void) | null
-  pendingKey: string | undefined
-  /** Default-key attempts (adaptive key computation). */
-  keyAttempts: number
-  /** Default-key cache hits observed. */
-  keyHits: number
-  /** Periodic re-probe counter for skipped default keys. */
-  keyProbeCounter: number
-}
-
-/** A memoized op fn plus a hook to rebind its dispatch context on configure. */
-interface OpFnEntry {
-  op: LoaderOpName
-  fn: LoaderOpFn<LoaderOpName>
-  /** Rebind to a fresh context after `configure()` so dispatch + stats stay current. */
-  rebind(ctx: OpDispatchCtx): void
-}
-
-interface LoaderState {
-  options: Required<
-    Pick<
-      LoaderOptions,
-      'adaptive' | 'batchMin' | 'maxCacheKeys' | 'caching' | 'sampleEvery' | 'loadStrategy'
-    >
-  >
-  ctxs: Map<LoaderOpName, OpDispatchCtx>
-  cache: LoaderCache
-  coalescer: TickCoalescer
-  opFns: Map<LoaderOpName, OpFnEntry>
-  flushes: number
-  /** Reusable packed-input scratch for the zero-alloc fast flush (grows). */
-  packScratch: Uint8Array
-  /** Reusable packed-output buffer for the zero-alloc fast flush (grows). */
-  outScratch: Uint8Array
-  /** Reusable packed-key output buffer for the batched default-key flush. */
-  keyScratch: Uint8Array
-}
-
-const KEY_SEP = '\u0000'
-
-// ── Load-aware `load()` strategy + adaptive-key tuning ──
-/** Consecutive single-load flushes before an op drops the coalescer. */
-const SINGLE_AFTER = 4
-/** Default-key attempts before unique inputs stop paying the fnv1a64 key. */
-const KEY_WARMUP = 8
-/** After warm-up with zero hits, re-probe the default key every N loads. */
-const KEY_PROBE_EVERY = 64
-
-/** Get (or lazily create) the dispatch context for an op. */
 function ctxFor(state: LoaderState, op: LoaderOpName): OpDispatchCtx {
   let ctx = state.ctxs.get(op)
   if (!ctx) {
@@ -928,3 +734,4 @@ export function createLoader(options: LoaderOptions = {}): Loader {
  * (higher-order function) or `loader.run("validateEmail", …)`.
  */
 export const loader = createLoader()
+

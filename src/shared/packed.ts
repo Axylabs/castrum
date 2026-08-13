@@ -4,6 +4,7 @@ import { getAddon, lazyAddon, type MultipartPart, type SchemaValidatorInstance }
 // Lazy: importing this module does not dlopen the addon until first use.
 const addon = lazyAddon(getAddon)
 
+/** Native JSON-Schema validator handle (see `createSchemaValidator`). */
 export type SchemaValidator = SchemaValidatorInstance
 
 function dataView(bytes: Uint8Array): DataView {
@@ -234,8 +235,13 @@ function readMultipartPartsPacked(bytes: Uint8Array): MultipartPart[] {
   return out
 }
 
+/** A decoded `[name, value]` pair from a packed buffer. */
 export type Pair = [string, string]
 
+/**
+ * Decode a packed `[u32 count][u32 keyLen][key][u32 valLen][val]...` buffer
+ * into `[name, value]` string pairs (see `packPairs` for the layout).
+ */
 export function readPairsPacked(bytes: Uint8Array): Pair[] {
   if (bytes.byteLength < 4) {
     return []
@@ -270,6 +276,10 @@ export function readPairsPacked(bytes: Uint8Array): Pair[] {
   return out
 }
 
+/**
+ * Fold `[name, value]` pairs into an object; repeated names collect into a
+ * string array (query-string/cookie semantics).
+ */
 export function pairsToObject(pairs: Pair[]): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {}
 
@@ -288,6 +298,7 @@ export function pairsToObject(pairs: Pair[]): Record<string, string | string[]> 
   return out
 }
 
+/** A decoded HTTP request from the native packed parser. */
 export interface ParsedHttpRequestPacked {
   method: string
   path: string
@@ -295,6 +306,10 @@ export interface ParsedHttpRequestPacked {
   headers: Record<string, string>
 }
 
+/**
+ * Decode a native `httpParseRequestPacked` buffer into a plain request object
+ * (zero-alloc on the Rust side; this builds the JS strings once).
+ */
 export function readHttpPacked(bytes: Uint8Array): ParsedHttpRequestPacked {
   const dv = dataView(bytes)
   let offset = 0
@@ -448,6 +463,10 @@ export function withPackScratch2<T>(
   }
 }
 
+/**
+ * Pack `[name, value]` string pairs into the native `[u32 count]...` layout
+ * that `readPairsPacked` / the batch validators consume.
+ */
 export function packPairs(pairs: Array<[string, string]>): Uint8Array {
   const encoded = pairs.map(([key, value]) => [encoder.encode(key), encoder.encode(value)] as const)
 
@@ -479,12 +498,14 @@ export function packPairs(pairs: Array<[string, string]>): Uint8Array {
   return out
 }
 
+/** Validate each item against `validator`; returns a packed validity bitset. */
 export function schemaValidateBatch(validator: SchemaValidator, items: Uint8Array[]): Uint8Array {
   return withPackScratch(items, (packed) =>
     unpackBitset(validator.validateBatchPackedBitset(packed)),
   )
 }
 
+/** Validate each item against `validator`; returns the count of valid items. */
 export function schemaValidateBatchCount(validator: SchemaValidator, items: Uint8Array[]): number {
   return withPackScratch(items, (packed) => validator.validateBatchPackedCount(packed))
 }
@@ -495,11 +516,13 @@ export function schemaValidateBatchCount(validator: SchemaValidator, items: Uint
 //   parseQueryString("a=1&b=2")    // { a: "1", b: "2" }
 //   parseCookieHeader("a=1; b=2")  // { a: "1", b: "2" }
 
+/** Parse a query string (`a=1&b=2`) into an object via the native parser. */
 export function parseQueryString(query: string): Record<string, string | string[]> {
   const packed = addon.queryParsePacked(encoder.encode(query))
   return pairsToObject(readPairsPacked(packed))
 }
 
+/** Parse a cookie header (`a=1; b=2`) into an object via the native parser. */
 export function parseCookieHeader(header: string): Record<string, string | string[]> {
   const packed = addon.cookieParsePacked(encoder.encode(header))
   return pairsToObject(readPairsPacked(packed))

@@ -18,12 +18,19 @@ import { MAX_COOKIE_HEADER_BYTES, MAX_SMALL_HEADER_BYTES, MAX_XFF_HEADER_BYTES }
 const encoder = new TextEncoder()
 
 // ── Header name constants (pre-encoded) ────────────────────────
+/** Pre-encoded `cookie` header name. */
 export const HDR_COOKIE = encoder.encode('cookie')
+/** Pre-encoded `origin` header name. */
 export const HDR_ORIGIN = encoder.encode('origin')
+/** Pre-encoded `access-control-request-method` header name. */
 export const HDR_ACRM = encoder.encode('access-control-request-method')
+/** Pre-encoded `access-control-request-headers` header name. */
 export const HDR_ACRH = encoder.encode('access-control-request-headers')
+/** Pre-encoded `x-forwarded-for` header name. */
 export const HDR_XFF = encoder.encode('x-forwarded-for')
+/** Pre-encoded `x-real-ip` header name. */
 export const HDR_XRI = encoder.encode('x-real-ip')
+/** Pre-encoded `x-forwarded-proto` header name. */
 export const HDR_XFP = encoder.encode('x-forwarded-proto')
 
 /**

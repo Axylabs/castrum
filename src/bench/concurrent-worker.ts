@@ -95,14 +95,33 @@ function runOnce(op: string, payload: unknown): unknown {
   }
 }
 
-const ctx = globalThis as any
+/** Message the main thread sends to this worker. */
+interface WorkerMessage {
+  type?: string
+  op?: string
+  payload?: unknown
+  warmup?: unknown
+  iterations?: unknown
+}
 
-ctx.onmessage = (event: any) => {
+/**
+ * Minimal worker-global surface this bench worker uses. Bun exposes these
+ * globals in a worker context; typing them explicitly keeps `globalThis`
+ * access type-safe (no `as any`).
+ */
+interface WorkerScope {
+  onmessage: ((event: { data: WorkerMessage }) => void) | null
+  postMessage(message: unknown): void
+}
+
+const ctx = globalThis as unknown as WorkerScope
+
+ctx.onmessage = (event) => {
   const msg = event.data
 
   try {
     if (msg?.type === 'init') {
-      currentOp = msg.op as string
+      currentOp = msg.op ?? ''
       currentPayload = msg.payload
 
       const warmup = Math.max(0, Number(msg.warmup ?? 0))

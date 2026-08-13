@@ -55,6 +55,7 @@ export interface TaskOutcome {
   isVariant: boolean
 }
 
+/** One function's live benchmark classification (aggregated task outcomes). */
 export interface ClassifiedEntry {
   entry: ProvenEntry
   tasks: TaskOutcome[]

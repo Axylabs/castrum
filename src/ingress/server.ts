@@ -124,6 +124,7 @@ export interface BakedServer {
   port: number
 }
 
+/** Options for `gracefulShutdown` (drain grace period + signals). */
 export interface GracefulShutdownOptions {
   /** Grace period (ms) to drain in-flight requests before force-closing. */
   timeoutMs?: number
@@ -182,13 +183,6 @@ export function gracefulShutdown(
   }
 }
 
-/**
- * Build the route → { method → handler } map from a server spec.
- *
- * Shared by `createIngressServer` (Bun.serve) and `createIngressServerNode`
- * (node:http) so both runtimes wire the exact same route handlers.
- */
-
 /** Options `buildRouteHandlers` actually consumes (a subset of the server
  *  options — it does not need `port` or the Node-only server fields). */
 export type BuildRouteHandlersOptions = Pick<
@@ -196,6 +190,12 @@ export type BuildRouteHandlersOptions = Pick<
   'routes' | 'fallback' | 'getIp' | 'copyBody'
 >
 
+/**
+ * Build the route → { method → handler } map from a server spec.
+ *
+ * Shared by `createIngressServer` (Bun.serve) and `createIngressServerNode`
+ * (node:http) so both runtimes wire the exact same route handlers.
+ */
 export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
   routes: Record<string, Record<string, unknown>>
   baseOpts: BakedHandlerOptions

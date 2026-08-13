@@ -17,7 +17,7 @@ Every overlapping op is **benchmarked against its Bun built-in** before it is
 built, kept, or delegated. Results live in
 `docs/bun-builtins-decision-matrix.md`. Rules:
 
-1. **Delegate to Bun** at the `@flux/native` wrapper layer where Bun wins
+1. **Delegate to Bun** at the selection/delegation layer where Bun wins
    clearly: non-crypto hashing (`Bun.hash.crc32` ~3x, `xxHash3` ~4x),
    gzip (`Bun.gzipSync`/`gunzipSync`), `Bun.randomUUIDv7` (~2x), HMAC
    (`Bun.CryptoHasher` ~1.2x).

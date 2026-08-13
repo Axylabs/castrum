@@ -6,6 +6,7 @@
 // without wiring OpenTelemetry. For full control, use the `onRequest` /
 // `onResponse` / `onError` runtime hooks instead.
 
+/** Structured-logging severity levels (least to most severe). */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent'
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
