@@ -153,10 +153,12 @@ export function createIngressFast(options: IngressFastOptions = {}): IngressFast
   // while `handler` is alive — this closure holds it, so it can never dangle.
   // Falls back to napi when ffi is unavailable / the pointer method is absent.
   const bunFFI = getBunFFI()
+  // Opaque u64 handle → JS number ONCE (bun:ffi converts a BigInt argument to
+  // a number per call anyway; number is cheaper on the hot path).
   const ingressPtr =
     bunFFI !== null && typeof handler.ingressInnerPtr === 'function'
-      ? handler.ingressInnerPtr()
-      : 0n
+      ? Number(handler.ingressInnerPtr())
+      : 0
 
   // Shared with the pre-baked handler path so cookie/cors/proxy/proto
   // extraction decisions can never silently diverge between the two paths.
@@ -184,7 +186,7 @@ export function createIngressFast(options: IngressFastOptions = {}): IngressFast
         // in the reused buffer can never be misread. Under Bun with a live ffi
         // handle this runs the pipeline through `bun:ffi` instead of napi.
         const written =
-          bunFFI !== null && ingressPtr !== 0n
+          bunFFI !== null && ingressPtr !== 0
             ? bunFFI.ingressHandlePacked(ingressPtr, input, body, outputBuf)
             : handler.handleRequestPacked(input, body, outputBuf)
         result.refresh(outputBuf.subarray(0, written), body ?? EMPTY_BODY, requestId)

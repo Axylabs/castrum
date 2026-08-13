@@ -62,6 +62,8 @@ import {
 } from './options'
 import { gatherRawHeadersPacked } from './packing/gather-raw-headers'
 import { IngressInputPacker } from './packing/input-packer'
+import { buildSecurityPairs } from './headers/hsts'
+import type { SecurityHeadersOptions } from './headers/hsts'
 import { ERROR_BODIES, ERROR_CODE_BODIES, rateLimitedBody } from './response/error-bodies'
 import {
   assertSyncCallback,
@@ -130,6 +132,32 @@ function pathForLog(req: Request): string {
   }
 }
 
+/**
+ * Merge structured `options.security` (SecurityHeadersOptions) with raw
+ * `runtime.securityHeaders` pairs into the ordered entries the baked templates
+ * prepend to every response variant. Raw pairs win on name conflicts; names are
+ * lowercased for the template merge.
+ *
+ * The structured defaults (nosniff/DENY/no-referrer) are ONLY applied when the
+ * user explicitly opted into security on this path (`security !== undefined`) —
+ * the baked path's long-standing default is no security headers, and silently
+ * adding them would change every response.
+ */
+function buildBakedSecurityEntries(
+  security: SecurityHeadersOptions | undefined,
+  https: boolean | undefined,
+  raw: ReadonlyArray<[string, string]> | undefined,
+): Array<[string, string]> {
+  const structured = security === undefined ? [] : buildSecurityPairs(security, https, true)
+
+  if (raw === undefined || raw.length === 0) return structured
+
+  const byName = new Map<string, string>()
+  for (const [k, v] of structured) byName.set(k, v)
+  for (const [k, v] of raw) byName.set(k.toLowerCase(), v)
+  return [...byName.entries()]
+}
+
 // ── Types ────────────────────────────────────────────────────────
 // `BakedContext` and `OptimizedIngressHandler` are defined in ./types.ts
 // (shared with the route factories) and re-exported here for back-compat.
@@ -140,7 +168,14 @@ export interface BakedIngressRuntime {
   emitRequestIdHeader?: boolean
   /** Enable security headers on responses. Default: true. */
   enableSecurityHeaders?: boolean
-  /** Ordered `[name, value]` security headers (names are lowercased). */
+  /**
+   * Ordered `[name, value]` security headers (names are lowercased).
+   * NOTE: this PRE-BAKED path takes RAW `[name, value]` pairs here; the
+   * fast/async paths (`createIngressFast`/`createIngress`) instead take a
+   * structured `security: SecurityHeadersOptions` object (CSP/HSTS builders).
+   * The two paths intentionally use different option shapes (see
+   * docs/INGRESS.md).
+   */
   securityHeaders?: ReadonlyArray<[string, string]>
   /** Native output buffer size in bytes. Default: 131072. */
   outputBufferSize?: number
@@ -172,6 +207,13 @@ export interface BakedIngressRuntime {
    * `BufferPool.maxInFlight`.
    */
   maxInFlight?: number
+  /**
+   * Abandonment guard (ms) for zero-copy responses: if a response body is
+   * neither pulled nor cancelled within this window, its pooled buffer is
+   * released and the stream closed. Bounds memory under abandoned (unread)
+   * zero-copy responses. 0 (default) disables it — see `pooledBodyResponse`.
+   */
+  zeroCopyTimeoutMs?: number
 }
 
 // ── Optimized ingress factory ─────────────────────────────────────
@@ -219,10 +261,14 @@ export function createIngressHandler(
   // back to napi when ffi is unavailable, the addon lacks the pointer method,
   // or the handle is 0 (i.e. the state was dropped).
   const bunFFI = getBunFFI()
+  // The opaque handle is a u64 under the 2^53 number range, so convert it to a
+  // plain JS number ONCE here — bun:ffi converts a BigInt argument to a number
+  // on every call anyway (and docs note BigInt is slower), so passing a number
+  // removes that per-request conversion on the hottest path.
   const ingressPtr =
     bunFFI !== null && typeof handler.ingressInnerPtr === 'function'
-      ? handler.ingressInnerPtr()
-      : 0n
+      ? Number(handler.ingressInnerPtr())
+      : 0
 
   const rateLimit = options.rateLimit as { limit?: number } | undefined
   const limit = rateLimit?.limit
@@ -233,6 +279,7 @@ export function createIngressHandler(
   const headerPlan: HeaderPlan = buildHeaderPlan(options)
 
   const emitRequestIdHeader = runtime.emitRequestIdHeader === true
+  const zeroCopyTimeoutMs = runtime.zeroCopyTimeoutMs ?? 0
   const outputBufferSize = clampIngressBufferSize(
     runtime.outputBufferSize ?? DEFAULT_BAKED_OUTPUT_BUFFER_SIZE,
     OUT_DATA_START,
@@ -306,11 +353,17 @@ export function createIngressHandler(
       }
     | undefined
 
+  // Security headers: honor the STRUCTURED `options.security`
+  // (SecurityHeadersOptions — the same shape `createIngress` honors) merged
+  // with raw `runtime.securityHeaders` pairs (raw wins on name conflicts).
+  // This closes the historic gotcha where `options.security` was silently
+  // ignored on the pre-baked path. When neither is provided, no security
+  // headers are emitted (the baked path's long-standing default).
   const securityEntries: ReadonlyArray<[string, string]> =
     runtime.enableSecurityHeaders === false
       ? Object.freeze([] as [string, string][])
       : Object.freeze(
-          (runtime.securityHeaders ?? []).map(([k, v]) => [k.toLowerCase(), v] as [string, string]),
+          buildBakedSecurityEntries(options.security, options.https, runtime.securityHeaders),
         )
 
   const corsAllowMethods = cors?.allowMethods?.join(', ') ?? ''
@@ -450,7 +503,7 @@ export function createIngressHandler(
   }
 
   function terminalResponse(
-    _req: Request,
+    _req: Request | undefined,
     result: BakedIngressResult,
     ctx: BakedContext,
   ): Response | null {
@@ -488,7 +541,7 @@ export function createIngressHandler(
   }
 
   function errorResponse(
-    _req: Request,
+    _req: Request | undefined,
     result: BakedIngressResult | null,
     status: number,
     code: string,
@@ -540,7 +593,7 @@ export function createIngressHandler(
       )
     }
     responseBorrowsBuffer = true
-    return pooledBodyResponse(currentHandle, result.bodyJson(false), init)
+    return pooledBodyResponse(currentHandle, result.bodyJson(false), init, zeroCopyTimeoutMs)
   }
 
   const result = new BakedIngressResult()
@@ -583,12 +636,7 @@ export function createIngressHandler(
       // request without accounting). `ctx.origin` was already fetched once
       // above, so pass it in to avoid a second `req.headers.get('origin')`
       // native→JS string conversion on the hot path.
-      const packedHeaders = gatherRawHeadersPacked(
-        req,
-        headerPlan,
-        methodKind,
-        ctx.origin,
-      )
+      const packedHeaders = gatherRawHeadersPacked(req, headerPlan, methodKind, ctx.origin)
       // url/ip are encoded directly into the packer buffer (no intermediate
       // `encoder.encode` Uint8Array + copy); requestId/headers are byte slices
       // copied verbatim (no decode→re-encode of the pre-encoded request id).
@@ -607,7 +655,7 @@ export function createIngressHandler(
         // contained), re-dispatch through napi once and, after repeated
         // failures, permanently disable ffi for this handler.
         let written: number
-        if (bunFFI !== null && ingressPtr !== 0n && !ffiDisabled) {
+        if (bunFFI !== null && ingressPtr !== 0 && !ffiDisabled) {
           try {
             written = bunFFI.ingressHandlePacked(ingressPtr, input, body, handle.buffer)
             ffiFailures = 0

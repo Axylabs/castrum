@@ -24,75 +24,75 @@
  * scripts/check-proven.ts (one source of truth for classification).
  */
 
-import { PROVEN_SURFACE, type PerformanceStatus, type ProvenEntry } from "./proven";
+import { PROVEN_SURFACE, type PerformanceStatus, type ProvenEntry } from './proven'
 
 /** A "proven"/"parity" function whose baseline is more than this much faster is a clear loss. */
-export const LOSS_TOLERANCE = 1.35;
+export const LOSS_TOLERANCE = 1.35
 /** A "not-competitive" function that wins by more than this is a promotion candidate. */
-export const PROMOTE_TOLERANCE = 1.5;
+export const PROMOTE_TOLERANCE = 1.5
 
 /** One measured rust-vs-baseline comparison from the CPU report. */
 export interface Comparison {
-  label: string;
-  nativeName: string;
-  rustName: string;
-  nativeAvgMs: number;
-  rustAvgMs: number;
-  ratio: number;
-  faster: "rust" | "native";
+  label: string
+  nativeName: string
+  rustName: string
+  nativeAvgMs: number
+  rustAvgMs: number
+  ratio: number
+  faster: 'rust' | 'native'
 }
 
 /** Pass/fail outcome for one of a function's benchmark tasks. */
 export interface TaskOutcome {
-  rustName: string;
-  label: string;
-  ratio: number;
+  rustName: string
+  label: string
+  ratio: number
   /** True when rust is at least as fast (ratio >= 1) — a genuine win. */
-  won: boolean;
+  won: boolean
   /** True when rust is a CLEAR loss (ratio < 1 / LOSS_TOLERANCE) — the deprecation signal. */
-  failed: boolean;
+  failed: boolean
   /** False for the registry's canonical rustTask; true for aggregated variants. */
-  isVariant: boolean;
+  isVariant: boolean
 }
 
 export interface ClassifiedEntry {
-  entry: ProvenEntry;
-  tasks: TaskOutcome[];
-  total: number;
+  entry: ProvenEntry
+  tasks: TaskOutcome[]
+  total: number
   /** Tasks where rust is at least as fast (ratio >= 1). */
-  won: number;
+  won: number
   /** Tasks where rust is a clear loss (ratio < 1 / LOSS_TOLERANCE). */
-  failed: number;
+  failed: number
   /** True when a clear majority of the function's benchmarks lose (failed > total/2). */
-  majorityFail: boolean;
+  majorityFail: boolean
   /** True when a clear majority of the function's benchmarks win (won > total/2). */
-  majorityWin: boolean;
+  majorityWin: boolean
   /**
    * Ratio to display in JSDoc: the worst task when majority-failing (honest
    * "this loses" number), otherwise the canonical comparison, else the median.
    */
-  ratio: number | undefined;
+  ratio: number | undefined
   /** Status derived purely from the latest report. */
-  live: PerformanceStatus;
+  live: PerformanceStatus
   /** Hybrid status the annotator/audit should act on (majority-fail overrides static). */
-  effective: PerformanceStatus;
+  effective: PerformanceStatus
   /** Live results contradict the static classification (majority fail on a proven/parity fn). */
-  drifted: boolean;
+  drifted: boolean
   /** Static "not-competitive" that now majority-wins (keep deprecated, add a note). */
-  promotable: boolean;
+  promotable: boolean
 }
 
 function median(values: number[]): number | undefined {
-  if (values.length === 0) return undefined;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return sorted[mid] ?? 0;
-  return ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+  if (values.length === 0) return undefined
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  if (sorted.length % 2 === 1) return sorted[mid] ?? 0
+  return ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2
 }
 
 /** Every rustTask claimed by any registry entry (prevents cross-entry variant theft). */
 function defaultClaimed(): Set<string> {
-  return new Set(PROVEN_SURFACE.map((e) => e.rustTask).filter(Boolean));
+  return new Set(PROVEN_SURFACE.map((e) => e.rustTask).filter(Boolean))
 }
 
 /**
@@ -116,20 +116,20 @@ export function classifyEntry(
     majorityFail: false,
     majorityWin: false,
     ratio: undefined,
-    live: "unmeasured",
-    effective: "unmeasured",
+    live: 'unmeasured',
+    effective: 'unmeasured',
     drifted: false,
     promotable: false,
-  };
-  if (!entry.rustTask) return unmeasured;
+  }
+  if (!entry.rustTask) return unmeasured
 
-  const tasks: TaskOutcome[] = [];
+  const tasks: TaskOutcome[] = []
   for (const c of comparisons) {
-    const isCanonical = c.rustName === entry.rustTask;
+    const isCanonical = c.rustName === entry.rustTask
     const isVariant =
       !isCanonical &&
       !claimedRustTasks.has(c.rustName) &&
-      c.rustName.startsWith(`${entry.rustTask}_`);
+      c.rustName.startsWith(`${entry.rustTask}_`)
     if (isCanonical || isVariant) {
       // Three-band classification (honest, noise-resistant): a task is WON when
       // rust is at least as fast (ratio >= 1), FAILED when rust clearly loses
@@ -144,36 +144,34 @@ export function classifyEntry(
         won: c.ratio >= 1,
         failed: c.ratio < 1 / LOSS_TOLERANCE,
         isVariant: !isCanonical,
-      });
+      })
     }
   }
 
-  const total = tasks.length;
-  if (total === 0) return unmeasured;
+  const total = tasks.length
+  if (total === 0) return unmeasured
 
-  const won = tasks.filter((t) => t.won).length;
-  const failed = tasks.filter((t) => t.failed).length;
-  const majorityFail = failed * 2 > total;
-  const majorityWin = won * 2 > total;
+  const won = tasks.filter((t) => t.won).length
+  const failed = tasks.filter((t) => t.failed).length
+  const majorityFail = failed * 2 > total
+  const majorityWin = won * 2 > total
 
-  const canonical = tasks.find((t) => !t.isVariant);
+  const canonical = tasks.find((t) => !t.isVariant)
   const ratio = majorityFail
     ? Math.min(...tasks.map((t) => t.ratio))
-    : canonical?.ratio ?? median(tasks.map((t) => t.ratio));
+    : (canonical?.ratio ?? median(tasks.map((t) => t.ratio)))
 
   const live: PerformanceStatus = majorityFail
-    ? "not-competitive"
+    ? 'not-competitive'
     : majorityWin
-      ? "proven"
-      : "parity";
+      ? 'proven'
+      : 'parity'
 
   // Hybrid effective status: a clear majority of losses overrides the static
   // registry (auto-deprecate); otherwise the static classification stands —
   // classifications reflect the shipped release build, not one local run.
   const effective: PerformanceStatus =
-    entry.status !== "unmeasured" && majorityFail
-      ? "not-competitive"
-      : entry.status;
+    entry.status !== 'unmeasured' && majorityFail ? 'not-competitive' : entry.status
 
   return {
     entry,
@@ -186,9 +184,9 @@ export function classifyEntry(
     ratio,
     live,
     effective,
-    drifted: entry.status !== "unmeasured" && effective !== entry.status,
-    promotable: entry.status === "not-competitive" && majorityWin,
-  };
+    drifted: entry.status !== 'unmeasured' && effective !== entry.status,
+    promotable: entry.status === 'not-competitive' && majorityWin,
+  }
 }
 
 /** Classify every registry entry (single source of truth for the audit + annotator). */
@@ -196,16 +194,16 @@ export function classifySurface(
   entries: readonly ProvenEntry[],
   comparisons: Comparison[],
 ): Map<string, ClassifiedEntry> {
-  const claimed = new Set(entries.map((e) => e.rustTask).filter(Boolean));
-  const out = new Map<string, ClassifiedEntry>();
+  const claimed = new Set(entries.map((e) => e.rustTask).filter(Boolean))
+  const out = new Map<string, ClassifiedEntry>()
   for (const entry of entries) {
-    out.set(entry.name, classifyEntry(entry, comparisons, claimed));
+    out.set(entry.name, classifyEntry(entry, comparisons, claimed))
   }
-  return out;
+  return out
 }
 
 /** Human ratio summary: "3.18x rust" / "2.34x baseline". */
 export function formatRatio(ratio: number): string {
-  if (ratio >= 1) return `${ratio.toFixed(2)}x rust`;
-  return `${(1 / ratio).toFixed(2)}x baseline`;
+  if (ratio >= 1) return `${ratio.toFixed(2)}x rust`
+  return `${(1 / ratio).toFixed(2)}x baseline`
 }

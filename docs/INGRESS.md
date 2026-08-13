@@ -281,6 +281,15 @@ rendering).
 **Health probes** — `livenessHandler()` (always 200), `readinessHandler(check?)`
 (200/503 via an async dependency check), `healthHandler(check?)`.
 
+> **Route spec note**: `BakedRoute.read` also accepts a raw
+> `(req) => Response` function (the probes and `metricsHandler` are plain
+> functions), so the pattern above typechecks and runs on both Bun
+> (`createIngressServer`) and Node (`createIngressServerNode`). Raw handlers
+> are served for GET only and skip the ingress pipeline / OPTIONS preflight.
+> See `examples/basic-server.ts` and the bench ingress server
+> (`bench/servers/ingress-server.ts`), which wire `/metrics` + `/healthz`
+> `/readyz` `/livez` end-to-end.
+
 **Tracing** — W3C trace-context helpers: `parseTraceParent(header)`,
 `createTraceId()`, `createSpanId()`, `serializeTraceParent(ctx)`. Wire an
 `onRequest` hook to parse `req.headers.get("traceparent")` and thread

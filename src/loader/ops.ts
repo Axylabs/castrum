@@ -19,35 +19,35 @@
 // the loader never pays a conversion cost on the hot path. This module is the
 // single source of truth for what the loader can dispatch.
 
-import { rust } from "../rust-ffi";
-import { addon } from "../rust-ffi/addon";
-import { decoder } from "../shared/bytes";
-import type { PasswordHashOptions } from "../native";
-import type { SchemaValidator } from "../shared/packed";
+import { rust } from '../rust-ffi'
+import { addon } from '../rust-ffi/addon'
+import { decoder } from '../shared/bytes'
+import type { PasswordHashOptions } from '../native'
+import type { SchemaValidator } from '../shared/packed'
 
 /** Empty bytes sentinel for skip-on-error scalar parity (e.g. AEAD decrypt). */
-export const EMPTY_BYTES = new Uint8Array(0);
+export const EMPTY_BYTES = new Uint8Array(0)
 
 /** Result kinds supported by the loader (mirrors the packed batch wire shapes). */
-export type LoaderResultKind = "boolean" | "number" | "bigint" | "bytes";
+export type LoaderResultKind = 'boolean' | 'number' | 'bigint' | 'bytes'
 
 /** Single-item (scalar) result type for a kind. */
-export type ScalarResult<K extends LoaderResultKind> = K extends "boolean"
+export type ScalarResult<K extends LoaderResultKind> = K extends 'boolean'
   ? boolean
-  : K extends "number"
+  : K extends 'number'
     ? number
-    : K extends "bigint"
+    : K extends 'bigint'
       ? bigint
-      : Uint8Array;
+      : Uint8Array
 
 /** Bulk (array-input) result type for a kind — same shape as `rust.batch.*`. */
-export type BulkResult<K extends LoaderResultKind> = K extends "boolean"
+export type BulkResult<K extends LoaderResultKind> = K extends 'boolean'
   ? Uint8Array
-  : K extends "number"
+  : K extends 'number'
     ? Uint32Array
-    : K extends "bigint"
+    : K extends 'bigint'
       ? BigInt64Array
-      : Uint8Array[];
+      : Uint8Array[]
 
 /**
  * Bulk-result type overrides per op. Bigint ops whose hashes can set the high
@@ -55,109 +55,109 @@ export type BulkResult<K extends LoaderResultKind> = K extends "boolean"
  * `rust.<op>`; the default signed `BigInt64Array` stays for sum-style ops.
  */
 export interface LoaderOpBulkOverride {
-  fnv1a64: BigUint64Array;
+  fnv1a64: BigUint64Array
 }
 
 /** Bulk result type of a specific op (per-op override wins). */
 export type LoaderBulk<K extends LoaderOpName> = K extends keyof LoaderOpBulkOverride
   ? LoaderOpBulkOverride[K]
-  : BulkResult<LoaderOpKind<K>>;
+  : BulkResult<LoaderOpKind<K>>
 
 /** Every op the loader can dispatch. */
 export type LoaderOpName =
-  | "crc32"
-  | "fnv1a64"
-  | "jsonValid"
-  | "jsonSumIds"
-  | "validateEmail"
-  | "validateUuid"
-  | "validateIpv4"
-  | "validateIpv6"
-  | "queryParse"
-  | "cookieParse"
-  | "formParse"
-  | "httpParseRequest"
-  | "hexEncode"
-  | "hexDecode"
-  | "base64Encode"
-  | "base64Decode"
-  | "base64UrlEncode"
-  | "base64UrlDecode"
-  | "gzipCompress"
-  | "gzipDecompress"
-  | "brotliCompress"
-  | "brotliDecompress"
-  | "etag"
-  | "urlEncode"
-  | "urlDecode"
-  | "urlDecodeBytes"
-  | "wsAcceptKey"
-  | "mimeFromExtension"
-  | "signCookie"
-  | "verifyCookie"
-  | "csrfVerify"
-  | "passwordHash"
-  | "passwordVerify"
-  | "hmacSha256"
-  | "hmacSha256Verify"
-  | "aeadEncrypt"
-  | "aeadDecrypt"
-  | "jwtSign"
-  | "jwtVerify"
-  | "jsonPatch"
-  | "urlResolve"
-  | "wsFrameEncode"
-  | "sseEncode"
-  | "schemaValidate";
+  | 'crc32'
+  | 'fnv1a64'
+  | 'jsonValid'
+  | 'jsonSumIds'
+  | 'validateEmail'
+  | 'validateUuid'
+  | 'validateIpv4'
+  | 'validateIpv6'
+  | 'queryParse'
+  | 'cookieParse'
+  | 'formParse'
+  | 'httpParseRequest'
+  | 'hexEncode'
+  | 'hexDecode'
+  | 'base64Encode'
+  | 'base64Decode'
+  | 'base64UrlEncode'
+  | 'base64UrlDecode'
+  | 'gzipCompress'
+  | 'gzipDecompress'
+  | 'brotliCompress'
+  | 'brotliDecompress'
+  | 'etag'
+  | 'urlEncode'
+  | 'urlDecode'
+  | 'urlDecodeBytes'
+  | 'wsAcceptKey'
+  | 'mimeFromExtension'
+  | 'signCookie'
+  | 'verifyCookie'
+  | 'csrfVerify'
+  | 'passwordHash'
+  | 'passwordVerify'
+  | 'hmacSha256'
+  | 'hmacSha256Verify'
+  | 'aeadEncrypt'
+  | 'aeadDecrypt'
+  | 'jwtSign'
+  | 'jwtVerify'
+  | 'jsonPatch'
+  | 'urlResolve'
+  | 'wsFrameEncode'
+  | 'sseEncode'
+  | 'schemaValidate'
 
 /** Extra arguments (after the item/items) for each op — the SINGLE call shape. */
 export interface LoaderOpArgs {
-  crc32: [];
-  fnv1a64: [];
-  jsonValid: [];
-  jsonSumIds: [];
-  validateEmail: [];
-  validateUuid: [];
-  validateIpv4: [];
-  validateIpv6: [];
-  queryParse: [];
-  cookieParse: [];
-  formParse: [];
-  httpParseRequest: [];
-  hexEncode: [];
-  hexDecode: [];
-  base64Encode: [urlSafe?: boolean, padding?: boolean];
-  base64Decode: [urlSafe?: boolean, padding?: boolean];
-  base64UrlEncode: [];
-  base64UrlDecode: [];
-  gzipCompress: [level?: number | null];
-  gzipDecompress: [];
-  brotliCompress: [quality?: number | null];
-  brotliDecompress: [];
-  etag: [weak?: boolean | null];
-  urlEncode: [];
-  urlDecode: [];
-  urlDecodeBytes: [];
-  wsAcceptKey: [];
-  mimeFromExtension: [];
-  signCookie: [secret: Uint8Array];
+  crc32: []
+  fnv1a64: []
+  jsonValid: []
+  jsonSumIds: []
+  validateEmail: []
+  validateUuid: []
+  validateIpv4: []
+  validateIpv6: []
+  queryParse: []
+  cookieParse: []
+  formParse: []
+  httpParseRequest: []
+  hexEncode: []
+  hexDecode: []
+  base64Encode: [urlSafe?: boolean, padding?: boolean]
+  base64Decode: [urlSafe?: boolean, padding?: boolean]
+  base64UrlEncode: []
+  base64UrlDecode: []
+  gzipCompress: [level?: number | null]
+  gzipDecompress: []
+  brotliCompress: [quality?: number | null]
+  brotliDecompress: []
+  etag: [weak?: boolean | null]
+  urlEncode: []
+  urlDecode: []
+  urlDecodeBytes: []
+  wsAcceptKey: []
+  mimeFromExtension: []
+  signCookie: [secret: Uint8Array]
   /** Boolean-validity op: returns valid/invalid (use `rust.verifyCookie` for the value). */
-  verifyCookie: [secret: Uint8Array];
-  csrfVerify: [secret: Uint8Array];
-  passwordHash: [salt: Uint8Array, options?: PasswordHashOptions | null];
-  passwordVerify: [phc: Uint8Array];
-  hmacSha256: [key: Uint8Array];
-  hmacSha256Verify: [key: Uint8Array, sig: Uint8Array];
-  aeadEncrypt: [key: Uint8Array, nonce: Uint8Array, algorithm?: string | null];
-  aeadDecrypt: [key: Uint8Array, nonce: Uint8Array, algorithm?: string | null];
-  jwtSign: [secret: Uint8Array, ttlSeconds?: number | null, nowSeconds?: number];
+  verifyCookie: [secret: Uint8Array]
+  csrfVerify: [secret: Uint8Array]
+  passwordHash: [salt: Uint8Array, options?: PasswordHashOptions | null]
+  passwordVerify: [phc: Uint8Array]
+  hmacSha256: [key: Uint8Array]
+  hmacSha256Verify: [key: Uint8Array, sig: Uint8Array]
+  aeadEncrypt: [key: Uint8Array, nonce: Uint8Array, algorithm?: string | null]
+  aeadDecrypt: [key: Uint8Array, nonce: Uint8Array, algorithm?: string | null]
+  jwtSign: [secret: Uint8Array, ttlSeconds?: number | null, nowSeconds?: number]
   /** Boolean-validity op: returns valid/invalid (use `rust.jwtVerify` for the payload). */
-  jwtVerify: [secret: Uint8Array, nowSeconds?: number];
-  jsonPatch: [patch: Uint8Array];
-  urlResolve: [base: Uint8Array];
-  wsFrameEncode: [opcode: number, mask: boolean, fin: boolean];
-  sseEncode: [event?: string | null, id?: string | null, retry?: number | null];
-  schemaValidate: [validator: SchemaValidator];
+  jwtVerify: [secret: Uint8Array, nowSeconds?: number]
+  jsonPatch: [patch: Uint8Array]
+  urlResolve: [base: Uint8Array]
+  wsFrameEncode: [opcode: number, mask: boolean, fin: boolean]
+  sseEncode: [event?: string | null, id?: string | null, retry?: number | null]
+  schemaValidate: [validator: SchemaValidator]
 }
 
 /**
@@ -166,16 +166,16 @@ export interface LoaderOpArgs {
  * shape (companions are shared across the batch).
  */
 export interface LoaderOpBulkArgs {
-  jsonPatch: [patches: Uint8Array[]];
-  hmacSha256Verify: [key: Uint8Array, sigs: Uint8Array[]];
-  passwordVerify: [phcs: Uint8Array[]];
-  urlResolve: [bases: Uint8Array[]];
+  jsonPatch: [patches: Uint8Array[]]
+  hmacSha256Verify: [key: Uint8Array, sigs: Uint8Array[]]
+  passwordVerify: [phcs: Uint8Array[]]
+  urlResolve: [bases: Uint8Array[]]
 }
 
 /** Bulk call shape for any op (defaults to the scalar shape). */
 export type LoaderBulkArgs<K extends LoaderOpName> = K extends keyof LoaderOpBulkArgs
   ? LoaderOpBulkArgs[K]
-  : LoaderOpArgs[K];
+  : LoaderOpArgs[K]
 
 /**
  * Zero-alloc fast-bulk wiring used by the coalesced `load()` flush for
@@ -186,102 +186,90 @@ export type LoaderBulkArgs<K extends LoaderOpName> = K extends keyof LoaderOpBul
  */
 export interface LoaderFastSpec {
   /** Write the packed batch result for `packed` into `output`; returns bytes written. */
-  batch(packed: Uint8Array, output: Uint8Array): number;
+  batch(packed: Uint8Array, output: Uint8Array): number
   /** Read the i-th scalar result out of the packed `output` written by `batch`. */
-  element(
-    view: DataView,
-    output: Uint8Array,
-    index: number,
-  ): boolean | number | bigint;
+  element(view: DataView, output: Uint8Array, index: number): boolean | number | bigint
   /** Exact number of bytes `output` needs for `count` items. */
-  outSize(count: number): number;
+  outSize(count: number): number
 }
 
 /** Per-op runtime spec: single + bulk execution, plus element access. */
 export interface LoaderOpSpec {
-  kind: LoaderResultKind;
+  kind: LoaderResultKind
   /** Single-item execution: `(input, ...rest) → scalar result`. */
-  scalar(input: Uint8Array, ...rest: unknown[]): unknown;
+  scalar(input: Uint8Array, ...rest: unknown[]): unknown
   /** Bulk execution: `(items, ...rest) → rust.batch-shaped result`. */
-  batch(items: Uint8Array[], ...rest: unknown[]): unknown;
+  batch(items: Uint8Array[], ...rest: unknown[]): unknown
   /** Read the i-th scalar result out of a bulk result. */
-  element(bulk: unknown, index: number): unknown;
+  element(bulk: unknown, index: number): unknown
   /**
    * Zero-alloc fast bulk path for the coalesced `load()` flush. Ops with this
    * MUST keep `element` returning the same per-item value as `fast.element`.
    */
-  fast?: LoaderFastSpec;
+  fast?: LoaderFastSpec
   /**
    * Indices into the bulk `rest` args that are PER-ITEM companion arrays
    * (paired ops). Used only by the adaptive scalar-loop fallback to split
    * companions per item; the packed batch path passes them through unchanged.
    */
-  pairedRest?: number[];
+  pairedRest?: number[]
   /**
    * Bigint ops whose bulk result is UNSIGNED (`BigUint64Array`). The adaptive
    * scalar-loop fallback builds the same unsigned array so single/bulk parity
    * holds for high-bit hashes.
    */
-  unsigned?: boolean;
+  unsigned?: boolean
 }
 
 function boolElem(bulk: unknown, index: number): boolean {
-  return ((bulk as Uint8Array)[index] ?? 0) === 1;
+  return ((bulk as Uint8Array)[index] ?? 0) === 1
 }
 function numElem(bulk: unknown, index: number): number {
-  return (bulk as Uint32Array)[index] as number;
+  return (bulk as Uint32Array)[index] as number
 }
 function bigElem(bulk: unknown, index: number): bigint {
-  return (bulk as BigInt64Array)[index] as bigint;
+  return (bulk as BigInt64Array)[index] as bigint
 }
 function byteElem(bulk: unknown, index: number): Uint8Array {
-  return (bulk as Uint8Array[])[index] as Uint8Array;
+  return (bulk as Uint8Array[])[index] as Uint8Array
 }
 
 // ── Zero-alloc fast-bulk readers (packed output → scalar) ──────────
 
 function boolFast(_view: DataView, output: Uint8Array, index: number): boolean {
-  return (((output[4 + (index >> 3)] ?? 0) >> (index & 7)) & 1) === 1;
+  return (((output[4 + (index >> 3)] ?? 0) >> (index & 7)) & 1) === 1
 }
 function bitsetOutSize(count: number): number {
-  return 4 + Math.ceil(count / 8);
+  return 4 + Math.ceil(count / 8)
 }
 function u32Fast(view: DataView, _output: Uint8Array, index: number): number {
-  return view.getUint32(4 + index * 4, true);
+  return view.getUint32(4 + index * 4, true)
 }
 function u32OutSize(count: number): number {
-  return 4 + count * 4;
+  return 4 + count * 4
 }
 function i64Fast(view: DataView, _output: Uint8Array, index: number): bigint {
-  return view.getBigInt64(4 + index * 8, true);
+  return view.getBigInt64(4 + index * 8, true)
 }
 function u64Fast(view: DataView, _output: Uint8Array, index: number): bigint {
-  return view.getBigUint64(4 + index * 8, true);
+  return view.getBigUint64(4 + index * 8, true)
 }
 function i64OutSize(count: number): number {
-  return 4 + count * 8;
+  return 4 + count * 8
 }
 
 // Native `_into` packed batch fns (lazy addon; resolved + cached on first use
 // so the flush path skips the lazy-addon Proxy get after warm-up).
-const fastNative = new Map<
-  string,
-  (packed: Uint8Array, output: Uint8Array) => number
->();
-function fastInto(
-  name: string,
-): (packed: Uint8Array, output: Uint8Array) => number {
-  let f = fastNative.get(name);
+const fastNative = new Map<string, (packed: Uint8Array, output: Uint8Array) => number>()
+function fastInto(name: string): (packed: Uint8Array, output: Uint8Array) => number {
+  let f = fastNative.get(name)
   if (f === undefined) {
-    f = (
-      addon as unknown as Record<
-        string,
-        (packed: Uint8Array, output: Uint8Array) => number
-      >
-    )[name] as (packed: Uint8Array, output: Uint8Array) => number;
-    fastNative.set(name, f);
+    f = (addon as unknown as Record<string, (packed: Uint8Array, output: Uint8Array) => number>)[
+      name
+    ] as (packed: Uint8Array, output: Uint8Array) => number
+    fastNative.set(name, f)
   }
-  return f;
+  return f
 }
 
 /**
@@ -290,15 +278,13 @@ function fastInto(
  * crossing (`[u32 count][u64 LE × n]`, u64 bit pattern — matches the scalar
  * `rust.fnv1a64` key). Returns bytes written.
  */
-export const fnvBatchKeysInto = (
-  packed: Uint8Array,
-  output: Uint8Array,
-): number => fastInto("fnv1A64BatchPackedInto")(packed, output);
+export const fnvBatchKeysInto = (packed: Uint8Array, output: Uint8Array): number =>
+  fastInto('fnv1A64BatchPackedInto')(packed, output)
 
-const BOOLEAN = "boolean";
-const NUMBER = "number";
-const BIGINT = "bigint";
-const BYTES = "bytes";
+const BOOLEAN = 'boolean'
+const NUMBER = 'number'
+const BIGINT = 'bigint'
+const BYTES = 'bytes'
 
 /**
  * Registry — single source of truth for loader-op wiring. Every op must have
@@ -314,7 +300,7 @@ export const LOADER_OPS = {
     batch: (items: Uint8Array[]) => rust.batch.crc32(items),
     element: numElem,
     fast: {
-      batch: (packed, output) => fastInto("crc32BatchPackedInto")(packed, output),
+      batch: (packed, output) => fastInto('crc32BatchPackedInto')(packed, output),
       element: u32Fast,
       outSize: u32OutSize,
     },
@@ -326,7 +312,7 @@ export const LOADER_OPS = {
     batch: (items: Uint8Array[]) => rust.batch.fnv1a64(items),
     element: bigElem,
     fast: {
-      batch: (packed, output) => fastInto("fnv1A64BatchPackedInto")(packed, output),
+      batch: (packed, output) => fastInto('fnv1A64BatchPackedInto')(packed, output),
       element: u64Fast,
       outSize: i64OutSize,
     },
@@ -337,7 +323,7 @@ export const LOADER_OPS = {
     batch: (items: Uint8Array[]) => rust.batch.jsonValid(items),
     element: boolElem,
     fast: {
-      batch: (packed, output) => fastInto("jsonValidBatchPackedInto")(packed, output),
+      batch: (packed, output) => fastInto('jsonValidBatchPackedInto')(packed, output),
       element: boolFast,
       outSize: bitsetOutSize,
     },
@@ -348,7 +334,7 @@ export const LOADER_OPS = {
     batch: (items: Uint8Array[]) => rust.batch.jsonSumIds(items),
     element: bigElem,
     fast: {
-      batch: (packed, output) => fastInto("jsonSumBatchPackedInto")(packed, output),
+      batch: (packed, output) => fastInto('jsonSumBatchPackedInto')(packed, output),
       element: i64Fast,
       outSize: i64OutSize,
     },
@@ -359,7 +345,7 @@ export const LOADER_OPS = {
     batch: (items: Uint8Array[]) => rust.batch.validateEmail(items),
     element: boolElem,
     fast: {
-      batch: (packed, output) => fastInto("validateEmailBatchPackedInto")(packed, output),
+      batch: (packed, output) => fastInto('validateEmailBatchPackedInto')(packed, output),
       element: boolFast,
       outSize: bitsetOutSize,
     },
@@ -370,7 +356,7 @@ export const LOADER_OPS = {
     batch: (items: Uint8Array[]) => rust.batch.validateUuid(items),
     element: boolElem,
     fast: {
-      batch: (packed, output) => fastInto("validateUuidBatchPackedInto")(packed, output),
+      batch: (packed, output) => fastInto('validateUuidBatchPackedInto')(packed, output),
       element: boolFast,
       outSize: bitsetOutSize,
     },
@@ -381,7 +367,7 @@ export const LOADER_OPS = {
     batch: (items: Uint8Array[]) => rust.batch.validateIpv4(items),
     element: boolElem,
     fast: {
-      batch: (packed, output) => fastInto("validateIpv4BatchPackedInto")(packed, output),
+      batch: (packed, output) => fastInto('validateIpv4BatchPackedInto')(packed, output),
       element: boolFast,
       outSize: bitsetOutSize,
     },
@@ -392,7 +378,7 @@ export const LOADER_OPS = {
     batch: (items: Uint8Array[]) => rust.batch.validateIpv6(items),
     element: boolElem,
     fast: {
-      batch: (packed, output) => fastInto("validateIpv6BatchPackedInto")(packed, output),
+      batch: (packed, output) => fastInto('validateIpv6BatchPackedInto')(packed, output),
       element: boolFast,
       outSize: bitsetOutSize,
     },
@@ -464,8 +450,7 @@ export const LOADER_OPS = {
   gzipCompress: {
     kind: BYTES,
     scalar: (i: Uint8Array, level?: number | null) => rust.gzipCompress(i, level),
-    batch: (items: Uint8Array[], level?: number | null) =>
-      rust.batch.gzipCompress(items, level),
+    batch: (items: Uint8Array[], level?: number | null) => rust.batch.gzipCompress(items, level),
     element: byteElem,
   },
   gzipDecompress: {
@@ -476,8 +461,7 @@ export const LOADER_OPS = {
   },
   brotliCompress: {
     kind: BYTES,
-    scalar: (i: Uint8Array, quality?: number | null) =>
-      rust.brotliCompress(i, quality),
+    scalar: (i: Uint8Array, quality?: number | null) => rust.brotliCompress(i, quality),
     batch: (items: Uint8Array[], quality?: number | null) =>
       rust.batch.brotliCompress(items, quality),
     element: byteElem,
@@ -490,10 +474,8 @@ export const LOADER_OPS = {
   },
   etag: {
     kind: BYTES,
-    scalar: (i: Uint8Array, weak?: boolean | null) =>
-      rust.etag(i, weak ?? undefined),
-    batch: (items: Uint8Array[], weak?: boolean | null) =>
-      rust.batch.etag(items, weak),
+    scalar: (i: Uint8Array, weak?: boolean | null) => rust.etag(i, weak ?? undefined),
+    batch: (items: Uint8Array[], weak?: boolean | null) => rust.batch.etag(items, weak),
     element: byteElem,
   },
   urlEncode: {
@@ -529,44 +511,36 @@ export const LOADER_OPS = {
   signCookie: {
     kind: BYTES,
     scalar: (i: Uint8Array, secret: Uint8Array) => rust.signCookie(i, secret),
-    batch: (items: Uint8Array[], secret: Uint8Array) =>
-      rust.batch.signCookie(items, secret),
+    batch: (items: Uint8Array[], secret: Uint8Array) => rust.batch.signCookie(items, secret),
     element: byteElem,
   },
   // Boolean-validity op: single returns valid/invalid (not the decoded value).
   // Use `rust.verifyCookie` when you need the signed value back.
   verifyCookie: {
     kind: BOOLEAN,
-    scalar: (i: Uint8Array, secret: Uint8Array) =>
-      rust.verifyCookie(i, secret) !== null,
-    batch: (items: Uint8Array[], secret: Uint8Array) =>
-      rust.batch.verifyCookie(items, secret),
+    scalar: (i: Uint8Array, secret: Uint8Array) => rust.verifyCookie(i, secret) !== null,
+    batch: (items: Uint8Array[], secret: Uint8Array) => rust.batch.verifyCookie(items, secret),
     element: boolElem,
   },
   csrfVerify: {
     kind: BOOLEAN,
     scalar: (i: Uint8Array, secret: Uint8Array) => rust.csrfVerify(i, secret),
-    batch: (items: Uint8Array[], secret: Uint8Array) =>
-      rust.batch.csrfVerify(items, secret),
+    batch: (items: Uint8Array[], secret: Uint8Array) => rust.batch.csrfVerify(items, secret),
     element: boolElem,
   },
   passwordHash: {
     kind: BYTES,
     scalar: (i: Uint8Array, salt: Uint8Array, options?: PasswordHashOptions | null) =>
       rust.passwordHash(i, salt, options),
-    batch: (
-      items: Uint8Array[],
-      salt: Uint8Array,
-      options?: PasswordHashOptions | null,
-    ) => rust.batch.passwordHash(items, salt, options),
+    batch: (items: Uint8Array[], salt: Uint8Array, options?: PasswordHashOptions | null) =>
+      rust.batch.passwordHash(items, salt, options),
     element: byteElem,
   },
   passwordVerify: {
     kind: BOOLEAN,
     pairedRest: [0],
     scalar: (i: Uint8Array, phc: Uint8Array) => rust.passwordVerify(i, phc),
-    batch: (items: Uint8Array[], phcs: Uint8Array[]) =>
-      rust.batch.passwordVerify(items, phcs),
+    batch: (items: Uint8Array[], phcs: Uint8Array[]) => rust.batch.passwordVerify(items, phcs),
     element: boolElem,
   },
   aeadEncrypt: {
@@ -589,14 +563,19 @@ export const LOADER_OPS = {
     kind: BYTES,
     // Input is a JSON claim document (bytes); the scalar parses it to the
     // claims object the native signer expects.
-    scalar: (
-      i: Uint8Array,
+    scalar: (i: Uint8Array, secret: Uint8Array, ttlSeconds?: number | null, nowSeconds?: number) =>
+      rust.jwtSign(
+        JSON.parse(decoder.decode(i)) as Record<string, unknown>,
+        secret,
+        ttlSeconds,
+        nowSeconds,
+      ),
+    batch: (
+      items: Uint8Array[],
       secret: Uint8Array,
       ttlSeconds?: number | null,
       nowSeconds?: number,
-    ) => rust.jwtSign(JSON.parse(decoder.decode(i)) as Record<string, unknown>, secret, ttlSeconds, nowSeconds),
-    batch: (items: Uint8Array[], secret: Uint8Array, ttlSeconds?: number | null, nowSeconds?: number) =>
-      rust.batch.jwtSign(items, secret, ttlSeconds, nowSeconds),
+    ) => rust.batch.jwtSign(items, secret, ttlSeconds, nowSeconds),
     element: byteElem,
   },
   // Boolean-validity op: single returns valid/invalid (not the payload).
@@ -605,32 +584,22 @@ export const LOADER_OPS = {
     kind: BOOLEAN,
     scalar: (i: Uint8Array, secret: Uint8Array, nowSeconds?: number) =>
       rust.jwtVerify(i, secret, nowSeconds) !== null,
-    batch: (
-      items: Uint8Array[],
-      secret: Uint8Array,
-      nowSeconds?: number,
-    ) =>
-      rust.batch.jwtVerify(
-        items,
-        secret,
-        nowSeconds ?? Math.floor(Date.now() / 1000),
-      ),
+    batch: (items: Uint8Array[], secret: Uint8Array, nowSeconds?: number) =>
+      rust.batch.jwtVerify(items, secret, nowSeconds ?? Math.floor(Date.now() / 1000)),
     element: boolElem,
   },
   jsonPatch: {
     kind: BYTES,
     pairedRest: [0],
     scalar: (i: Uint8Array, patch: Uint8Array) => rust.jsonPatch(i, patch),
-    batch: (items: Uint8Array[], patches: Uint8Array[]) =>
-      rust.batch.jsonPatch(items, patches),
+    batch: (items: Uint8Array[], patches: Uint8Array[]) => rust.batch.jsonPatch(items, patches),
     element: byteElem,
   },
   urlResolve: {
     kind: BYTES,
     pairedRest: [0],
     scalar: (i: Uint8Array, base: Uint8Array) => rust.urlResolve(base, i),
-    batch: (items: Uint8Array[], bases: Uint8Array[]) =>
-      rust.batch.urlResolve(bases, items),
+    batch: (items: Uint8Array[], bases: Uint8Array[]) => rust.batch.urlResolve(bases, items),
     element: byteElem,
   },
   wsFrameEncode: {
@@ -645,8 +614,12 @@ export const LOADER_OPS = {
     kind: BYTES,
     scalar: (i: Uint8Array, event?: string | null, id?: string | null, retry?: number | null) =>
       rust.sseEncodeEvent(event ?? null, i, id ?? null, retry ?? null),
-    batch: (items: Uint8Array[], event?: string | null, id?: string | null, retry?: number | null) =>
-      rust.batch.sseEncode(items, event, id, retry),
+    batch: (
+      items: Uint8Array[],
+      event?: string | null,
+      id?: string | null,
+      retry?: number | null,
+    ) => rust.batch.sseEncode(items, event, id, retry),
     element: byteElem,
   },
   schemaValidate: {
@@ -661,26 +634,24 @@ export const LOADER_OPS = {
     // NOTE: scalar arg order is (key, data); the loader normalizes to
     // (input, ...rest) so callers pass the key as the trailing argument.
     scalar: (i: Uint8Array, key: Uint8Array) => rust.hmacSha256(key, i),
-    batch: (items: Uint8Array[], key: Uint8Array) =>
-      rust.batch.hmacSha256(items, key),
+    batch: (items: Uint8Array[], key: Uint8Array) => rust.batch.hmacSha256(items, key),
     element: byteElem,
   },
   hmacSha256Verify: {
     kind: BOOLEAN,
     pairedRest: [1],
     // scalar arg order is (key, data, sig); normalized to (input=data, key, sig).
-    scalar: (i: Uint8Array, key: Uint8Array, sig: Uint8Array) =>
-      rust.hmacSha256Verify(key, i, sig),
+    scalar: (i: Uint8Array, key: Uint8Array, sig: Uint8Array) => rust.hmacSha256Verify(key, i, sig),
     batch: (items: Uint8Array[], key: Uint8Array, sigs: Uint8Array[]) =>
       rust.batch.hmacSha256Verify(items, sigs, key),
     element: boolElem,
   },
-} as const satisfies Record<LoaderOpName, LoaderOpSpec>;
+} as const satisfies Record<LoaderOpName, LoaderOpSpec>
 
 /** Kind of a specific op. */
-export type LoaderOpKind<K extends LoaderOpName> = (typeof LOADER_OPS)[K]["kind"];
+export type LoaderOpKind<K extends LoaderOpName> = (typeof LOADER_OPS)[K]['kind']
 /** Single-item result type of a specific op. */
-export type LoaderScalar<K extends LoaderOpName> = ScalarResult<LoaderOpKind<K>>;
+export type LoaderScalar<K extends LoaderOpName> = ScalarResult<LoaderOpKind<K>>
 
 /** All op names, as a readonly array (for iteration). */
-export const LOADER_OP_NAMES = Object.keys(LOADER_OPS) as LoaderOpName[];
+export const LOADER_OP_NAMES = Object.keys(LOADER_OPS) as LoaderOpName[]

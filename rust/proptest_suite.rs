@@ -10,7 +10,10 @@
 
 use proptest::prelude::*;
 
+use crate::http::cookie_parser::cookie_parse_packed_vec;
+use crate::http::form::form_parse_packed_vec;
 use crate::http::headers::HeaderRefs;
+use crate::http::media_type::parse_media_type_core;
 use crate::http::query_parser::query_parse_packed_vec;
 use crate::json::fast_schema::compile;
 use crate::util::bytes::decode_percent_at;
@@ -63,6 +66,64 @@ proptest! {
         });
         let fast = compile(&schema).expect("schema must compile on the fast path");
         let _ = fast.is_valid_bytes(&input);
+    }
+
+    /// cookie_parse_packed_vec must never panic on arbitrary bytes (forged
+    /// length prefixes, raw NULs, truncated pairs).
+    #[test]
+    fn cookie_parse_never_panics(input in prop::collection::vec(any::<u8>(), 0..1024)) {
+        let _ = cookie_parse_packed_vec(&input);
+    }
+
+    /// form_parse_packed_vec must never panic on arbitrary bytes (raw %, +/-
+    /// handling, control chars).
+    #[test]
+    fn form_parse_never_panics(input in prop::collection::vec(any::<u8>(), 0..1024)) {
+        let _ = form_parse_packed_vec(&input);
+    }
+
+    /// parse_media_type_core must never panic on arbitrary bytes.
+    #[test]
+    fn media_type_parse_never_panics(input in prop::collection::vec(any::<u8>(), 0..512)) {
+        let _ = parse_media_type_core(&input);
+    }
+
+    /// RFC 3986 percent-encode → decode must be the identity for EVERY byte
+    /// (the encode set here mirrors url_codec.rs's unreserved set).
+    #[test]
+    fn percent_encode_decode_roundtrip(input in prop::collection::vec(any::<u8>(), 0..256)) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut encoded = Vec::with_capacity(input.len() * 3);
+        for &b in &input {
+            let unreserved = matches!(b,
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+                | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | 0x27 | b'(' | b')'
+            );
+            if unreserved {
+                encoded.push(b);
+            } else {
+                encoded.push(b'%');
+                encoded.push(HEX[(b >> 4) as usize]);
+                encoded.push(HEX[(b & 0x0f) as usize]);
+            }
+        }
+        let mut decoded = Vec::with_capacity(input.len());
+        let mut i = 0usize;
+        while i < encoded.len() {
+            if encoded[i] == b'%' {
+                prop_assert!(i + 2 < encoded.len(), "%XX truncated at {i}");
+                // decode_percent_at returns the ABSOLUTE next index (i + 3).
+                let (byte, next) = decode_percent_at(&encoded, i).unwrap_or_else(|| {
+                    panic!("decode_percent_at failed at {i} in {:?}", &encoded[i..])
+                });
+                decoded.push(byte);
+                i = next;
+            } else {
+                decoded.push(encoded[i]);
+                i += 1;
+            }
+        }
+        prop_assert_eq!(decoded, input);
     }
 }
 

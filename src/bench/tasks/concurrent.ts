@@ -1,23 +1,20 @@
-import type { BenchFixtures, ComplexFixtures } from "../fixtures";
-import type { ConcurrentBenchTask } from "../types";
+import type { BenchFixtures, ComplexFixtures } from '../fixtures'
+import type { ConcurrentBenchTask } from '../types'
 
-export function concurrentTasks(
-  f: BenchFixtures,
-  c: ComplexFixtures,
-): ConcurrentBenchTask[] {
+export function concurrentTasks(f: BenchFixtures, c: ComplexFixtures): ConcurrentBenchTask[] {
   return [
     // ── JSON validation: medium concurrency ──
     {
-      name: "native:json_valid_concurrent_10",
-      op: "native:json_valid",
+      name: 'native:json_valid_concurrent_10',
+      op: 'native:json_valid',
       payload: f.jsonPayload,
       concurrency: 10,
       iterationsPerSlot: 50,
       warmupPerSlot: 5,
     },
     {
-      name: "rust:json_valid_concurrent_10",
-      op: "rust:json_valid",
+      name: 'rust:json_valid_concurrent_10',
+      op: 'rust:json_valid',
       payload: f.jsonPayload,
       concurrency: 10,
       iterationsPerSlot: 50,
@@ -26,16 +23,16 @@ export function concurrentTasks(
 
     // ── JSON validation: high concurrency ──
     {
-      name: "native:json_valid_concurrent_50",
-      op: "native:json_valid",
+      name: 'native:json_valid_concurrent_50',
+      op: 'native:json_valid',
       payload: f.jsonPayload,
       concurrency: 50,
       iterationsPerSlot: 20,
       warmupPerSlot: 2,
     },
     {
-      name: "rust:json_valid_concurrent_50",
-      op: "rust:json_valid",
+      name: 'rust:json_valid_concurrent_50',
+      op: 'rust:json_valid',
       payload: f.jsonPayload,
       concurrency: 50,
       iterationsPerSlot: 20,
@@ -44,16 +41,16 @@ export function concurrentTasks(
 
     // ── HTTP parse burst ──
     {
-      name: "native:http_parse_concurrent_20",
-      op: "native:http_parse",
+      name: 'native:http_parse_concurrent_20',
+      op: 'native:http_parse',
       payload: f.httpRaw,
       concurrency: 20,
       iterationsPerSlot: 50,
       warmupPerSlot: 5,
     },
     {
-      name: "rust:http_parse_concurrent_20",
-      op: "rust:http_parse",
+      name: 'rust:http_parse_concurrent_20',
+      op: 'rust:http_parse',
       payload: f.httpRaw,
       concurrency: 20,
       iterationsPerSlot: 50,
@@ -62,8 +59,8 @@ export function concurrentTasks(
 
     // ── HMAC burst ──
     {
-      name: "native:hmac_sha256_concurrent_20",
-      op: "native:hmac_sha256",
+      name: 'native:hmac_sha256_concurrent_20',
+      op: 'native:hmac_sha256',
       payload: {
         key: f.hmacKey,
         data: f.hmacData,
@@ -73,8 +70,8 @@ export function concurrentTasks(
       warmupPerSlot: 5,
     },
     {
-      name: "rust:hmac_sha256_concurrent_20",
-      op: "rust:hmac_sha256",
+      name: 'rust:hmac_sha256_concurrent_20',
+      op: 'rust:hmac_sha256',
       payload: {
         key: f.hmacKey,
         data: f.hmacData,
@@ -86,16 +83,16 @@ export function concurrentTasks(
 
     // ── Validation burst: email ──
     {
-      name: "native:validate_email_concurrent_50",
-      op: "native:validate_email",
+      name: 'native:validate_email_concurrent_50',
+      op: 'native:validate_email',
       payload: f.emailOk,
       concurrency: 50,
       iterationsPerSlot: 40,
       warmupPerSlot: 5,
     },
     {
-      name: "rust:validate_email_concurrent_50",
-      op: "rust:validate_email",
+      name: 'rust:validate_email_concurrent_50',
+      op: 'rust:validate_email',
       payload: f.emailOk,
       concurrency: 50,
       iterationsPerSlot: 40,
@@ -104,16 +101,16 @@ export function concurrentTasks(
 
     // ── Validation burst: uuid ──
     {
-      name: "native:validate_uuid_concurrent_50",
-      op: "native:validate_uuid",
+      name: 'native:validate_uuid_concurrent_50',
+      op: 'native:validate_uuid',
       payload: f.uuidOk,
       concurrency: 50,
       iterationsPerSlot: 40,
       warmupPerSlot: 5,
     },
     {
-      name: "rust:validate_uuid_concurrent_50",
-      op: "rust:validate_uuid",
+      name: 'rust:validate_uuid_concurrent_50',
+      op: 'rust:validate_uuid',
       payload: f.uuidOk,
       concurrency: 50,
       iterationsPerSlot: 40,
@@ -122,16 +119,16 @@ export function concurrentTasks(
 
     // ── Query parse burst ──
     {
-      name: "native:query_parse_concurrent_20",
-      op: "native:query_parse",
+      name: 'native:query_parse_concurrent_20',
+      op: 'native:query_parse',
       payload: f.queryStr,
       concurrency: 20,
       iterationsPerSlot: 50,
       warmupPerSlot: 5,
     },
     {
-      name: "rust:query_parse_concurrent_20",
-      op: "rust:query_parse",
+      name: 'rust:query_parse_concurrent_20',
+      op: 'rust:query_parse',
       payload: f.queryStr,
       concurrency: 20,
       iterationsPerSlot: 50,
@@ -140,16 +137,16 @@ export function concurrentTasks(
 
     // ── Cookie parse burst ──
     {
-      name: "native:cookie_parse_concurrent_20",
-      op: "native:cookie_parse",
+      name: 'native:cookie_parse_concurrent_20',
+      op: 'native:cookie_parse',
       payload: f.cookieStr,
       concurrency: 20,
       iterationsPerSlot: 50,
       warmupPerSlot: 5,
     },
     {
-      name: "rust:cookie_parse_concurrent_20",
-      op: "rust:cookie_parse",
+      name: 'rust:cookie_parse_concurrent_20',
+      op: 'rust:cookie_parse',
       payload: f.cookieStr,
       concurrency: 20,
       iterationsPerSlot: 50,
@@ -158,16 +155,16 @@ export function concurrentTasks(
 
     // ── CRC32 burst ──
     {
-      name: "native:crc32_concurrent_20",
-      op: "native:crc32",
+      name: 'native:crc32_concurrent_20',
+      op: 'native:crc32',
       payload: f.crcInput,
       concurrency: 20,
       iterationsPerSlot: 100,
       warmupPerSlot: 10,
     },
     {
-      name: "rust:crc32_concurrent_20",
-      op: "rust:crc32",
+      name: 'rust:crc32_concurrent_20',
+      op: 'rust:crc32',
       payload: f.crcInput,
       concurrency: 20,
       iterationsPerSlot: 100,
@@ -176,16 +173,16 @@ export function concurrentTasks(
 
     // ── JSON sum burst ──
     {
-      name: "native:json_sum_concurrent_20",
-      op: "native:json_sum",
+      name: 'native:json_sum_concurrent_20',
+      op: 'native:json_sum',
       payload: f.jsonPayload,
       concurrency: 20,
       iterationsPerSlot: 20,
       warmupPerSlot: 3,
     },
     {
-      name: "rust:json_sum_concurrent_20",
-      op: "rust:json_sum",
+      name: 'rust:json_sum_concurrent_20',
+      op: 'rust:json_sum',
       payload: f.jsonPayload,
       concurrency: 20,
       iterationsPerSlot: 20,
@@ -194,20 +191,20 @@ export function concurrentTasks(
 
     // ── Batch JSON validation burst ──
     {
-      name: "native:json_valid_batch_concurrent_10",
-      op: "native:json_valid_batch",
+      name: 'native:json_valid_batch_concurrent_10',
+      op: 'native:json_valid_batch',
       payload: c.batchJsonDocs,
       concurrency: 10,
       iterationsPerSlot: 20,
       warmupPerSlot: 3,
     },
     {
-      name: "rust:json_valid_batch_concurrent_10",
-      op: "rust:json_valid_batch_packed",
+      name: 'rust:json_valid_batch_concurrent_10',
+      op: 'rust:json_valid_batch_packed',
       payload: c.batchJsonDocs,
       concurrency: 10,
       iterationsPerSlot: 20,
       warmupPerSlot: 3,
     },
-  ];
+  ]
 }

@@ -16,14 +16,14 @@ export interface BufferPoolOptions {
   /**
    * Initial buffer size in bytes. Default: 131072.
    */
-  initialSize?: number;
+  initialSize?: number
   /**
    * Upper bound on buffers retained by the pool. When this is reached and no
    * free buffer is large enough, the largest free buffer is grown in place
    * (replaced) so memory stays bounded. If the pool is fully in-flight, a
    * temporary buffer is allocated and discarded on release. Default: 16.
    */
-  maxBuffers?: number;
+  maxBuffers?: number
   /**
    * Hard cap on the number of buffers simultaneously in flight (acquired but
    * not yet released). When exceeded, `acquire()` throws a `RangeError` — a
@@ -32,14 +32,14 @@ export interface BufferPoolOptions {
    * buffers are allocated and discarded on release (unbounded under a slow
    * zero-copy consumer — set this to bound it).
    */
-  maxInFlight?: number;
+  maxInFlight?: number
   /**
    * When true, learn the observed request size (EWMA over `minSize` at each
    * take) and pre-size new buffers to at least the learned estimate (bounded
    * by `maxBuffers` retention). Helps workloads with varying request sizes
    * converge on one buffer size instead of re-growing each time. Default false.
    */
-  adaptive?: boolean;
+  adaptive?: boolean
 }
 
 export interface PooledBuffer {
@@ -47,19 +47,19 @@ export interface PooledBuffer {
    * The underlying buffer. Its byteLength is guaranteed to be at least the
    * `minSize` requested at acquire time.
    */
-  readonly buffer: Uint8Array;
+  readonly buffer: Uint8Array
   /**
    * Whether this handle has already been returned to the pool.
    */
-  readonly released: boolean;
+  readonly released: boolean
   /**
    * Return the buffer to the pool for reuse. Safe to call more than once;
    * subsequent calls are no-ops.
    */
-  release(): void;
+  release(): void
 }
 
-import { AdaptiveEstimate } from "./adaptive";
+import { AdaptiveEstimate } from './adaptive'
 
 /**
  * A pool of reusable `Uint8Array` buffers.
@@ -78,32 +78,34 @@ import { AdaptiveEstimate } from "./adaptive";
  * ```
  */
 export class BufferPool {
-  private readonly free: Uint8Array[] = [];
-  private readonly initialSize: number;
-  private readonly maxBuffers: number;
-  private readonly maxInFlight: number;
-  private readonly estimate: AdaptiveEstimate | null;
-  private created = 0;
-  private inFlight = 0;
+  private readonly free: Uint8Array[] = []
+  private readonly initialSize: number
+  private readonly maxBuffers: number
+  private readonly maxInFlight: number
+  private readonly estimate: AdaptiveEstimate | null
+  private created = 0
+  private inFlight = 0
 
   constructor(options: BufferPoolOptions = {}) {
-    this.initialSize = Math.max(1, Math.floor(options.initialSize ?? 131_072));
-    this.maxBuffers = Math.max(1, Math.floor(options.maxBuffers ?? 16));
-    this.maxInFlight = Math.max(0, Math.floor(options.maxInFlight ?? 0));
+    this.initialSize = Math.max(1, Math.floor(options.initialSize ?? 131_072))
+    this.maxBuffers = Math.max(1, Math.floor(options.maxBuffers ?? 16))
+    this.maxInFlight = Math.max(0, Math.floor(options.maxInFlight ?? 0))
     this.estimate =
-      options.adaptive === true ? new AdaptiveEstimate({ alpha: 0.25, min: this.initialSize }) : null;
-    this.free.push(new Uint8Array(this.initialSize));
-    this.created = 1;
+      options.adaptive === true
+        ? new AdaptiveEstimate({ alpha: 0.25, min: this.initialSize })
+        : null
+    this.free.push(new Uint8Array(this.initialSize))
+    this.created = 1
   }
 
   /** Number of buffers currently available for immediate reuse. */
   get freeCount(): number {
-    return this.free.length;
+    return this.free.length
   }
 
   /** Total number of buffers this pool has allocated (monotonic). */
   get createdCount(): number {
-    return this.created;
+    return this.created
   }
 
   /**
@@ -118,93 +120,90 @@ export class BufferPool {
     if (this.maxInFlight > 0 && this.inFlight >= this.maxInFlight) {
       throw new RangeError(
         `BufferPool: maxInFlight (${this.maxInFlight}) exceeded — too many ` +
-          "buffers borrowed at once (unreleased zero-copy responses?). " +
-          "Raise maxInFlight or consume/release responses faster.",
-      );
+          'buffers borrowed at once (unreleased zero-copy responses?). ' +
+          'Raise maxInFlight or consume/release responses faster.',
+      )
     }
-    const buffer = this.take(Math.max(0, Math.floor(minSize)));
-    this.inFlight++;
-    let released = false;
+    const buffer = this.take(Math.max(0, Math.floor(minSize)))
+    this.inFlight++
+    let released = false
 
     return {
       buffer,
       get released(): boolean {
-        return released;
+        return released
       },
       release: () => {
         if (released) {
-          return;
+          return
         }
-        released = true;
-        this.inFlight--;
-        this.releaseBuffer(buffer);
+        released = true
+        this.inFlight--
+        this.releaseBuffer(buffer)
       },
-    };
+    }
   }
 
   /** Take a buffer of at least `minSize` bytes out of circulation. */
   private take(minSize: number): Uint8Array {
     // Learn the observed demand so future allocations pre-size to it.
-    this.estimate?.sample(minSize);
+    this.estimate?.sample(minSize)
 
     // 1) Reuse a free buffer that is already large enough.
     for (let i = 0; i < this.free.length; i++) {
-      const candidate = this.free[i] as Uint8Array;
+      const candidate = this.free[i] as Uint8Array
       if (candidate.byteLength >= minSize) {
-        this.free.splice(i, 1);
-        return candidate;
+        this.free.splice(i, 1)
+        return candidate
       }
     }
 
-    const target = this.nextSize(minSize);
+    const target = this.nextSize(minSize)
 
     // 2) No free buffer is large enough: grow the largest free buffer in place
     //    to keep the number of retained buffers bounded.
-    let largestBuf: Uint8Array | null = null;
-    let largest = -1;
+    let largestBuf: Uint8Array | null = null
+    let largest = -1
     for (let i = 0; i < this.free.length; i++) {
-      const candidate = this.free[i] as Uint8Array;
+      const candidate = this.free[i] as Uint8Array
       if (largestBuf === null || candidate.byteLength > largestBuf.byteLength) {
-        largestBuf = candidate;
-        largest = i;
+        largestBuf = candidate
+        largest = i
       }
     }
     if (largestBuf !== null) {
-      this.free.splice(largest, 1);
-      this.created++;
-      return new Uint8Array(target);
+      this.free.splice(largest, 1)
+      this.created++
+      return new Uint8Array(target)
     }
 
     // 3) Pool exhausted (all buffers in flight): allocate a fresh buffer.
-    this.created++;
-    return new Uint8Array(target);
+    this.created++
+    return new Uint8Array(target)
   }
 
   /** Return a buffer to the free list, bounding total retained memory. */
   private releaseBuffer(buffer: Uint8Array): void {
     if (this.free.length >= this.maxBuffers) {
       // Free list is full: drop the smallest retained buffer to stay bounded.
-      let smallestBuf: Uint8Array | null = null;
-      let smallest = 0;
+      let smallestBuf: Uint8Array | null = null
+      let smallest = 0
       for (let i = 0; i < this.free.length; i++) {
-        const candidate = this.free[i] as Uint8Array;
-        if (
-          smallestBuf === null ||
-          candidate.byteLength < smallestBuf.byteLength
-        ) {
-          smallestBuf = candidate;
-          smallest = i;
+        const candidate = this.free[i] as Uint8Array
+        if (smallestBuf === null || candidate.byteLength < smallestBuf.byteLength) {
+          smallestBuf = candidate
+          smallest = i
         }
       }
-      this.free.splice(smallest, 1);
+      this.free.splice(smallest, 1)
     }
-    this.free.push(buffer);
+    this.free.push(buffer)
   }
 
   private nextSize(minSize: number): number {
     const floor = this.estimate
       ? Math.max(this.initialSize, Math.ceil(this.estimate.estimate))
-      : this.initialSize;
-    return Math.max(floor, minSize);
+      : this.initialSize
+    return Math.max(floor, minSize)
   }
 }

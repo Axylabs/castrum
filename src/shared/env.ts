@@ -10,11 +10,11 @@ export function resolveEnvVar(
   preferred: string,
   legacy: readonly string[] = [],
 ): string | undefined {
-  const direct = process.env[preferred];
-  if (direct !== undefined) return direct;
+  const direct = process.env[preferred]
+  if (direct !== undefined) return direct
   for (const alias of legacy) {
-    const aliasValue = process.env[alias];
-    if (aliasValue !== undefined) return aliasValue;
+    const aliasValue = process.env[alias]
+    if (aliasValue !== undefined) return aliasValue
   }
-  return undefined;
+  return undefined
 }

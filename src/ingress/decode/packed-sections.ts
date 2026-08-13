@@ -5,22 +5,22 @@
 // the fixed header. This helper centralizes the bounds-checked offset math so
 // a malformed/truncated buffer can never produce slices past its end.
 
-import { OUT_DATA_START } from "../constants";
+import { OUT_DATA_START } from '../constants'
 
 /** Bounds-checked section offsets for one ingress output buffer. */
 export interface PackedSectionLayout {
   /** Cookie-JSON length clamped to the buffer (0 if none / out of range). */
-  safeCookiesLen: number;
+  safeCookiesLen: number
   /** Byte offset where the query-JSON section begins. */
-  queryStart: number;
+  queryStart: number
   /** Query-JSON length clamped to the buffer (0 if none / out of range). */
-  safeQueryLen: number;
+  safeQueryLen: number
   /** Byte offset where the body-JSON section begins. */
-  bodyJsonStart: number;
+  bodyJsonStart: number
   /** Body-JSON length clamped to the buffer (0 if none / out of range). */
-  safeBodyJsonLen: number;
+  safeBodyJsonLen: number
   /** Whether any declared section length overran the buffer. */
-  truncated: boolean;
+  truncated: boolean
 }
 
 /**
@@ -38,13 +38,11 @@ export function sectionLayout(
   queryLen: number,
   bodyLen: number,
 ): PackedSectionLayout {
-  const safeCookiesLen =
-    cookiesLen > 0 && OUT_DATA_START + cookiesLen <= bufLen ? cookiesLen : 0;
-  const queryStart = OUT_DATA_START + safeCookiesLen;
-  const safeQueryLen = queryLen > 0 && queryStart + queryLen <= bufLen ? queryLen : 0;
-  const bodyJsonStart = queryStart + safeQueryLen;
-  const safeBodyJsonLen =
-    bodyLen > 0 && bodyJsonStart + bodyLen <= bufLen ? bodyLen : 0;
+  const safeCookiesLen = cookiesLen > 0 && OUT_DATA_START + cookiesLen <= bufLen ? cookiesLen : 0
+  const queryStart = OUT_DATA_START + safeCookiesLen
+  const safeQueryLen = queryLen > 0 && queryStart + queryLen <= bufLen ? queryLen : 0
+  const bodyJsonStart = queryStart + safeQueryLen
+  const safeBodyJsonLen = bodyLen > 0 && bodyJsonStart + bodyLen <= bufLen ? bodyLen : 0
 
   return {
     safeCookiesLen,
@@ -53,8 +51,6 @@ export function sectionLayout(
     bodyJsonStart,
     safeBodyJsonLen,
     truncated:
-      safeCookiesLen !== cookiesLen ||
-      safeQueryLen !== queryLen ||
-      safeBodyJsonLen !== bodyLen,
-  };
+      safeCookiesLen !== cookiesLen || safeQueryLen !== queryLen || safeBodyJsonLen !== bodyLen,
+  }
 }

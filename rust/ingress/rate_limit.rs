@@ -182,7 +182,7 @@ fn advance_window(c: &mut Counter, now_ms: u64, window: u64) {
 // process-wide limiter.
 //
 // The registry is BOUNDED: each distinct config materializes a full 256-shard
-// limiter (~1M LRU nodes at the default max_entries, tens of MB), so an
+// limiter (~100k LRU nodes at the default max_entries, ~MBs), so an
 // unbounded map would let many slightly-different configs balloon memory. We
 // cap the number of retained configs (LRU eviction) and clamp max_entries.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -196,8 +196,11 @@ struct LimiterKey {
 const MAX_SHARED_LIMITERS: usize = 16;
 /// Upper clamp for `max_entries` (prevents a ~4 GB allocation from a bad input).
 const MAX_ENTRIES_CAP: usize = 4_000_000;
-/// Default per-config entry budget (256 shards × 4096 nodes).
-const DEFAULT_MAX_ENTRIES: usize = 1_048_576;
+/// Default per-config entry budget (256 shards × ~390 nodes). Lowered from
+/// ~1M so a default-configured limiter stays ~1 MB instead of tens of MB.
+/// Rate limiting is opt-in; callers that need a larger budget can pass
+/// `maxEntries` explicitly.
+pub(crate) const DEFAULT_MAX_ENTRIES: usize = 100_000;
 
 static SHARED_LIMITERS: OnceLock<Mutex<LruCache<LimiterKey, Arc<KeyedRateLimiter>>>> =
     OnceLock::new();

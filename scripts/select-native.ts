@@ -62,6 +62,14 @@ const cookieText = dec.decode(cookieBytes)
 const formText = `name=Ada%20Lovelace&role=engineer&active=true&tags=a&tags=b&lang=en&chunk=${bigChunk}`
 const formBytes = enc.encode(formText)
 const etagBytes = enc.encode(`hello world, etag sample ${bigChunk}`)
+const urlText = 'https://example.com/a b/c?q=hello world&x=1'
+const urlBytes = enc.encode(urlText)
+const urlEncodedText = 'hello%20world%20%26%20foo%3Dbar'
+const b64Bytes = enc.encode(`base64 sample ${bigChunk}`)
+const httpDateSecs = 1_700_000_000
+const jsonSchemaBytes = enc.encode(
+  '{"type":"object","properties":{"a":{"type":"number"}},"required":["a"]}',
+)
 const mediaTypeText = 'multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW'
 const mediaTypeBytes = enc.encode(mediaTypeText)
 const acceptText = 'gzip, deflate, br;q=0.9, identity;q=0.1'
@@ -330,6 +338,8 @@ interface BenchOp {
   fallback: () => void
   /** When set, the op is not re-benchmarked here (pinned by an external measure). */
   skip?: string
+  /** When `skip` is set, the decision to write instead of the current baked one. */
+  pinned?: 'native' | 'js'
 }
 
 function opsPerSec(fn: () => void, durationMs = 200): number {
@@ -606,6 +616,116 @@ const OPS: BenchOp[] = [
     native: () => tplNative.render(templateCtx),
     fallback: () => nativeTemplateRender(templateSrc, templateCtx),
   },
+  // ── BUN_WINS ops (Node-side decisions) ──────────────────────────
+  // Under Bun these are overridden to 'js' by src/selection.ts BUN_WINS (the
+  // builders delegate to the faster Bun built-in); the entries here make
+  // `opImpl(op)` non-null for every public op under Node.
+  {
+    op: 'xxh3',
+    label: 'xxh3',
+    // Pinned native: the addon is the only xxh3 under Node (Bun.hash.xxHash3
+    // is Bun-only), so there is no representative pure-TS baseline to measure
+    // against — a Node consumer has no faster option than the addon. Under
+    // Bun the public surface delegates to Bun.hash.xxHash3 regardless.
+    native: () => a.xxh3(etagBytes),
+    fallback: () => a.xxh3(etagBytes),
+    skip: 'pinned native — no pure-TS xxh3 baseline under Node',
+    pinned: 'native',
+  },
+  {
+    op: 'urlEncode',
+    label: 'urlEncode',
+    native: () => a.urlEncode(urlBytes),
+    fallback: () => enc.encode(encodeURIComponent(urlText)),
+  },
+  {
+    op: 'urlDecode',
+    label: 'urlDecode',
+    native: () => a.urlDecode(enc.encode(urlEncodedText)),
+    fallback: () => enc.encode(decodeURIComponent(urlEncodedText)),
+  },
+  {
+    op: 'base64Encode',
+    label: 'base64Encode',
+    native: () => a.base64Encode(b64Bytes),
+    fallback: () => enc.encode(Buffer.from(b64Bytes).toString('base64')),
+  },
+  {
+    op: 'httpDate',
+    label: 'httpDate',
+    native: () => a.httpDate(httpDateSecs),
+    fallback: () => enc.encode(new Date(httpDateSecs * 1000).toUTCString()),
+  },
+  // ── Pinned ops (preserved from the prior baked selection) ─────────
+  // These were part of the committed selection (all native) but are absent
+  // from the OPS array, so `--write` would silently DROP them from
+  // src/selection.json — making `opImpl(op)` null under Node, the exact
+  // "JS call instead of the faster addon" regression class. `skip` + `pinned`
+  // preserves the baked decision:
+  //   - jwtSign/jwtVerify: constant-time canonical — the decision is a
+  //     security-semantics requirement, not pure throughput (borderline ~1.1x).
+  //   - passwordVerify: argon2 verify — no representative pure-TS baseline.
+  //   - createTemplate / createSchemaValidator: compiled-once instances —
+  //     setup-time measurement is compile noise; the PROVEN rows audit the
+  //     steady-state validate/render instead.
+  {
+    op: 'jwtSign',
+    label: 'jwtSign',
+    native: () => a.jwtSign({ sub: '42' }, enc.encode('s3cret'), null, 1_700_000_000),
+    fallback: () => a.jwtSign({ sub: '42' }, enc.encode('s3cret'), null, 1_700_000_000),
+    skip: 'pinned native — constant-time canonical (not pure-perf)',
+    pinned: 'native',
+  },
+  {
+    op: 'jwtVerify',
+    label: 'jwtVerify',
+    native: () =>
+      a.jwtVerify(
+        a.jwtSign({ sub: '42' }, enc.encode('s3cret'), null, 1_700_000_000),
+        enc.encode('s3cret'),
+        1_700_000_000,
+      ),
+    fallback: () =>
+      a.jwtVerify(
+        a.jwtSign({ sub: '42' }, enc.encode('s3cret'), null, 1_700_000_000),
+        enc.encode('s3cret'),
+        1_700_000_000,
+      ),
+    skip: 'pinned native — constant-time canonical (not pure-perf)',
+    pinned: 'native',
+  },
+  {
+    op: 'passwordVerify',
+    label: 'passwordVerify',
+    native: () =>
+      a.passwordVerify(
+        enc.encode('hunter2'),
+        a.passwordHash(enc.encode('hunter2'), enc.encode('somesalt1234')),
+      ),
+    fallback: () =>
+      a.passwordVerify(
+        enc.encode('hunter2'),
+        a.passwordHash(enc.encode('hunter2'), enc.encode('somesalt1234')),
+      ),
+    skip: 'pinned native — no representative pure-TS argon2 verify baseline',
+    pinned: 'native',
+  },
+  {
+    op: 'createTemplate',
+    label: 'createTemplate',
+    native: () => new a.TemplateRenderer(templateSrc),
+    fallback: () => new a.TemplateRenderer(templateSrc),
+    skip: 'pinned native — compiled-once instance; setup-time noise',
+    pinned: 'native',
+  },
+  {
+    op: 'createSchemaValidator',
+    label: 'createSchemaValidator',
+    native: () => new a.SchemaValidator(jsonSchemaBytes),
+    fallback: () => new a.SchemaValidator(jsonSchemaBytes),
+    skip: 'pinned native — compiled-once instance; PROVEN audits steady-state validate',
+    pinned: 'native',
+  },
 ]
 
 // AEAD helpers (node:crypto aes-256-gcm)
@@ -648,13 +768,14 @@ const results: Measured[] = []
 for (const op of OPS) {
   if (op.skip) {
     // Pinned decision (external measure) — record as-is, never flagged.
+    const impl = op.pinned ?? a.opImpl(op.op) ?? 'js'
     results.push({
       op: op.op,
       nativeOps: Number.NaN,
       fallbackOps: Number.NaN,
       ratio: Number.NaN,
       current: a.opImpl(op.op),
-      recommended: a.opImpl(op.op) ?? 'js',
+      recommended: impl,
       drift: false,
     })
     continue

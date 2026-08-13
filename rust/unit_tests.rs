@@ -140,10 +140,10 @@ fn rate_limit_shared_limiter_refuses_17th_distinct_config() {
     // with the 4 the other shared_limiter tests already register, so this is
     // deterministic regardless of test order), then assert a 17th throws.
     let mut configs: Vec<(u32, u32, usize)> = vec![
-        (100, 60_000, 1_048_576), // matches shared_limiter(100, 60_000, None)
+        (100, 60_000, crate::ingress::rate_limit::DEFAULT_MAX_ENTRIES), // matches shared_limiter(100, 60_000, None)
         (100, 60_000, 10_000), // matches shared_limiter(100, 60_000, Some(10_000))
-        (200, 60_000, 1_048_576), // matches shared_limiter(200, 60_000, None)
-        (2, 60_000, 1_048_576), // matches shared_limiter(2, 60_000, None)
+        (200, 60_000, crate::ingress::rate_limit::DEFAULT_MAX_ENTRIES), // matches shared_limiter(200, 60_000, None)
+        (2, 60_000, crate::ingress::rate_limit::DEFAULT_MAX_ENTRIES), // matches shared_limiter(2, 60_000, None)
     ];
     for i in 0..12u32 {
         configs.push((300 + i, 60_000, 1000 + i as usize));
@@ -1078,10 +1078,15 @@ fn cookie_json_into_slice_output() {
 }
 
 #[test]
-fn cookie_json_into_slice_escapes() {
+fn cookie_json_into_slice_unwraps_dquote() {
     let mut out = vec![0u8; 256];
+    // RFC 6265 §5.2: a DQUOTE-wrapped cookie value is unwrapped before
+    // serializing (matches the JS fallback + the native cookie parser).
     let written = crate::json::json_ser::cookie_json_into_slice(b"k=\"v\"", &mut out, 100).unwrap();
-    assert_eq!(&out[..written], b"{\"k\":\"\\\"v\\\"\"}");
+    assert_eq!(&out[..written], b"{\"k\":\"v\"}");
+    // JSON escaping still applies to unquoted values with special characters.
+    let written = crate::json::json_ser::cookie_json_into_slice(b"k=a\"b", &mut out, 100).unwrap();
+    assert_eq!(&out[..written], b"{\"k\":\"a\\\"b\"}");
 }
 
 #[test]

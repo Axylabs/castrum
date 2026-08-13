@@ -1,10 +1,10 @@
-import { scryptSync } from "node:crypto";
+import { scryptSync } from 'node:crypto'
 
 export interface PasswordHashOptions {
-  mCost?: number;
-  tCost?: number;
-  pCost?: number;
-  outLen?: number;
+  mCost?: number
+  tCost?: number
+  pCost?: number
+  outLen?: number
 }
 
 /**
@@ -18,7 +18,7 @@ export function nativePasswordHash(
   salt: Uint8Array,
   options?: PasswordHashOptions | null,
 ): Uint8Array {
-  const outLen = options?.outLen ?? 32;
-  const derived = scryptSync(Buffer.from(password), Buffer.from(salt), outLen);
-  return new Uint8Array(derived);
+  const outLen = options?.outLen ?? 32
+  const derived = scryptSync(Buffer.from(password), Buffer.from(salt), outLen)
+  return new Uint8Array(derived)
 }

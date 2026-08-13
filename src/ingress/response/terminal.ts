@@ -6,12 +6,9 @@
 // the pre-baked path has its own builders (see ./handlers.ts) — do not unify
 // them (see AGENTS.md).
 
-import {
-  headersForResult,
-  type ResponseBuildContext,
-} from "../headers/fast-templates";
-import { safeTerminalStatus } from "../status";
-import { errorCodeName, errorMessage } from "../errors";
+import { headersForResult, type ResponseBuildContext } from '../headers/fast-templates'
+import { safeTerminalStatus } from '../status'
+import { errorCodeName, errorMessage } from '../errors'
 
 /**
  * Build a terminal response for a result, or `null` when the result is not
@@ -20,34 +17,34 @@ import { errorCodeName, errorMessage } from "../errors";
 export function buildTerminalResponse(
   ctx: ResponseBuildContext,
   r: {
-    readonly terminal: boolean;
-    readonly isPreflight: boolean;
-    readonly corsAllowed: boolean;
-    readonly errorCode: number;
-    readonly status: number;
-    readonly headerVariant: number;
-    readonly https: boolean;
-    readonly rateLimit: number;
-    readonly rateRemaining: number;
-    readonly rateResetMs: number;
-    readonly retryAfterMs: number;
+    readonly terminal: boolean
+    readonly isPreflight: boolean
+    readonly corsAllowed: boolean
+    readonly errorCode: number
+    readonly status: number
+    readonly headerVariant: number
+    readonly https: boolean
+    readonly rateLimit: number
+    readonly rateRemaining: number
+    readonly rateResetMs: number
+    readonly retryAfterMs: number
   },
   req: Request,
   requestId: string,
 ): Response | null {
-  if (!r.terminal) return null;
+  if (!r.terminal) return null
 
-  const preflightAllowed = r.isPreflight && r.corsAllowed;
-  const headers = headersForResult(ctx, r, req, requestId);
+  const preflightAllowed = r.isPreflight && r.corsAllowed
+  const headers = headersForResult(ctx, r, req, requestId)
 
   if (preflightAllowed) {
-    return new Response(null, { status: 204, headers });
+    return new Response(null, { status: 204, headers })
   }
 
-  const status = safeTerminalStatus(r);
+  const status = safeTerminalStatus(r)
 
-  headers.set("content-type", "application/json; charset=utf-8");
-  headers.set("cache-control", "no-store");
+  headers.set('content-type', 'application/json; charset=utf-8')
+  headers.set('cache-control', 'no-store')
 
   const payload = JSON.stringify({
     error: {
@@ -56,7 +53,7 @@ export function buildTerminalResponse(
       message: errorMessage(status, r.errorCode),
       requestId: requestId || undefined,
     },
-  });
+  })
 
-  return new Response(payload, { status, headers });
+  return new Response(payload, { status, headers })
 }

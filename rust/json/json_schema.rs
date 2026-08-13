@@ -49,6 +49,26 @@ impl From<crate::json::fast_schema::SchemaError> for SchemaError {
     }
 }
 
+/// A single derived value captured during one-pass validation.
+#[napi(object)]
+pub struct JsonDeriveValue {
+    /// `"int" | "number" | "string" | "bool" | "null"`.
+    pub kind: String,
+    pub int: Option<i64>,
+    pub number: Option<f64>,
+    pub text: Option<String>,
+    pub boolean: Option<bool>,
+}
+
+/// Result of a one-pass `validate + derive`.
+#[napi(object)]
+pub struct JsonDeriveResult {
+    /// `true` when the document is schema-valid; `false` → caller rejects.
+    pub ok: bool,
+    /// One entry per requested path (`None` = path absent from the document).
+    pub values: Vec<Option<JsonDeriveValue>>,
+}
+
 #[napi]
 impl SchemaValidator {
     #[napi(constructor)]
@@ -105,6 +125,29 @@ impl SchemaValidator {
     #[napi]
     pub fn validate(&self, input: Uint8Array) -> bool {
         self.validate_doc(input.as_ref())
+    }
+
+    /// One-pass validate + extract: validate `input` against the schema and
+    /// capture scalar values / array lengths at `paths` during the SAME walk
+    /// (no `JSON.parse`, no DOM). For "derive" routes (response built from a
+    /// handful of body fields) this replaces `JSON.parse` + Ajv on the happy
+    /// path and rejects invalid bodies with zero DOM/GC.
+    ///
+    /// `paths` are RFC 6901 JSON pointers of OBJECT KEYS; a trailing `/-`
+    /// captures the ARRAY LENGTH at that path (e.g. `"/totalCents"`,
+    /// `"/lineItems/-"`). Array-index steps are not supported.
+    #[napi]
+    pub fn derive(&self, input: Uint8Array, paths: Vec<String>) -> Result<JsonDeriveResult> {
+        let targets = parse_derive_targets(&paths)?;
+        if let Some(fast) = &self.fast {
+            let (ok, cap) = fast.validate_with_capture(input.as_ref(), targets.clone());
+            Ok(JsonDeriveResult {
+                ok,
+                values: derive_values(&cap, ok, &targets, input.as_ref()),
+            })
+        } else {
+            self.derive_dom(input.as_ref(), &targets)
+        }
     }
 
     /// Validate a single JSON document and return detailed errors (empty = valid).
@@ -271,6 +314,237 @@ impl SchemaValidator {
             .map_err(|e| Error::from_reason(format!("Streaming batch JSON error: {}", e)))?;
 
         Ok(count)
+    }
+}
+
+fn parse_derive_targets(paths: &[String]) -> Result<Vec<fast_schema::TargetPath>> {
+    let mut targets = Vec::with_capacity(paths.len());
+    for p in paths {
+        match fast_schema::parse_target(p) {
+            Some(t) => targets.push(t),
+            None => {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    format!(
+                        "derive path \"{p}\" must be a JSON pointer of object keys (e.g. \"/totalCents\", \"/lineItems/-\")"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(targets)
+}
+
+/// Turn a completed capture into the napi result values (fast path).
+fn derive_values(
+    cap: &fast_schema::Capture,
+    ok: bool,
+    targets: &[fast_schema::TargetPath],
+    input: &[u8],
+) -> Vec<Option<JsonDeriveValue>> {
+    targets
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            if !ok {
+                return None;
+            }
+            match t.kind {
+                fast_schema::CaptureKind::Length => cap.length(i).map(|n| JsonDeriveValue {
+                    kind: "int".to_string(),
+                    int: Some(n as i64),
+                    number: None,
+                    text: None,
+                    boolean: None,
+                }),
+                fast_schema::CaptureKind::Value => cap.value_range(i).and_then(|(s, e)| {
+                    if e <= s || e > input.len() {
+                        None
+                    } else {
+                        Some(scalar_value(&input[s..e]))
+                    }
+                }),
+            }
+        })
+        .collect()
+}
+
+/// Classify a captured raw scalar value (bytes are exactly the JSON value).
+fn scalar_value(raw: &[u8]) -> JsonDeriveValue {
+    let null_value = JsonDeriveValue {
+        kind: "null".to_string(),
+        int: None,
+        number: None,
+        text: None,
+        boolean: None,
+    };
+    let Some(first) = raw.first() else {
+        return null_value;
+    };
+    match first {
+        b'"' => match serde_json::from_slice::<String>(raw) {
+            Ok(s) => JsonDeriveValue {
+                kind: "string".to_string(),
+                int: None,
+                number: None,
+                text: Some(s),
+                boolean: None,
+            },
+            Err(_) => null_value,
+        },
+        b't' | b'f' => JsonDeriveValue {
+            kind: "bool".to_string(),
+            int: None,
+            number: None,
+            text: None,
+            boolean: Some(*first == b't'),
+        },
+        b'n' => null_value,
+        _ => {
+            let s = std::str::from_utf8(raw).unwrap_or("");
+            if let Ok(i) = s.parse::<i64>() {
+                JsonDeriveValue {
+                    kind: "int".to_string(),
+                    int: Some(i),
+                    number: None,
+                    text: None,
+                    boolean: None,
+                }
+            } else if let Ok(f) = s.parse::<f64>() {
+                JsonDeriveValue {
+                    kind: "number".to_string(),
+                    int: None,
+                    number: Some(f),
+                    text: None,
+                    boolean: None,
+                }
+            } else {
+                null_value
+            }
+        }
+    }
+}
+
+/// JSON pointer string for a target path (for the DOM-fallback extraction).
+fn pointer_for(t: &fast_schema::TargetPath) -> String {
+    let mut out = String::new();
+    for step in &t.steps {
+        out.push('/');
+        for &b in step.iter() {
+            match b {
+                b'~' => out.push_str("~0"),
+                b'/' => out.push_str("~1"),
+                _ => out.push(b as char),
+            }
+        }
+    }
+    out
+}
+
+fn dom_scalar(v: &Value) -> JsonDeriveValue {
+    match v {
+        Value::Null => JsonDeriveValue {
+            kind: "null".to_string(),
+            int: None,
+            number: None,
+            text: None,
+            boolean: None,
+        },
+        Value::Bool(b) => JsonDeriveValue {
+            kind: "bool".to_string(),
+            int: None,
+            number: None,
+            text: None,
+            boolean: Some(*b),
+        },
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                JsonDeriveValue {
+                    kind: "int".to_string(),
+                    int: Some(i),
+                    number: None,
+                    text: None,
+                    boolean: None,
+                }
+            } else if let Some(f) = n.as_f64() {
+                JsonDeriveValue {
+                    kind: "number".to_string(),
+                    int: None,
+                    number: Some(f),
+                    text: None,
+                    boolean: None,
+                }
+            } else {
+                JsonDeriveValue {
+                    kind: "number".to_string(),
+                    int: None,
+                    number: None,
+                    text: None,
+                    boolean: None,
+                }
+            }
+        }
+        Value::String(s) => JsonDeriveValue {
+            kind: "string".to_string(),
+            int: None,
+            number: None,
+            text: Some(s.clone()),
+            boolean: None,
+        },
+        Value::Array(_) | Value::Object(_) => JsonDeriveValue {
+            kind: "null".to_string(),
+            int: None,
+            number: None,
+            text: None,
+            boolean: None,
+        },
+    }
+}
+
+impl SchemaValidator {
+    /// DOM-fallback derive (schemas outside the fast subset): validate then
+    /// extract with serde_json pointers. Correctness matters; perf is fine
+    /// (this is the rare non-fast-schema case).
+    fn derive_dom(
+        &self,
+        bytes: &[u8],
+        targets: &[fast_schema::TargetPath],
+    ) -> Result<JsonDeriveResult> {
+        let value: Value = match sonic_rs::from_slice(bytes) {
+            Ok(v) => v,
+            Err(_) => {
+                return Ok(JsonDeriveResult {
+                    ok: false,
+                    values: (0..targets.len()).map(|_| None).collect(),
+                });
+            }
+        };
+        if !self.schema.is_valid(&value) {
+            return Ok(JsonDeriveResult {
+                ok: false,
+                values: (0..targets.len()).map(|_| None).collect(),
+            });
+        }
+        let values = targets
+            .iter()
+            .map(|t| {
+                let ptr = pointer_for(t);
+                match t.kind {
+                    fast_schema::CaptureKind::Length => value
+                        .pointer(&ptr)
+                        .and_then(|v| v.as_array())
+                        .map(|a| JsonDeriveValue {
+                            kind: "int".to_string(),
+                            int: Some(a.len() as i64),
+                            number: None,
+                            text: None,
+                            boolean: None,
+                        }),
+                    fast_schema::CaptureKind::Value => value.pointer(&ptr).map(dom_scalar),
+                }
+            })
+            .collect();
+        Ok(JsonDeriveResult { ok: true, values })
     }
 }
 
@@ -465,5 +739,125 @@ mod tests {
         // extra properties and is correctly rejected by that schema.
         assert!(v.validate_doc(br#"{"id":1,"name":"a"}"#));
         assert!(!v.validate_doc(doc));
+    }
+
+    // ── one-pass derive (validate + extract) ────────────────────────────────
+
+    const ORDERS_SCHEMA: &str = r#"{
+      "type": "object",
+      "required": ["orderId","lineItems","totalCents","customer"],
+      "properties": {
+        "orderId": { "type": "string" },
+        "customer": {
+          "type": "object",
+          "required": ["id","email"],
+          "properties": { "id": {"type":"string"}, "email": {"type":"string"} }
+        },
+        "lineItems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["sku","quantity"],
+            "properties": {
+              "sku": {"type":"string"},
+              "quantity": {"type":"integer","minimum":1}
+            }
+          }
+        },
+        "totalCents": { "type": "integer" }
+      },
+      "additionalProperties": false
+    }"#;
+
+    const ORDERS_DOC: &str = r#"{
+      "orderId": "ord_1",
+      "customer": {"id":"cus_1","email":"a@b.c"},
+      "lineItems": [
+        {"sku":"A","quantity":2},
+        {"sku":"B","quantity":3},
+        {"sku":"C","quantity":1}
+      ],
+      "totalCents": 108000
+    }"#;
+
+    fn orders_validator() -> SchemaValidator {
+        SchemaValidator::new(Uint8Array::new(ORDERS_SCHEMA.as_bytes().to_vec())).unwrap()
+    }
+
+    fn derive(
+        v: &SchemaValidator,
+        doc: &[u8],
+        paths: &[&str],
+    ) -> JsonDeriveResult {
+        let p: Vec<String> = paths.iter().map(|s| s.to_string()).collect();
+        v.derive(Uint8Array::new(doc.to_vec()), p).unwrap()
+    }
+
+    #[test]
+    fn derive_extracts_count_and_int() {
+        let v = orders_validator();
+        let r = derive(&v, ORDERS_DOC.as_bytes(), &["/lineItems/-", "/totalCents"]);
+        assert!(r.ok);
+        assert_eq!(r.values.len(), 2);
+        let count = r.values[0].as_ref().unwrap();
+        assert_eq!(count.kind, "int");
+        assert_eq!(count.int, Some(3));
+        let total = r.values[1].as_ref().unwrap();
+        assert_eq!(total.kind, "int");
+        assert_eq!(total.int, Some(108000));
+    }
+
+    #[test]
+    fn derive_extracts_string() {
+        let v = orders_validator();
+        let r = derive(&v, ORDERS_DOC.as_bytes(), &["/customer/email"]);
+        assert!(r.ok);
+        let email = r.values[0].as_ref().unwrap();
+        assert_eq!(email.kind, "string");
+        assert_eq!(email.text.as_deref(), Some("a@b.c"));
+    }
+
+    #[test]
+    fn derive_missing_path_is_none() {
+        let v = orders_validator();
+        let r = derive(&v, ORDERS_DOC.as_bytes(), &["/nope", "/lineItems/-"]);
+        assert!(r.ok);
+        assert!(r.values[0].is_none());
+        assert_eq!(r.values[1].as_ref().unwrap().int, Some(3));
+    }
+
+    #[test]
+    fn derive_invalid_doc_is_not_ok() {
+        let v = orders_validator();
+        // bad sku type at lineItems[0]
+        let bad: &[u8] = br#"{"orderId":"o","customer":{"id":"c","email":"e@x"},
+          "lineItems":[{"sku":123,"quantity":2}],"totalCents":1}"#;
+        let r = derive(&v, bad, &["/lineItems/-", "/totalCents"]);
+        assert!(!r.ok);
+        assert!(r.values[0].is_none());
+        // malformed JSON
+        let r2 = derive(&v, b"{oops", &["/totalCents"]);
+        assert!(!r2.ok);
+    }
+
+    #[test]
+    fn derive_matches_plain_validate() {
+        // For a batch of docs, derive.ok must equal validate_doc exactly.
+        let v = orders_validator();
+        let docs: [&[u8]; 5] = [
+            ORDERS_DOC.as_bytes(),
+            br#"{"orderId":"o","customer":{"id":"c","email":"e"},
+                "lineItems":[],"totalCents":0}"#,
+            br#"{"orderId":"o","customer":{"id":"c","email":"e"},
+                "lineItems":[{"sku":"a","quantity":0}],"totalCents":1}"#,
+            br#"{"orderId":"o","customer":{"id":"c","email":"e"},
+                "lineItems":[{"sku":"a","quantity":2}],"totalCents":"x"}"#,
+            b"not json at all",
+        ];
+        for doc in docs {
+            let expected = v.validate_doc(doc);
+            let r = derive(&v, doc, &["/totalCents", "/lineItems/-"]);
+            assert_eq!(r.ok, expected, "derive.ok must equal validate_doc");
+        }
     }
 }

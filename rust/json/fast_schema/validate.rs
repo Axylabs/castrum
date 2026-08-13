@@ -39,6 +39,30 @@ impl FastNode {
         c.pos == bytes.len()
     }
 
+    /// Validate a complete JSON document against this schema while capturing
+    /// scalar values at `targets` during the SAME walk (one pass, no DOM).
+    ///
+    /// Returns `(schema_valid, capture)`. When invalid, captured values are
+    /// meaningless (callers must reject); when valid, each target either
+    /// matched (range/length) or the path was absent from the document.
+    pub fn validate_with_capture(
+        &self,
+        bytes: &[u8],
+        targets: Vec<super::capture::TargetPath>,
+    ) -> (bool, super::capture::Capture) {
+        let capture = super::capture::Capture::new(targets);
+        let mut c = Cursor::new(bytes);
+        let mut ctx = Ctx::bool_mode();
+        ctx.capture = Some(capture);
+        ctx.input_ptr = bytes.as_ptr();
+        let ok = self.validate(&mut c, &mut ctx);
+        c.skip_ws();
+        let ok = ok && c.pos == bytes.len();
+        // `capture` was set just above, so `take` is guaranteed Some.
+        let capture = ctx.capture.take().expect("capture set before validate");
+        (ok, capture)
+    }
+
     /// Validate and return detailed errors (empty = valid). `max_errors` caps
     /// the number of errors collected (1 = first error only).
     pub fn validate_errors(
@@ -638,6 +662,11 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
         if !c.eat(b':') {
             return false;
         }
+        // Align to the value's first byte (whitespace after the colon is not
+        // part of the value). `validate_inner` also skips ws at its start, so
+        // this is a no-op for validation; it makes `vstart` (used for one-pass
+        // derive capture + error realignment) point at the actual value.
+        c.skip_ws();
         // Schemas applying to this key: the `properties` schema (if any) plus
         // every matching `patternProperties` schema — ALL apply conjunctively
         // (a key covered by either is not an "additional" property).
@@ -649,6 +678,7 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
             }
         }
         let vstart = c.pos;
+        ctx.capture_enter_key(c.data.as_ptr(), key);
         ctx.push_key(key);
         let ok = if pat_nodes.is_empty() {
             match prop_node {
@@ -675,6 +705,11 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
             nodes.extend(pat_nodes);
             validate_all(&nodes, c, ctx)
         };
+        // One-pass derive capture: this member's value spans [vstart, c.pos).
+        // Entered above (trie descend), recorded here, exited here — all on
+        // the ROOT walk only (sub-scan cursors are skipped via the pointer).
+        ctx.capture_record_value(c.data.as_ptr(), vstart, c.pos);
+        ctx.capture_exit_key(c.data.as_ptr());
         ctx.pop();
         if !ok {
             if ctx.is_detailed() {
@@ -849,6 +884,9 @@ pub(crate) fn validate_array(a: &FastArray, c: &mut Cursor, ctx: &mut Ctx, base:
         if c.eat(b']') {
             let fin = check_array_counts(a, count, ctx, base)
                 && contains_ok(a, contains_found, base, ctx);
+            // One-pass derive capture: this array's element count (only on the
+            // ROOT walk; sub-scan cursors are skipped via the data-pointer).
+            ctx.capture_record_length(c.data.as_ptr(), count);
             return arr_ok && fin;
         }
         if !c.eat(b',') {

@@ -3,20 +3,20 @@
 // Composes the per-namespace builders (scalar / text / batch / packed) over a
 // shared per-instance context (./context.ts) and exposes `configure`.
 
-import { createContext } from "./context";
-import { buildText, type RustText } from "./text";
-import { buildBatch, type RustBatch } from "./batch";
-import { buildPacked, type RustPacked } from "./packed";
-import { buildScalar, type RustScalar } from "./scalar";
-import { getBunFFI } from "../native/ffi";
-import type { RustOptions } from "./options";
+import { createContext } from './context'
+import { buildText, type RustText } from './text'
+import { buildBatch, type RustBatch } from './batch'
+import { buildPacked, type RustPacked } from './packed'
+import { buildScalar, type RustScalar } from './scalar'
+import { getBunFFI } from '../native/ffi'
+import type { RustOptions } from './options'
 
 /** The full Rust FFI client (scalar methods + namespaces + configuration). */
 export interface RustClient extends RustScalar {
   // ── Namespaces ──
-  text: RustText;
-  batch: RustBatch;
-  packed: RustPacked;
+  text: RustText
+  batch: RustBatch
+  packed: RustPacked
 
   // ── Transport introspection ──
   /**
@@ -24,9 +24,9 @@ export interface RustClient extends RustScalar {
    * the PRIMARY transport under Bun) or `"napi"` (Node, forced
    * `CASTRUM_FFI_MODE=napi`, or a failed ffi bind-time self-test).
    */
-  transport(): "ffi" | "napi";
+  transport(): 'ffi' | 'napi'
   /** Whether the bun:ffi transport is live (equivalent to `transport() === "ffi"`). */
-  ffiActive(): boolean;
+  ffiActive(): boolean
 
   // ── Configuration ──
   /**
@@ -34,7 +34,7 @@ export interface RustClient extends RustScalar {
    * immediately (per-instance). `rayonThreads` is applied only if the
    * process-wide pool is not yet initialized (see {@link RustOptions}).
    */
-  configure(options: RustOptions): void;
+  configure(options: RustOptions): void
 }
 
 /**
@@ -46,7 +46,7 @@ export interface RustClient extends RustScalar {
  * `max(1, hardwareConcurrency - 1)` otherwise.
  */
 export function createRust(options: RustOptions = {}): RustClient {
-  const ctx = createContext(options);
+  const ctx = createContext(options)
 
   return {
     ...buildScalar(ctx),
@@ -56,28 +56,28 @@ export function createRust(options: RustOptions = {}): RustClient {
 
     // ── Transport introspection (FFI-primary on Bun; napi is the fallback) ──
     transport() {
-      return getBunFFI() !== null ? "ffi" : "napi";
+      return getBunFFI() !== null ? 'ffi' : 'napi'
     },
     ffiActive() {
-      return getBunFFI() !== null;
+      return getBunFFI() !== null
     },
 
     // ── Configuration ──
     configure(next) {
       // rayonThreads only takes effect BEFORE the pool is first used.
       if (next.rayonThreads !== undefined && !ctx.isPoolInitialized()) {
-        ctx.setPendingThreads(next.rayonThreads);
+        ctx.setPendingThreads(next.rayonThreads)
       }
 
       if (next.mimeCache !== undefined) {
-        ctx.state.mimeCache = next.mimeCache;
+        ctx.state.mimeCache = next.mimeCache
       }
 
       if (next.hmacCache !== undefined) {
-        ctx.state.hmacCache = next.hmacCache;
+        ctx.state.hmacCache = next.hmacCache
       }
     },
-  };
+  }
 }
 
 /**
@@ -85,4 +85,4 @@ export function createRust(options: RustOptions = {}): RustClient {
  * rayon threads from the host automatically). Most consumers just do
  * `import { rust } from "castrum"` and call `rust.<fn>(...)` directly.
  */
-export const rust = createRust();
+export const rust = createRust()

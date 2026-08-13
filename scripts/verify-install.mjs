@@ -9,52 +9,52 @@
 //
 // Run: node scripts/verify-install.mjs   (needs the host addon already built)
 
-import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { execSync } from 'node:child_process'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // Resolve the package root from THIS script (not process.cwd()), so the script
 // works when invoked from any directory.
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 // `npm pack` ships the compiled ESM entry (dist/) — if it hasn't been built the
 // installed consumer fails with a confusing MODULE_NOT_FOUND. Fail early with
 // the actual prerequisite.
-if (!existsSync(join(root, "dist", "index.js"))) {
+if (!existsSync(join(root, 'dist', 'index.js'))) {
   console.error(
-    "verify-install: dist/ is missing — run `bun run build:js` first " +
-      "(the installed-tarball consumer imports castrum/dist/index.js).",
-  );
-  process.exit(1);
+    'verify-install: dist/ is missing — run `bun run build:js` first ' +
+      '(the installed-tarball consumer imports castrum/dist/index.js).',
+  )
+  process.exit(1)
 }
-const tmp = mkdtempSync(join(tmpdir(), "castrum-install-"));
+const tmp = mkdtempSync(join(tmpdir(), 'castrum-install-'))
 try {
   // 1. Pack (partial: only the host-platform .node is present in this repo).
   const packOut = execSync(`npm pack --pack-destination ${JSON.stringify(tmp)} --json`, {
     cwd: root,
-    env: { ...process.env, CASTRUM_PUBLISH_ALLOW_PARTIAL: "1" },
-    encoding: "utf8",
-  });
-  const filename = JSON.parse(packOut)[0].filename;
-  const tarballPath = join(tmp, filename);
+    env: { ...process.env, CASTRUM_PUBLISH_ALLOW_PARTIAL: '1' },
+    encoding: 'utf8',
+  })
+  const filename = JSON.parse(packOut)[0].filename
+  const tarballPath = join(tmp, filename)
 
   // 2. Consumer project + install from the tarball.
-  const consumer = join(tmp, "consumer");
-  mkdirSync(consumer, { recursive: true });
+  const consumer = join(tmp, 'consumer')
+  mkdirSync(consumer, { recursive: true })
   writeFileSync(
-    join(consumer, "package.json"),
-    JSON.stringify({ name: "consumer", private: true, type: "module" }),
-  );
+    join(consumer, 'package.json'),
+    JSON.stringify({ name: 'consumer', private: true, type: 'module' }),
+  )
   execSync(`npm install --no-save --no-audit --no-fund ${tarballPath}`, {
     cwd: consumer,
-    stdio: "pipe",
-  });
+    stdio: 'pipe',
+  })
 
   // 3. Import from node_modules and smoke-check (loader must resolve the
   //    installed dist/ + package-root .node layout — not the repo layout).
-  const smokeFile = join(consumer, "smoke.mjs");
+  const smokeFile = join(consumer, 'smoke.mjs')
   writeFileSync(
     smokeFile,
     `
@@ -70,12 +70,12 @@ await srv.ready;
 srv.stop(true);
 console.log("INSTALL-OK");
 `,
-  );
-  const out = execSync(`node ${smokeFile}`, { cwd: consumer, encoding: "utf8" });
-  if (!out.includes("INSTALL-OK")) {
-    throw new Error("installed smoke check did not pass");
+  )
+  const out = execSync(`node ${smokeFile}`, { cwd: consumer, encoding: 'utf8' })
+  if (!out.includes('INSTALL-OK')) {
+    throw new Error('installed smoke check did not pass')
   }
-  console.log("verify-install: OK — installed tarball imports and runs under Node");
+  console.log('verify-install: OK — installed tarball imports and runs under Node')
 } finally {
-  rmSync(tmp, { recursive: true, force: true });
+  rmSync(tmp, { recursive: true, force: true })
 }

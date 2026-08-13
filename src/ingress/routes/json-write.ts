@@ -1,12 +1,12 @@
 // src/ingress/routes/json-write.ts — Pre-baked JSON-write handler
 // (POST/PUT/PATCH).
 
-import type { OptimizedIngressHandler } from "../types";
-import { resolveIp, type BakedHandlerOptions } from "./common";
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, secondsFromMs } from "../shared";
-import { readBodyWithLimit } from "../body";
-import { getAddon } from "../../native";
-import { getBunFFI } from "../../native/ffi";
+import type { OptimizedIngressHandler } from '../types'
+import { resolveIp, type BakedHandlerOptions } from './common'
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, secondsFromMs } from '../shared'
+import { readBodyWithLimit } from '../body'
+import { getAddon } from '../../native'
+import { getBunFFI } from '../../native/ffi'
 
 /**
  * Zero-DOM JSON-validity check — the same native fast path the ingress
@@ -20,8 +20,8 @@ import { getBunFFI } from "../../native/ffi";
  * `CASTRUM_FFI_MODE=napi`, or a failed ffi self-test).
  */
 function isValidJsonBytes(bytes: Uint8Array): boolean {
-  const ffi = getBunFFI();
-  return ffi ? ffi.jsonValid(bytes) : getAddon().jsonValid(bytes);
+  const ffi = getBunFFI()
+  return ffi ? ffi.jsonValid(bytes) : getAddon().jsonValid(bytes)
 }
 
 /**
@@ -33,83 +33,82 @@ export function jsonWriteHandler(
   ingress: OptimizedIngressHandler,
   opts: BakedHandlerOptions = {},
 ): (req: Request, srv?: unknown) => Promise<Response> {
-  const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
-  const fallback = opts.fallback ?? ingress;
-  const copyBody = opts.copyBody !== false;
+  const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
+  const fallback = opts.fallback ?? ingress
+  const copyBody = opts.copyBody !== false
   // Non-zero default: protect against slowloris / trickling bodies. Set
   // `bodyTimeoutMs: 0` to disable.
-  const bodyTimeoutMs = opts.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
+  const bodyTimeoutMs = opts.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS
 
   return async (req, srv) => {
-    const ip = resolveIp(req, srv, opts);
+    const ip = resolveIp(req, srv, opts)
 
-    const contentType = req.headers.get("content-type") ?? "";
-    if (!contentType.includes("application/json")) {
+    const contentType = req.headers.get('content-type') ?? ''
+    if (!contentType.includes('application/json')) {
       return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx);
-        if (terminal) return terminal;
+        const terminal = fallback.terminalResponse(req, result, ctx)
+        if (terminal) return terminal
 
         return fallback.errorResponse(
           req,
           result,
           415,
-          "unsupported_media_type",
-          "Content-Type must be application/json",
+          'unsupported_media_type',
+          'Content-Type must be application/json',
           ctx,
-        );
-      });
+        )
+      })
     }
 
-    const contentLengthHeader = req.headers.get("content-length");
-    const contentLength =
-      contentLengthHeader === null ? NaN : Number(contentLengthHeader);
+    const contentLengthHeader = req.headers.get('content-length')
+    const contentLength = contentLengthHeader === null ? NaN : Number(contentLengthHeader)
 
     if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
       return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx);
-        if (terminal) return terminal;
+        const terminal = fallback.terminalResponse(req, result, ctx)
+        if (terminal) return terminal
 
         return fallback.errorResponse(
           req,
           result,
           413,
-          "body_too_large",
-          "Request body is too large",
+          'body_too_large',
+          'Request body is too large',
           ctx,
-        );
-      });
+        )
+      })
     }
 
-    let bodyBytes: Uint8Array;
+    let bodyBytes: Uint8Array
     try {
       // Stream-read with the limit enforced WHILE reading — a body that
       // exceeds maxBodyBytes is rejected as soon as the limit is crossed,
       // never fully buffered first.
-      bodyBytes = await readBodyWithLimit(req, maxBodyBytes, true, bodyTimeoutMs);
+      bodyBytes = await readBodyWithLimit(req, maxBodyBytes, true, bodyTimeoutMs)
     } catch (err) {
-      const code = (err as { code?: string } | null)?.code;
-      const isTooLarge = code === "BODY_TOO_LARGE";
+      const code = (err as { code?: string } | null)?.code
+      const isTooLarge = code === 'BODY_TOO_LARGE'
       return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx);
-        if (terminal) return terminal;
+        const terminal = fallback.terminalResponse(req, result, ctx)
+        if (terminal) return terminal
 
         return fallback.errorResponse(
           req,
           result,
           isTooLarge ? 413 : 408,
-          isTooLarge ? "body_too_large" : "request_timeout",
-          isTooLarge ? "Request body is too large" : "Request body read timed out",
+          isTooLarge ? 'body_too_large' : 'request_timeout',
+          isTooLarge ? 'Request body is too large' : 'Request body read timed out',
           ctx,
-        );
-      });
+        )
+      })
     }
 
     return ingress.run(req, ip, bodyBytes, (result, ctx) => {
-      const terminal = ingress.terminalResponse(req, result, ctx);
-      if (terminal) return terminal;
+      const terminal = ingress.terminalResponse(req, result, ctx)
+      if (terminal) return terminal
 
       if (result.bodyTruncated) {
-        return ingress.internalErrorResponse(ctx, result);
+        return ingress.internalErrorResponse(ctx, result)
       }
 
       // `bodyValidJson`/`schemaValid` are only computed when the pipeline ran
@@ -126,20 +125,13 @@ export function jsonWriteHandler(
             req,
             result,
             422,
-            "schema_validation_failed",
-            "Request body failed schema validation",
+            'schema_validation_failed',
+            'Request body failed schema validation',
             ctx,
-          );
+          )
         }
       } else if (!isValidJsonBytes(bodyBytes)) {
-        return ingress.errorResponse(
-          req,
-          result,
-          400,
-          "invalid_json",
-          "Invalid JSON body",
-          ctx,
-        );
+        return ingress.errorResponse(req, result, 400, 'invalid_json', 'Invalid JSON body', ctx)
       }
 
       const init: ResponseInit = {
@@ -149,15 +141,13 @@ export function jsonWriteHandler(
           ctx.requestIdHeader,
           ctx.origin,
           result.rateRemaining,
-          result.rateResetMs > 0
-            ? secondsFromMs(result.rateResetMs)
-            : undefined,
+          result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
         ),
-      };
+      }
 
       return copyBody
         ? new Response(result.bodyJson(true), init)
-        : ingress.zeroCopyResponse(result, ctx, init);
-    });
-  };
+        : ingress.zeroCopyResponse(result, ctx, init)
+    })
+  }
 }

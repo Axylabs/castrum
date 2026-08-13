@@ -68,6 +68,36 @@ export interface SchemaValidatorInstance {
   validateBatchPackedCount(packed: Uint8Array): number
   validateBatchPackedBitset(packed: Uint8Array): Uint8Array
   validateBatchStreaming(batchBytes: Uint8Array): number
+  /**
+   * One-pass validate + extract: validate `input` against the schema and
+   * capture scalar values / array lengths at `paths` during the same native
+   * walk (no `JSON.parse`, no DOM). For "derive" routes (response built from a
+   * handful of body fields) this replaces `JSON.parse` + Ajv on the happy path
+   * and rejects invalid bodies with zero DOM/GC.
+   *
+   * `paths` are RFC 6901 JSON pointers of OBJECT KEYS; a trailing `/-`
+   * captures the ARRAY LENGTH at that path (e.g. `"/totalCents"`,
+   * `"/lineItems/-"`). Array-index steps are not supported.
+   */
+  derive(input: Uint8Array, paths: string[]): JsonDeriveResult
+}
+
+/** A single derived value captured during one-pass validation. */
+export interface JsonDeriveValue {
+  /** `"int" | "number" | "string" | "bool" | "null"`. */
+  kind: string
+  int: number | null
+  number: number | null
+  text: string | null
+  boolean: boolean | null
+}
+
+/** Result of a one-pass `validate + derive`. */
+export interface JsonDeriveResult {
+  /** `true` when the document is schema-valid; `false` → caller rejects. */
+  ok: boolean
+  /** One entry per requested path (`null` = path absent from the document). */
+  values: Array<JsonDeriveValue | null>
 }
 
 /** The native `HmacSigner` class instance. */

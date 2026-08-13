@@ -40,6 +40,7 @@
 //   - errors.rs    error sink/context + SchemaError (instance/schema paths)
 //   - tests.rs     fast-vs-jsonschema-crate parity tests
 
+mod capture;
 mod compile;
 mod cursor;
 mod email;
@@ -50,6 +51,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
+pub use self::capture::{parse_target, Capture, CaptureKind, TargetPath};
 pub use self::compile::compile;
 pub use self::errors::SchemaError;
 pub use self::types::FastNode;

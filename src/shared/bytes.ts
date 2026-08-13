@@ -3,22 +3,19 @@
  *
  * Reusing a single encoder avoids allocation overhead in hot paths.
  */
-export const encoder = new TextEncoder();
+export const encoder = new TextEncoder()
 
 /**
  * Shared TextDecoder instance for decoding UTF-8 bytes to strings.
  *
  * Reusing a single decoder avoids allocation overhead in hot paths.
  */
-export const decoder = new TextDecoder();
+export const decoder = new TextDecoder()
 
 /**
  * Cache of `DataView`s keyed by their backing buffer + creation offset.
  */
-const dataViewCache = new WeakMap<
-  ArrayBufferLike,
-  { offset: number; view: DataView }
->();
+const dataViewCache = new WeakMap<ArrayBufferLike, { offset: number; view: DataView }>()
 
 /**
  * Returns a `DataView` over `buffer` starting at `byteOffset`, creating and
@@ -35,17 +32,14 @@ const dataViewCache = new WeakMap<
  * @param byteOffset - The start of the view within `buffer`. Default 0.
  * @returns A cached `DataView` over `buffer` starting at `byteOffset`.
  */
-export function viewForArrayBuffer(
-  buffer: ArrayBufferLike,
-  byteOffset = 0,
-): DataView {
-  const cached = dataViewCache.get(buffer);
+export function viewForArrayBuffer(buffer: ArrayBufferLike, byteOffset = 0): DataView {
+  const cached = dataViewCache.get(buffer)
   if (cached !== undefined && cached.offset === byteOffset) {
-    return cached.view;
+    return cached.view
   }
-  const view = new DataView(buffer, byteOffset);
-  dataViewCache.set(buffer, { offset: byteOffset, view });
-  return view;
+  const view = new DataView(buffer, byteOffset)
+  dataViewCache.set(buffer, { offset: byteOffset, view })
+  return view
 }
 
 /**
@@ -66,7 +60,7 @@ export function viewForArrayBuffer(
  * ```
  */
 export function toPlainBuffer(bytes: Uint8Array): Uint8Array {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy;
+  const copy = new Uint8Array(bytes.byteLength)
+  copy.set(bytes)
+  return copy
 }

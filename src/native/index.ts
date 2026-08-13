@@ -4,5 +4,5 @@
 // (./loader.ts). Importing this barrel does NOT dlopen the addon — use
 // `getAddon()` / `lazyAddon` at call time.
 
-export * from "./types";
-export { getAddonPath, getAddon, lazyAddon } from "./loader";
+export * from './types'
+export { getAddonPath, getAddon, lazyAddon } from './loader'

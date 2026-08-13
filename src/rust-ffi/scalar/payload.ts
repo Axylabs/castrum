@@ -5,6 +5,7 @@
 
 import type { MultipartPart, WsFrame } from '../../native'
 import { getBunFFI } from '../../native/ffi'
+import { isBun } from '../../shared/runtime'
 import type { RustClientContext } from '../context'
 
 /** Output / streaming scalar methods (`Pick<RustScalar, ...>`). */
@@ -13,6 +14,14 @@ export function buildPayload(ctx: RustClientContext) {
 
   return {
     gzipCompress(data: Uint8Array, level?: number | null): Uint8Array {
+      // Optimal by default under Bun: `Bun.gzipSync` (native zlib) is ~2x
+      // faster than the rust+FFI crossing (decision matrix). Emits valid gzip
+      // (decompression-parity with the addon — only the header OS byte
+      // differs: 0xFF vs 0x03). `gzipCompressInto` (pooled) stays native.
+      if (isBun()) {
+        const opts = level != null ? ({ level } as Parameters<typeof Bun.gzipSync>[1]) : undefined
+        return Bun.gzipSync(data as unknown as Uint8Array<ArrayBuffer>, opts)
+      }
       const ffi = getBunFFI()
       if (ffi) return ffi.gzipCompress(data, level ?? undefined)
       return addon.gzipCompress(data, level ?? null)
@@ -90,10 +99,14 @@ export function buildPayload(ctx: RustClientContext) {
         const packed = ffi.wsFrameDecodePacked(data)
         if (packed === null) return null
         const payloadLen =
-          (packed[2]! | (packed[3]! << 8) | (packed[4]! << 16) | (packed[5]! << 24)) >>> 0
+          ((packed[2] ?? 0) |
+            ((packed[3] ?? 0) << 8) |
+            ((packed[4] ?? 0) << 16) |
+            ((packed[5] ?? 0) << 24)) >>>
+          0
         return {
-          fin: packed[0]! === 1,
-          opcode: packed[1]!,
+          fin: (packed[0] ?? 0) === 1,
+          opcode: packed[1] ?? 0,
           payload: packed.subarray(6, 6 + payloadLen),
         }
       }

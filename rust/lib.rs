@@ -6,13 +6,12 @@
 //! entry points use napi types. See the module map below and `docs/REPO_MAP.md`.
 
 // The napi `Uint8Array` exposes its backing JS-buffer memory to Rust through
-// `as_mut()`. We allow this lint crate-wide because the pattern is deliberate
-// and audited: the caller-provided buffer is only borrowed for the duration of
-// the call, aliasing with the input/body is checked via `slices_overlap`, and
-// every writer is capacity-checked (`ingress/output.rs` panics on overflow,
-// which napi converts to a JS 500). Do not widen the unsafe surface beyond
-// these sites without re-auditing.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
+// `as_mut()`. The pattern is deliberate and audited: the caller-provided
+// buffer is only borrowed for the duration of the call, aliasing with the
+// input/body is checked via `slices_overlap`, and every writer is
+// capacity-checked (`ingress/output.rs` panics on overflow, which napi
+// converts to a JS 500). Do not widen the unsafe surface beyond these sites
+// without re-auditing.
 
 use mimalloc::MiMalloc;
 

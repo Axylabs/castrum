@@ -1,20 +1,23 @@
-import * as native from "../../baseline";
-import { rust } from "../../rust-ffi";
-import type { BenchTask } from "../types";
+import * as native from '../../baseline'
+import { rawRandomToken } from '../raw-native'
+import type { BenchTask } from '../types'
 
 export function tokenTasks(): BenchTask[] {
   return [
     {
-      name: "native:random_token",
+      name: 'native:random_token',
       run: () => native.nativeRandomToken(32).byteLength,
       iterations: 1000,
       warmup: 100,
     },
     {
-      name: "rust:random_token",
-      run: () => rust.randomToken(32).byteLength,
+      name: 'rust:random_token',
+      // `rust.randomToken` delegates to crypto.getRandomValues under Bun
+      // (BUN_WINS), so measure the raw addon here to keep the audit about the
+      // addon vs the node baseline.
+      run: () => rawRandomToken(32).byteLength,
       iterations: 1000,
       warmup: 100,
     },
-  ];
+  ]
 }

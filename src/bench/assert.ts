@@ -1,4 +1,4 @@
-import { decoder } from "../shared/bytes";
+import { decoder } from '../shared/bytes'
 
 /**
  * Recursively sort object keys. Bench-local helper used by `assertDeepEqual`
@@ -8,33 +8,33 @@ import { decoder } from "../shared/bytes";
  * correctness checks.
  */
 function sortKeys(value: unknown): unknown {
-  if (value === null || typeof value !== "object") {
-    return value;
+  if (value === null || typeof value !== 'object') {
+    return value
   }
 
   if (Array.isArray(value)) {
-    return value.map(sortKeys);
+    return value.map(sortKeys)
   }
 
-  const record = value as Record<string, unknown>;
-  const sorted: Record<string, unknown> = {};
+  const record = value as Record<string, unknown>
+  const sorted: Record<string, unknown> = {}
 
   for (const key of Object.keys(record).sort()) {
-    sorted[key] = sortKeys(record[key]);
+    sorted[key] = sortKeys(record[key])
   }
 
-  return sorted;
+  return sorted
 }
 
 export function parseJsonBytes(bytes: Uint8Array): unknown {
-  return JSON.parse(decoder.decode(bytes));
+  return JSON.parse(decoder.decode(bytes))
 }
 
 function typeName(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  if (value instanceof Uint8Array) return "Uint8Array";
-  return typeof value;
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  if (value instanceof Uint8Array) return 'Uint8Array'
+  return typeof value
 }
 
 /**
@@ -45,51 +45,39 @@ function typeName(value: unknown): string {
  * treated as equal when their numeric value is the same.
  */
 function normalizeScalar(value: unknown): unknown {
-  if (typeof value === "bigint") {
-    return value;
+  if (typeof value === 'bigint') {
+    return value
   }
 
-  if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) {
-    return BigInt(Math.trunc(value));
+  if (typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value)) {
+    return BigInt(Math.trunc(value))
   }
 
-  return value;
+  return value
 }
 
-export function assertEqual(
-  actual: unknown,
-  expected: unknown,
-  label: string,
-): void {
-  const a = normalizeScalar(actual);
-  const b = normalizeScalar(expected);
+export function assertEqual(actual: unknown, expected: unknown, label: string): void {
+  const a = normalizeScalar(actual)
+  const b = normalizeScalar(expected)
 
   if (a !== b) {
-    console.error(`FAIL: ${label}`);
-    console.error(
-      `  actual:   ${String(actual)} (${typeName(actual)})`,
-    );
-    console.error(
-      `  expected: ${String(expected)} (${typeName(expected)})`,
-    );
-    process.exit(1);
-    throw new Error(`Assertion failed: ${label}`);
+    console.error(`FAIL: ${label}`)
+    console.error(`  actual:   ${String(actual)} (${typeName(actual)})`)
+    console.error(`  expected: ${String(expected)} (${typeName(expected)})`)
+    process.exit(1)
+    throw new Error(`Assertion failed: ${label}`)
   }
 }
 
-export function assertDeepEqual(
-  actual: unknown,
-  expected: unknown,
-  label: string,
-): void {
-  const a = JSON.stringify(sortKeys(actual));
-  const b = JSON.stringify(sortKeys(expected));
+export function assertDeepEqual(actual: unknown, expected: unknown, label: string): void {
+  const a = JSON.stringify(sortKeys(actual))
+  const b = JSON.stringify(sortKeys(expected))
 
   if (a !== b) {
-    console.error(`FAIL: ${label}`);
-    console.error(`  actual:   ${a}`);
-    console.error(`  expected: ${b}`);
-    process.exit(1);
-    throw new Error(`Assertion failed: ${label}`);
+    console.error(`FAIL: ${label}`)
+    console.error(`  actual:   ${a}`)
+    console.error(`  expected: ${b}`)
+    process.exit(1)
+    throw new Error(`Assertion failed: ${label}`)
   }
 }

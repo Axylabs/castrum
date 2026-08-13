@@ -6,7 +6,7 @@
 // `pooledBodyResponse` wraps the slice in a streaming body that returns the
 // handle to its pool once the body is read (or the request is aborted).
 
-import type { PooledBuffer } from "./buffer-pool";
+import type { PooledBuffer } from './buffer-pool'
 
 /**
  * Build a `Response` whose body is backed by a pooled byte slice, returning the
@@ -49,22 +49,22 @@ export function pooledBodyResponse(
 ): Response {
   if (bytes.byteLength === 0) {
     // Nothing to serve: release immediately.
-    handle.release();
-    return new Response(null, init);
+    handle.release()
+    return new Response(null, init)
   }
 
-  let released = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let released = false
+  let timer: ReturnType<typeof setTimeout> | undefined
   const release = (): void => {
     if (released) {
-      return;
+      return
     }
-    released = true;
+    released = true
     if (timer !== undefined) {
-      clearTimeout(timer);
+      clearTimeout(timer)
     }
-    handle.release();
-  };
+    handle.release()
+  }
 
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -77,28 +77,28 @@ export function pooledBodyResponse(
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
           if (released) {
-            return;
+            return
           }
-          release();
-          controller.close();
-        }, timeoutMs);
+          release()
+          controller.close()
+        }, timeoutMs)
       }
     },
     pull(controller) {
       if (released) {
         // Released by the abandonment guard (or a racing cancel): the pooled
         // bytes may already be reused — never serve them. End-of-stream.
-        controller.close();
-        return;
+        controller.close()
+        return
       }
-      controller.enqueue(bytes);
-      controller.close();
-      release();
+      controller.enqueue(bytes)
+      controller.close()
+      release()
     },
     cancel() {
-      release();
+      release()
     },
-  });
+  })
 
-  return new Response(body, init);
+  return new Response(body, init)
 }

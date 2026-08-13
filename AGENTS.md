@@ -29,11 +29,15 @@ HTTP **ingress pipeline** for Bun servers.
 | Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts), NEVER audited by check:proven; decision matrix in docs/bun-builtins-decision-matrix.md |
 | Proven-surface audit | `bun run check:proven` (report) / `bun run check:proven:fail` (CI gate) |
 | Startup / first-call benchmark | `bun run bench:startup` |
+| FFI transport benches | `bun run bench:ffi` / `bench:ffi:load` / `bench:ffi:public` / `bench:ffi:workers` |
+| Native batch parity check | `bun run verify:native:batch` |
 | Typecheck | `bun run typecheck` (== `bunx tsc --noEmit`; `include` = index.ts, bench.ts, src, bench) + `bun run typecheck:test` (== `bunx tsc --noEmit -p tsconfig.test.json`; typechecks `test/` + `bench/` with unused locals/params on) |
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
 | Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
+| JSDoc coverage guard | `bun run check:jsdoc` (== `bun scripts/check-jsdoc.ts`) — fails if < 70% of `src/`+`index.ts` exported symbols lack a JSDoc block; run after adding public exports |
 | JS dependency audit | `bun run audit` |
 | Cargo deny audit | `bun run deny` (== `cargo deny check`) |
+| Coverage floors | `bun run test:coverage` (== `node scripts/check-coverage.mjs`) — 75% overall line floor + a 50% per-directory floor on the SHIPPED dirs (`src/ingress`, `src/shared`, `src/rust-ffi`, `src/native`, `src/loader`, `src/integration`) so one directory can't collapse while others compensate |
 | HTTP bench (all servers) | `bun run bench:http` |
 | HTTP bench (ingress only) | `bun run bench:http:ingress` |
 | HTTP smoke (fast sanity; CI-gated wire-format guard) | `bun run bench:http:smoke` |
@@ -121,6 +125,9 @@ src/loader/               higher-order loader (HFC) over the curated op set (ops
 src/integration/          framework-agnostic helpers: createPipeline, createWebSocketUpgrade, sseResponse — exported from index.ts
 src/baseline/             JS baseline implementations (benchmark reference, `native`)
 src/bench/                CPU benchmark framework (tasks, measure, report, ...)
+  ├── raw-native.ts       RAW addon accessors (FFI-first/napi) for ops whose public
+  │                       rust.* delegates to Bun under Bun — the CPU bench `rust:`
+  │                       column must measure the ADDON, not the delegated built-in
 src/data, src/shared/     JSON rows + bytes/packed helpers
 bench/servers/            bun-server.ts, elysia-server.ts, ingress-server.ts (HTTP bench)
 bench/load.ts             HTTP load generator + scenarios; validates response SHAPE
@@ -171,9 +178,11 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   ├── json_ops.rs     zero-DOM validate/sum + DOM parse
   │   ├── json_ser.rs     zero-alloc JSON escaping + cookie/query → JSON writers
   │   ├── json_patch_ops.rs  RFC 6902 JSON patch
-  │   ├── json_schema.rs  SchemaValidator napi class (fast path + jsonschema-crate fallback)
+  │   ├── json_schema.rs  SchemaValidator napi class (fast path + jsonschema-crate fallback; 
+  │   │                   also SchemaValidator.derive — one-pass validate + extract)
   │   └── fast_schema/    zero-DOM draft-07 JSON Schema fast path: mod.rs (re-exports compile/FastNode + SchemaError)
-  │       └── types.rs / cursor.rs / compile.rs / validate.rs / errors.rs / email.rs (format:"email" replica) / tests.rs
+  │       └── types.rs / cursor.rs / compile.rs / validate.rs / errors.rs / capture.rs (one-pass derive trie) /
+  │           email.rs (format:"email" replica) / tests.rs
   ├── payload/            OUTPUT & STREAMING
   │   ├── compress.rs     gzip (zlib-rs) + brotli + batch
   │   ├── sse.rs / ws_frames.rs / websocket.rs   SSE framing, RFC 6455 codec, accept-key
@@ -290,6 +299,15 @@ success and `error.code` / `error.message` on errors (path 2's format).
   uncatchable abort). Both the schema walk (`validate`) and the structural
   `skip_value` path are guarded. Do NOT raise the cap without matching the
   reference — deeper docs would diverge from the DOM path's parse-fail → invalid.
+  **One-pass derive (`SchemaValidator.derive`, rust/json/fast_schema/capture.rs)**: validate a
+  document AND capture scalar values / array lengths at object-key JSON-pointer paths during the
+  SAME walk — replaces `JSON.parse` + Ajv for derive-pattern routes (response built from a few
+  body fields) and rejects invalid bodies with zero DOM/GC. Target paths compile to a TRIE; the
+  walk tracks `(node, alive)` per object level (no per-member key cloning; dead subtrees free).
+  Capture is OFF by default (`Ctx::capture == None`) so bool/detailed hot paths are unchanged —
+  keep it that way, and keep the ROOT-cursor-only + `suppress` guards (sub-scan offsets are
+  relative to sub-slices and must never corrupt captured ranges). Paths are object-key pointers;
+  array-index steps and `/-`-root are rejected.
 - **Decompression cap**: `rust.gzipDecompress` / `rust.brotliDecompress` (and
   `batch.*`) cap decompressed output at 64 MiB by default (`maxDecompressed` napi
   param, `Option<u32>`, rust/payload/compress.rs). This is a decompression-bomb
@@ -365,7 +383,11 @@ success and `error.code` / `error.message` on errors (path 2's format).
 
 - **TS**: explicit types on all public APIs; JSDoc (`@param`, `@returns`,
   `@example`) on exports; named imports; `camelCase` fns/vars, `PascalCase`
-  types. One logical module per file.
+  types. One logical module per file. Every exported symbol in `src/` +
+  `index.ts` needs a JSDoc block — `bun run check:jsdoc` enforces a 70%
+  floor (run it after adding public exports). Preserve the `// src/... — purpose`
+  module-header convention on every file, and keep barrel `index.ts` files as
+  lightweight re-export hubs (a 1-line header is enough).
 - **Rust**: `rustfmt`, `cargo clippy` clean, `///` doc comments, snake_case.
   Keep NAPI types out of internal signatures so core logic stays testable.
 - **Wire format is a contract**: changing success/error body shape or the
@@ -385,6 +407,18 @@ success and `error.code` / `error.message` on errors (path 2's format).
   registry and run `bun run check:proven:fail` on a RELEASE build (debug builds
   inflate rust timings). Classifications must reflect the shipped baseline-CPU
   release build, not the local SIMD `build:perf`.
+- **Bun delegation (`BUN_WINS`, src/selection.ts)**: the public `rust.*` scalar
+  surface is OPTIMAL-BY-DEFAULT under Bun — `urlEncode`/`urlDecode`
+  (`encodeURIComponent`/`decodeURIComponent`), `base64Encode` (Buffer), `httpDate`
+  (`Date.toUTCString()`), `crc32`/`xxh3` (`Bun.hash.*`), `hmacSha256`
+  (`Bun.CryptoHasher`, hex re-encoded), `randomToken` (`crypto.getRandomValues` +
+  hex) and `gzipCompress` (`Bun.gzipSync`) all delegate to Bun built-ins when
+  `isBun()`. **`gzipDecompress` is deliberately NOT delegated** (stays native —
+  `Bun.gunzipSync` has no decompression-bomb cap; the native 64 MiB cap is kept).
+  Keep `src/selection.ts` `BUN_WINS` in sync with the actual surface. The CPU
+  bench measures the RAW addon for delegated ops via `src/bench/raw-native.ts`
+  (FFI-first/napi) so the report + PROVEN_SURFACE reflect the addon, not the
+  delegated built-in. Parity is pinned by `test/unit/features/delegation.test.ts`.
 
 ## Testing
 

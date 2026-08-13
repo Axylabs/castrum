@@ -4,27 +4,22 @@
 // helpers in ./context.ts, so the implementation modules never need to import
 // the public barrel.
 
-import type { IngressFastOptions } from "./options";
-import type { BakedIngressResult } from "./decode/baked-result";
+import type { IngressFastOptions } from './options'
+import type { BakedIngressResult } from './decode/baked-result'
 
 /** Public ingress options (extends the fast-path options). */
 export interface IngressOptions extends IngressFastOptions {
-  enableRequestIds?: boolean;
+  enableRequestIds?: boolean
   /**
    * Invoked before a request is processed (for tracing/context hooks).
    * Only used by the async `createIngress` path.
    */
-  onRequest?: (req: Request, requestId: string, ip: string | undefined) => void;
+  onRequest?: (req: Request, requestId: string, ip: string | undefined) => void
   /**
    * Invoked after a terminal context (and its `Response`) is produced, for
    * metrics/logging hooks. Only used by the async `createIngress` path.
    */
-  onResponse?: (
-    req: Request,
-    result: IngressContext,
-    status: number,
-    requestId: string,
-  ) => void;
+  onResponse?: (req: Request, result: IngressContext, status: number, requestId: string) => void
 }
 
 /**
@@ -34,38 +29,38 @@ export interface IngressOptions extends IngressFastOptions {
  * this interface is the readonly view used by the public sync/async handlers.
  */
 export interface IngressResult {
-  readonly status: number;
-  readonly verdict: number;
-  readonly flags: number;
-  readonly errorCode: number;
-  readonly terminal: boolean;
-  readonly ok: boolean;
-  readonly https: boolean;
-  readonly trustedProxy: boolean;
-  readonly hasCookies: boolean;
-  readonly hasQuery: boolean;
-  readonly bodyValidJson: boolean;
-  readonly schemaValid: boolean;
-  readonly corsAllowed: boolean;
-  readonly isPreflight: boolean;
-  readonly rateLimited: boolean;
-  readonly rateLimit: number;
-  readonly rateRemaining: number;
-  readonly rateResetMs: number;
-  readonly retryAfterMs: number;
-  readonly body: Uint8Array;
-  readonly headerVariant: number;
-  readonly requestId: string;
-  readonly bodyTruncated: boolean;
+  readonly status: number
+  readonly verdict: number
+  readonly flags: number
+  readonly errorCode: number
+  readonly terminal: boolean
+  readonly ok: boolean
+  readonly https: boolean
+  readonly trustedProxy: boolean
+  readonly hasCookies: boolean
+  readonly hasQuery: boolean
+  readonly bodyValidJson: boolean
+  readonly schemaValid: boolean
+  readonly corsAllowed: boolean
+  readonly isPreflight: boolean
+  readonly rateLimited: boolean
+  readonly rateLimit: number
+  readonly rateRemaining: number
+  readonly rateResetMs: number
+  readonly retryAfterMs: number
+  readonly body: Uint8Array
+  readonly headerVariant: number
+  readonly requestId: string
+  readonly bodyTruncated: boolean
 
-  cookiesJson(): string;
-  queryJson(): string;
-  bodyJson(): Uint8Array;
+  cookiesJson(): string
+  queryJson(): string
+  bodyJson(): Uint8Array
 }
 
 /** A result plus the terminal Response computed for it. */
 export interface IngressContext extends IngressResult {
-  response: Response | null;
+  response: Response | null
 }
 
 /**
@@ -83,11 +78,11 @@ export interface SyncIngressHandler {
     body: Uint8Array | null,
     requestId: string,
     fn: (result: IngressResult) => T,
-  ): T;
+  ): T
 }
 
 /** Async ingress handler (wraps {@link SyncIngressHandler} with body reading). */
-export type IngressHandler = (req: Request, ip?: string) => Promise<IngressContext>;
+export type IngressHandler = (req: Request, ip?: string) => Promise<IngressContext>
 
 // ── Pre-baked (handlers.ts) shared types ────────────────────────────
 // These live here (not in ./handlers.ts) so the route factories in
@@ -97,9 +92,9 @@ export type IngressHandler = (req: Request, ip?: string) => Promise<IngressConte
 /** Mutable per-request context threaded through the pre-baked handler run. */
 export interface BakedContext {
   /** The request-id string (null when `emitRequestIdHeader` is off). */
-  requestIdHeader: string | null;
+  requestIdHeader: string | null
   /** The `Origin` request header when CORS extraction is enabled. */
-  origin: string | null;
+  origin: string | null
 }
 
 /**
@@ -114,7 +109,7 @@ export interface OptimizedIngressHandler {
     ip: string | undefined,
     body: Uint8Array | null,
     fn: (result: BakedIngressResult, ctx: BakedContext) => T,
-  ): T;
+  ): T
 
   responseHeaders(
     variant: number,
@@ -123,35 +118,34 @@ export interface OptimizedIngressHandler {
     rateRemaining?: number,
     rateResetSecs?: number,
     retryAfterSecs?: number,
-  ): [string, string][];
+  ): [string, string][]
 
   terminalHeaders(
     variant: number,
     ctx: BakedContext,
     result: BakedIngressResult | null,
-  ): [string, string][];
+  ): [string, string][]
 
+  /** `req` is accepted for back-compat but unused by the baked terminal path. */
   terminalResponse(
-    req: Request,
+    req: Request | undefined,
     result: BakedIngressResult,
     ctx: BakedContext,
-  ): Response | null;
+  ): Response | null
 
+  /** `req` is accepted for back-compat but unused by the baked error path. */
   errorResponse(
-    req: Request,
+    req: Request | undefined,
     result: BakedIngressResult | null,
     status: number,
     code: string,
     message: string,
     ctx: BakedContext,
-  ): Response;
+  ): Response
 
-  internalErrorResponse(ctx: BakedContext, result?: BakedIngressResult): Response;
+  internalErrorResponse(ctx: BakedContext, result?: BakedIngressResult): Response
 
-  withContentType(
-    headers: ReadonlyArray<[string, string]>,
-    contentType: string,
-  ): [string, string][];
+  withContentType(headers: ReadonlyArray<[string, string]>, contentType: string): [string, string][]
 
   /**
    * Build a zero-copy `Response` whose body is the request's pooled output
@@ -159,9 +153,5 @@ export interface OptimizedIngressHandler {
    * consumed (stream closed) or the request aborted. Use when `copyBody` is
    * `false`; otherwise a copied body is released eagerly at the end of `run()`.
    */
-  zeroCopyResponse(
-    result: BakedIngressResult,
-    ctx: BakedContext,
-    init: ResponseInit,
-  ): Response;
+  zeroCopyResponse(result: BakedIngressResult, ctx: BakedContext, init: ResponseInit): Response
 }

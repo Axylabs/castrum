@@ -20,18 +20,10 @@ export function buildJson(ctx: RustClientContext) {
       return addon.jsonParse(input)
     },
     jsonSumIds(input: Uint8Array): bigint {
+      // The C ABI returns a packed [u8 ok][i64 sum LE] output, so a legit
+      // zero-sum and invalid input are unambiguous — no napi re-dispatch.
       const ffi = getBunFFI()
-      if (ffi) {
-        const v = ffi.jsonSumIds(input)
-        if (v === 0n) {
-          // The C ABI returns 0 for BOTH a legit zero-sum AND invalid input
-          // (non-array), while napi throws on invalid. Re-dispatch to napi so
-          // the scalar path keeps its exact error semantics (0-sum results are
-          // identical either way).
-          return asBigInt(addon.jsonSumIds(input) as unknown)
-        }
-        return v
-      }
+      if (ffi) return ffi.jsonSumIds(input)
       return asBigInt(addon.jsonSumIds(input) as unknown)
     },
     jsonPatch(doc: Uint8Array, patch: Uint8Array): Uint8Array {

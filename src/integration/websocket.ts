@@ -1,19 +1,19 @@
 // src/integration/websocket.ts — WebSocket upgrade handshake helper.
 
-import { rust } from "../rust-ffi";
+import { rust } from '../rust-ffi'
 
 export interface WebSocketUpgradeOptions {
   /** Subprotocols this server supports; the first client-requested match wins. */
-  protocols?: ReadonlyArray<string>;
+  protocols?: ReadonlyArray<string>
 }
 
 export interface WebSocketUpgradeResult {
   /** The 101 Switching Protocols response — return it from your fetch handler. */
-  readonly response: Response;
+  readonly response: Response
   /** The client's `Sec-WebSocket-Key` (handy for connection logging). */
-  readonly key: string;
+  readonly key: string
   /** The negotiated subprotocol, if any. */
-  readonly protocol: string | null;
+  readonly protocol: string | null
 }
 
 /**
@@ -49,43 +49,44 @@ export function createWebSocketUpgrade(
   req: Request,
   opts: WebSocketUpgradeOptions = {},
 ): WebSocketUpgradeResult | null {
-  const key = req.headers.get("sec-websocket-key");
-  if (!key || key.length === 0) return null;
+  const key = req.headers.get('sec-websocket-key')
+  if (!key || key.length === 0) return null
 
-  const accept = rust.text.wsAcceptKey(key);
+  const accept = rust.text.wsAcceptKey(key)
 
-  let protocol: string | null = null;
-  const offered = opts.protocols ?? [];
-  const requested = req.headers.get("sec-websocket-protocol");
+  let protocol: string | null = null
+  const offered = opts.protocols ?? []
+  const requested = req.headers.get('sec-websocket-protocol')
   if (requested && offered.length > 0) {
-    const wanted = requested.split(",").map((s) => s.trim()).filter(Boolean);
-    protocol =
-      offered.find((p) => wanted.some((w) => w.toLowerCase() === p.toLowerCase())) ??
-      null;
+    const wanted = requested
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    protocol = offered.find((p) => wanted.some((w) => w.toLowerCase() === p.toLowerCase())) ?? null
   }
 
   // Node's fetch `Response` rejects status 101 (undici allows only 200-599);
   // Bun permits it. This helper produces a Bun.serve-compatible 101 Response,
   // so on Node throw a clear error pointing at the Node adapter's `upgrade`
   // option (which writes the RFC 6455 handshake head directly).
-  if (typeof Bun === "undefined") {
+  if (typeof Bun === 'undefined') {
     throw new Error(
       "createWebSocketUpgrade is Bun-only: Node's Response cannot carry status 101. " +
         "On Node, use createIngressServerNode's `upgrade` option and compute the " +
-        "accept key with rust.text.wsAcceptKey().",
-    );
+        'accept key with rust.text.wsAcceptKey().',
+    )
   }
 
   const headers: Record<string, string> = {
-    "sec-websocket-accept": accept,
-  };
+    'sec-websocket-accept': accept,
+  }
   if (protocol) {
-    headers["sec-websocket-protocol"] = protocol;
+    headers['sec-websocket-protocol'] = protocol
   }
 
   return {
     response: new Response(null, { status: 101, headers }),
     key,
     protocol,
-  };
+  }
 }

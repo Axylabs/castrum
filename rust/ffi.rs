@@ -21,46 +21,62 @@
 
 use aws_lc_rs::aead::{AES_256_GCM, CHACHA20_POLY1305};
 use aws_lc_rs::hmac;
+use lru::LruCache;
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use std::cell::RefCell;
+use std::num::NonZeroUsize;
+use std::ptr;
 use std::slice;
-use std::sync::Arc;
 
-// Per-thread bounded LRU of compiled HMAC-SHA256 keys, so repeated
-// same-secret FFI calls (the steady-state case — and each Bun Worker thread
-// under the `*_concurrent_*` benches) reuse a compiled `hmac::Key` instead of
-// rebuilding it on every call (~100ns). This is the C-ABI equivalent of the
-// compiled-once `HmacSigner` NAPI instance WITHOUT an opaque-handle lifetime
-// hazard: the cache owns the `Arc<hmac::Key>` values and LRU-evicts, so no
-// caller ever holds a dangling pointer. Thread-local = zero lock contention
-// across worker threads.
-thread_local! {
-    static HMAC_KEY_CACHE: RefCell<Vec<(Vec<u8>, Arc<hmac::Key>)>> =
-        const { RefCell::new(Vec::new()) };
+/// Build the HMAC-SHA256 key used by the scalar HMAC/cookie/CSRF cores (the
+/// same per-call construction the napi scalar fns use). Test-only reference
+/// helper: the hot C-ABI fns go through `hmac_key_cached` below.
+#[cfg(test)]
+#[inline]
+fn hmac_key(secret: &[u8]) -> hmac::Key {
+    hmac::Key::new(hmac::HMAC_SHA256, secret)
 }
 
-/// Max compiled keys kept per thread (LRU evicts the oldest).
+/// Capacity of the per-thread compiled-key LRU.
 const HMAC_KEY_CACHE_CAP: usize = 16;
 
-/// Build (or look up) the HMAC-SHA256 key for `secret` — cached per thread,
-/// LRU-evicted. Returns an `Arc` so callers can keep using `&key` (deref
-/// coercion `&Arc<hmac::Key>` → `&hmac::Key`).
+// Per-thread LRU of compiled HMAC-SHA256 keys, keyed by the secret bytes.
+//
+// `hmac::Key::new` recomputes the HMAC key schedule (a SHA-256 pass over the
+// secret) on EVERY call. That is the C-ABI equivalent of what the napi
+// `HmacSigner` instance avoids by compiling its key once at construction — but
+// the raw `castrum_*` fns are stateless, so without a cache a server signing
+// cookies / CSRF tokens / HMACs with the SAME secret on every request would
+// re-derive the key each time. `hmac::Key` is `Clone` (a copy of the
+// precomputed schedule — far cheaper than re-deriving it), so a cache hit
+// returns an OWNED key and no handle can dangle across the call. Thread-local
+// = zero lock contention across Bun Worker threads.
+thread_local! {
+    static HMAC_KEY_CACHE: RefCell<LruCache<Vec<u8>, hmac::Key>> = RefCell::new(
+        LruCache::new(NonZeroUsize::new(HMAC_KEY_CACHE_CAP).expect("cap is nonzero")),
+    );
+}
+
+// Test-only hit counter proving the cache actually reuses compiled keys.
+#[cfg(test)]
+thread_local! {
+    static HMAC_CACHE_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Return a compiled HMAC-SHA256 key for `secret`, reusing a cached copy when
+/// the same secret was used recently (per-thread LRU, cap 16).
 #[inline]
-fn hmac_key(secret: &[u8]) -> Arc<hmac::Key> {
-    HMAC_KEY_CACHE.with(|cell| {
-        let mut cache = cell.borrow_mut();
-        if let Some(pos) = cache.iter().position(|(k, _)| k.as_slice() == secret) {
-            let entry = cache.remove(pos);
-            let key = Arc::clone(&entry.1);
-            cache.push(entry);
-            return key;
+fn hmac_key_cached(secret: &[u8]) -> hmac::Key {
+    HMAC_KEY_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(key) = cache.get(secret) {
+            #[cfg(test)]
+            HMAC_CACHE_HITS.with(|h| h.set(h.get() + 1));
+            return key.clone();
         }
-        let key = Arc::new(hmac::Key::new(hmac::HMAC_SHA256, secret));
-        if cache.len() >= HMAC_KEY_CACHE_CAP {
-            cache.remove(0);
-        }
-        cache.push((secret.to_vec(), Arc::clone(&key)));
+        let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
+        cache.put(secret.to_vec(), key.clone());
         key
     })
 }
@@ -255,40 +271,37 @@ validator_c_abi!(castrum_validate_uuid, crate::util::validation::validate_uuid_b
 validator_c_abi!(castrum_validate_ipv4, crate::util::validation::validate_ipv4_bytes);
 validator_c_abi!(castrum_validate_ipv6, crate::util::validation::validate_ipv6_bytes);
 
-/// Sum of `id` fields across a JSON array (sonic-rs zero-DOM). Writes a packed
-/// `[u8 ok][i64 sum LE]` (9 bytes) into `out`: `ok=1` on a valid array (the
-/// sum may legitimately be 0), `ok=0` on invalid / non-conforming input.
-/// Returns bytes written — 9 on valid, 1 on invalid, 0 on a null `out` or
-/// `out_cap` too small for the written shape. The `ok` byte disambiguates a
-/// legit zero-sum from invalid input, which the old scalar-i64 ABI (0 for both)
-/// could not.
+/// Sum of `id` fields across a JSON array (sonic-rs zero-DOM) → packed
+/// `[u8 ok][i64 sum LE]` output (9 B: 1 = valid array — the sum may be 0 —,
+/// 0 = invalid; return 9/1/0 bytes). The ok byte removes the old scalar-i64
+/// ambiguity (0 for both a legit zero-sum and invalid input) that forced the
+/// JS builder to re-dispatch to napi on every 0n.
 ///
 /// # Safety
-/// `data` must be valid for reads of `len` bytes; `out` for `out_cap` bytes.
+/// `data` must be valid for reads of `len` bytes; `out` must be valid for
+/// writes of `out_len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_json_sum_ids(
     data: *const u8,
     len: usize,
     out: *mut u8,
-    out_cap: usize,
+    out_len: usize,
 ) -> usize {
-    if data.is_null() || out.is_null() || out_cap == 0 {
+    if data.is_null() || out.is_null() {
         return 0;
     }
     match crate::json::json_ops::json_sum_ids_bytes(slice::from_raw_parts(data, len)) {
-        Ok(sum) => {
-            if out_cap < 9 {
-                return 0;
-            }
-            let o = slice::from_raw_parts_mut(out, 9);
-            o[0] = 1;
-            o[1..9].copy_from_slice(&sum.to_le_bytes());
+        Ok(sum) if out_len >= 9 => {
+            *out = 1;
+            ptr::copy_nonoverlapping(sum.to_le_bytes().as_ptr(), out.add(1), 8);
             9
         }
-        Err(_) => {
+        Ok(_) => 9, // too-small buffer → exact required size (growExact)
+        Err(_) if out_len >= 1 => {
             *out = 0;
             1
         }
+        Err(_) => 1, // too-small buffer → exact required size
     }
 }
 
@@ -313,7 +326,7 @@ pub unsafe extern "C" fn castrum_hmac_sha256_verify(
     let Some(sig_bytes) = crate::util::bytes::hex_decode_32(sig_t) else {
         return 0;
     };
-    let k = hmac_key(slice::from_raw_parts(key, klen));
+    let k = hmac_key_cached(slice::from_raw_parts(key, klen));
     u8::from(hmac::verify(&k, slice::from_raw_parts(data, dlen), &sig_bytes).is_ok())
 }
 
@@ -331,7 +344,7 @@ pub unsafe extern "C" fn castrum_csrf_verify(
     if token.is_null() || secret.is_null() {
         return 0;
     }
-    let k = hmac_key(slice::from_raw_parts(secret, slen));
+    let k = hmac_key_cached(slice::from_raw_parts(secret, slen));
     u8::from(crate::crypto::csrf::csrf_verify_with_key(
         slice::from_raw_parts(token, tlen),
         &k,
@@ -518,7 +531,7 @@ pub unsafe extern "C" fn castrum_hmac_sha256(
     if key.is_null() || data.is_null() || out.is_null() || out_cap < 64 {
         return 0;
     }
-    let k = hmac_key(slice::from_raw_parts(key, klen));
+    let k = hmac_key_cached(slice::from_raw_parts(key, klen));
     let tag = hmac::sign(&k, slice::from_raw_parts(data, dlen));
     let mut hex = [0u8; 64];
     crate::util::bytes::hex_encode_32(tag.as_ref(), &mut hex);
@@ -544,7 +557,7 @@ pub unsafe extern "C" fn castrum_sign_cookie(
     }
     crate::crypto::cookie_sign::sign_cookie_into(
         slice::from_raw_parts(value, vlen),
-        &hmac_key(slice::from_raw_parts(secret, slen)),
+        &hmac_key_cached(slice::from_raw_parts(secret, slen)),
         slice::from_raw_parts_mut(out, out_cap),
     )
     .unwrap_or(0)
@@ -569,7 +582,7 @@ pub unsafe extern "C" fn castrum_verify_cookie(
     }
     crate::crypto::cookie_sign::verify_cookie_into(
         slice::from_raw_parts(signed, slen),
-        &hmac_key(slice::from_raw_parts(secret, klen)),
+        &hmac_key_cached(slice::from_raw_parts(secret, klen)),
         slice::from_raw_parts_mut(out, out_cap),
     )
     .unwrap_or(0)
@@ -589,7 +602,7 @@ pub unsafe extern "C" fn castrum_csrf_token(
     if secret.is_null() || out.is_null() || out_cap < 129 {
         return 0;
     }
-    let k = hmac_key(slice::from_raw_parts(secret, slen));
+    let k = hmac_key_cached(slice::from_raw_parts(secret, slen));
     let mut rnd = [0u8; 32];
     if getrandom::fill(&mut rnd).is_err() {
         return 0;
@@ -1424,6 +1437,54 @@ mod tests {
     }
 
     #[test]
+    fn hmac_key_cache_reuses_compiled_key() {
+        // Same-secret calls must hit the cache (the whole point of the LRU):
+        // repeated calls reuse the precomputed key schedule instead of
+        // re-deriving it via `hmac::Key::new`.
+        HMAC_KEY_CACHE.with(|c| c.borrow_mut().clear());
+        HMAC_CACHE_HITS.with(|h| h.set(0));
+        let secret = b"same-secret";
+        let _ = hmac_key_cached(secret);
+        let _ = hmac_key_cached(secret);
+        let _ = hmac_key_cached(secret);
+        let hits = HMAC_CACHE_HITS.with(|h| h.get());
+        assert!(
+            hits >= 2,
+            "same-secret calls must reuse the cached key (hits={hits})"
+        );
+    }
+
+    #[test]
+    fn hmac_key_cache_matches_fresh_key() {
+        // The cached key must be byte-identical in behavior to a freshly
+        // derived key for every secret.
+        for secret in [b"a".as_slice(), b"secret-key", b"x".repeat(300).as_slice()] {
+            let cached = hmac_key_cached(secret);
+            let fresh = hmac_key(secret);
+            let data = b"hello world";
+            let a = hmac::sign(&cached, data);
+            let b = hmac::sign(&fresh, data);
+            assert_eq!(a.as_ref(), b.as_ref(), "cached key differs from fresh key");
+        }
+    }
+
+    #[test]
+    fn hmac_key_cache_survives_eviction_thrash() {
+        // Exceed the LRU capacity with distinct secrets: eviction must not
+        // corrupt the surviving entries (every secret still verifies).
+        for i in 0..(HMAC_KEY_CACHE_CAP * 4) {
+            let secret = format!("secret-{i}").into_bytes();
+            let key = hmac_key_cached(&secret);
+            let data = b"payload";
+            let tag = hmac::sign(&key, data);
+            assert!(
+                hmac::verify(&key, data, tag.as_ref()).is_ok(),
+                "secret-{i} failed after cache eviction"
+            );
+        }
+    }
+
+    #[test]
     fn hex_encode_c_abi_roundtrip() {
         let input = b"hello";
         let mut out = [0u8; 16];
@@ -1504,66 +1565,36 @@ mod tests {
     }
 
     #[test]
-    fn json_sum_ids_c_abi() {
+    fn json_sum_ids_c_abi_packed_output() {
         let doc = b"[{\"id\":1},{\"id\":2},{\"id\":3}]";
         let mut out = [0u8; 9];
-        let w = unsafe { castrum_json_sum_ids(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len()) };
+        let w = unsafe {
+            castrum_json_sum_ids(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len())
+        };
         assert_eq!(w, 9);
         assert_eq!(out[0], 1);
         assert_eq!(i64::from_le_bytes(out[1..9].try_into().unwrap()), 6);
-        // Invalid (non-array) input → ok=0, w=1.
-        let mut out2 = [0u8; 9];
-        let w2 = unsafe { castrum_json_sum_ids(b"nope".as_ptr(), 4, out2.as_mut_ptr(), out2.len()) };
-        assert_eq!(w2, 1);
-        assert_eq!(out2[0], 0);
-        // A legit zero-sum is VALID → ok=1, sum=0 (the old ABI collapsed this
-        // to the same 0 as invalid input).
-        let zero = b"[{\"id\":0},{\"id\":0}]";
-        let mut out3 = [0u8; 9];
-        let w3 = unsafe {
-            castrum_json_sum_ids(zero.as_ptr(), zero.len(), out3.as_mut_ptr(), out3.len())
-        };
-        assert_eq!(w3, 9);
-        assert_eq!(out3[0], 1);
-        assert_eq!(i64::from_le_bytes(out3[1..9].try_into().unwrap()), 0);
-    }
 
-    #[test]
-    fn hmac_key_cache_hit_evict_and_parity() {
-        // The cache is thread-local; repeated same-secret lookups must return
-        // an equivalent compiled key (identical output), distinct secrets
-        // compile independently, and the bounded LRU stays alive under a flood.
-        let key = b"key";
-        let data = b"hello world";
-        let mut out_a = [0u8; 64];
-        let mut out_b = [0u8; 64];
-        unsafe {
-            castrum_hmac_sha256(key.as_ptr(), key.len(), data.as_ptr(), data.len(), out_a.as_mut_ptr(), out_a.len());
-            castrum_hmac_sha256(key.as_ptr(), key.len(), data.as_ptr(), data.len(), out_b.as_mut_ptr(), out_b.len());
-        }
-        assert_eq!(out_a, out_b);
-        let key2 = b"another-key";
-        let mut out_c = [0u8; 64];
-        unsafe {
-            castrum_hmac_sha256(key2.as_ptr(), key2.len(), data.as_ptr(), data.len(), out_c.as_mut_ptr(), out_c.len());
-        }
-        assert_ne!(out_a, out_c);
-        // Eviction: fill past the cap; the LRU must keep working (no panic,
-        // outputs non-empty) and a recent key still resolves.
-        for i in 0..(HMAC_KEY_CACHE_CAP + 8) {
-            let s = format!("secret-{i}");
-            let mut o = [0u8; 64];
-            unsafe {
-                castrum_hmac_sha256(s.as_bytes().as_ptr(), s.len(), data.as_ptr(), data.len(), o.as_mut_ptr(), o.len());
-            }
-            assert_ne!(&o[..], &[0u8; 64]);
-        }
-        let recent = b"secret-22";
-        let mut out_d = [0u8; 64];
-        unsafe {
-            castrum_hmac_sha256(recent.as_ptr(), recent.len(), data.as_ptr(), data.len(), out_d.as_mut_ptr(), out_d.len());
-        }
-        assert_ne!(&out_d[..], &[0u8; 64]);
+        // A legit zero-sum array is still "ok" (the old scalar i64 conflated
+        // this with invalid input).
+        let zero = b"[{\"id\":0},{\"id\":0}]";
+        let w = unsafe {
+            castrum_json_sum_ids(zero.as_ptr(), zero.len(), out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 9);
+        assert_eq!(out[0], 1);
+        assert_eq!(i64::from_le_bytes(out[1..9].try_into().unwrap()), 0);
+
+        // Invalid (non-array) input → ok=0, 1 byte.
+        let w = unsafe { castrum_json_sum_ids(b"nope".as_ptr(), 4, out.as_mut_ptr(), out.len()) };
+        assert_eq!(w, 1);
+        assert_eq!(out[0], 0);
+
+        // Too-small output → exact required size (9/1), no write past cap.
+        let w = unsafe { castrum_json_sum_ids(doc.as_ptr(), doc.len(), out.as_mut_ptr(), 1) };
+        assert_eq!(w, 9);
+        let w = unsafe { castrum_json_sum_ids(b"nope".as_ptr(), 4, out.as_mut_ptr(), 0) };
+        assert_eq!(w, 1);
     }
 
     #[test]

@@ -7,17 +7,18 @@
 // other's implementation module.
 
 /** Default maximum request body size in bytes. */
-export const DEFAULT_MAX_BODY_BYTES = 1_048_576;
+export const DEFAULT_MAX_BODY_BYTES = 1_048_576
 
 /**
  * Default native ingress output-buffer size (bytes) for the FAST path
  * (`createIngressFast`).
  *
- * The fast path allocates a fresh output buffer per `run()` call, so a larger
- * default reduces reallocation on large responses. Perf-sensitive — change
- * only with benchmarking.
+ * The fast path allocates its output buffer ONCE in the factory and reuses it
+ * across `run()` calls, so this default sets headroom for large responses
+ * (avoiding per-request growth) rather than per-request allocation cost.
+ * Perf-sensitive — change only with benchmarking.
  */
-export const DEFAULT_FAST_OUTPUT_BUFFER_SIZE = 262_144;
+export const DEFAULT_FAST_OUTPUT_BUFFER_SIZE = 262_144
 
 /**
  * Default native ingress output-buffer size (bytes) for the PRE-BAKED path
@@ -27,7 +28,7 @@ export const DEFAULT_FAST_OUTPUT_BUFFER_SIZE = 262_144;
  * a smaller default keeps peak memory lower. Perf-sensitive — change only
  * with benchmarking. The two paths intentionally differ (see above).
  */
-export const DEFAULT_BAKED_OUTPUT_BUFFER_SIZE = 131_072;
+export const DEFAULT_BAKED_OUTPUT_BUFFER_SIZE = 131_072
 
 /**
  * Upper bound on ingress native output buffers (64 MiB). A huge misconfigured
@@ -35,17 +36,14 @@ export const DEFAULT_BAKED_OUTPUT_BUFFER_SIZE = 131_072;
  * (`handle_request_full_sync` allocates `vec![0u8; output_size]`), OOM-ing the
  * process. Callers that genuinely need more can raise it here.
  */
-export const MAX_OUTPUT_BUFFER_SIZE = 64 * 1024 * 1024;
+export const MAX_OUTPUT_BUFFER_SIZE = 64 * 1024 * 1024
 
 /**
  * Clamp an ingress output-buffer size into `[min, MAX_OUTPUT_BUFFER_SIZE]` so
  * a misconfigured (huge/negative/NaN) value can never reach the native layer.
  */
 export function clampIngressBufferSize(size: number, min: number): number {
-  return Math.min(
-    MAX_OUTPUT_BUFFER_SIZE,
-    Math.max(min, Math.floor(size)),
-  );
+  return Math.min(MAX_OUTPUT_BUFFER_SIZE, Math.max(min, Math.floor(size)))
 }
 
 /**
@@ -53,7 +51,7 @@ export function clampIngressBufferSize(size: number, min: number): number {
  * async `createIngress` / route handlers are protected against slowloris and
  * trickling bodies by default. Set `bodyTimeoutMs: 0` to disable.
  */
-export const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+export const DEFAULT_BODY_TIMEOUT_MS = 30_000
 
 /**
  * Convert a millisecond duration to whole seconds, rounding UP.
@@ -63,7 +61,7 @@ export const DEFAULT_BODY_TIMEOUT_MS = 30_000;
  * are whole-second integers (a partial second must not report 0).
  */
 export function secondsFromMs(ms: number): number {
-  return Math.ceil(ms / 1000);
+  return Math.ceil(ms / 1000)
 }
 
 /** Maps HTTP methods to the native Ingress method-kind enum. */
@@ -75,17 +73,17 @@ export const METHOD_KIND: Record<string, number> = {
   PATCH: 4,
   DELETE: 5,
   OPTIONS: 6,
-};
+}
 
 /** Method-kind value for methods not present in {@link METHOD_KIND}. */
-export const METHOD_KIND_UNKNOWN = 7;
+export const METHOD_KIND_UNKNOWN = 7
 
 /** Which request headers to extract into the packed input. */
 export interface HeaderPlan {
-  cookie: boolean;
-  cors: boolean;
-  proxy: boolean;
-  proto: boolean;
+  cookie: boolean
+  cors: boolean
+  proxy: boolean
+  proto: boolean
 }
 
 /**
@@ -100,20 +98,19 @@ export interface HeaderPlan {
  * `https` is not pinned explicitly.
  */
 export function buildHeaderPlan(options: {
-  parseCookies?: boolean;
-  cors?: unknown;
-  trustProxy?: boolean;
-  trustedProxies?: { enabled?: boolean };
-  https?: boolean;
+  parseCookies?: boolean
+  cors?: unknown
+  trustProxy?: boolean
+  trustedProxies?: { enabled?: boolean }
+  https?: boolean
 }): HeaderPlan {
-  const trust =
-    options.trustProxy === true || options.trustedProxies?.enabled === true;
+  const trust = options.trustProxy === true || options.trustedProxies?.enabled === true
   return {
     cookie: options.parseCookies === true,
     cors: options.cors != null,
     proxy: trust,
     proto: trust && options.https === undefined,
-  };
+  }
 }
 
 /**
@@ -127,9 +124,9 @@ export function buildHeaderPlan(options: {
 export function assertSyncCallback<T>(out: T, label: string): void {
   if (
     out !== null &&
-    (typeof out === "object" || typeof out === "function") &&
-    typeof (out as { then?: unknown }).then === "function"
+    (typeof out === 'object' || typeof out === 'function') &&
+    typeof (out as { then?: unknown }).then === 'function'
   ) {
-    throw new Error(`${label} callback must be synchronous.`);
+    throw new Error(`${label} callback must be synchronous.`)
   }
 }

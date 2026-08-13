@@ -14,22 +14,18 @@ import {
   HV_CORS_PREFLIGHT,
   HV_RATE_ACTIVE,
   HV_RATE_LIMITED,
-} from "../constants";
-import {
-  buildCorsStaticStrings,
-  type CorsOptions,
-  type CorsStaticStrings,
-} from "./cors";
-import { buildHstsValue, type SecurityHeadersOptions } from "./hsts";
-import { secondsFromMs } from "../shared";
+} from '../constants'
+import { buildCorsStaticStrings, type CorsOptions, type CorsStaticStrings } from './cors'
+import { buildHstsValue, buildSecurityPairs, type SecurityHeadersOptions } from './hsts'
+import { secondsFromMs } from '../shared'
 
 /** A single precomputed header-variant template. */
 export interface HeaderTemplate {
-  readonly entries: ReadonlyArray<readonly [string, string]>;
-  readonly needsOriginEcho: boolean;
-  readonly needsRateDynamic: boolean;
-  readonly needsRetryAfter: boolean;
-  readonly needsDynamicHsts: boolean;
+  readonly entries: ReadonlyArray<readonly [string, string]>
+  readonly needsOriginEcho: boolean
+  readonly needsRateDynamic: boolean
+  readonly needsRetryAfter: boolean
+  readonly needsDynamicHsts: boolean
 }
 
 /**
@@ -42,172 +38,129 @@ const EMPTY_HEADER_TEMPLATE: HeaderTemplate = Object.freeze({
   needsRateDynamic: false,
   needsRetryAfter: false,
   needsDynamicHsts: false,
-});
+})
 
 /** Precomputed per-handler response context. */
 export interface ResponseBuildContext {
-  readonly templates: HeaderTemplate[];
-  readonly corsStatic: CorsStaticStrings | null;
-  readonly hstsValue: string | null;
+  readonly templates: HeaderTemplate[]
+  readonly corsStatic: CorsStaticStrings | null
+  readonly hstsValue: string | null
 }
 
 /**
  * Build the full response context (header templates + static CORS strings +
  * HSTS value) for a handler configuration.
  */
-export function buildResponseContext(
-  options: {
-    cors?: CorsOptions;
-    security?: SecurityHeadersOptions;
-    https?: boolean;
-    enableSecurityHeaders?: boolean;
-    rateLimit?: { limit?: number };
-  },
-): ResponseBuildContext {
-  const templates = buildHeaderTemplates(options);
-  const corsStatic = buildCorsStaticStrings(options.cors);
-  const hstsValue = buildHstsValue(options.security ?? {});
+export function buildResponseContext(options: {
+  cors?: CorsOptions
+  security?: SecurityHeadersOptions
+  https?: boolean
+  enableSecurityHeaders?: boolean
+  rateLimit?: { limit?: number }
+}): ResponseBuildContext {
+  const templates = buildHeaderTemplates(options)
+  const corsStatic = buildCorsStaticStrings(options.cors)
+  const hstsValue = buildHstsValue(options.security ?? {})
 
-  return { templates, corsStatic, hstsValue };
+  return { templates, corsStatic, hstsValue }
 }
 
-function buildHeaderTemplates(
-  options: {
-    cors?: CorsOptions;
-    security?: SecurityHeadersOptions;
-    https?: boolean;
-    enableSecurityHeaders?: boolean;
-    rateLimit?: { limit?: number };
-  },
-): HeaderTemplate[] {
-  const templates: HeaderTemplate[] = new Array(HV_COUNT);
+function buildHeaderTemplates(options: {
+  cors?: CorsOptions
+  security?: SecurityHeadersOptions
+  https?: boolean
+  enableSecurityHeaders?: boolean
+  rateLimit?: { limit?: number }
+}): HeaderTemplate[] {
+  const templates: HeaderTemplate[] = new Array(HV_COUNT)
 
-  const sec = options.security ?? {};
-  const securityEnabled = options.enableSecurityHeaders !== false;
-  const corsStatic = buildCorsStaticStrings(options.cors);
-  const hstsValue = buildHstsValue(sec);
-  const hstsIsDynamic = options.https === undefined && hstsValue !== null;
+  const sec = options.security ?? {}
+  const securityEnabled = options.enableSecurityHeaders !== false
+  const corsStatic = buildCorsStaticStrings(options.cors)
+  const hstsValue = buildHstsValue(sec)
+  const hstsIsDynamic = options.https === undefined && hstsValue !== null
 
-  const securityPairs: Array<[string, string]> = [];
+  // Single source of truth for security-option → header pairs (shared with the
+  // pre-baked handlers.ts path — see buildSecurityPairs in ./hsts.ts), so a
+  // security option can never be honored on one path and ignored on the other.
+  const securityPairs = buildSecurityPairs(sec, options.https, securityEnabled)
 
-  if (securityEnabled) {
-    if (sec.nosniff !== false) {
-      securityPairs.push(["x-content-type-options", "nosniff"]);
-    }
-
-    securityPairs.push(["x-frame-options", sec.frameOptions ?? "DENY"]);
-    securityPairs.push(["referrer-policy", sec.referrerPolicy ?? "no-referrer"]);
-
-    if (sec.xssProtection) {
-      securityPairs.push(["x-xss-protection", sec.xssProtection]);
-    }
-
-    if (sec.contentSecurityPolicy) {
-      securityPairs.push(["content-security-policy", sec.contentSecurityPolicy]);
-    }
-
-    if (sec.coep) {
-      securityPairs.push(["cross-origin-embedder-policy", sec.coep]);
-    }
-
-    if (sec.coop) {
-      securityPairs.push(["cross-origin-opener-policy", sec.coop]);
-    }
-
-    if (sec.corp) {
-      securityPairs.push(["cross-origin-resource-policy", sec.corp]);
-    }
-
-    if (hstsValue !== null && options.https === true) {
-      securityPairs.push(["strict-transport-security", hstsValue]);
-    }
-  }
-
-  const corsVaryPairs: Array<[string, string]> = [];
+  const corsVaryPairs: Array<[string, string]> = []
 
   if (corsStatic) {
-    corsVaryPairs.push(["vary", "Origin"]);
+    corsVaryPairs.push(['vary', 'Origin'])
 
     if (!corsStatic.isWildcard) {
-      corsVaryPairs.push(["vary", "Access-Control-Request-Method"]);
-      corsVaryPairs.push(["vary", "Access-Control-Request-Headers"]);
+      corsVaryPairs.push(['vary', 'Access-Control-Request-Method'])
+      corsVaryPairs.push(['vary', 'Access-Control-Request-Headers'])
     }
   }
 
-  const corsPolicyPairs: Array<[string, string]> = [];
+  const corsPolicyPairs: Array<[string, string]> = []
 
   if (corsStatic) {
     if (corsStatic.credentials) {
-      corsPolicyPairs.push(["access-control-allow-credentials", "true"]);
+      corsPolicyPairs.push(['access-control-allow-credentials', 'true'])
     }
 
     if (corsStatic.exposeHeadersJoined) {
-      corsPolicyPairs.push([
-        "access-control-expose-headers",
-        corsStatic.exposeHeadersJoined,
-      ]);
+      corsPolicyPairs.push(['access-control-expose-headers', corsStatic.exposeHeadersJoined])
     }
   }
 
-  const corsPreflightPairs: Array<[string, string]> = [];
+  const corsPreflightPairs: Array<[string, string]> = []
 
   if (corsStatic) {
-    corsPreflightPairs.push([
-      "access-control-allow-methods",
-      corsStatic.allowMethodsJoined,
-    ]);
+    corsPreflightPairs.push(['access-control-allow-methods', corsStatic.allowMethodsJoined])
 
     if (corsStatic.allowHeadersJoined) {
-      corsPreflightPairs.push([
-        "access-control-allow-headers",
-        corsStatic.allowHeadersJoined,
-      ]);
+      corsPreflightPairs.push(['access-control-allow-headers', corsStatic.allowHeadersJoined])
     }
 
     if (corsStatic.maxAgeString) {
-      corsPreflightPairs.push(["access-control-max-age", corsStatic.maxAgeString]);
+      corsPreflightPairs.push(['access-control-max-age', corsStatic.maxAgeString])
     }
   }
 
-  const rateLimitCeiling: Array<[string, string]> = [];
+  const rateLimitCeiling: Array<[string, string]> = []
 
   if (options.rateLimit?.limit && options.rateLimit.limit > 0) {
-    rateLimitCeiling.push(["x-ratelimit-limit", String(options.rateLimit.limit)]);
+    rateLimitCeiling.push(['x-ratelimit-limit', String(options.rateLimit.limit)])
   }
 
   for (let variant = 0; variant < HV_COUNT; variant++) {
-    const isCorsSimple = (variant & HV_CORS_SIMPLE) !== 0;
-    const isCorsPreflight = (variant & HV_CORS_PREFLIGHT) !== 0;
-    const isRateActive = (variant & HV_RATE_ACTIVE) !== 0;
-    const isRateLimited = (variant & HV_RATE_LIMITED) !== 0;
+    const isCorsSimple = (variant & HV_CORS_SIMPLE) !== 0
+    const isCorsPreflight = (variant & HV_CORS_PREFLIGHT) !== 0
+    const isRateActive = (variant & HV_RATE_ACTIVE) !== 0
+    const isRateLimited = (variant & HV_RATE_LIMITED) !== 0
 
-    const entries: Array<[string, string]> = [];
+    const entries: Array<[string, string]> = []
 
     if (securityEnabled) {
       for (const pair of securityPairs) {
-        entries.push(pair);
+        entries.push(pair)
       }
     }
 
     for (const pair of corsVaryPairs) {
-      entries.push(pair);
+      entries.push(pair)
     }
 
     if (isCorsSimple || isCorsPreflight) {
       for (const pair of corsPolicyPairs) {
-        entries.push(pair);
+        entries.push(pair)
       }
     }
 
     if (isCorsPreflight) {
       for (const pair of corsPreflightPairs) {
-        entries.push(pair);
+        entries.push(pair)
       }
     }
 
     if (isRateActive) {
       for (const pair of rateLimitCeiling) {
-        entries.push(pair);
+        entries.push(pair)
       }
     }
 
@@ -217,10 +170,10 @@ function buildHeaderTemplates(
       needsRateDynamic: isRateActive,
       needsRetryAfter: isRateLimited,
       needsDynamicHsts: hstsIsDynamic,
-    };
+    }
   }
 
-  return templates;
+  return templates
 }
 
 /**
@@ -230,61 +183,56 @@ function buildHeaderTemplates(
 export function headersForResult(
   ctx: ResponseBuildContext,
   r: {
-    readonly headerVariant: number;
-    readonly corsAllowed: boolean;
-    readonly rateRemaining: number;
-    readonly rateResetMs: number;
-    readonly retryAfterMs: number;
-    readonly https: boolean;
+    readonly headerVariant: number
+    readonly corsAllowed: boolean
+    readonly rateRemaining: number
+    readonly rateResetMs: number
+    readonly retryAfterMs: number
+    readonly https: boolean
   },
   req: Request,
   requestId: string,
 ): Headers {
   const template =
-    ctx.templates[r.headerVariant & 0x1f] ??
-    ctx.templates[0] ??
-    EMPTY_HEADER_TEMPLATE;
+    ctx.templates[r.headerVariant & 0x1f] ?? ctx.templates[0] ?? EMPTY_HEADER_TEMPLATE
 
-  const headers = new Headers();
+  const headers = new Headers()
 
   for (const [name, value] of template.entries) {
-    headers.append(name, value);
+    headers.append(name, value)
   }
 
   if (requestId) {
-    headers.set("x-request-id", requestId);
+    headers.set('x-request-id', requestId)
   }
 
   if (template.needsOriginEcho && r.corsAllowed && ctx.corsStatic) {
-    const origin = req.headers.get("origin");
+    const origin = req.headers.get('origin')
 
     if (origin) {
       if (ctx.corsStatic.isWildcard && !ctx.corsStatic.credentials) {
-        headers.set("access-control-allow-origin", "*");
+        headers.set('access-control-allow-origin', '*')
       } else {
-        headers.set("access-control-allow-origin", origin);
+        headers.set('access-control-allow-origin', origin)
       }
     }
   }
 
   if (template.needsRateDynamic) {
-    headers.set("x-ratelimit-remaining", String(Math.max(0, r.rateRemaining)));
+    headers.set('x-ratelimit-remaining', String(Math.max(0, r.rateRemaining)))
 
     if (r.rateResetMs > 0) {
-      headers.set("x-ratelimit-reset", String(secondsFromMs(r.rateResetMs)));
+      headers.set('x-ratelimit-reset', String(secondsFromMs(r.rateResetMs)))
     }
   }
 
   if (template.needsRetryAfter && r.retryAfterMs > 0) {
-    headers.set(
-      "retry-after",
-      String(Math.max(1, secondsFromMs(r.retryAfterMs))),
-    );
+    headers.set('retry-after', String(Math.max(1, secondsFromMs(r.retryAfterMs))))
   }
 
   if (template.needsDynamicHsts && r.https && ctx.hstsValue) {
-    headers.set("strict-transport-security", ctx.hstsValue);
+    headers.set('strict-transport-security', ctx.hstsValue)
   }
 
-  return headers;
+  return headers
 }

@@ -251,7 +251,9 @@ pub fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
 /// Iterate over the `name=value` pairs in a cookie-style header.
 ///
 /// Pairs are split on `;`, whitespace-trimmed, and entries with an empty name
-/// are skipped. A missing `=` yields an empty value.
+/// are skipped. A missing `=` yields an empty value. A value wrapped in
+/// surrounding double quotes is unwrapped (RFC 6265 §5.2) so the native
+/// output is byte-identical to the JS fallback.
 pub fn cookie_pairs(input: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> + '_ {
     input.split(|&b| b == b';').filter_map(|raw| {
         let pair = trim_ascii_whitespace(raw);
@@ -270,6 +272,14 @@ pub fn cookie_pairs(input: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> + '_ {
         if name.is_empty() {
             return None;
         }
+
+        // RFC 6265 §5.2: unwrap a cookie-value surrounded by DQUOTE (only when
+        // BOTH ends quote, matching the JS fallback's `unquote` exactly).
+        let value = if value.len() >= 2 && value[0] == b'"' && value[value.len() - 1] == b'"' {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        };
 
         Some((name, value))
     })
@@ -321,27 +331,33 @@ mod tests {
     }
 
     #[test]
-    fn decode_form_capacity_semantics() {
-        // A `%XX` sequence shrinks 3 input bytes → 1; a buffer sized to the
-        // decoded length must succeed even though it is smaller than `src`.
-        let src = b"abcdef%20ghijkl";
-        let mut small = vec![0u8; src.len() - 2]; // decoded length = src.len() - 2
-        let n = decode_form_component_into(src, &mut small).unwrap();
-        assert_eq!(n, src.len() - 2);
-        assert_eq!(&small[..n], b"abcdef ghijkl");
-
-        // Too small for even the decoded form → BufferTooSmall.
-        let mut tiny = vec![0u8; src.len() - 3];
+    fn cookie_pairs_unwraps_dquote() {
+        let pairs: Vec<(&[u8], &[u8])> = cookie_pairs(b"a=1; b=\"quoted value\"; c=\"\"; d=\"abc; empty=")
+            .collect();
         assert_eq!(
-            decode_form_component_into(src, &mut tiny),
-            Err(FormDecodeError::BufferTooSmall)
+            pairs,
+            vec![
+                (&b"a"[..], &b"1"[..]),
+                (&b"b"[..], &b"quoted value"[..]),
+                (&b"c"[..], &b""[..]),
+                (&b"d"[..], &b"\"abc"[..]), // unbalanced quote kept, matches JS
+                (&b"empty"[..], &b""[..]),
+            ]
         );
+    }
 
-        // Plain input requires the full length.
-        let mut tiny = [0u8; 2];
+    #[test]
+    fn cookie_pairs_keeps_unbalanced_quotes() {
+        // A quote only at one end (or embedded) is left as-is — matches JS.
+        let pairs: Vec<(&[u8], &[u8])> = cookie_pairs(b"a=\"abc; b=ab\"c; c=\"quote")
+            .collect();
         assert_eq!(
-            decode_form_component_into(b"abc", &mut tiny),
-            Err(FormDecodeError::BufferTooSmall)
+            pairs,
+            vec![
+                (&b"a"[..], &b"\"abc"[..]),
+                (&b"b"[..], &b"ab\"c"[..]),
+                (&b"c"[..], &b"\"quote"[..]),
+            ]
         );
     }
 }

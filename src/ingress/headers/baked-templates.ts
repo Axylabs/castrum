@@ -8,29 +8,24 @@
 // builder (./fast-templates.ts) with a different wire format (x-ratelimit-*) —
 // do not unify them (see AGENTS.md).
 
-import {
-  HV_JSON,
-  HV_CORS_SIMPLE,
-  HV_CORS_PREFLIGHT,
-  HV_RATE_ACTIVE,
-} from "../constants";
+import { HV_JSON, HV_CORS_SIMPLE, HV_CORS_PREFLIGHT, HV_RATE_ACTIVE } from '../constants'
 
 /** Inputs needed to build the pre-baked header templates. */
 export interface BakedTemplateParams {
-  securityEntries: ReadonlyArray<[string, string]>;
+  securityEntries: ReadonlyArray<[string, string]>
   cors?: {
-    allowOrigin?: string[];
-    allowMethods?: string[];
-    allowHeaders?: string[];
-    exposeHeaders?: string[];
-    allowCredentials?: boolean;
-    maxAge?: number;
-  };
-  corsAllowMethods: string;
-  corsAllowHeaders: string;
-  corsExposeHeaders: string;
-  corsMaxAge: string;
-  rateLimitStr: string;
+    allowOrigin?: string[]
+    allowMethods?: string[]
+    allowHeaders?: string[]
+    exposeHeaders?: string[]
+    allowCredentials?: boolean
+    maxAge?: number
+  }
+  corsAllowMethods: string
+  corsAllowHeaders: string
+  corsExposeHeaders: string
+  corsMaxAge: string
+  rateLimitStr: string
 }
 
 /**
@@ -43,11 +38,9 @@ export interface BakedTemplateParams {
  *   steady-state error path can return a frozen array with no per-response
  *   allocation or copy.
  */
-export function buildBakedHeaderTemplates(
-  params: BakedTemplateParams,
-): {
-  regular: ReadonlyArray<ReadonlyArray<[string, string]>>;
-  terminal: ReadonlyArray<ReadonlyArray<[string, string]>>;
+export function buildBakedHeaderTemplates(params: BakedTemplateParams): {
+  regular: ReadonlyArray<ReadonlyArray<[string, string]>>
+  terminal: ReadonlyArray<ReadonlyArray<[string, string]>>
 } {
   const {
     securityEntries,
@@ -57,56 +50,53 @@ export function buildBakedHeaderTemplates(
     corsExposeHeaders,
     corsMaxAge,
     rateLimitStr,
-  } = params;
+  } = params
 
   const regular = Object.freeze(
     Array.from({ length: 32 }, (_, variant) => {
-      const entries: [string, string][] = [...securityEntries];
+      const entries: [string, string][] = [...securityEntries]
 
       if ((variant & HV_JSON) !== 0) {
-        entries.push(["content-type", "application/json"]);
+        entries.push(['content-type', 'application/json'])
       }
 
       if ((variant & HV_CORS_SIMPLE) !== 0) {
-        entries.push(["vary", "Origin"]);
+        entries.push(['vary', 'Origin'])
         if (cors?.allowCredentials) {
-          entries.push(["access-control-allow-credentials", "true"]);
+          entries.push(['access-control-allow-credentials', 'true'])
         }
         if (corsExposeHeaders.length > 0) {
-          entries.push(["access-control-expose-headers", corsExposeHeaders]);
+          entries.push(['access-control-expose-headers', corsExposeHeaders])
         }
       }
 
       if ((variant & HV_CORS_PREFLIGHT) !== 0) {
         entries.push([
-          "vary",
-          "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
-        ]);
+          'vary',
+          'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
+        ])
         if (cors?.allowCredentials) {
-          entries.push(["access-control-allow-credentials", "true"]);
+          entries.push(['access-control-allow-credentials', 'true'])
         }
-        entries.push(["access-control-allow-methods", corsAllowMethods]);
-        entries.push(["access-control-allow-headers", corsAllowHeaders]);
-        entries.push(["access-control-max-age", corsMaxAge]);
+        entries.push(['access-control-allow-methods', corsAllowMethods])
+        entries.push(['access-control-allow-headers', corsAllowHeaders])
+        entries.push(['access-control-max-age', corsMaxAge])
       }
 
       if ((variant & HV_RATE_ACTIVE) !== 0) {
-        entries.push(["ratelimit-limit", rateLimitStr]);
+        entries.push(['ratelimit-limit', rateLimitStr])
       }
 
-      return Object.freeze(entries);
+      return Object.freeze(entries)
     }),
-  );
+  )
 
   const terminal = Object.freeze(
     regular.map((t) => {
-      const entries: [string, string][] = [
-        ...t,
-        ["cache-control", "no-store"],
-      ];
-      return Object.freeze(entries);
+      const entries: [string, string][] = [...t, ['cache-control', 'no-store']]
+      return Object.freeze(entries)
     }),
-  );
+  )
 
-  return { regular, terminal };
+  return { regular, terminal }
 }

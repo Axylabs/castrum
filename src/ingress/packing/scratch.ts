@@ -7,7 +7,7 @@
 // keeping the hot path allocation-free.
 
 /** Scratch capacity for the reusable packed-header buffer. */
-export const HEADER_BUF_SIZE = 8192;
+export const HEADER_BUF_SIZE = 8192
 
 // ── Per-header size guards (SHARED by BOTH packing paths) ─────────
 // A header value larger than the bound below is dropped BEFORE packing rather
@@ -17,34 +17,34 @@ export const HEADER_BUF_SIZE = 8192;
 // path silently dropped the same header. Both paths must share ONE policy;
 // keep the Rust `max_headers_bytes` bound in mind when changing these.
 /** Upper bound for the `cookie` header value. */
-export const MAX_COOKIE_HEADER_BYTES = 8192;
+export const MAX_COOKIE_HEADER_BYTES = 8192
 /** Upper bound for small single-value headers (origin, ACRM, ACRH, ...). */
-export const MAX_SMALL_HEADER_BYTES = 2048;
+export const MAX_SMALL_HEADER_BYTES = 2048
 /** Upper bound for the `x-forwarded-for` header value. */
-export const MAX_XFF_HEADER_BYTES = 8192;
+export const MAX_XFF_HEADER_BYTES = 8192
 
 // Thread-local header buffer for per-call isolation (round-robin over a
 // bounded pool; each buffer is only borrowed for the duration of one
 // pack/gather call).
 const [getHeaderBuf] = (() => {
-  const tls: [Uint8Array, DataView][] = [];
-  const MAX_CACHED = 256;
-  let tlsIdx = 0;
+  const tls: [Uint8Array, DataView][] = []
+  const MAX_CACHED = 256
+  let tlsIdx = 0
 
   function acquire(): [Uint8Array, DataView] {
-    const cached = tls[tlsIdx];
-    tlsIdx = (tlsIdx + 1) % MAX_CACHED;
-    if (cached) return cached;
+    const cached = tls[tlsIdx]
+    tlsIdx = (tlsIdx + 1) % MAX_CACHED
+    if (cached) return cached
 
-    const buf = new Uint8Array(HEADER_BUF_SIZE);
-    const view = new DataView(buf.buffer);
-    const pair: [Uint8Array, DataView] = [buf, view];
-    tls.push(pair);
-    return pair;
+    const buf = new Uint8Array(HEADER_BUF_SIZE)
+    const view = new DataView(buf.buffer)
+    const pair: [Uint8Array, DataView] = [buf, view]
+    tls.push(pair)
+    return pair
   }
 
-  return [acquire];
-})();
+  return [acquire]
+})()
 
 /** Acquire the next scratch header buffer + view from the thread-local pool. */
-export { getHeaderBuf };
+export { getHeaderBuf }

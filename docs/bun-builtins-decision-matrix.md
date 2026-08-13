@@ -68,10 +68,6 @@ FFI crossing cannot beat Bun's in-process C++:
 | `randomToken` | Prefer `Bun.randomUUIDv7()` (or `crypto.getRandomValues`) for token-sized output; keep rust for byte-precise control. |
 | `hmacSha256` | Prefer `Bun.CryptoHasher("sha256", key)` (1.17× — mild; keep rust batch path, which wins on larger inputs). |
 | `fnv1a64` | Parity — either is fine; `Bun.hash` (wyhash) is a stronger algorithm, prefer it for NEW non-crypto hashing needs. |
-| `urlEncode` | **NOW BOUND in the rust surface**: `rust.urlEncode` / `rust.text.urlEncode` delegate to `encodeURIComponent` under Bun (~3–4× faster than the FFI crossing; byte parity pinned). Rust addon stays the Node path. |
-| `urlDecode` | **NOW BOUND in the rust surface**: `rust.urlDecode` / `rust.text.urlDecode` delegate to `decodeURIComponent` under Bun (~4–8× faster; strict UTF-8 semantics match). Raw-bytes `urlDecodeBytes` stays native. |
-| `httpDate` | **NOW BOUND in the rust surface**: `rust.httpDate` delegates to `Date.toUTCString()` under Bun (~3.7× faster; byte-identical RFC 1123). |
-| `base64Encode` | **NOW BOUND in the rust surface**: `rust.base64Encode` delegates to `Buffer` base64 under Bun for the standard padded case (~2× faster); url-safe/unpadded stays native. |
 
 **Delegation rule of thumb**: rust stays the default only where it is
 `proven` against its **Bun** baseline (not just its JS baseline). These are the

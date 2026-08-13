@@ -5,23 +5,18 @@
  * place that inspects `typeof Bun`. These tests run under `bun test` (Bun).
  */
 
-import { describe, test, expect } from "bun:test";
-import {
-  isBun,
-  isNode,
-  nodeMajorVersion,
-  runtimeName,
-} from "../../../src/shared/runtime";
+import { describe, test, expect } from 'bun:test'
+import { isBun, isNode, nodeMajorVersion, runtimeName } from '../../../src/shared/runtime'
 
-describe("runtime detection seam", () => {
-  test("detects the current (Bun) runtime", () => {
-    expect(isBun()).toBe(true);
-    expect(isNode()).toBe(false);
-    expect(runtimeName()).toBe("bun");
-    expect(nodeMajorVersion()).toBeNull();
-  });
+describe('runtime detection seam', () => {
+  test('detects the current (Bun) runtime', () => {
+    expect(isBun()).toBe(true)
+    expect(isNode()).toBe(false)
+    expect(runtimeName()).toBe('bun')
+    expect(nodeMajorVersion()).toBeNull()
+  })
 
-  test("isBun and isNode are mutually exclusive", () => {
-    expect(isBun() && isNode()).toBe(false);
-  });
-});
+  test('isBun and isNode are mutually exclusive', () => {
+    expect(isBun() && isNode()).toBe(false)
+  })
+})

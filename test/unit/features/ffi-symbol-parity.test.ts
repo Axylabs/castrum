@@ -1,0 +1,88 @@
+/**
+ * FFI symbol-parity guard (source-level): every `castrum_*` C-ABI export in
+ * rust/ffi.rs must be bound in src/native/ffi.ts's `dlopen` symbol map, and
+ * every bound symbol must exist in Rust.
+ *
+ * Closes the drift class where a NEW `castrum_*` export (or a renamed one) is
+ * silently never bound — it would compile and ship, but simply never be
+ * called — and where a bound symbol that no longer exists in Rust would fail
+ * at dlopen time (caught late, in production). The bind-time self-test
+ * (src/native/ffi.ts) is the VALUE backstop (wrong results → napi fallback);
+ * this test is the COMPLETENESS backstop (missing bindings are caught here).
+ */
+
+import { describe, test, expect } from 'bun:test'
+import { readFileSync } from 'node:fs'
+
+const rustSource = readFileSync(new URL('../../../rust/ffi.rs', import.meta.url), 'utf8')
+const ffiSource = readFileSync(new URL('../../../src/native/ffi.ts', import.meta.url), 'utf8')
+
+/** All `castrum_*` C-ABI export names declared in rust/ffi.rs. */
+function rustExports(src: string): Set<string> {
+  const names = new Set<string>()
+  // Direct `extern "C" fn castrum_x(...)` declarations...
+  for (const m of src.matchAll(/extern "C" fn (castrum_\w+)/g)) {
+    const name = m[1]
+    if (name) names.add(name)
+  }
+  // ...plus macro-generated exports (compress_to_out!, validator_c_abi!).
+  for (const m of src.matchAll(/(?:compress_to_out|validator_c_abi)!\((castrum_\w+)/g)) {
+    const name = m[1]
+    if (name) names.add(name)
+  }
+  return names
+}
+
+/** Symbol-map keys in the `dlopen(path, { castrum_x: {...} })` call. */
+function ffiBoundSymbols(src: string): Set<string> {
+  const names = new Set<string>()
+  // The dlopen symbol-map entries are the only `castrum_x: {` occurrences in
+  // the file (the `(sym.castrum_x as RawN)` bindings never use `: {`).
+  for (const m of src.matchAll(/(castrum_\w+):\s*\{/g)) {
+    const name = m[1]
+    if (name) names.add(name)
+  }
+  return names
+}
+
+/** Distinct BunFFI wrapper methods exercised by the bind-time self-test. */
+function selfTestCovers(src: string): Set<string> {
+  const start = src.indexOf('function selfTest(')
+  const body = src.slice(start, src.indexOf('\n}', start))
+  const methods = new Set<string>()
+  for (const m of body.matchAll(/\bb\.(\w+)\(/g)) {
+    const name = m[1]
+    if (name) methods.add(name)
+  }
+  return methods
+}
+
+describe('FFI symbol parity (source-level)', () => {
+  test('every castrum_* Rust export is bound in the ffi.ts symbol map', () => {
+    const rust = rustExports(rustSource)
+    const bound = ffiBoundSymbols(ffiSource)
+    const unbound = [...rust].filter((s) => !bound.has(s))
+    expect(unbound).toEqual([])
+  })
+
+  test('every bound symbol exists in rust/ffi.rs (no stale bindings)', () => {
+    const rust = rustExports(rustSource)
+    const bound = ffiBoundSymbols(ffiSource)
+    const stale = [...bound].filter((s) => !rust.has(s))
+    expect(stale).toEqual([])
+  })
+
+  test('the symbol sets are exactly equal', () => {
+    const rust = rustExports(rustSource)
+    const bound = ffiBoundSymbols(ffiSource)
+    expect(rust.size).toBe(bound.size)
+    expect([...rust].sort()).toEqual([...bound].sort())
+  })
+
+  test('the bind-time self-test exercises a broad set of wrappers', () => {
+    const covered = selfTestCovers(ffiSource)
+    // Current coverage is ~40 of 47 wrappers; floor guards against the
+    // self-test being gutted (a silent loss of the ffi value backstop).
+    expect(covered.size).toBeGreaterThanOrEqual(30)
+  })
+})

@@ -71,6 +71,7 @@
         "test:rust": "cargo test",
         "deny": "cargo deny check",
         "check:version": "bun scripts/check-version.mjs",
+        "check:jsdoc": "bun scripts/check-jsdoc.ts",
         "audit": "bun audit",
         "publish:manual": "node scripts/publish-manual.mjs",
         "publish:manual:dry": "node scripts/publish-manual.mjs --dry-run",
@@ -93,7 +94,12 @@
         "bench:http:ingress": "bun run bench/run-bench.ts '' ingress",
         "bench:http:bun-only": "bun run bench/run-bench.ts '' bun",
         "bench:http:all-heavy": "bun run bench/run-bench.ts 1",
-        "bench:startup": "bun run bench/startup.ts"
+        "bench:startup": "bun run bench/startup.ts",
+        "bench:ffi": "bun run bench/ffi-all.ts",
+        "bench:ffi:load": "bun run bench/ffi-load.ts",
+        "bench:ffi:public": "bun run bench/ffi-public.ts",
+        "bench:ffi:workers": "bun run bench/ffi-workers.ts",
+        "verify:native:batch": "bun run scripts/verify-native-batch.ts"
     },
     "dependencies": {},
     "peerDependencies": {

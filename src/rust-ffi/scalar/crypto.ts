@@ -17,6 +17,18 @@ export function buildCrypto(ctx: RustClientContext) {
 
   return {
     randomToken(byteLen: number): Uint8Array {
+      // Optimal by default under Bun: `crypto.getRandomValues` + native hex
+      // beats the rust+FFI crossing for token-sized draws (decision matrix).
+      // Preserves the native 16 MiB allocation guard and the hex format
+      // (2n bytes). Node keeps the addon.
+      if (isBun()) {
+        if (byteLen > 16 * 1024 * 1024) {
+          throw new RangeError('randomToken: byteLen exceeds 16 MiB limit')
+        }
+        return encoder.encode(
+          Buffer.from(crypto.getRandomValues(new Uint8Array(byteLen))).toString('hex'),
+        )
+      }
       const ffi = getBunFFI()
       if (ffi) return ffi.randomToken(byteLen)
       return addon.randomToken(byteLen)

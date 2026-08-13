@@ -17,7 +17,7 @@ import { type RustClientContext, resolveNative } from '../context'
 const FATAL_UTF8 = new TextDecoder('utf-8', { fatal: true })
 function ensureValidUtf8(bytes: Uint8Array): void {
   for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i]! >= 0x80) {
+    if ((bytes[i] ?? 0) >= 0x80) {
       try {
         FATAL_UTF8.decode(bytes)
       } catch {

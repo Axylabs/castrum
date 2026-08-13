@@ -5,7 +5,7 @@
 // a native OpenSSL-backed KDF. This baseline is runtime-agnostic (works under
 // both Bun and Node).
 
-import { pbkdf2Sync } from "node:crypto";
+import { pbkdf2Sync } from 'node:crypto'
 
 /**
  * JS baseline PBKDF2-HMAC-SHA256. Returns derived-key bytes.
@@ -16,12 +16,6 @@ export function nativePbkdf2Sha256(
   rounds: number,
   dkLen: number,
 ): Uint8Array {
-  const derived = pbkdf2Sync(
-    Buffer.from(password),
-    Buffer.from(salt),
-    rounds,
-    dkLen,
-    "sha256",
-  );
-  return new Uint8Array(derived);
+  const derived = pbkdf2Sync(Buffer.from(password), Buffer.from(salt), rounds, dkLen, 'sha256')
+  return new Uint8Array(derived)
 }

@@ -403,12 +403,6 @@ schema.count(docs);       // number of valid docs
 // Fine-grained control: createLoader({ adaptive, batchMin, maxCacheKeys, ... })
 ```
 
-The loader is also surfaced through the integration layer for bulk workloads
-(`src/integration/batch.ts`, exported): `validateMany` / `validateCount`
-(batch JSON-schema validation) and generic `runMany` / `runOne`. See
-`examples/loader-demo.ts` (single / bulk / schema / hash routes against a real
-Bun.serve server) for end-to-end usage.
-
 #### Configuring defaults
 
 Defaults are selected automatically, and can be overridden:
@@ -481,17 +475,7 @@ const handler = createIngressFast({
   rateLimit: { limit: 100, windowMs: 60_000 },
   parseCookies: true,
   parseQuery: true,
-  // warmOnCreate: true   // prime the hot path once at construction (see below)
 });
-```
-
-**Cold-start priming**: pass `warmOnCreate: true` to `createIngressFast` /
-`createIngressHandler` to run one probe GET at construction so the `run()`
-closure + packed pipeline + FFI ingress call are JIT-warmed before the first
-real request (cuts cold-invocation tail latency in serverless-style
-deployments). For instant execution in fresh processes, compile the server to a
-standalone Bun binary (`bun build --compile ./server.ts --outfile server`) or
-use Bun's compile cache — see [docs/GETTING_STARTED.md §8](./docs/GETTING_STARTED.md).
 
 // Inside a Bun server:
 Bun.serve({

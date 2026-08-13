@@ -1,6 +1,6 @@
 // src/ingress/routes/delete.ts — Pre-baked DELETE handler.
 
-import { readHandler } from "./read";
+import { readHandler } from './read'
 
 /**
  * Pre-baked DELETE handler: DELETE is a read-style method (no request body is
@@ -11,4 +11,4 @@ import { readHandler } from "./read";
  *
  * Wire it via the `delete` key of a `BakedRoute` (see `createIngressServer`).
  */
-export const deleteHandler = readHandler;
+export const deleteHandler = readHandler

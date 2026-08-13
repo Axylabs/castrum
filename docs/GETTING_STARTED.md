@@ -189,48 +189,6 @@ bun run test:node # Node.js integration tests (node --test) — run `bun run bui
    build (`bun run build`).
 7. Format + lint: `bun run format` and `bun run lint`.
 
-## 8. Cold start & runtime self-optimization
-
-castrum is **lazy**: importing the package does not dlopen the native addon
-(the ingress layout is read via the bun:ffi C-ABI blob, everything else binds
-on first use), and the rayon pool is deferred until the first batch op so
-`rust.configure({ rayonThreads })` still applies. Cold start is Bun's own JIT —
-typically `import` ~40–90ms, first native call <0.1ms, first request ~0.7ms.
-
-**First-request priming (`warmOnCreate`)** — in serverless-style deployments
-(the "cold invocation" tail), JIT-warm the request hot path once at handler
-construction so the first real request is not the slowest:
-
-```ts
-const ingress = createIngressHandler({ warmOnCreate: true, /* ... */ });
-// or createIngressFast({ warmOnCreate: true })
-```
-
-**Instant execution via a Bun compile cache / snapshot** — Bun can persist its
-compiled output so a fresh process skips most of the JIT warm-up (the
-Cloudflare-isolate / snapshot idea, but at the JS layer). Build a standalone
-executable (bundles the addon path + precompiles JS):
-
-```sh
-bun build --compile ./server.ts --outfile castrum-server
-./castrum-server        # starts with a warm, precompiled module graph
-```
-
-Or, in a long-lived process, `Bun.CompileCache` (when available) caches the
-transpiled modules on disk between runs. There is nothing castrum needs to do
-to support either — the package is already `bun`-export-conditioned (raw
-`index.ts`, no build step) and defers all native init, so the snapshot starts
-with a near-zero import cost.
-
-**Adaptive runtime decisions** — the loader's EWMA cost model is generalized
-as `AdaptiveEstimate` (bounded, noise-smoothed) and used by `BufferPool`
-(`adaptive: true`) to learn the observed request size and pre-size buffers:
-
-```ts
-import { AdaptiveEstimate, BufferPool } from "castrum";
-const pool = new BufferPool({ initialSize: 131072, adaptive: true });
-```
-
 ## Common gotchas
 
 - The **two ingress paths** have different wire formats — don't unify them

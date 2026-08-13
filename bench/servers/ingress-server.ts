@@ -10,8 +10,14 @@ import { errorCodeName } from "../../src/ingress";
 import {
   createIngressHandler,
   createIngressServer,
+  createIngressMetrics,
+  metricsHandler,
+  livenessHandler,
+  readinessHandler,
+  healthHandler,
   RATE_LIMIT_U32_MAX,
   type BakedIngressResult,
+  type BakedRoute,
 } from "../../src/ingress";
 import {
   PORTS,
@@ -23,7 +29,6 @@ import {
 } from "./shared";
 import {
   ERR_CODE_NONE as ERROR_CODE_NONE,
-  ERR_CODE_INTERNAL as ERROR_CODE_INTERNAL,
 } from "../../src/ingress/constants";
 
 // ── Runtime configuration (validated) ──
@@ -82,10 +87,17 @@ const NEED_SOCKET_IP = RATE_ENABLED;
 
 const EMIT_REQUEST_ID_HEADER = envFlag("INGRESS_REQUEST_ID_HEADER", false);
 
-// Safe default: copy response bodies.
-// Do not enable zero-copy unless you implement per-response output buffers.
-const UNSAFE_ZERO_COPY = envFlag("INGRESS_UNSAFE_ZERO_COPY", false);
-const COPY_BODY = !UNSAFE_ZERO_COPY;
+// Zero-copy pipeline-only responses (the native output slice is served via a
+// streaming body that holds the pooled buffer until consumed — safe with the
+// bounds below). INGRESS_ZERO_COPY=0 restores copy mode; the legacy
+// INGRESS_UNSAFE_ZERO_COPY flag is honored as an alias.
+const ZERO_COPY_ENABLED = envFlag("INGRESS_ZERO_COPY", envFlag("INGRESS_UNSAFE_ZERO_COPY", true));
+const COPY_BODY = !ZERO_COPY_ENABLED;
+// Bound zero-copy memory: at most this many buffers held by in-flight
+// responses, and an abandoned (unread) body releases its buffer after this
+// timeout.
+const ZERO_COPY_MAX_IN_FLIGHT = envNumber("INGRESS_ZERO_COPY_MAX_IN_FLIGHT", 128, 1);
+const ZERO_COPY_TIMEOUT_MS = envNumber("INGRESS_ZERO_COPY_TIMEOUT_MS", 1000, 0);
 
 const OUTPUT_BUF_SIZE = envNumber("INGRESS_OUTPUT_BUF_BYTES", 131072, 65536);
 
@@ -104,24 +116,10 @@ const IDLE_TIMEOUT = envNumber("INGRESS_IDLE_TIMEOUT", 30, 1);
 
 // ── Request logging & metrics (opt-in) ────────────────────────────
 // INGRESS_LOG_REQUESTS=1 -> one JSON line per request on stderr.
-// INGRESS_METRICS=1      -> periodic aggregate summary on stderr.
-interface MetricsState {
-  total: number;
-  byStatusClass: { "2xx": number; "4xx": number; "5xx": number; "204": number };
-  rateLimited: number;
-  internalErrors: number;
-  startMs: number;
-}
-
-const metrics: MetricsState | null = ENABLE_METRICS
-  ? {
-      total: 0,
-      byStatusClass: { "2xx": 0, "4xx": 0, "5xx": 0, "204": 0 },
-      rateLimited: 0,
-      internalErrors: 0,
-      startMs: Date.now(),
-    }
-  : null;
+// INGRESS_METRICS=1      -> the PUBLIC Prometheus ingress metrics
+//                           (createIngressMetrics), wired into the handler
+//                           runtime and served at /metrics.
+const ingressMetrics = ENABLE_METRICS ? createIngressMetrics() : null;
 
 function logRequest(
   req: Request,
@@ -155,42 +153,6 @@ function logRequest(
   if (result.retryAfterMs > 0) entry.retryAfterMs = result.retryAfterMs;
 
   process.stderr.write(JSON.stringify(entry) + "\n");
-}
-
-function recordRequest(status: number, result: BakedIngressResult): void {
-  if (!metrics) return;
-
-  metrics.total++;
-  if (status === 204) metrics.byStatusClass["204"]++;
-  else if (status >= 500) metrics.byStatusClass["5xx"]++;
-  else if (status >= 400) metrics.byStatusClass["4xx"]++;
-  else metrics.byStatusClass["2xx"]++;
-
-  if (result.rateLimited) metrics.rateLimited++;
-  if (result.errorCode === ERROR_CODE_INTERNAL) metrics.internalErrors++;
-}
-
-function startMetricsReporter(): void {
-  if (!metrics) return;
-
-  const timer = setInterval(() => {
-    const elapsedMs = Math.max(1, Date.now() - metrics.startMs);
-    const rps = metrics.total / (elapsedMs / 1000);
-    const summary = {
-      ts: new Date().toISOString(),
-      kind: "metrics",
-      total: metrics.total,
-      rps: Number(rps.toFixed(2)),
-      status: metrics.byStatusClass,
-      rateLimited: metrics.rateLimited,
-      internalErrors: metrics.internalErrors,
-      uptimeMs: elapsedMs,
-    };
-    process.stderr.write(JSON.stringify(summary) + "\n");
-  }, 10_000);
-
-  // Don't keep the process alive just for the reporter.
-  (timer as unknown as { unref?: () => void }).unref?.();
 }
 
 // ── Optimized ingress instances ──
@@ -232,13 +194,20 @@ const runtime = {
   enableSecurityHeaders: SECURITY_HEADERS_ENABLED,
   securityHeaders: Object.entries(SECURITY_HEADERS) as [string, string][],
   outputBufferSize: OUTPUT_BUF_SIZE,
+  maxInFlight: ZERO_COPY_MAX_IN_FLIGHT,
+  zeroCopyTimeoutMs: ZERO_COPY_TIMEOUT_MS,
+  // Wire the public Prometheus metrics hooks (onRequest/onError/onResponse)
+  // when INGRESS_METRICS=1; onResponse composes metrics + request logging.
+  ...(ingressMetrics ? ingressMetrics.runtime : {}),
   onResponse: (
     req: Request,
     result: BakedIngressResult,
     status: number,
     requestId: string,
   ) => {
-    recordRequest(status, result);
+    if (ingressMetrics) {
+      ingressMetrics.runtime.onResponse?.(req, result, status, requestId);
+    }
     logRequest(req, result, status, requestId);
   },
 };
@@ -282,6 +251,25 @@ const echoIngress = createIngressHandler(
 const fallbackIngress = healthIngress;
 
 // ── Server ──
+// Orchestrator probes + /metrics use the PUBLIC health/metrics handlers
+// (livenessHandler / readinessHandler / healthHandler / metricsHandler).
+const routes: Record<string, BakedRoute> = {
+  "/health": { read: healthIngress },
+  "/healthz": { read: livenessHandler() },
+  "/readyz": { read: readinessHandler() },
+  "/livez": { read: healthHandler() },
+  "/api/users": {
+    read: usersReadIngress,
+    write: usersWriteIngress,
+    maxBodyBytes: MAX_BODY_BYTES,
+  },
+  "/api/echo": { echo: echoIngress, maxBodyBytes: MAX_BODY_BYTES },
+  "/api/cookies": { read: cookiesIngress },
+};
+if (ingressMetrics) {
+  routes["/metrics"] = { read: metricsHandler(ingressMetrics) };
+}
+
 createIngressServer({
   port: PORTS.ingress,
   hostname: HOST,
@@ -290,20 +278,9 @@ createIngressServer({
   reusePort: REUSE_PORT,
   copyBody: COPY_BODY,
   getIp: ipFor,
-  routes: {
-    "/health": { read: healthIngress },
-    "/api/users": {
-      read: usersReadIngress,
-      write: usersWriteIngress,
-      maxBodyBytes: MAX_BODY_BYTES,
-    },
-    "/api/echo": { echo: echoIngress, maxBodyBytes: MAX_BODY_BYTES },
-    "/api/cookies": { read: cookiesIngress },
-  },
+  routes,
   fallback: fallbackIngress,
 });
-
-startMetricsReporter();
 
 console.log(
   `[ingress] listening on :${PORTS.ingress} (optimized Bun.serve routes)`,

@@ -10,15 +10,15 @@
 // `IngressLayout` (`castrum_ingress_layout`). Both read the same numbers, so
 // they cannot drift.
 
-import { getAddon } from "../native";
-import { getBunFFI, type BunFFI } from "../native/ffi";
+import { getAddon } from '../native'
+import { getBunFFI, type BunFFI } from '../native/ffi'
 
 // Transport: bun:ffi is PRIMARY on Bun, so the layout is read through the
 // C-ABI blob WITHOUT dlopening the napi addon. Node — or forced
 // `CASTRUM_FFI_MODE=napi`, a missing symbol, or a failed bind-time self-test —
 // falls back to the napi addon. This is the ONE module that touches native at
 // import time; everything else in the package stays lazy.
-const ffi = getBunFFI();
+const ffi = getBunFFI()
 
 // Slot order mirrors the `#[repr(C)] IngressLayout` struct in rust/ffi.rs
 // (38 × u32 LE). Drift is guarded by the Rust unit test
@@ -63,25 +63,25 @@ const SLOT = {
   ERR_BAD_REQUEST: 35,
   ERR_REQUEST_TOO_LARGE: 36,
   ERR_INTERNAL: 37,
-} as const;
+} as const
 
-type Layout = Record<keyof typeof SLOT, number>;
+type Layout = Record<keyof typeof SLOT, number>
 
 /** Read the layout via the bun:ffi C-ABI blob (Bun primary path). */
 function readLayoutViaFfi(ffiLive: BunFFI): Layout {
-  const buf = new Uint8Array(38 * 4);
-  ffiLive.ingressLayout(buf);
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const out = {} as Layout;
+  const buf = new Uint8Array(38 * 4)
+  ffiLive.ingressLayout(buf)
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  const out = {} as Layout
   for (const key of Object.keys(SLOT) as (keyof typeof SLOT)[]) {
-    out[key] = view.getUint32(SLOT[key] * 4, true);
+    out[key] = view.getUint32(SLOT[key] * 4, true)
   }
-  return out;
+  return out
 }
 
 /** Read the layout via the napi addon (Node / fallback). */
 function readLayoutViaNapi(): Layout {
-  const addon = getAddon();
+  const addon = getAddon()
   return {
     OUT_VERDICT: addon.INGRESS_OUT_VERDICT,
     OUT_ERROR_CODE: addon.INGRESS_OUT_ERROR_CODE,
@@ -121,56 +121,99 @@ function readLayoutViaNapi(): Layout {
     ERR_BAD_REQUEST: addon.INGRESS_ERR_BAD_REQUEST,
     ERR_REQUEST_TOO_LARGE: addon.INGRESS_ERR_REQUEST_TOO_LARGE,
     ERR_INTERNAL: addon.INGRESS_ERR_INTERNAL,
-  };
+  }
 }
 
-const L: Layout = ffi !== null ? readLayoutViaFfi(ffi) : readLayoutViaNapi();
+const L: Layout = ffi !== null ? readLayoutViaFfi(ffi) : readLayoutViaNapi()
 
 // ── Output buffer layout ───────────────────────────────────
-export const OUT_VERDICT: number = L.OUT_VERDICT;
-export const OUT_ERROR_CODE: number = L.OUT_ERROR_CODE;
-export const OUT_STATUS: number = L.OUT_STATUS;
-export const OUT_FLAGS: number = L.OUT_FLAGS;
-export const OUT_RATE_LIMIT: number = L.OUT_RATE_LIMIT;
-export const OUT_RATE_REMAINING: number = L.OUT_RATE_REMAINING;
-export const OUT_RATE_RESET: number = L.OUT_RATE_RESET;
-export const OUT_RETRY_AFTER: number = L.OUT_RETRY_AFTER;
-export const OUT_COOKIES_JSON_LEN: number = L.OUT_COOKIES_JSON_LEN;
-export const OUT_QUERY_JSON_LEN: number = L.OUT_QUERY_JSON_LEN;
-export const OUT_HEADER_VARIANT: number = L.OUT_HEADER_VARIANT;
-export const OUT_BODY_JSON_LEN: number = L.OUT_BODY_JSON_LEN;
-export const OUT_DATA_START: number = L.OUT_DATA_START;
+// Byte offsets into the fixed header of the native ingress OUTPUT buffer.
+// The header occupies [0, OUT_DATA_START); the cookie/query/body JSON sections
+// follow at OUT_DATA_START (see decode/packed-sections.ts). Read through the
+// C-ABI layout blob (Bun) or napi (Node) — never hardcoded.
 
-// ── Flags ──────────────────────────────────────────────────
-export const FLAG_HAS_COOKIES: number = L.FLAG_HAS_COOKIES;
-export const FLAG_HAS_QUERY: number = L.FLAG_HAS_QUERY;
-export const FLAG_BODY_VALID_JSON: number = L.FLAG_BODY_VALID_JSON;
-export const FLAG_SCHEMA_VALID: number = L.FLAG_SCHEMA_VALID;
-export const FLAG_CORS_ALLOWED: number = L.FLAG_CORS_ALLOWED;
-export const FLAG_IS_PREFLIGHT: number = L.FLAG_IS_PREFLIGHT;
-export const FLAG_RATE_LIMITED: number = L.FLAG_RATE_LIMITED;
-export const FLAG_HTTPS: number = L.FLAG_HTTPS;
-export const FLAG_TRUSTED_PROXY: number = L.FLAG_TRUSTED_PROXY;
-export const FLAG_BODY_TRUNCATED: number = L.FLAG_BODY_TRUNCATED;
+/** Offset of the verdict byte (0 = accepted, nonzero = terminal error). */
+export const OUT_VERDICT: number = L.OUT_VERDICT
+/** Offset of the error-code byte (see ERR_CODE_* below). */
+export const OUT_ERROR_CODE: number = L.OUT_ERROR_CODE
+/** Offset of the raw u16 status. */
+export const OUT_STATUS: number = L.OUT_STATUS
+/** Offset of the u32 flags word (see FLAG_* below). */
+export const OUT_FLAGS: number = L.OUT_FLAGS
+/** Offset of the u32 rate-limit budget (U32_MAX = disabled). */
+export const OUT_RATE_LIMIT: number = L.OUT_RATE_LIMIT
+/** Offset of the u32 rate-limit remaining count. */
+export const OUT_RATE_REMAINING: number = L.OUT_RATE_REMAINING
+/** Offset of the u64 rate-limit window reset (ms epoch). */
+export const OUT_RATE_RESET: number = L.OUT_RATE_RESET
+/** Offset of the u64 Retry-After value (ms). */
+export const OUT_RETRY_AFTER: number = L.OUT_RETRY_AFTER
+/** Offset of the u32 cookies-JSON section length. */
+export const OUT_COOKIES_JSON_LEN: number = L.OUT_COOKIES_JSON_LEN
+/** Offset of the u32 query-JSON section length. */
+export const OUT_QUERY_JSON_LEN: number = L.OUT_QUERY_JSON_LEN
+/** Offset of the header-template variant byte (see HV_* below). */
+export const OUT_HEADER_VARIANT: number = L.OUT_HEADER_VARIANT
+/** Offset of the u32 body-JSON section length. */
+export const OUT_BODY_JSON_LEN: number = L.OUT_BODY_JSON_LEN
+/** Byte offset where the variable-length JSON sections begin. */
+export const OUT_DATA_START: number = L.OUT_DATA_START
 
-// ── Header variant bits ────────────────────────────────────
-export const HV_JSON: number = L.HV_JSON;
-export const HV_CORS_SIMPLE: number = L.HV_CORS_SIMPLE;
-export const HV_CORS_PREFLIGHT: number = L.HV_CORS_PREFLIGHT;
-export const HV_RATE_ACTIVE: number = L.HV_RATE_ACTIVE;
-export const HV_RATE_LIMITED: number = L.HV_RATE_LIMITED;
-export const HV_COUNT: number = L.HV_COUNT;
+// ── Flags (bits within the OUT_FLAGS u32) ──────────────────
+/** Request carried a cookie header (cookie-JSON section present). */
+export const FLAG_HAS_COOKIES: number = L.FLAG_HAS_COOKIES
+/** Request carried a query string (query-JSON section present). */
+export const FLAG_HAS_QUERY: number = L.FLAG_HAS_QUERY
+/** The request body parsed as valid JSON. */
+export const FLAG_BODY_VALID_JSON: number = L.FLAG_BODY_VALID_JSON
+/** The request body validated against the ingress schema. */
+export const FLAG_SCHEMA_VALID: number = L.FLAG_SCHEMA_VALID
+/** The CORS engine allowed the request origin. */
+export const FLAG_CORS_ALLOWED: number = L.FLAG_CORS_ALLOWED
+/** The request was a CORS preflight (OPTIONS + request-method). */
+export const FLAG_IS_PREFLIGHT: number = L.FLAG_IS_PREFLIGHT
+/** The request was rate-limited. */
+export const FLAG_RATE_LIMITED: number = L.FLAG_RATE_LIMITED
+/** The request arrived over HTTPS (trusted-proxy scheme). */
+export const FLAG_HTTPS: number = L.FLAG_HTTPS
+/** The request came from a trusted proxy (per the proxy config). */
+export const FLAG_TRUSTED_PROXY: number = L.FLAG_TRUSTED_PROXY
+/** A declared output section overran the buffer (truncated). */
+export const FLAG_BODY_TRUNCATED: number = L.FLAG_BODY_TRUNCATED
 
-// ── Error codes ────────────────────────────────────────────
-export const ERR_CODE_NONE: number = L.ERR_NONE;
-export const ERR_CODE_CORS_PREFLIGHT: number = L.ERR_CORS_PREFLIGHT;
-export const ERR_CODE_RATE_LIMITED: number = L.ERR_RATE_LIMITED;
-export const ERR_CODE_BODY_TOO_LARGE: number = L.ERR_BODY_TOO_LARGE;
-export const ERR_CODE_INVALID_JSON: number = L.ERR_INVALID_JSON;
-export const ERR_CODE_SCHEMA_VALIDATION: number = L.ERR_SCHEMA_VALIDATION;
-export const ERR_CODE_BAD_REQUEST: number = L.ERR_BAD_REQUEST;
-export const ERR_CODE_REQUEST_TOO_LARGE: number = L.ERR_REQUEST_TOO_LARGE;
-export const ERR_CODE_INTERNAL: number = L.ERR_INTERNAL;
+// ── Header variant bits (bits within the OUT_HEADER_VARIANT byte) ──
+/** Response body is JSON (`content-type: application/json`). */
+export const HV_JSON: number = L.HV_JSON
+/** CORS simple-request variant (Origin echoed + vary headers). */
+export const HV_CORS_SIMPLE: number = L.HV_CORS_SIMPLE
+/** CORS preflight variant (allow-methods/headers/max-age). */
+export const HV_CORS_PREFLIGHT: number = L.HV_CORS_PREFLIGHT
+/** Rate-limit active variant (`ratelimit-limit` header). */
+export const HV_RATE_ACTIVE: number = L.HV_RATE_ACTIVE
+/** Rate-limited variant (Retry-After emitted). */
+export const HV_RATE_LIMITED: number = L.HV_RATE_LIMITED
+/** Total number of header-variant combinations (32). */
+export const HV_COUNT: number = L.HV_COUNT
+
+// ── Error codes (bytes in OUT_ERROR_CODE) ──────────────────
+/** No error (accepted). */
+export const ERR_CODE_NONE: number = L.ERR_NONE
+/** CORS preflight rejected. */
+export const ERR_CODE_CORS_PREFLIGHT: number = L.ERR_CORS_PREFLIGHT
+/** Rate limit exceeded. */
+export const ERR_CODE_RATE_LIMITED: number = L.ERR_RATE_LIMITED
+/** Request body exceeded the size guard. */
+export const ERR_CODE_BODY_TOO_LARGE: number = L.ERR_BODY_TOO_LARGE
+/** Request body is not valid JSON. */
+export const ERR_CODE_INVALID_JSON: number = L.ERR_INVALID_JSON
+/** Request body failed schema validation. */
+export const ERR_CODE_SCHEMA_VALIDATION: number = L.ERR_SCHEMA_VALIDATION
+/** Malformed request (bad request line / headers). */
+export const ERR_CODE_BAD_REQUEST: number = L.ERR_BAD_REQUEST
+/** Request headers/URL exceeded the configured limits. */
+export const ERR_CODE_REQUEST_TOO_LARGE: number = L.ERR_REQUEST_TOO_LARGE
+/** Internal pipeline failure (maps to 500). */
+export const ERR_CODE_INTERNAL: number = L.ERR_INTERNAL
 
 /**
  * JS-only error-code sentinel for a request-body read timeout in the async
@@ -182,4 +225,4 @@ export const ERR_CODE_INTERNAL: number = L.ERR_INTERNAL;
  * consistent. Deliberately not sourced from Rust (see the header comment:
  * numeric layout values come from the addon; this one is a JS-level error).
  */
-export const ERR_CODE_REQUEST_TIMEOUT: number = -1;
+export const ERR_CODE_REQUEST_TIMEOUT: number = -1

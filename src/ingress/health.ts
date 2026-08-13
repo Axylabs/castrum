@@ -16,15 +16,15 @@
 // The health probe is an alias of liveness (process up) plus optional check.
 
 export interface ReadinessResult {
-  status: number;
-  body: string;
+  status: number
+  body: string
 }
 
 function jsonResponse(status: number, body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-  });
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  })
 }
 
 /**
@@ -32,7 +32,7 @@ function jsonResponse(status: number, body: Record<string, unknown>): Response {
  * Never touches dependencies.
  */
 export function livenessHandler() {
-  return (_req: Request): Response => jsonResponse(200, { status: "ok" });
+  return (_req: Request): Response => jsonResponse(200, { status: 'ok' })
 }
 
 /**
@@ -42,19 +42,19 @@ export function livenessHandler() {
  */
 export function readinessHandler(check?: () => boolean | Promise<boolean>) {
   return async (_req: Request): Promise<Response> => {
-    if (!check) return jsonResponse(200, { status: "ready" });
+    if (!check) return jsonResponse(200, { status: 'ready' })
     try {
-      const ok = await check();
+      const ok = await check()
       return ok
-        ? jsonResponse(200, { status: "ready" })
-        : jsonResponse(503, { status: "not_ready" });
+        ? jsonResponse(200, { status: 'ready' })
+        : jsonResponse(503, { status: 'not_ready' })
     } catch (err) {
       return jsonResponse(503, {
-        status: "not_ready",
+        status: 'not_ready',
         error: err instanceof Error ? err.message : String(err),
-      });
+      })
     }
-  };
+  }
 }
 
 /**
@@ -63,5 +63,5 @@ export function readinessHandler(check?: () => boolean | Promise<boolean>) {
  * (readiness semantics), otherwise always 200.
  */
 export function healthHandler(check?: () => boolean | Promise<boolean>) {
-  return check ? readinessHandler(check) : livenessHandler();
+  return check ? readinessHandler(check) : livenessHandler()
 }

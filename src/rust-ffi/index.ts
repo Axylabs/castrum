@@ -26,13 +26,13 @@
 //   rust.packed.jsonValidBatchPacked(p);  // raw packed in/out
 //   rust.configure({ rayonThreads: 8 });  // override defaults
 
-export { createRust, rust } from "./client";
-export type { RustClient } from "./client";
-export type { RustOptions } from "./options";
-export type { RustText } from "./text";
-export type { RustBatch } from "./batch";
-export type { RustPacked } from "./packed";
-export type { SchemaValidator } from "../shared/packed";
+export { createRust, rust } from './client'
+export type { RustClient } from './client'
+export type { RustOptions } from './options'
+export type { RustText } from './text'
+export type { RustBatch } from './batch'
+export type { RustPacked } from './packed'
+export type { SchemaValidator } from '../shared/packed'
 export type {
   HmacSignerInstance,
   SchemaValidatorInstance,
@@ -51,4 +51,4 @@ export type {
   MultipartPart,
   PasswordHashOptions,
   WsFrame,
-} from "../native";
+} from '../native'

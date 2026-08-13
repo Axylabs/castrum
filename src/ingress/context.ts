@@ -1,21 +1,12 @@
 // src/ingress/context.ts — Result snapshotting + synthetic/error context
 // builders for the async ingress API.
 
-import type { ResponseBuildContext } from "./headers/fast-templates";
-import { buildTerminalResponse } from "./response/terminal";
-import {
-  ERR_CODE_INTERNAL,
-  ERR_CODE_RATE_LIMITED,
-  HV_JSON,
-  HV_CORS_SIMPLE,
-} from "./constants";
-import type {
-  IngressOptions,
-  IngressResult,
-  IngressContext,
-} from "./types";
+import type { ResponseBuildContext } from './headers/fast-templates'
+import { buildTerminalResponse } from './response/terminal'
+import { ERR_CODE_INTERNAL, ERR_CODE_RATE_LIMITED, HV_JSON, HV_CORS_SIMPLE } from './constants'
+import type { IngressOptions, IngressResult, IngressContext } from './types'
 
-const EMPTY_BODY = new Uint8Array(0);
+const EMPTY_BODY = new Uint8Array(0)
 
 /**
  * Deep-snapshot a result so the caller can use it after `run()` returns.
@@ -29,10 +20,10 @@ const EMPTY_BODY = new Uint8Array(0);
  * for a defensive copy.
  */
 export function snapshotResult(r: IngressResult): IngressResult {
-  const cookies = r.cookiesJson();
-  const query = r.queryJson();
-  const bodyJson = r.bodyJson().slice();
-  const body = r.body;
+  const cookies = r.cookiesJson()
+  const query = r.queryJson()
+  const bodyJson = r.bodyJson().slice()
+  const body = r.body
 
   return {
     status: r.status,
@@ -62,7 +53,7 @@ export function snapshotResult(r: IngressResult): IngressResult {
     cookiesJson: () => cookies,
     queryJson: () => query,
     bodyJson: () => bodyJson,
-  };
+  }
 }
 
 /** Build a synthetic (terminal) context for body-size / error short-circuits. */
@@ -74,8 +65,8 @@ export function syntheticContext(
   status: number,
   errorCode: number,
 ): IngressContext {
-  const corsAllowed = staticCorsAllowed(options, req);
-  const variant = HV_JSON | (corsAllowed ? HV_CORS_SIMPLE : 0);
+  const corsAllowed = staticCorsAllowed(options, req)
+  const variant = HV_JSON | (corsAllowed ? HV_CORS_SIMPLE : 0)
 
   const base: IngressResult = {
     status,
@@ -85,9 +76,7 @@ export function syntheticContext(
     terminal: true,
     ok: false,
     https: options.https === true,
-    trustedProxy:
-      options.trustProxy === true ||
-      options.trustedProxies?.enabled === true,
+    trustedProxy: options.trustProxy === true || options.trustedProxies?.enabled === true,
     hasCookies: false,
     hasQuery: false,
     bodyValidJson: false,
@@ -104,15 +93,15 @@ export function syntheticContext(
     requestId,
     bodyTruncated: false,
 
-    cookiesJson: () => "{}",
-    queryJson: () => "{}",
+    cookiesJson: () => '{}',
+    queryJson: () => '{}',
     bodyJson: () => EMPTY_BODY,
-  };
+  }
 
   return {
     ...base,
     response: buildTerminalResponse(responseCtx, base, req, requestId),
-  };
+  }
 }
 
 /** Build the internal-error context (status 500). */
@@ -122,33 +111,26 @@ export function internalContext(
   options: IngressOptions,
   responseCtx: ResponseBuildContext,
 ): IngressContext {
-  return syntheticContext(
-    req,
-    requestId,
-    options,
-    responseCtx,
-    500,
-    ERR_CODE_INTERNAL,
-  );
+  return syntheticContext(req, requestId, options, responseCtx, 500, ERR_CODE_INTERNAL)
 }
 
 /** Statically determine whether the configured CORS policy allows `req`. */
 export function staticCorsAllowed(options: IngressOptions, req: Request): boolean {
-  const cors = options.cors;
-  if (!cors) return false;
+  const cors = options.cors
+  if (!cors) return false
 
-  const origin = req.headers.get("origin");
-  if (!origin) return false;
+  const origin = req.headers.get('origin')
+  if (!origin) return false
 
-  const list = cors.allowOrigin;
+  const list = cors.allowOrigin
 
   if (!list || list.length === 0) {
-    return cors.allowCredentials !== true;
+    return cors.allowCredentials !== true
   }
 
-  if (list.includes("*")) {
-    return cors.allowCredentials !== true;
+  if (list.includes('*')) {
+    return cors.allowCredentials !== true
   }
 
-  return list.includes(origin);
+  return list.includes(origin)
 }

@@ -222,7 +222,7 @@ run(
 // ── Ingress request handler (the headline) ───────────────────────
 const handler = new addon.Ingress({ parseQuery: true, parseCookies: true })
 const ingressPtr =
-  typeof handler.ingressInnerPtr === 'function' ? handler.ingressInnerPtr() : 0n
+  typeof handler.ingressInnerPtr === 'function' ? Number(handler.ingressInnerPtr()) : 0
 const packer = new IngressInputPacker()
 const ingressInput = packer.pack(
   0,

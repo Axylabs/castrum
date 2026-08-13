@@ -1,3 +1,3 @@
-import { runBenchmark } from "./src/bench";
+import { runBenchmark } from './src/bench'
 
-runBenchmark();
+runBenchmark()

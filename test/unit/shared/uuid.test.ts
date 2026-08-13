@@ -5,33 +5,32 @@
  * the FFI-crossing rust path, so this is the "don't reinvent the wheel" path.
  */
 
-import { describe, test, expect } from "bun:test";
-import { uuidv7 } from "../../../src/shared/uuid";
+import { describe, test, expect } from 'bun:test'
+import { uuidv7 } from '../../../src/shared/uuid'
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-describe("uuidv7", () => {
-  test("returns a well-formed UUID string", () => {
-    const id = uuidv7();
-    expect(id).toMatch(UUID_RE);
-    expect(id.length).toBe(36);
-  });
+describe('uuidv7', () => {
+  test('returns a well-formed UUID string', () => {
+    const id = uuidv7()
+    expect(id).toMatch(UUID_RE)
+    expect(id.length).toBe(36)
+  })
 
-  test("is unique across calls", () => {
-    const seen = new Set<string>();
+  test('is unique across calls', () => {
+    const seen = new Set<string>()
     for (let i = 0; i < 100; i++) {
-      const id = uuidv7();
-      expect(seen.has(id)).toBe(false);
-      seen.add(id);
+      const id = uuidv7()
+      expect(seen.has(id)).toBe(false)
+      seen.add(id)
     }
-  });
+  })
 
-  test("uses Bun.randomUUIDv7 when available (version nibble 7)", () => {
-    if (typeof Bun !== "undefined" && typeof Bun.randomUUIDv7 === "function") {
-      const id = uuidv7();
+  test('uses Bun.randomUUIDv7 when available (version nibble 7)', () => {
+    if (typeof Bun !== 'undefined' && typeof Bun.randomUUIDv7 === 'function') {
+      const id = uuidv7()
       // UUIDv7: the version nibble is the first hex char of the 3rd group.
-      expect(id[14]).toBe("7");
+      expect(id[14]).toBe('7')
     }
-  });
-});
+  })
+})

@@ -24,8 +24,11 @@
 // Buffer ABI: input/out pointers are `(ptr, len)` pairs; the JS wrapper passes
 // `(view, view.length)` and bun:ffi converts the TypedArray to its pointer.
 
-import { isBun } from '../shared/runtime'
+// Type-only: erased at compile time (no runtime import of `bun:ffi` — that
+// stays lazy inside `bind()`). `FFITypeOrString` is the dlopen ABI-string union.
+import type { FFITypeOrString } from 'bun:ffi'
 import { resolveEnvVar } from '../shared/env'
+import { isBun } from '../shared/runtime'
 // Static import: loader.ts has no side effects (path resolution only — no
 // dlopen), so this adds zero import-time cost while letting `bind()` reuse the
 // exact same resolved `.node` path the napi fallback uses (the shared seam).
@@ -53,7 +56,7 @@ export interface BunFFI {
   validateUuid(input: Uint8Array): boolean
   validateIpv4(input: Uint8Array): boolean
   validateIpv6(input: Uint8Array): boolean
-  /** Sum of `id` fields across a JSON array → bigint (0 on invalid input). */
+  /** Sum of `id` fields across a JSON array → bigint (throws on non-array input). */
   jsonSumIds(input: Uint8Array): bigint
 
   // ── Constant-time verify (u8 → boolean) ───────────────────────────
@@ -196,7 +199,7 @@ export interface BunFFI {
    * caller must hold it). Returns bytes written; throws on error / too-small.
    */
   ingressHandlePacked(
-    inner: bigint,
+    inner: number,
     input: Uint8Array,
     body: Uint8Array | null,
     output: Uint8Array,
@@ -216,6 +219,29 @@ export interface BunFFI {
 const MAX_DECOMPRESSED = 64 * 1024 * 1024
 // rust/json/json_patch_ops.rs MAX_JSON_PATCH_OUTPUT (128 MiB).
 const MAX_JSON_PATCH_OUTPUT = 128 * 1024 * 1024
+
+// ── Output-buffer sizing heuristics (measured) ─────────────────────
+// These are ALLOCATION caps only, not correctness bounds: `growExact` covers
+// any residual miss with at most one exact-size retry (no re-run loop), so a
+// guess that is too small costs one extra native pass, never a wrong result.
+//
+// Compress: a 75 KiB input compresses to <1 KiB, so a 16 KiB initial is
+// plenty and single-pass; the 1 MiB ceiling bounds incompressible data.
+const COMPRESS_INITIAL_CAP = 16 * 1024
+const COMPRESS_MAX_CAP = 1024 * 1024
+const COMPRESS_HEADROOM = 64 // small-input slack above `data.length`
+// Decompress (no trailer / expensive trailer): typical JSON/text ratios.
+const DECOMPRESS_GUESS_MULTIPLIER_GZIP = 16
+const DECOMPRESS_GUESS_MULTIPLIER_BROTLI = 32
+const DECOMPRESS_FALLBACK_CAP = 4 * 1024 * 1024 // 4 MiB over-alloc bound
+const DECOMPRESS_MIN_INITIAL = 1024
+// JWT: token ≈ header(~36) + payload(≈4/3× claims) + sig(~43) + 2 dots. The
+// old `claims.length + 128` under-sized a typical token (measured 168 B for a
+// 30 B claim → grow-retry double-run, making ffi slower than napi). 2×+128
+// with a 256-byte floor covers typical claims in one pass.
+const JWT_INITIAL_MULTIPLIER = 2
+const JWT_INITIAL_EXTRA = 128
+const JWT_INITIAL_FLOOR = 256
 
 // ── Known-good vectors for the bind-time self-test ───────────────
 // These mirror the Rust `#[cfg(test)]` vectors in rust/ffi.rs.
@@ -266,6 +292,37 @@ export function getBunFFI(): BunFFI | null {
   return cached
 }
 
+/**
+ * Probe whether this Bun build accepts the `buffer`/`buffer_length` ABI pair in
+ * `dlopen`. Bun's docs list `buffer_length` as engine-native (dlopen-supported),
+ * but an earlier canary threw "invalid ABI type" for it. If that regressed (or
+ * a future Bun removes it), we silently keep explicit `(ptr, len)` pairs. The
+ * full bind-time self-test is the safety net either way.
+ */
+function probeBufferLength(dlopen: typeof import('bun:ffi')['dlopen'], path: string): boolean {
+  try {
+    const { symbols, close } = dlopen(path, {
+      // bun-types lacks the `buffer_length` literal — cast it; runtime support
+      // is exactly what this probe is verifying.
+      castrum_crc32: {
+        args: ['buffer', 'buffer_length'] as unknown as readonly FFITypeOrString[],
+        returns: 'u32',
+      },
+    })
+    // `buffer_length` is `buffer`'s length twin — pass the SAME view twice
+    // (the engine reads ptr + byteLength off that object at call time).
+    const view = new Uint8Array([1, 2, 3])
+    const out = (symbols as Record<string, (a: unknown, b: unknown) => unknown>).castrum_crc32?.(
+      view,
+      view,
+    )
+    close()
+    return typeof out === 'number' && out >= 0
+  } catch {
+    return false
+  }
+}
+
 function bind(): BunFFI | null {
   const mode = resolveFfiMode()
   if (!isBun()) {
@@ -288,23 +345,33 @@ function bind(): BunFFI | null {
     // above; it only resolves the path, it never dlopens the addon).
     const path = getAddonPath()
 
+    // Probe `buffer`/`buffer_length` (the engine reads ptr + len off the SAME
+    // TypedArray at call time — an atomic snapshot) once; when supported we use
+    // it for the input-only hot fns (one JS arg instead of two), else `(ptr,len)`.
+    const useBufferLength = probeBufferLength(dlopen, path)
+
     // String ABI specs ("ptr"/"usize"/"u32"...): accepted by bun:ffi and typed
     // via `FFITypeOrString` in bun-types. usize == uint64 on the host ABI.
     // Symbol keys must be the exact `#[no_mangle] extern "C"` names in
     // rust/ffi.rs. Every `(ptr,len)` pair is passed as `(view, view.length)`.
+    // The 8 input-only single-buffer fns use `inputAbi`; everything else keeps
+    // `(ptr,len)` because the output length is the caller's write cap.
+    const inputAbi: readonly FFITypeOrString[] = useBufferLength
+      ? (['buffer', 'buffer_length'] as unknown as readonly FFITypeOrString[])
+      : ['ptr', 'usize']
     const { symbols } = dlopen(path, {
-      castrum_crc32: { args: ['ptr', 'usize'], returns: 'u32' },
-      castrum_fnv1a64: { args: ['ptr', 'usize'], returns: 'u64' },
-      castrum_xxh3: { args: ['ptr', 'usize'], returns: 'u64' },
-      castrum_json_valid: { args: ['ptr', 'usize'], returns: 'u8' },
+      castrum_crc32: { args: inputAbi, returns: 'u32' },
+      castrum_fnv1a64: { args: inputAbi, returns: 'u64' },
+      castrum_xxh3: { args: inputAbi, returns: 'u64' },
+      castrum_json_valid: { args: inputAbi, returns: 'u8' },
       castrum_hex_encode: { args: ['ptr', 'usize', 'ptr', 'usize'], returns: 'usize' },
       castrum_hex_decode: { args: ['ptr', 'usize', 'ptr', 'usize'], returns: 'usize' },
       castrum_url_encode: { args: ['ptr', 'usize', 'ptr', 'usize'], returns: 'usize' },
       castrum_url_decode: { args: ['ptr', 'usize', 'ptr', 'usize'], returns: 'usize' },
-      castrum_validate_email: { args: ['ptr', 'usize'], returns: 'u8' },
-      castrum_validate_uuid: { args: ['ptr', 'usize'], returns: 'u8' },
-      castrum_validate_ipv4: { args: ['ptr', 'usize'], returns: 'u8' },
-      castrum_validate_ipv6: { args: ['ptr', 'usize'], returns: 'u8' },
+      castrum_validate_email: { args: inputAbi, returns: 'u8' },
+      castrum_validate_uuid: { args: inputAbi, returns: 'u8' },
+      castrum_validate_ipv4: { args: inputAbi, returns: 'u8' },
+      castrum_validate_ipv6: { args: inputAbi, returns: 'u8' },
       castrum_json_sum_ids: { args: ['ptr', 'usize', 'ptr', 'usize'], returns: 'usize' },
       castrum_hmac_sha256_verify: {
         args: ['ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize'],
@@ -403,7 +470,7 @@ function bind(): BunFFI | null {
       castrum_ingress_layout: { args: ['ptr', 'usize'], returns: 'usize' },
     })
 
-    const bindings = build(symbols as Record<string, (...a: unknown[]) => unknown>)
+    const bindings = build(symbols as Record<string, (...a: unknown[]) => unknown>, useBufferLength)
     if (!selfTest(bindings)) {
       if (mode === 'ffi') {
         throw new Error(
@@ -518,19 +585,16 @@ function writeOrThrow(w: number, inputLen: number, label: string): number {
 }
 
 /** base64 (no-pad) length of `n` bytes. */
-const b64Len = (n: number): number =>
-  n === 0 ? 0 : Math.ceil(n / 3) * 4 - ((3 - (n % 3)) % 3)
+const b64Len = (n: number): number => (n === 0 ? 0 : Math.ceil(n / 3) * 4 - ((3 - (n % 3)) % 3))
 
 /**
- * Exact length of an argon2id PHC string for the given params (m/t/p/out_len)
- * and the ACTUAL salt byte length. Format:
- * `$argon2id$v=19$m=<m>,t=<t>,p=<p>$<salt b64>$<hash b64>`. The salt b64 must
- * be derived from the caller's salt length (NOT hardcoded — a 16-byte salt is
- * 22 chars but a 19-byte salt is 26; hardcoding 22 made every call with a
- * non-16-byte salt grow-retry, re-running the whole ~tens-of-ms hash TWICE).
- * Pre-sizing exactly makes `passwordHash` a single native pass.
+ * Exact length of an argon2id PHC string for the given params (m/t/p/out_len).
+ * Format: `$argon2id$v=19$m=<m>,t=<t>,p=<p>$<22-char salt b64>$<hash b64>`.
+ * The salt is always 16 bytes → 22 base64 chars (SaltString::encode_b64).
+ * Pre-sizing exactly makes `passwordHash` a single native pass instead of a
+ * grow-retry (which would re-run the whole ~tens-of-ms hash on a miss).
  */
-function argon2PhcLength(m: number, t: number, p: number, outLen: number, saltLen: number): number {
+function argon2PhcLength(m: number, t: number, p: number, outLen: number): number {
   return (
     15 + // "$argon2id$v=19$"
     2 + // "m="
@@ -540,26 +604,37 @@ function argon2PhcLength(m: number, t: number, p: number, outLen: number, saltLe
     3 + // ",p="
     String(p).length +
     1 + // "$" before the salt
-    b64Len(saltLen) +
+    22 + // salt b64 (16 bytes)
     1 + // "$" before the hash
     b64Len(outLen)
   )
 }
 
-function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
-  const crc32 = sym.castrum_crc32 as Raw2
-  const fnv = sym.castrum_fnv1a64 as Raw2
-  const xxh = sym.castrum_xxh3 as Raw2
-  const jsonValid = sym.castrum_json_valid as Raw2
+function build(
+  sym: Record<string, (...a: unknown[]) => unknown>,
+  useBufferLength: boolean,
+): BunFFI {
+  const crc32 = sym.castrum_crc32 as (...a: unknown[]) => number | bigint
+  const fnv = sym.castrum_fnv1a64 as (...a: unknown[]) => number | bigint
+  const xxh = sym.castrum_xxh3 as (...a: unknown[]) => number | bigint
+  const jsonValid = sym.castrum_json_valid as (...a: unknown[]) => number | bigint
   const hexEncode = sym.castrum_hex_encode as Raw4
   const hexDecode = sym.castrum_hex_decode as Raw4
   const urlEncode = sym.castrum_url_encode as Raw4
   const urlDecode = sym.castrum_url_decode as Raw4
-  const validateEmail = sym.castrum_validate_email as Raw2
-  const validateUuid = sym.castrum_validate_uuid as Raw2
-  const validateIpv4 = sym.castrum_validate_ipv4 as Raw2
-  const validateIpv6 = sym.castrum_validate_ipv6 as Raw2
-  const jsonSumIds = sym.castrum_json_sum_ids as Raw4
+  const validateEmail = sym.castrum_validate_email as (...a: unknown[]) => number | bigint
+  const validateUuid = sym.castrum_validate_uuid as (...a: unknown[]) => number | bigint
+  const validateIpv4 = sym.castrum_validate_ipv4 as (...a: unknown[]) => number | bigint
+  const validateIpv6 = sym.castrum_validate_ipv6 as (...a: unknown[]) => number | bigint
+  const jsonSumRaw = sym.castrum_json_sum_ids as Raw4
+
+  // Single-buffer input fns: with the probe-gated `buffer/buffer_length` ABI the
+  // engine reads ptr + byteLength off the SAME TypedArray at call time (an
+  // atomic snapshot — pass the view twice, per Bun's docs); with `(ptr,len)` we
+  // pass the length explicitly. The branch is on a bind-time constant, so the
+  // JIT folds it away at the call site.
+  const oneArg = (raw: (...a: unknown[]) => number | bigint, v: Uint8Array): number | bigint =>
+    useBufferLength ? raw(v, v) : raw(v, v.length)
   const hmacVerify = sym.castrum_hmac_sha256_verify as Raw6
   const csrfVerify = sym.castrum_csrf_verify as Raw4
   const passwordVerify = sym.castrum_password_verify as Raw4
@@ -663,10 +738,9 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
         flag(padding ?? true),
       ),
     )
-    if (w === 0) {
-      throw new Error('base64 encode: output buffer too small')
-    }
-    return w
+    // Empty input legitimately writes 0 bytes — only a 0 write on NON-empty
+    // input is a real error (same convention as the decode/etag paths).
+    return writeOrThrow(w, input.length, 'base64 encode')
   }
 
   const etagInto = (data: Uint8Array, output: Uint8Array, weak?: boolean): number => {
@@ -678,10 +752,10 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
   }
 
   return {
-    crc32: (input) => Number(crc32(input, input.length)) >>> 0,
-    fnv1a64: (input) => BigInt(fnv(input, input.length)),
-    xxh3: (input) => BigInt(xxh(input, input.length)),
-    jsonValid: (input) => Number(jsonValid(input, input.length)) === 1,
+    crc32: (input) => Number(oneArg(crc32, input)) >>> 0,
+    fnv1a64: (input) => BigInt(oneArg(fnv, input)),
+    xxh3: (input) => BigInt(oneArg(xxh, input)),
+    jsonValid: (input) => Number(oneArg(jsonValid, input)) === 1,
     hexEncode(input) {
       const out = new Uint8Array(input.length * 2)
       const w = hexEncodeInto(input, out)
@@ -696,26 +770,24 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
     },
     urlEncodeInto,
 
-    validateEmail: (input) => Number(validateEmail(input, input.length)) === 1,
-    validateUuid: (input) => Number(validateUuid(input, input.length)) === 1,
-    validateIpv4: (input) => Number(validateIpv4(input, input.length)) === 1,
-    validateIpv6: (input) => Number(validateIpv6(input, input.length)) === 1,
-    jsonSumIds(input) {
-      // Packed `[u8 ok][i64 sum LE]` (9 bytes) — the ok byte disambiguates a
-      // legit zero-sum from invalid input, so the builder never re-dispatches
-      // to napi on 0n (removes the old 0-ambiguous scalar-i64 ABI). The i64 is
-      // read byte-by-byte into a BigInt (alloc-free, correct for negative
-      // two's-complement sums).
+    validateEmail: (input) => Number(oneArg(validateEmail, input)) === 1,
+    validateUuid: (input) => Number(oneArg(validateUuid, input)) === 1,
+    validateIpv4: (input) => Number(oneArg(validateIpv4, input)) === 1,
+    validateIpv6: (input) => Number(oneArg(validateIpv6, input)) === 1,
+    jsonSumIds: (input) => {
+      // Packed [u8 ok][i64 sum LE] output (9 B): ok=1 → valid array (the sum
+      // may be 0); ok=0 → invalid input. Bytes written: 9/1/0 (0 = real error).
       const out = new Uint8Array(9)
-      const w = Number(jsonSumIds(input, input.length, out, out.length))
-      if (w === 0 || (out[0] ?? 0) !== 1) {
-        throw new Error('json sum ids: expected an array')
+      const w = Number(jsonSumRaw(input, input.length, out, out.length))
+      if (w === 0) {
+        throw new Error('json sum ids: output buffer too small')
       }
-      let sum = 0n
-      for (let i = 8; i >= 1; i--) {
-        sum = (sum << 8n) | BigInt(out[i] ?? 0)
+      if (out[0] === 0) {
+        // Mirrors the napi error phrasing (serde: "expected an array of objects
+        // with numeric ids") so both transports throw the same message.
+        throw new Error('json sum ids: expected an array of objects with numeric ids')
       }
-      return sum
+      return new DataView(out.buffer, out.byteOffset, out.byteLength).getBigInt64(1, true)
     },
     hmacSha256Verify: (key, data, signature) =>
       Number(hmacVerify(key, key.length, data, data.length, signature, signature.length)) === 1,
@@ -807,7 +879,9 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
       if (output.length < need) {
         throw new Error('sign cookie: output buffer too small')
       }
-      const w = Number(signCookie(value, value.length, secret, secret.length, output, output.length))
+      const w = Number(
+        signCookie(value, value.length, secret, secret.length, output, output.length),
+      )
       if (w === 0) {
         throw new Error('sign cookie: output buffer too small')
       }
@@ -846,7 +920,7 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
               out.length,
             ),
           ),
-        argon2PhcLength(mCost, tCost, pCost, outLen, salt.length),
+        argon2PhcLength(mCost, tCost, pCost, outLen),
         2 * 1024 * 1024,
         'password hash: output buffer too small',
       )
@@ -953,7 +1027,15 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
         throw new Error('ws frame encode: output buffer too small')
       }
       const w = Number(
-        wsFrameEncode(opcode, payload, payload.length, flag(mask), flag(fin), output, output.length),
+        wsFrameEncode(
+          opcode,
+          payload,
+          payload.length,
+          flag(mask),
+          flag(fin),
+          output,
+          output.length,
+        ),
       )
       if (w === 0) {
         throw new Error('ws frame encode: output buffer too small')
@@ -970,23 +1052,20 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
     },
     gzipCompress(data, level = 6) {
       // The C ABI streams the compressed output directly into `out` (no internal
-      // Vec — see rust/payload/compress.rs gzip_compress_into). Pre-size to
-      // ~input + 12.5% headroom (gzip's worst-case expansion is a small
-      // constant per stored block), so incompressible/large inputs complete in
-      // a SINGLE pass instead of the old 16 KiB cap triggering a growExact
-      // retry that re-ran the whole compression (~2x). growExact remains the
-      // safety net for pathological misses (one exact retry).
+      // Vec — see rust/payload/compress.rs gzip_compress_into). Cap the initial
+      // so large compressible inputs don't pay a full-size allocation (measured:
+      // a 75 KiB input compressed to <1 KiB — COMPRESS_INITIAL_CAP is plenty and
+      // single-pass). growExact handles incompressible data with at most one
+      // exact retry (no re-run loop).
       return growExact(
         (out) => Number(gzipCompress(data, data.length, Math.min(level, 9), out, out.length)),
-        data.length + (data.length >> 3) + 64,
-        Math.max(data.length * 2 + 64, 1024 * 1024),
+        Math.min(data.length + COMPRESS_HEADROOM, COMPRESS_INITIAL_CAP),
+        Math.max(data.length * 2 + COMPRESS_HEADROOM, COMPRESS_MAX_CAP),
         'gzip compress: output buffer too small',
       )
     },
     gzipCompressInto(data, output, level = 6) {
-      const w = Number(
-        gzipCompress(data, data.length, Math.min(level, 9), output, output.length),
-      )
+      const w = Number(gzipCompress(data, data.length, Math.min(level, 9), output, output.length))
       // Needed-size convention: w > output.length = too small; w === 0 = real error.
       if (w === 0) {
         throw new Error('gzip compress: invalid input')
@@ -1005,7 +1084,9 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
       // grow-to-max allocation storm).
       const isize = Number(gzipIsize(data, data.length))
       const initial =
-        isize !== 0 ? Math.min(isize, max) : Math.min(data.length * 16, 4 * 1024 * 1024)
+        isize !== 0
+          ? Math.min(isize, max)
+          : Math.min(data.length * DECOMPRESS_GUESS_MULTIPLIER_GZIP, DECOMPRESS_FALLBACK_CAP)
       return growExact(
         (out) => Number(gzipDecompress(data, data.length, max, out, out.length)),
         initial,
@@ -1014,12 +1095,12 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
       )
     },
     brotliCompress(data, quality = 5) {
-      // Same single-pass rationale as gzipCompress (streaming core): pre-size
-      // with 12.5% headroom so large/incompressible inputs don't double-run.
+      // Same cap rationale as gzipCompress (streaming core); growExact for
+      // incompressible data.
       return growExact(
         (out) => Number(brotliCompress(data, data.length, Math.min(quality, 11), out, out.length)),
-        data.length + (data.length >> 3) + 64,
-        Math.max(data.length * 2 + 64, 1024 * 1024),
+        Math.min(data.length + COMPRESS_HEADROOM, COMPRESS_INITIAL_CAP),
+        Math.max(data.length * 2 + COMPRESS_HEADROOM, COMPRESS_MAX_CAP),
         'brotli compress: output buffer too small',
       )
     },
@@ -1038,12 +1119,16 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
     },
     brotliDecompress(data, maxDecompressed) {
       const max = maxDecompressed ?? MAX_DECOMPRESSED
-      // Brotli has no cheap trailer size: a 32x initial covers typical JSON/text
-      // ratios (~10-30x) while the 4 MiB cap bounds over-allocation on large
-      // streams; growExact handles higher-ratio streams with one exact retry.
+      // Brotli has no cheap trailer size: DECOMPRESS_GUESS_MULTIPLIER_BROTLI×
+      // initial covers typical JSON/text ratios (~10-30x) while the fallback
+      // cap bounds over-allocation on large streams; growExact handles
+      // higher-ratio streams with one exact retry.
       return growExact(
         (out) => Number(brotliDecompress(data, data.length, max, out, out.length)),
-        Math.min(Math.max(data.length * 32, 1024), 4 * 1024 * 1024),
+        Math.min(
+          Math.max(data.length * DECOMPRESS_GUESS_MULTIPLIER_BROTLI, DECOMPRESS_MIN_INITIAL),
+          DECOMPRESS_FALLBACK_CAP,
+        ),
         max,
         'brotli decompress: invalid stream or exceeded max decompressed size',
       )
@@ -1093,7 +1178,13 @@ function build(sym: Record<string, (...a: unknown[]) => unknown>): BunFFI {
               out.length,
             ),
           ),
-        Math.min(Math.max(claimsJson.length * 2 + 128, 256), 1024 * 1024),
+        Math.min(
+          Math.max(
+            claimsJson.length * JWT_INITIAL_MULTIPLIER + JWT_INITIAL_EXTRA,
+            JWT_INITIAL_FLOOR,
+          ),
+          1024 * 1024,
+        ),
         1024 * 1024,
         'jwt sign: output buffer too small',
       )
@@ -1201,7 +1292,7 @@ function selfTest(b: BunFFI): boolean {
   // instead of crashing under load. Real frame→output parity is covered by
   // ffi.test.ts against a live napi instance.
   try {
-    b.ingressHandlePacked(0n, enc.encode('/'), null, new Uint8Array(64))
+    b.ingressHandlePacked(0, enc.encode('/'), null, new Uint8Array(64))
     return false // a null handle must throw, not return
   } catch {
     // expected: null inner handle → 0 → throw
@@ -1221,6 +1312,19 @@ function selfTest(b: BunFFI): boolean {
     return false
   }
   if (b.jsonSumIds(enc.encode(`[{"id":1},{"id":2}]`)) !== 3n) {
+    return false
+  }
+  // The packed [u8 ok][i64 sum LE] ABI: a legit zero-sum is ok, invalid input throws.
+  if (b.jsonSumIds(enc.encode(`[{"id":0},{"id":0}]`)) !== 0n) {
+    return false
+  }
+  let sumInvalidThrew = false
+  try {
+    b.jsonSumIds(enc.encode('nope'))
+  } catch {
+    sumInvalidThrew = true
+  }
+  if (!sumInvalidThrew) {
     return false
   }
 
@@ -1402,7 +1506,7 @@ function selfTest(b: BunFFI): boolean {
     return false
   }
   // Packed layout: [u32 count][u32 name_len][name]... → name_len at offset 4.
-  const mNameLen = mOut[4]! | (mOut[5]! << 8) | (mOut[6]! << 16) | (mOut[7]! << 24)
+  const mNameLen = (mOut[4] ?? 0) | ((mOut[5] ?? 0) << 8) | ((mOut[6] ?? 0) << 16) | ((mOut[7] ?? 0) << 24)
   if (dec.decode(mOut.subarray(8, 8 + mNameLen)) !== 'field') {
     return false
   }

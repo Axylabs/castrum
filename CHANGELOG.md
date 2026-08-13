@@ -7,32 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Loader-backed bulk helpers** (`src/integration/batch.ts`, exported from the
-  package): `validateMany` / `validateCount` (batch JSON-schema validation via
-  `loader.schema`), and generic `runMany` / `runOne` (packed batch / single
-  loader dispatch). These wire the higher-order loader into the integration
-  layer — the loader was previously exported + benchmarked but had no
-  production call sites. `LoaderScalar` is now re-exported from the loader
-  barrel. See `examples/loader-demo.ts` for single/bulk/schema/hash usage.
-- **`enableLoader` option on the pre-baked write routes** (`BakedHandlerOptions`):
-  when set, the JSON-validity fallback check routes through
-  `loader("jsonValid")` instead of the direct native call — exercising the
-  loader's dispatch + counters on the real request path. Default off (the
-  direct call is marginally faster for a single request).
-- **`warmOnCreate` option** on `createIngressFast` / `createIngressHandler`:
-  runs one probe GET at construction so the `run()` closure + packed pipeline +
-  FFI ingress call are JIT-warmed before the first real request — cuts
-  cold-invocation tail latency in serverless-style deployments.
-- **Startup benchmark baseline persisted** to `bench/results/startup/latest.json`
-  (`bun run bench:startup`) so cold-start regressions are catchable like the
-  CPU report.
-- **`AdaptiveEstimate`** (`src/shared/adaptive.ts`, exported): a bounded EWMA
-  adaptive-estimate utility (generalized from the loader's cost model) for
-  runtime self-optimization decisions, plus a `BufferPool` `adaptive` option
-  that learns the observed request size to pre-size future buffers.
-
 ### Security
 
 - **Decompression-bomb cap**: `rust.gzipDecompress` / `rust.brotliDecompress`
@@ -96,30 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (0) inner handle must throw — a signature/ABI drift surfaces at bind time
   (→ napi fallback) instead of crashing under load. The bind-time self-test
   previously covered `castrum_ingress_layout` but not the ingress handle call.
-- **`passwordHash` double-run from salt-size miscalc**: `argon2PhcLength`
-  hardcoded a 22-char salt base64 (a 16-byte salt). Any other salt length
-  (the ffi bench uses a 19-byte salt) made the pre-sized buffer too small, so
-  `growExact` re-ran the whole argon2 hash — `passwordHash(m=8)` measured
-  **0.52x** vs napi. It now derives the salt b64 from the actual `salt.length`
-  → single native pass (measured **1.04x**).
-- **gzip/brotli compress double-run from the 16 KiB initial cap**: the streaming
-  core writes directly into the caller buffer, so the old `min(len+64, 16 KiB)`
-  cap caused a grow-retry re-run of the whole compression whenever the output
-  exceeded 16 KiB (any large/incompressible payload). The initial is now
-  `len + len/8 + 64` (single-pass; verified on a 64 KiB incompressible input
-  at ~1.1x vs napi instead of ~2x).
-- **`jsonSumIds` legit zero-sum no longer re-dispatches to napi**: the scalar-
-  i64 C ABI returned `0` for BOTH a zero-sum and invalid input, so every legit
-  `0n` result triggered a second napi crossing. The C ABI now writes a packed
-  `[u8 ok][i64 sum LE]` output (9 bytes) that disambiguates; the builder only
-  re-dispatches to napi on actual invalid input (preserving the exact error
-  message). Measured `jsonSumIds(200 rows)` 0.90x → 0.99x.
-- **Repeated same-secret HMAC/CSRF/cookie FFI calls no longer rebuild the key**: a
-  per-thread bounded LRU (`rust/ffi.rs` `HMAC_KEY_CACHE`) caches the compiled
-  `hmac::Key` — the C-ABI equivalent of the compiled-once `HmacSigner` NAPI
-  instance, without an opaque-handle lifetime hazard (the cache owns the keys
-  and LRU-evicts). Zero lock contention across Bun Worker threads
-  (`hmac_sha256_concurrent_*`).
 
 ### Changed
 
@@ -177,38 +127,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opaque handles (deferred). Measured (release build, noisy host):
   `csrf_create` ~11x, `cookie_verify` ~2x, `form_parse` ~5x faster vs the JS
   baseline.
+- **Honest CPU-bench measurement of the delegated BUN_WINS ops.** The
+  `rust:url_encode` / `rust:url_decode` / `rust:http_date` columns (and the
+  large-input variants) previously called the public `rust.*` wrapper, which
+  delegates to the Bun built-in under Bun — so the report compared the built-in
+  against itself (~1.0x) and the addon's real numbers were invisible. They now
+  use new raw addon accessors in `src/bench/raw-native.ts`
+  (`rawUrlEncode` / `rawUrlDecode` / `rawHttpDate` / `rawXxh3` /
+  `rawBase64Encode`, alongside the existing `rawCrc32` / `rawHmacSha256` /
+  `rawGzipCompress` / `rawRandomToken`). The `diag:*` rows in
+  `bun-builtins.ts` (crc32 / xxh3 / hmac / gzip / randomToken) were likewise
+  self-comparing and now measure the addon, restoring addon-vs-Bun-builtin
+  decision-matrix data. The honest report reveals the addon actually WINS on
+  large inputs (`rust:url_encode_large` ~1.45x, `rust:url_decode_large`
+  ~3.45x), previously hidden.
+- **`selection.json` completeness — `opImpl(op)` is non-null for every public
+  op.** Five ops (`xxh3`, `urlEncode`, `urlDecode`, `base64Encode`,
+  `httpDate`) were absent from the selection table, so under Node `opImpl`
+  returned `null` and consumers silently fell back to a JS path even when the
+  addon was faster. `scripts/select-native.ts` now measures them (with a
+  `pinned` skip for ops whose decision is semantics-driven) and regenerates
+  `src/selection.json` (47 ops). The `--write` flow also now preserves the
+  five previously-baked native ops (`jwtSign`, `jwtVerify`, `passwordVerify`,
+  `createTemplate`, `createSchemaValidator`) that were missing from the OPS
+  array and would have been silently dropped — the exact regression vector that
+  turned ignus core's JSON-schema validation into a JS (Ajv) call.
+- **Wiring-guard test suite** (`test/unit/features/wiring.test.ts`): pins that
+  (1) every selection.json op has a non-null baked Node decision and BUN_WINS
+  ops resolve to `"js"` under Bun; (2) critical ops (`createSchemaValidator`,
+  constant-time crypto, `gzipDecompress`) stay native-bound; (3) the raw-*
+  accessors exist for all 9 BUN_WINS ops and match the addon; and (4) the CPU
+  bench `rust:` columns reference the raw accessors, never the delegated public
+  wrappers. `delegation.test.ts` parity coverage extended from 5 to all 9
+  BUN_WINS ops; `json.test.ts` pins `createSchemaValidator` to the native
+  addon.
 
 ### Performance
 
-- **Bun-builtin delegation for FFI-bound scalar ops (mix-and-match)**: the
-  `rust.*` surface now binds four ops to Bun's in-process native built-ins
-  **under Bun** (skipping the C-ABI/FFI crossing entirely; the rust addon
-  remains the Node/non-Bun path), matching the `BUN_WINS` decision set in
-  `src/selection.ts` (`urlEncode`, `urlDecode`, `base64Encode` added; docs in
-  `docs/bun-builtins-decision-matrix.md`):
-  - `rust.urlEncode` / `rust.text.urlEncode` → `encodeURIComponent` (~3–4×
-    faster than the FFI crossing; RFC 3986 unreserved set is byte-identical).
-  - `rust.urlDecode` / `rust.text.urlDecode` → `decodeURIComponent` (~4–8×
-    faster; strict UTF-8 semantics match — both throw on malformed/invalid).
-    Raw-bytes `urlDecodeBytes` and the pooled `*Into` variants stay native.
-  - `rust.httpDate` → `Date.toUTCString()` (~3.7× faster; byte-identical
-    RFC 1123 across epoch/leap/2100).
-  - `rust.base64Encode` → `Buffer` base64 for the standard padded,
-    non-url-safe case (~2× faster); url-safe/unpadded stays native.
-  - `hexEncode` **kept on rust** (measured 1.35× faster than `Buffer` hex —
-    the "remove the ones that don't improve" half of the decision).
-  - Byte parity between the Bun-binding and the napi addon is pinned by new
-    cross-transport tests in `test/unit/features/url.test.ts`; the existing
-    `encoding.test.ts` / `etag.test.ts` baselines now cover the bindings.
-- **FFI-vs-NAPI regression sweep** (the fixes above, measured on `bench/ffi-all.ts`
-  before/after on the same noisy host): `passwordHash(m=8)` **0.52x → 1.04x**,
-  `jsonSumIds(200 rows)` **0.90x → 0.99x**, `aeadEncrypt` 0.84x → 1.08x
-  (confirmed noise), and gzip/brotli compress on a 64 KiB incompressible input
-  single-pass at ~1.1x (was ~2x from the grow-retry re-run). The post-fix run
-  reports **3** ops slower than napi (all compression rows on a 1.2 KiB
-  medium input — already single-pass before/after, host noise) vs **6** before;
-  `check:proven --fail` is clean, with hmacSha256 1.31x, passwordHash 20.95x,
-  aeadEncrypt 2.29x, hmacSha256Verify 2.77x.
+- **Bun FFI hot-path trims** (`src/native/ffi.ts` + `rust/ffi.rs`):
+  - **Per-thread HMAC key cache**: the C-ABI HMAC/cookie/CSRF fns now reuse a
+    compiled `hmac::Key` from a per-thread cap-16 LRU (`HMAC_KEY_CACHE`) instead
+    of re-deriving the key schedule (`hmac::Key::new` — a SHA-256 pass over the
+    secret) on every call. This is the C-ABI equivalent of the napi
+    `HmacSigner`'s compiled-once key, so a server signing cookies / CSRF tokens
+    / HMACs with the SAME secret no longer pays the key derivation per request.
+  - **Ingress inner handle as a JS number**: the opaque ingress handle (a u64
+    under 2^53) is converted to `Number` ONCE at handler creation and passed as
+    a plain number on the hot path — bun:ffi previously converted the BigInt
+    argument to a number on every request (docs note BigInt is slower).
+  - **`buffer`/`buffer_length` ABI adopted** for the 9 input-only FFI fns
+    (crc32, fnv1a64, xxh3, jsonValid, validators, jsonSumIds) when the current
+    Bun accepts the pair (probe-gated at bind time; falls back to `(ptr, len)`
+    otherwise). The engine reads ptr + length off the same TypedArray at call
+    time — an atomic snapshot — matching Bun's documented idiom.
+
 - **FFI-primary tuning closes the remaining Bun regressions** (the fast path is
   now the primary transport — see Changed):
   - gzip/brotli `growWrite` pre-sizes its output buffer: gzip decompress reads

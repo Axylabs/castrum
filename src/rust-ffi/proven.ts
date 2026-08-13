@@ -11,21 +11,21 @@
 // annotations; `bun run check:proven` audits it against the latest benchmark
 // report (with `--fail` to gate CI).
 
-import { rust, type RustClient } from "./client";
+import { rust, type RustClient } from './client'
 
 /**
  * The performance-annotated client: the full {@link RustClient} surface.
  * Each exported function's JSDoc notes its measured performance vs the JS
  * baseline; functions slower than the baseline carry `@deprecated`.
  */
-export type ProvenClient = RustClient;
+export type ProvenClient = RustClient
 
 /**
  * The full `rust.*` surface with benchmark-annotated JSDoc. Identical to
  * `rust` — the annotations and `@deprecated` markers are what communicate
  * performance now, not a curated subset.
  */
-export const proven: ProvenClient = rust;
+export const proven: ProvenClient = rust
 
 // Re-export the registry + helpers so consumers can audit the surface.
 export {
@@ -34,9 +34,9 @@ export {
   isProven,
   provenSurface,
   provenSummary,
-} from "../shared/proven";
+} from '../shared/proven'
 export type {
   PerformanceStatus,
   ProvenEntry,
   ProvenKey,
-} from "../shared/proven";
+} from '../shared/proven'

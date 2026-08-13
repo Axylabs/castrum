@@ -10,14 +10,28 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { IngressInputPacker } from '../../../src/ingress/packing/input-packer'
 import * as constants from '../../../src/ingress/constants'
-import { getAddon } from '../../../src/native'
+import { IngressInputPacker } from '../../../src/ingress/packing/input-packer'
+import { getAddon, type WsFrame } from '../../../src/native'
 import { getBunFFI } from '../../../src/native/ffi'
 import { rust } from '../../../src/rust-ffi'
 import { isBun } from '../../../src/shared/runtime'
 
 const encoder = new TextEncoder()
+
+/**
+ * gzip from `Bun.gzipSync` (zlib) and from the native flate2 core differ ONLY
+ * in the gzip header OS byte (byte 9): 3 vs 255 — documented in
+ * `src/rust-ffi/scalar/payload.ts`. Normalize it so the byte-parity checks
+ * below compare the actual compressed stream, not the (intentional) OS byte.
+ */
+function gzipWithoutOsByte(bytes: Uint8Array): number[] {
+  const out = Array.from(bytes)
+  if (out.length > 9) {
+    out[9] = 0
+  }
+  return out
+}
 
 describe('bun:ffi fast path', () => {
   test('is active under Bun with the self-test passing', () => {
@@ -127,6 +141,15 @@ describe('bun:ffi fast path', () => {
     )
   })
 
+  test('jsonSumIds ok-byte semantics: zero-sum valid, non-array throws', () => {
+    if (!isBun() || getBunFFI() === null) return
+    // A legit zero-sum must NOT be conflated with invalid input (the old scalar
+    // i64 ABI returned 0 for both and forced a napi re-dispatch).
+    expect(rust.jsonSumIds(encoder.encode('[{"id":0},{"id":0}]'))).toBe(0n)
+    expect(() => rust.jsonSumIds(encoder.encode('nope'))).toThrow()
+    expect(() => rust.jsonSumIds(encoder.encode('[{"id":1}]}'))).toThrow()
+  })
+
   test('decoders match the napi addon byte-for-byte', () => {
     if (!isBun() || getBunFFI() === null) return
     const addon = getAddon()
@@ -173,7 +196,7 @@ describe('bun:ffi fast path', () => {
     const verified = rust.verifyCookie(signed, secret)
     const verifiedAddon = addon.verifyCookie(signed, secret)
     expect(verified).not.toBeNull()
-    expect(Array.from(verified!)).toEqual(Array.from(verifiedAddon!))
+    expect(Array.from(verified as Uint8Array)).toEqual(Array.from(verifiedAddon as Uint8Array))
     expect(rust.verifyCookie(encoder.encode('bad.signature'), secret)).toBeNull()
 
     // CSRF: a token issued via ffi verifies through BOTH paths.
@@ -232,7 +255,7 @@ describe('bun:ffi fast path', () => {
     const dec = rust.aeadDecrypt(key, nonce, ct)
     const decAddon = addon.aeadDecrypt(key, nonce, ct)
     expect(dec).not.toBeNull()
-    expect(Array.from(dec!)).toEqual(Array.from(decAddon!))
+    expect(Array.from(dec as Uint8Array)).toEqual(Array.from(decAddon as Uint8Array))
     // ChaCha20-Poly1305.
     expect(Array.from(rust.aeadEncrypt(key, nonce, pt, 'chacha20-poly1305'))).toEqual(
       Array.from(addon.aeadEncrypt(key, nonce, pt, 'chacha20-poly1305')),
@@ -243,7 +266,9 @@ describe('bun:ffi fast path', () => {
     if (!isBun() || getBunFFI() === null) return
     const addon = getAddon()
     const data = encoder.encode('hello hello hello '.repeat(20))
-    expect(Array.from(rust.gzipCompress(data))).toEqual(Array.from(addon.gzipCompress(data)))
+    expect(gzipWithoutOsByte(rust.gzipCompress(data))).toEqual(
+      gzipWithoutOsByte(addon.gzipCompress(data)),
+    )
     const gz = rust.gzipCompress(data)
     expect(Array.from(rust.gzipDecompress(gz))).toEqual(Array.from(addon.gzipDecompress(gz)))
     expect(Array.from(rust.brotliCompress(data, 5))).toEqual(
@@ -309,9 +334,14 @@ describe('bun:ffi fast path', () => {
       const a = rust.wsFrameDecode(frame)
       const b = addon.wsFrameDecode(frame)
       expect(a).not.toBeNull()
-      expect(a!.fin).toBe(b!.fin)
-      expect(a!.opcode).toBe(b!.opcode)
-      expect(Array.from(a!.payload)).toEqual(Array.from(b!.payload))
+      expect(b).not.toBeNull()
+      // Cast after the null guard — biome bans `!`; the values are asserted
+      // non-null on the lines above.
+      const af = a as WsFrame
+      const bf = b as WsFrame
+      expect(af.fin).toBe(bf.fin)
+      expect(af.opcode).toBe(bf.opcode)
+      expect(Array.from(af.payload)).toEqual(Array.from(bf.payload))
     }
     // Malformed → both null.
     expect(rust.wsFrameDecode(encoder.encode('\x80'))).toBeNull()
@@ -342,13 +372,17 @@ describe('bun:ffi fast path', () => {
   test('ingress handleRequestPacked matches the napi addon byte-for-byte (ffi handle)', () => {
     if (!isBun() || getBunFFI() === null) return
     const addon = getAddon()
-    const ffi = getBunFFI()!
+    const ffi = getBunFFI()
+    if (ffi === null) return // narrow for TS (the guard above already returned)
     const handler = new addon.Ingress({ parseQuery: true, parseCookies: true })
     if (typeof handler.ingressInnerPtr !== 'function') {
       return // addon predates the ffi ingress handle — covered by the napi suite
     }
-    const ptr = handler.ingressInnerPtr()
-    expect(ptr).not.toBe(0n)
+    // The opaque u64 handle is < 2^53, so the FFI wrapper takes a JS number
+    // (converted once at handler creation; bun:ffi converts BigInt per call
+    // otherwise). Number() here mirrors that conversion for the cross-check.
+    const ptr = Number(handler.ingressInnerPtr())
+    expect(ptr).not.toBe(0)
 
     const packer = new IngressInputPacker()
     const input = packer.pack(
@@ -412,8 +446,8 @@ describe('bun:ffi fast path', () => {
     const gz = new Uint8Array(1024)
     const gzw = rust.gzipCompressInto(encoder.encode('hello'), gz)
     expect(gzw).toBeGreaterThan(0)
-    expect(Array.from(gz.subarray(0, gzw))).toEqual(
-      Array.from(rust.gzipCompress(encoder.encode('hello'))),
+    expect(gzipWithoutOsByte(gz.subarray(0, gzw))).toEqual(
+      gzipWithoutOsByte(rust.gzipCompress(encoder.encode('hello'))),
     )
 
     const br = new Uint8Array(1024)
@@ -426,8 +460,12 @@ describe('bun:ffi fast path', () => {
     // Too-small buffers throw (parity with the existing *Into contract).
     expect(() => rust.hmacSha256Into(key, data, new Uint8Array(8))).toThrow()
     expect(() => rust.signCookieInto(value, secret, new Uint8Array(8))).toThrow()
-    expect(() => rust.aeadEncryptInto(aeadKey, nonce, encoder.encode('hello'), new Uint8Array(8))).toThrow()
-    expect(() => rust.wsFrameEncodeInto(1, encoder.encode('hello'), true, true, new Uint8Array(4))).toThrow()
+    expect(() =>
+      rust.aeadEncryptInto(aeadKey, nonce, encoder.encode('hello'), new Uint8Array(8)),
+    ).toThrow()
+    expect(() =>
+      rust.wsFrameEncodeInto(1, encoder.encode('hello'), true, true, new Uint8Array(4)),
+    ).toThrow()
     expect(() => rust.gzipCompressInto(encoder.encode('hello'), new Uint8Array(2))).toThrow()
     expect(() => rust.brotliCompressInto(encoder.encode('hello'), new Uint8Array(2))).toThrow()
   })
@@ -462,7 +500,9 @@ describe('bun:ffi fast path', () => {
     const napiCookie = new addon.CookieSigner(secret)
     const signed = ffiCookie.sign(value)
     expect(Array.from(signed)).toEqual(Array.from(napiCookie.sign(value)))
-    expect(Array.from(ffiCookie.verify(signed)!)).toEqual(Array.from(napiCookie.verify(signed)!))
+    expect(Array.from(ffiCookie.verify(signed) as Uint8Array)).toEqual(
+      Array.from(napiCookie.verify(signed) as Uint8Array),
+    )
     expect(ffiCookie.verify(encoder.encode('bad.sig'))).toBeNull()
 
     const ffiCsrf = rust.createCsrfProtector(secret)
@@ -495,7 +535,7 @@ describe('bun:ffi fast path', () => {
     const napiAead = new addon.AeadCipher(aeadKey)
     const ct = ffiAead.encrypt(nonce, data)
     expect(Array.from(ct)).toEqual(Array.from(napiAead.encrypt(nonce, data)))
-    expect(Array.from(ffiAead.decrypt(nonce, ct)!)).toEqual(Array.from(data))
+    expect(Array.from(ffiAead.decrypt(nonce, ct) as Uint8Array)).toEqual(Array.from(data))
   })
 
   // ── Transport introspection (FFI is PRIMARY on Bun; napi is the fallback) ──
@@ -532,7 +572,7 @@ describe('bun:ffi fast path', () => {
       encoding: 'utf8',
     })
     expect(res.status).toBe(0)
-    const [isNull, transport, active] = res.stdout!.trim().split(/\s+/)
+    const [isNull, transport, active] = (res.stdout as string).trim().split(/\s+/)
     expect(isNull).toBe('true')
     expect(transport).toBe('napi')
     expect(active).toBe('false')

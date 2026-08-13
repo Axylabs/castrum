@@ -13,13 +13,13 @@ export interface AdaptiveEstimateOptions {
    * EWMA smoothing factor in (0, 1]. Higher reacts faster to new samples;
    * lower smooths more. Default: 0.25.
    */
-  alpha?: number;
+  alpha?: number
   /** Starting estimate. Default 0 (the first sample wins). */
-  initial?: number;
+  initial?: number
   /** Clamp the estimate to at least this. Default 0. */
-  min?: number;
+  min?: number
   /** Clamp the estimate to at most this (bounds memory / resources). Default Infinity. */
-  max?: number;
+  max?: number
 }
 
 /**
@@ -32,38 +32,37 @@ export interface AdaptiveEstimateOptions {
  * observations.
  */
 export class AdaptiveEstimate {
-  private readonly alpha: number;
-  private readonly min: number;
-  private readonly max: number;
-  private readonly initial: number;
-  private value: number;
+  private readonly alpha: number
+  private readonly min: number
+  private readonly max: number
+  private readonly initial: number
+  private value: number
 
   constructor(options: AdaptiveEstimateOptions = {}) {
-    const alpha = options.alpha ?? 0.25;
+    const alpha = options.alpha ?? 0.25
     if (!Number.isFinite(alpha) || alpha <= 0 || alpha > 1) {
-      throw new RangeError(`AdaptiveEstimate: alpha must be in (0,1], got ${alpha}`);
+      throw new RangeError(`AdaptiveEstimate: alpha must be in (0,1], got ${alpha}`)
     }
-    this.alpha = alpha;
-    this.min = Math.max(0, options.min ?? 0);
-    this.max = options.max ?? Number.POSITIVE_INFINITY;
-    this.initial = options.initial ?? 0;
-    this.value = this.initial;
+    this.alpha = alpha
+    this.min = Math.max(0, options.min ?? 0)
+    this.max = options.max ?? Number.POSITIVE_INFINITY
+    this.initial = options.initial ?? 0
+    this.value = this.initial
   }
 
   /** Fold a new observation into the running estimate. */
   sample(x: number): void {
-    const v =
-      this.value === 0 ? x : this.value * (1 - this.alpha) + x * this.alpha;
-    this.value = v < this.min ? this.min : v > this.max ? this.max : v;
+    const v = this.value === 0 ? x : this.value * (1 - this.alpha) + x * this.alpha
+    this.value = v < this.min ? this.min : v > this.max ? this.max : v
   }
 
   /** Current estimate (clamped to `[min, max]`). */
   get estimate(): number {
-    return this.value;
+    return this.value
   }
 
   /** Reset the estimate (back to `initial`). */
   reset(): void {
-    this.value = this.initial;
+    this.value = this.initial
   }
 }

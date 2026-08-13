@@ -14,17 +14,17 @@
 //     "/metrics": { read: metricsHandler(m) },
 //   }});
 
-import { createMetrics, DEFAULT_BUCKETS, type MetricsRegistry } from "../shared/metrics";
-import type { BakedIngressResult } from "./decode/baked-result";
-import type { BakedIngressRuntime } from "./handlers";
+import { createMetrics, DEFAULT_BUCKETS, type MetricsRegistry } from '../shared/metrics'
+import type { BakedIngressResult } from './decode/baked-result'
+import type { BakedIngressRuntime } from './handlers'
 
 /** The runtime hooks + registry for ingress metrics. */
 export interface IngressMetrics {
-  registry: MetricsRegistry;
+  registry: MetricsRegistry
   /** Pass as the runtime to `createIngressHandler`. */
-  runtime: Pick<BakedIngressRuntime, "onRequest" | "onResponse" | "onError">;
+  runtime: Pick<BakedIngressRuntime, 'onRequest' | 'onResponse' | 'onError'>
   /** Render the Prometheus exposition. */
-  render(): string;
+  render(): string
 }
 
 /**
@@ -32,34 +32,34 @@ export interface IngressMetrics {
  * runtime hooks. Metric names follow the Prometheus `castrum_http_*` scheme.
  */
 export function createIngressMetrics(): IngressMetrics {
-  const registry = createMetrics();
+  const registry = createMetrics()
 
   const requestsTotal = registry.counter(
-    "castrum_http_requests_total",
-    "Total ingress requests processed.",
-    ["method", "status"],
-  );
+    'castrum_http_requests_total',
+    'Total ingress requests processed.',
+    ['method', 'status'],
+  )
   const requestDuration = registry.histogram(
-    "castrum_http_request_duration_seconds",
-    "Ingress request latency in seconds.",
+    'castrum_http_request_duration_seconds',
+    'Ingress request latency in seconds.',
     DEFAULT_BUCKETS,
-    ["method", "status"],
-  );
+    ['method', 'status'],
+  )
   const errorsTotal = registry.counter(
-    "castrum_http_errors_total",
-    "Total internal/terminal errors.",
-    ["code"],
-  );
+    'castrum_http_errors_total',
+    'Total internal/terminal errors.',
+    ['code'],
+  )
   const rateLimitedTotal = registry.counter(
-    "castrum_http_rate_limited_total",
-    "Total requests rejected by the rate limiter (429).",
-  );
+    'castrum_http_rate_limited_total',
+    'Total requests rejected by the rate limiter (429).',
+  )
   const inFlight = registry.gauge(
-    "castrum_http_in_flight_requests",
-    "Requests currently being processed.",
-  );
+    'castrum_http_in_flight_requests',
+    'Requests currently being processed.',
+  )
 
-  const statusLabel = (status: number): string => String(status);
+  const statusLabel = (status: number): string => String(status)
 
   // Per-request in-flight accounting keyed by the request id (also surfaced in
   // logs/metrics). This makes the gauge EXACTLY-ONCE per request, which matters
@@ -70,48 +70,48 @@ export function createIngressMetrics(): IngressMetrics {
   // NOTE: error-ended requests (onError fired) are counted via requestsTotal +
   // errorsTotal but not latency-sampled — the duration histogram only observes
   // requests that complete through onResponse.
-  const active = new Map<string, number>();
+  const active = new Map<string, number>()
 
   return {
     registry,
     runtime: {
       onRequest(_req, requestId, _ip) {
         if (requestId) {
-          active.set(requestId, performance.now());
+          active.set(requestId, performance.now())
         }
-        inFlight.inc();
+        inFlight.inc()
       },
       onResponse(req, result: BakedIngressResult, status, requestId) {
-        const method = req.method ?? "unknown";
-        const statusKey = statusLabel(status);
-        requestsTotal.inc({ method, status: statusKey });
+        const method = req.method ?? 'unknown'
+        const statusKey = statusLabel(status)
+        requestsTotal.inc({ method, status: statusKey })
         // Only a request that has not already ended (via onError) records its
         // latency and decrements the gauge here.
-        const started = requestId ? active.get(requestId) : undefined;
+        const started = requestId ? active.get(requestId) : undefined
         if (started !== undefined) {
-          active.delete(requestId);
-          inFlight.dec();
-          requestDuration.observe(
-            Math.max(performance.now() - started, 0) / 1000,
-            { method, status: statusKey },
-          );
+          active.delete(requestId)
+          inFlight.dec()
+          requestDuration.observe(Math.max(performance.now() - started, 0) / 1000, {
+            method,
+            status: statusKey,
+          })
         }
-        if (result.rateLimited) rateLimitedTotal.inc();
+        if (result.rateLimited) rateLimitedTotal.inc()
       },
       onError(_req, requestId, error) {
         // Ends the request's gauge accounting exactly once (a later onResponse
         // for the same request id becomes a no-op for the gauge). When only
         // onError fires (throwing callback), this is what un-leaks inFlight.
         if (requestId && active.delete(requestId)) {
-          inFlight.dec();
+          inFlight.dec()
         }
-        errorsTotal.inc({ code: error?.name ?? "internal" });
+        errorsTotal.inc({ code: error?.name ?? 'internal' })
       },
     },
     render() {
-      return registry.render();
+      return registry.render()
     },
-  };
+  }
 }
 
 /**
@@ -125,8 +125,8 @@ export function metricsHandler(metrics: IngressMetrics) {
     new Response(metrics.render(), {
       status: 200,
       headers: {
-        "content-type": "text/plain; version=0.0.4; charset=utf-8",
-        "cache-control": "no-store",
+        'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+        'cache-control': 'no-store',
       },
-    });
+    })
 }

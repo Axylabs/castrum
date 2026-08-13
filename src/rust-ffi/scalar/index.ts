@@ -8,18 +8,18 @@
 // in `interface.ts`; the implementation is split into domain builders mirroring
 // `rust/` (hashing, json, http, crypto, payload, factories).
 
-import type { RustClientContext } from "../context";
-import { buildHashing } from "./hashing";
-import { buildJson } from "./json";
-import { buildHttp } from "./http";
-import { buildCrypto } from "./crypto";
-import { buildPayload } from "./payload";
-import { buildFactories } from "./factories";
+import type { RustClientContext } from '../context'
+import { buildHashing } from './hashing'
+import { buildJson } from './json'
+import { buildHttp } from './http'
+import { buildCrypto } from './crypto'
+import { buildPayload } from './payload'
+import { buildFactories } from './factories'
 
-export type { RustScalar } from "./interface";
+export type { RustScalar } from './interface'
 
 /** Build the scalar/feature method set for a client context. */
-export function buildScalar(ctx: RustClientContext): import("./interface").RustScalar {
+export function buildScalar(ctx: RustClientContext): import('./interface').RustScalar {
   return {
     ...buildHashing(ctx),
     ...buildJson(ctx),
@@ -27,5 +27,5 @@ export function buildScalar(ctx: RustClientContext): import("./interface").RustS
     ...buildCrypto(ctx),
     ...buildPayload(ctx),
     ...buildFactories(ctx),
-  };
+  }
 }
