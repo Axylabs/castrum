@@ -1,8 +1,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use serde::de::{DeserializeSeed, Deserializer, SeqAccess, Visitor};
 use serde_json::Value;
-use std::fmt;
 use std::sync::Arc;
 
 use crate::json::fast_schema;
@@ -15,6 +13,19 @@ pub struct SchemaValidator {
     /// Zero-DOM fast path, engaged when the schema only uses the supported
     /// keyword subset; `None` falls back to the `jsonschema` crate DOM path.
     fast: Option<Arc<fast_schema::FastNode>>,
+}
+
+/// C-ABI support: validate a document against the compiled schema.
+///
+/// # Safety
+/// `p` must be a valid `*const SchemaValidator` from `inner_ptr`, alive for
+/// the call (the JS wrapper holds the napi instance).
+pub(crate) unsafe fn schema_validator_validate_core(
+    p: *const SchemaValidator,
+    doc: &[u8],
+) -> bool {
+    let this = &*p;
+    this.validate_doc(doc)
 }
 
 /// Total payload bytes in a packed buffer (`[u32 count] {[u32 len][bytes]}`),
@@ -125,6 +136,14 @@ impl SchemaValidator {
     #[napi]
     pub fn validate(&self, input: Uint8Array) -> bool {
         self.validate_doc(input.as_ref())
+    }
+
+    /// Opaque handle to the compiled schema, for the `bun:ffi` C-ABI fast path
+    /// (`castrum_schema_validator_validate` in rust/ffi.rs). Only valid while
+    /// THIS instance is alive; the JS wrapper holds the instance.
+    #[napi]
+    pub fn inner_ptr(&self) -> u64 {
+        self as *const SchemaValidator as u64
     }
 
     /// One-pass validate + extract: validate `input` against the schema and
@@ -295,25 +314,6 @@ impl SchemaValidator {
         }
 
         Ok(Buffer::from(out))
-    }
-
-    /// Stream-validate a JSON array payload.
-    ///
-    /// This still materializes one array element at a time, because
-    /// `jsonschema` currently expects a DOM-like value, but it avoids
-    /// materializing the entire array at once.
-    #[napi]
-    pub fn validate_batch_streaming(&self, batch_bytes: Uint8Array) -> Result<u32> {
-        let mut de = sonic_rs::Deserializer::from_slice(batch_bytes.as_ref());
-        let seed = BatchSeed {
-            validator: &self.schema,
-        };
-
-        let count = seed
-            .deserialize(&mut de)
-            .map_err(|e| Error::from_reason(format!("Streaming batch JSON error: {}", e)))?;
-
-        Ok(count)
     }
 }
 
@@ -548,50 +548,6 @@ impl SchemaValidator {
     }
 }
 
-struct BatchSeed<'a> {
-    validator: &'a jsonschema::Validator,
-}
-
-impl<'de> DeserializeSeed<'de> for BatchSeed<'_> {
-    type Value = u32;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_seq(BatchVisitor {
-            validator: self.validator,
-        })
-    }
-}
-
-struct BatchVisitor<'a> {
-    validator: &'a jsonschema::Validator,
-}
-
-impl<'de> Visitor<'de> for BatchVisitor<'_> {
-    type Value = u32;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a JSON array of documents")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut count = 0u32;
-
-        while let Some(value) = seq.next_element::<Value>()? {
-            if self.validator.is_valid(&value) {
-                count += 1;
-            }
-        }
-
-        Ok(count)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,22 +636,9 @@ mod tests {
             .filter(|&i| (bitset[4 + (i >> 3)] >> (i & 7)) & 1 == 1)
             .count();
 
-        // Streaming batch: one JSON array of the same docs.
-        let array: String = format!(
-            "[{}]",
-            docs.iter()
-                .map(|d| std::str::from_utf8(d).unwrap())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        let streamed = v
-            .validate_batch_streaming(Uint8Array::new(array.into_bytes()))
-            .unwrap();
-
         assert_eq!(count, 3);
         assert_eq!(bitset_count as usize, docs.len());
         assert_eq!(valid_from_bitset, 3);
-        assert_eq!(streamed, 3);
     }
 
     /// Diagnostic: splits per-document cost into DOM build vs schema walk, to
@@ -784,11 +727,7 @@ mod tests {
         SchemaValidator::new(Uint8Array::new(ORDERS_SCHEMA.as_bytes().to_vec())).unwrap()
     }
 
-    fn derive(
-        v: &SchemaValidator,
-        doc: &[u8],
-        paths: &[&str],
-    ) -> JsonDeriveResult {
+    fn derive(v: &SchemaValidator, doc: &[u8], paths: &[&str]) -> JsonDeriveResult {
         let p: Vec<String> = paths.iter().map(|s| s.to_string()).collect();
         v.derive(Uint8Array::new(doc.to_vec()), p).unwrap()
     }

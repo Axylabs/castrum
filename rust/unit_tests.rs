@@ -149,9 +149,8 @@ fn rate_limit_shared_limiter_refuses_17th_distinct_config() {
         configs.push((300 + i, 60_000, 1000 + i as usize));
     }
     for &(limit, window, max_entries) in &configs {
-        let _ =
-            crate::ingress::rate_limit::shared_limiter(limit, window, Some(max_entries))
-                .expect("distinct config registers");
+        let _ = crate::ingress::rate_limit::shared_limiter(limit, window, Some(max_entries))
+            .expect("distinct config registers");
     }
     // Registry at capacity: a genuinely new config must error, not evict.
     let res = crate::ingress::rate_limit::shared_limiter(500_000, 60_000, Some(123_456));
@@ -423,21 +422,7 @@ fn output_header_panics_on_undersized() {
     // header up front so a miscalculated buffer becomes a clean panic (→ napi
     // catch_unwind → JS 500) instead of a silent OOB write.
     let mut out = vec![0u8; crate::ingress::output::OUT_DATA_START - 1];
-    crate::ingress::output::write_output_header(
-        &mut out,
-        0,
-        0,
-        200,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    );
+    crate::ingress::output::write_output_header(&mut out, 0, 0, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 #[test]
@@ -882,7 +867,10 @@ fn cookie_parse_expires_value_with_commas() {
     assert_eq!(pairs.len(), 2);
     assert_eq!(
         pairs[1],
-        (b"expires".to_vec(), b"Wed, 21 Oct 2015 07:28:00 GMT".to_vec())
+        (
+            b"expires".to_vec(),
+            b"Wed, 21 Oct 2015 07:28:00 GMT".to_vec()
+        )
     );
 }
 
@@ -950,15 +938,15 @@ fn json_escaped_len_fused_matches_write_on_utf8_corpus() {
     // equal the bytes `write_json_escaped` emits for valid non-ASCII UTF-8 AND
     // invalid UTF-8 (where every byte becomes \u00XX).
     let cases: &[&[u8]] = &[
-        "héllo wörld".as_bytes(),                           // valid non-ASCII, no escapes
-        "caf\u{00e9} \u{201c}quoted\u{201d}".as_bytes(),    // valid with escapes
-        &[b'a', 0xC3, 0xA9, b'b'],                          // é valid
-        &[b'"', 0xC3, 0xA9, b'\\'],                         // escapes + multibyte
-        &[0xFF, 0xFE, b'a'],                                // invalid UTF-8
-        &[b'a', 0x80, b'b'],                                // lone continuation byte
-        &[0xC3, b' ', b'x'],                                // truncated multibyte
-        &[b'a', b'\\', 0xFF, b'\n', 0x01],                  // mixed invalid + escapes
-        "日本語のテキスト".as_bytes(),                        // pure multibyte, no ASCII
+        "héllo wörld".as_bytes(), // valid non-ASCII, no escapes
+        "caf\u{00e9} \u{201c}quoted\u{201d}".as_bytes(), // valid with escapes
+        &[b'a', 0xC3, 0xA9, b'b'], // é valid
+        &[b'"', 0xC3, 0xA9, b'\\'], // escapes + multibyte
+        &[0xFF, 0xFE, b'a'],      // invalid UTF-8
+        &[b'a', 0x80, b'b'],      // lone continuation byte
+        &[0xC3, b' ', b'x'],      // truncated multibyte
+        &[b'a', b'\\', 0xFF, b'\n', 0x01], // mixed invalid + escapes
+        "日本語のテキスト".as_bytes(), // pure multibyte, no ASCII
     ];
     for input in cases {
         let len = crate::json::json_ser::json_escaped_len(input);
@@ -1226,9 +1214,7 @@ fn read_i64(buf: &[u8], off: usize) -> i64 {
 #[test]
 fn fnv1a64_batch_matches_scalar() {
     let out = crate::util::batch::fnv1a64_batch_packed(Uint8Array::new(pack_slices(&[
-        b"foobar",
-        b"",
-        b"castrum",
+        b"foobar", b"", b"castrum",
     ])))
     .unwrap();
     let out = out.as_ref();
@@ -1267,8 +1253,7 @@ fn etag_batch_matches_scalar() {
 #[test]
 fn url_encode_batch_matches_scalar() {
     let out = crate::http::url_codec::url_encode_batch_packed(Uint8Array::new(pack_slices(&[
-        b"a b&c",
-        b"plain",
+        b"a b&c", b"plain",
     ])))
     .unwrap();
     let out = out.as_ref();
@@ -1280,8 +1265,7 @@ fn url_encode_batch_matches_scalar() {
 #[test]
 fn url_decode_batch_matches_scalar() {
     let out = crate::http::url_codec::url_decode_batch_packed(Uint8Array::new(pack_slices(&[
-        b"a%20b",
-        b"plain",
+        b"a%20b", b"plain",
     ])))
     .unwrap();
     let out = out.as_ref();
@@ -1290,10 +1274,11 @@ fn url_decode_batch_matches_scalar() {
     assert_eq!(&out[8..8 + len0], b"a b");
 
     // Strict bytes decode (no UTF-8 validation): %C3%A9 → the two raw bytes.
-    let out = crate::http::url_codec::url_decode_bytes_batch_packed(Uint8Array::new(pack_slices(
-        &[b"%C3%A9"],
-    )))
-    .unwrap();
+    let out =
+        crate::http::url_codec::url_decode_bytes_batch_packed(Uint8Array::new(pack_slices(&[
+            b"%C3%A9",
+        ])))
+        .unwrap();
     let out = out.as_ref();
     let len0 = read_u32(out, 4) as usize;
     assert_eq!(&out[8..8 + len0], &[0xc3, 0xa9]);
@@ -1325,10 +1310,11 @@ fn mime_from_extension_batch_matches_scalar() {
 fn ws_accept_key_batch_matches_rfc6455() {
     // Expected vector mirrors the repo's existing scalar test in
     // rust/payload/websocket.rs (rfc6455_accept_key_vector).
-    let out = crate::payload::websocket::ws_accept_key_batch_packed(Uint8Array::new(
-        pack_slices(&[b"dGhlIHNhbXBsZSBub25jZQ=="]),
-    ))
-    .unwrap();
+    let out =
+        crate::payload::websocket::ws_accept_key_batch_packed(Uint8Array::new(pack_slices(&[
+            b"dGhlIHNhbXBsZSBub25jZQ==",
+        ])))
+        .unwrap();
     let out = out.as_ref();
     let len0 = read_u32(out, 4) as usize;
     assert_eq!(&out[8..8 + len0], b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");

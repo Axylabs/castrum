@@ -6,7 +6,7 @@
  * checked against its scalar `rust.<op>` counterpart.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'
 
@@ -27,7 +27,7 @@ describe('rust.batch: hashing / url / mime / ws / base64url', () => {
   test('etag batch (strong + weak) matches the scalar', () => {
     const strong = rust.batch.etag([bytes('123456789'), bytes('x')])
     expect(strong[0]).toEqual(bytes('"cbf43926"'))
-    expect(strong[1]).toEqual(rust.etag(bytes('x')))
+    expect(strong[1]).toEqual(encoder.encode(rust.etag(bytes('x'))))
     const weak = rust.batch.etag([bytes('123456789')], true)
     expect(weak[0]).toEqual(bytes('W/"cbf43926"'))
   })
@@ -44,7 +44,9 @@ describe('rust.batch: hashing / url / mime / ws / base64url', () => {
   test('base64url batches match the scalar (URL-safe, no padding)', () => {
     expect(rust.batch.base64UrlEncode([RAW_FBFF, bytes('')])[0]).toEqual(bytes('-_8'))
     expect(rust.batch.base64UrlDecode([bytes('-_8')])[0]).toEqual(RAW_FBFF)
-    expect(rust.batch.base64UrlEncode([RAW_FBFF])[0]).toEqual(rust.base64UrlEncode(RAW_FBFF))
+    expect(rust.batch.base64UrlEncode([RAW_FBFF])[0]).toEqual(
+      encoder.encode(rust.base64UrlEncode(RAW_FBFF)),
+    )
   })
 
   test('wsAcceptKey + mime batches match the scalar', () => {
@@ -61,12 +63,14 @@ describe('rust.batch: hashing / url / mime / ws / base64url', () => {
 describe('rust.batch: backend-framework batches', () => {
   test('passwordVerify batch (zipped) matches the scalar', () => {
     const salt = bytes('0123456789abcdef')
-    const phc = rust.passwordHash(bytes('hunter2'), salt, {
-      mCost: 8,
-      tCost: 1,
-      pCost: 1,
-      outLen: 16,
-    })
+    const phc = encoder.encode(
+      rust.passwordHash(bytes('hunter2'), salt, {
+        mCost: 8,
+        tCost: 1,
+        pCost: 1,
+        outLen: 16,
+      }),
+    )
     const bits = rust.batch.passwordVerify([bytes('hunter2'), bytes('nope')], [phc, phc])
     expect(bits[0]).toBe(1)
     expect(bits[1]).toBe(0)

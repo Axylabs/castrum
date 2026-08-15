@@ -7,6 +7,200 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Sonic-rs DOM swap + zero-DOM hot-path pass (COMPLETE)**: replaced the
+  `serde_json::Value` DOM on every crate boundary that allowed it, cutting
+  per-request heap `String` allocation and DOM construction on the hot paths.
+  - NEW `rust/json/napi_marshal.rs`: hand-written `sonic_rs::Value` → napi
+    `Unknown` walker (`sonic_value_to_js`) + jsonschema-parity equality
+    (`sonic_values_equal`). Number marshaling is byte-parity with napi's
+    `serde-json` `ToNapiValue for serde_json::Number` (PosInt u64 ≤ u32::MAX →
+    Number, larger → BigInt; NegInt within ±2^53-1 → Number, outside → BigInt;
+    Float → Number).
+  - **JWT verify is zero-DOM**: `verify_token_with_key` decodes the payload
+    ONCE, checks `exp`/`nbf`/`iat` over a compact `sonic_rs::Value` (no
+    `serde_json` DOM, no re-serialize) and returns the decoded payload BYTES.
+    `jwt_verify` / `JwtSigner::verify` marshal those bytes via the walker.
+    `jwtSignBytes` / `JwtSigner::signBytes` / `castrum_jwt_sign_bytes*` inject
+    `iat`/`exp` into a sonic object (`inject_and_payload_b64_sonic`) and
+    serialize with `sonic_rs::to_vec`.
+  - **fast_schema enum/const/uniqueItems are zero-DOM**: schema literals compile
+    to `Arc<sonic_rs::Value>` (`compile.rs::serde_to_sonic`) and validation
+    re-parses the doc into a compact sonic Value + `sonic_values_equal` (no
+    `Vec<serde_json::Value>` seen-set).
+  - **minijinja context is sonic**: `render_bytes` / `render_batch_packed` /
+    `template_render_core` parse the context into `sonic_rs::Value`
+    (implements `Serialize`, so `render(&impl Serialize)` accepts it).
+  - **Custom sonic RFC 6902 JSON Patch engine**: `json_patch_ops.rs` no longer
+    round-trips through the serde_json-DOM `json-patch` crate. A new
+    `Pointer` (`~0`/`~1` unescape) + `PatchOp` parser + applicator (add incl.
+    array `-`/bounds, remove, replace, move, copy, test incl. `1 == 1.0`) runs
+    directly against `sonic_rs::Value`, keeping the `JsonPatchError` semantics,
+    the input/output size guards and the packed batch entry points. The
+    `json-patch` and `jsonptr` deps are REMOVED.
+  - **sonic `sort_keys` feature enabled**: sonic's owned `Value` backs mutable
+    objects with `AHashMap` (non-deterministic iteration order); `sort_keys`
+    swaps the owned map to `BTreeMap` so JWT sign (iat/exp injection) and the
+    patch engine emit byte-identical output across the FFI/napi/scalar/bulk
+    transports. Parsed (unmutated) values keep the shared Vec (insertion
+    order); only mutation switches to the map. `sonic_values_equal` and the
+    napi marshaler still iterate the shared representation, so their
+    insertion-order semantics are unchanged.
+  - **napi `jsonParse`** now parses `sonic_rs::Value` and marshals via the
+    walker (was `serde_json::Value` → generic serde-json marshal); `jsonValid` /
+    `json_sum_ids` were already zero-DOM and are unchanged.
+  - `serde_json` REMAINS on the crate-hardwired boundaries that cannot swap:
+    the jsonschema 0.48 DOM fallback (`json_schema.rs` + `pipeline.rs`
+    `IngressSchema`), `selection.rs`, and the napi JS-object input of
+    `jwt_sign` / `JwtSigner::sign`.
+
+### Added
+
+- **Phase 6 — stateful instances via opaque handles (COMPLETE)**: every
+  compiled-once instance now evaluates its hot per-call op through the C-ABI
+  (`inner_ptr()` handle) instead of a napi crossing, with the napi instance
+  held for the handle's lifetime and a null-handle guard that never dereferences
+  freed state. Added in this pass: **MediaTypeMatcher** (`matches` →
+  `castrum_media_type_matcher_matches`), **AcceptNegotiator** (`negotiate` →
+  `castrum_accept_negotiator_negotiate`, cstring, `null` = identity),
+  **JwtSigner** (`sign`/`verify` from pre-serialized claims →
+  `castrum_jwt_signer_sign`/`_verify`), **TemplateRenderer** (`render` →
+  `castrum_template_render`, pre-serialized JSON context),
+  **SchemaValidator** (the hot `validate` → `castrum_schema_validator_validate`;
+  detailed/batch/derive stay napi), **RateLimiter** (`check`/`checkKey` →
+  `castrum_rate_limiter_check*`, packed `[u8 allowed][u32 remaining][i64 reset_ms]`
+  verdict). Earlier in Phase 6: ConditionalRequest + UrlBuilder. Every new
+  C-ABI symbol has a Rust unit test + a bind-time self-test (null-handle) +
+  parity pinned by the existing instance tests.
+- **`UrlBuilder` opaque-handle FFI (Phase 6)**: `rust.createUrlBuilder(base)` now
+  parses the base ONCE (napi construction) and evaluates each per-call
+  `resolve(reference)` through a NEW C-ABI `castrum_url_builder_resolve` via the
+  `inner_ptr()` opaque handle — no napi crossing on the hot path (needed-size
+  convention with growExact; 0 = null handle / non-UTF-8 reference). The JS
+  wrapper holds the napi instance for the handle's lifetime (same contract as
+  `Ingress::inner_ptr`). The napi instance remains the fallback (Node / napi
+  mode). Parity pinned by `url-join.test.ts`.
+- **`ConditionalRequest` opaque-handle FFI (Phase 6 pilot)**: `rust.createConditionalRequest(...)` now compiles the resource state once (napi construction) and evaluates each per-call `isNotModified` through a NEW C-ABI `castrum_conditional_is_not_modified` via the `inner_ptr()` opaque handle — no napi crossing on the 304-check hot path. The JS wrapper holds the napi instance for the handle's lifetime (same contract as `Ingress::inner_ptr`); a null (0) handle returns false (never dereferences freed state). Presence flags encode If-None-Match / If-Modified-Since so a present-but-empty header is distinct from absent. The napi instance remains the fallback (Node / napi mode). Parity pinned by `etag.test.ts`.
+- **Bun-native delegation for `base64UrlEncode` + `hexEncode` (FFI bench
+  regression fix)**: both now delegate to Bun's SIMD `Buffer.toString('base64url')`
+  / `toString('hex')` under Bun (mirroring the existing `base64Encode`
+  delegation), added to `BUN_WINS`. `bench:ffi` regressions eliminated:
+  `hexEncode (64 KiB)` 0.66x → **3.15x**, `hexEncode (small)` → **6.81x**,
+  `base64UrlEncode` 0.06x → **2.24x**; now **45 ffi-faster / 0 ffi-slower**
+  (was 41/3). `httpParseRequestPacked` 0.72x was measurement noise (1.15x after
+  re-measure).
+- **`rust.text.*` FFI-wired (Phase 5)**: `text.mimeFromExtension`,
+  `text.wsAcceptKey`, and the four `text.validate*` string validators now take
+  the bun:ffi path (cstring / u8 returns) with the napi fallback preserved.
+- **C-ABI for the remaining stateless napi-only scalars (Phase 3)**: new
+  `castrum_*` exports (`castrum_json_parse`, `castrum_parse_media_type`,
+  `castrum_parse_http_date`, `castrum_parse_accept_encoding`,
+  `castrum_url_encode_query`, `castrum_url_resolve`,
+  `castrum_mime_from_extension`) with bun:ffi bindings, bind-time self-test
+  vectors, and Rust unit tests. Every stateless scalar now has a C-ABI path:
+  `rust.jsonParse` (compact-JSON cstring → `JSON.parse`), `rust.parseMediaType`
+  / `parseHttpDate` / `parseAcceptEncoding` (packed verdicts unpacked in JS),
+  `rust.urlEncodeQuery` / `urlResolve` / `mimeFromExtension` (cstring returns →
+  `string` on Bun under the string-return contract). `rust.jwtSign(object)` and
+  `rust.multipartParse(object)` route through the existing FFI (`jwtSignBytes` /
+  `multipartParsePacked`) with their byte contracts preserved.
+- **String-return contract on Bun (text-returning `rust.*` ops)**: text ops
+  now return **JS strings** on the `bun:ffi` C-ABI path via JSC's native
+  transfer (cstring → `new CString(ptr, 0, len)`) with **zero
+  `TextEncoder`/`TextDecoder`** on the Bun hot path. Affected: `urlEncode`,
+  `base64Encode`, `hexEncode`, `hmacSha256`, `etag`, `wsAcceptKey`,
+  `randomToken`, `signCookie`, `verifyCookie` (`string | null`), `csrfToken`,
+  `passwordHash`, `passwordHashBcrypt`, `jwtSignBytes`, `jsonPatch`,
+  `httpDate`. On Node (napi fallback) they still return `Uint8Array` — the TS
+  surface types the union (`Uint8Array | string`); normalize with `toBytes` /
+  `toText` (`src/shared/bytes.ts`). The `*Into`/pooled variants return bytes on
+  both runtimes. New Bun-native codec (`src/shared/codec.ts`:
+  `Bun.ArrayBufferSink` encode, zero-copy `Buffer`-view `encodeInto`, `CString`
+  decode) backs the shared `encoder`/`decoder`, whose `encode`/`decode` now
+  accept the union. `TextEncoder`/`TextDecoder` remain ONLY as the Node-fallback
+  branches inside `codec.ts`.
+- **`createIngressRouter` — per-route compiled ingress (the "one super
+  solution")**: takes a route table where each route carries its OWN
+  `IngressHandlerOptions`, compiles a DEDICATED native `IngressInner` per route
+  (stages pruned to that route: parseCookies/parseQuery/schema/cors/rateLimit/
+  limits), builds a per-route header plan (zero header reads for routes that
+  need none), pre-warms at construction (`warmOnCreate`), and dispatches through
+  the shared path/method matcher. Reuses the existing wire format + route
+  factories + shared process-wide rate-limiter budgets — measured **~788ns/req
+  saved** on a minimal route vs a full (cookies+query+cors) route
+  (`bun run bench:router`). Added `bench/servers/router-server.ts` to the HTTP
+  bench (`SERVER=router`); the smoke test passes the load generator's shape
+  checks with 0 failures.
+- **Pooled `*Into` variants for every allocating FFI op**: `hexDecodeInto`,
+  `base64DecodeInto`, `formParsePackedInto`, `multipartParsePackedInto`,
+  `wsFrameDecodePackedInto`, `randomTokenInto`, `wsAcceptKeyInto`,
+  `verifyCookieInto`, `csrfTokenInto`, `jwtSignBytesInto` write into a caller
+  buffer (needed-size convention, throws on too-small). Combined with the new
+  native `_into` C-ABI symbols (`castrum_ws_accept_key_into`,
+  `castrum_etag_into`, `castrum_sign_cookie_into`, `castrum_verify_cookie_into`,
+  `castrum_csrf_token_into`, `castrum_jwt_sign_bytes_into`,
+  `castrum_random_token_into`), the pooled paths avoid the cstring round-trip —
+  ws_frame_decode 288→39ns, random_token 285→83ns, etag 184→88ns, etc.
+  (see `docs/ffi-native-margin-plan.md` §3c).
+
+### Removed
+
+- **`rust/route.rs` (dead per-route pre-compiler)**: the `castrum_route_*`
+  C-ABI exports were never bound in `src/native/ffi.ts`, had no JS `NativeRoute`
+  consumer, and used a THIRD wire format from an external "ignus" project —
+  `createIngressRouter` supersedes it with per-route compilation over the ONE
+  existing ingress core + wire format.
+- **`rust.executeTasks` (heterogeneous packed task group)**: the 33-op
+  `castrum_execute_tasks` C-ABI dispatch (`OP_*` codes + `run_one_task` /
+  `run_task_group`), `src/rust-ffi/scalar/tasks.ts`, and
+  `test/unit/features/tasks.test.ts` are removed — the surface had no production
+  consumer (tests + bind-time self-test only); the loader already covers
+  coalesced batching via the packed napi batch ops.
+- **`SchemaValidator.validateBatchStreaming`**: the napi method + its
+  `BatchSeed`/`BatchVisitor` sonic-rs streaming core are removed — zero TS call
+  sites. The packed `validateBatchPacked*` and one-pass `derive` paths remain.
+- **FFI `queryToJson` / `cookiesToJson`**: the never-surfaced
+  `castrum_query_to_json` / `castrum_cookies_to_json` C-ABI exports + bindings
+  are removed (the shared `query_to_json_into_slice` / `cookie_json_into_slice`
+  cores remain — the ingress metadata envelope uses them). Their now-orphaned
+  `query_to_json_size` / `cookie_json_size` size probes were removed with them.
+
+### Changed
+
+- **`rust.jsonParse` is now a single-pass structural parse on Bun (FFI)**
+  instead of the old cstring re-serialize + JS re-parse: new
+  `castrum_json_parse_packed` parses ONCE with sonic-rs and emits a packed
+  token stream (deduplicated string table + start/end-marker value tree) that
+  the JS decoder assembles with NO second JSON text parse and ~1 decode per
+  unique string. The cstring sibling `castrum_json_parse` now uses
+  `sonic_rs::Value` + `sonic_rs::to_string` (flat arena, no per-key `String`
+  heap allocs). CPU bench `JSON parse (5k rows)`: 9.40ms → 4.87ms (native gap
+  3.92x → 1.89x). napi fallback unchanged.
+- **`fast_schema` error recording is lazy** + **the object-member walk no longer
+  clones `Arc`s / allocates per member** — schema-invalid bodies and large
+  object arrays validate without per-failure or per-member heap allocations.
+- **`write_bitset_batch_into`** writes the bitset directly into the caller's
+  buffer on the rayon path (no intermediate `Vec<u8>` + copy).
+- **`handleRequestFullSync`** default output buffer shrunk from 256 KiB to
+  `OUT_DATA_START + 8 KiB` with a bounded grow on the "output buffer too small"
+  signal (no flat 256 KiB zero-fill per call).
+- **query/cookie/form parse batches** reuse one scratch buffer via their
+  `*_into_slice` writers (no per-item `vec![0u8; 9·len+16]`).
+- **Bind-time self-test** now exercises every bound BunFFI wrapper (13
+  previously-uncovered pooled/string methods added).
+- **CPU bench `rust:hex_encode`** now measures the addon via a new
+  `rawHexEncode` accessor (the public `rust.hexEncode` delegates to
+  `Buffer.toString('hex')` under Bun — BUN_WINS).
+
+- **`buffer`+`buffer_length` ABI everywhere** (Phase 1.1): every FFI
+  `(ptr,len)` pair now binds as `(buffer,buffer_length)` when the probe says
+  Bun supports it — the engine reads ptr+byteLength off the same view
+  (atomic snapshot, ~1.5-2ns/call). The `usize` inner handle of
+  `ingressHandlePacked` and the `usize` `max` decompress params stay scalars.
+- **`u64_fast` returns for every bytes-written FFI symbol**: plain `number`
+  instead of BigInt on hot scalar / `*Into` / packed / ingress calls.
+
 ### Security
 
 - **Decompression-bomb cap**: `rust.gzipDecompress` / `rust.brotliDecompress`
@@ -30,6 +224,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was never set). Request accounting is now exactly-once, keyed by the request
   id, with the start time recorded in `onRequest`. A throwing route callback now
   also reports via `onError` (previously neither hook fired, leaking the gauge).
+- **`passwordHash` (argon2) FFI pre-size under-counted salts >16 bytes**: the
+  `argon2PhcLength` pre-size hardcoded 22 base64 chars for the salt (a 16-byte
+  salt), but `SaltString::encode_b64` is base64-no-pad of the CALLER's salt byte
+  length — an 18-byte salt (e.g. `"salty-salt-16bytes"`) yields a 24-char b64,
+  so the pre-sized buffer was too small and `growExact` re-ran the whole argon2
+  hash on the retry (measured exactly 2× slower than NAPI at every m-cost). The
+  salt b64 length is now derived from the actual salt length
+  (`b64Len(salt.length)`), restoring a single native pass (measured back to
+  ~1.0× with byte parity).
 - **`zeroCopyResponse`-then-throw pooled-buffer leak**: a route callback that
   borrowed the pooled output buffer and then threw left the buffer in flight
   forever (the owning Response was never delivered). `run()` now releases the
@@ -164,6 +367,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **New FFI C-ABI exports kill the napi crossing on SSE + HTTP-date** (Bun
+  `bun:ffi` primary transport; napi remains the fallback):
+  - `castrum_sse_encode_into` (+ `castrum_http_date_into`): the C-ABI siblings
+    of the napi `sse_encode_event` / `http_date_into` write directly into a
+    caller buffer. Measured on Bun: SSE 814ns → ~390ns (2.1x); pooled
+    `sseEncodeEventInto` ~177ns; `httpDateInto` 262ns → ~44ns (5.9x). New
+    public `rust.sseEncodeEventInto` (pooled). Empty-vs-absent `event`/`id`
+    parity preserved via presence-flag bits (a present-but-empty string still
+    emits the line, matching napi `Option`). Self-test vectors added; parity
+    covered by the ffi selftest + sse unit tests.
+  - SSE uses a zero-alloc `encode_event_into_slice` core (exact-size pre-pass,
+    no `retry.to_string()`), so both the allocating and pooled paths are
+    allocation-free on the Rust side.
+- **CPU report honesty pass**: the encoding headline rows (`URL encode/decode`,
+  `Base64 encode/decode`, `Hex encode/decode`) now measure the recommended
+  pooled `*_into` path (which the `@deprecated` annotations already steer to);
+  the allocating variants are reported explicitly as `(allocating)` rows. New
+  `SSE encode (pooled)` + `http_date_into` pooled rows. Re-ran
+  `check:annotate` (98 wins / 27 losses on the headline set, up from 95/29).
 - **Bun FFI hot-path trims** (`src/native/ffi.ts` + `rust/ffi.rs`):
   - **Per-thread HMAC key cache**: the C-ABI HMAC/cookie/CSRF fns now reuse a
     compiled `hmac::Key` from a per-thread cap-16 LRU (`HMAC_KEY_CACHE`) instead
@@ -317,6 +539,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   header array (per-handler, read-only contract), removing a per-request array
   alloc + copy when an `Origin` header is present (the common browser/bench
   case).
+
+### Documentation
+
+- **NEW `docs/FFI_BUN_GUIDE.md` — "Writing Rust for Bun"**: a citable reference
+  distilled from Bun 1.3.14's own `bun:ffi` implementation (Rust runtime:
+  `src/runtime/ffi/ffi_body.rs`, `src/js/bun/ffi.ts`, `src/jsc/bindings/*`,
+  `docs/runtime/ffi.mdx`). Covers the JIT-to-direct-native-call path, the
+  `FFIType` ABI system, the canonical `(ptr,len)` / `(ptr,len,out,out_cap)` /
+  cstring signature shapes, `buffer`/`buffer_length` atomic-snapshot semantics,
+  pointers-as-`number` + `u64_fast`/`i64_fast`, cstring clone + aliasing,
+  dlopen lifetime (never `close()` while bound), thread-safety via
+  thread-local caches, the no-struct-by-value → packed-buffer rule, callback
+  guidance, the mandatory per-export rules (`panic_guard`, self-test,
+  needed-size, null checks, `u64_fast` byte counts), and Bun's own Rust
+  hygiene (RAII, no mutable `#[no_mangle]` state). Rules are also encoded into
+  `AGENTS.md` (Hard constraints & gotchas) so future generated Rust follows
+  them.
+- **Corrected stale FFI docs**: the `castrum_*` C-ABI export count is **75**
+  (67 direct + 4 `validator_c_abi!` + 4 `compress_to_out!`), not "47" — fixed
+  in `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/CASE_STUDY.md` (+ mermaid
+  diagram), and `docs/REPO_MAP.md`; parity is guarded by
+  `test/unit/features/ffi-symbol-parity.test.ts`.
+- **Rewrote the outdated "no C-ABI export" claims** (`docs/ARCHITECTURE.md`,
+  `docs/GETTING_STARTED.md`): since Phase 6 the compiled-once instances route
+  their hot per-call ops through opaque-`usize` handles and `jwtVerify` has a
+  C-ABI export; still napi-only are `rust.batch.*`, `rust.packed.*`,
+  `text.*`, and the DOM `jsonParse`.
+- **Reconciled `docs/bun-builtins-decision-matrix.md`** with the actual
+  `BUN_WINS` delegation set in `src/selection.ts` (added `urlEncode`/
+  `urlDecode`/`base64Encode`/`base64UrlEncode`/`hexEncode`/`httpDate`;
+  `gzipDecompress` correctly marked as deliberately NOT delegated — no
+  decompression-bomb cap in `Bun.gunzipSync`; `fnv1a64` noted as parity/either,
+  not delegated).
+- **Completed `docs/API.md` runtime return-type divergence list** with the
+  missing cstring-returning ops (`jwtVerify`, `mimeFromExtension`,
+  `urlResolve`, `urlEncodeQuery`, `acceptNegotiatorNegotiate`, incl. the
+  `string | null` sentinels).
+
+### Added
+
+- **`ffiBufferMode()` diagnostic** (`src/native/ffi.ts`): reports which buffer
+  ABI the live `bun:ffi` binding uses — `'buffer-pair'` (engine-native
+  `buffer`/`buffer_length` atomic snapshot) or `'ptr-len'` (the explicit
+  `(ptr, usize)` fallback) — or `null` when the transport is unavailable.
+  Additive; lazy (shares the one-time bind). Pinned by a new regression test in
+  `test/unit/features/ffi.test.ts` that fails if a future Bun (or probe bug)
+  silently drops the fast path.
 
 ## [0.9.0] — 2026-08-11
 

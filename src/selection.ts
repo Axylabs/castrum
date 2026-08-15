@@ -9,7 +9,7 @@
 // Consumers bind each operation to a fixed implementation at startup by
 // reading `opImpl(op)` here — they do NOT swap native↔js per call.
 
-import { lazyAddon, getAddon } from './native'
+import { getAddon, lazyAddon } from './native'
 import { isBun } from './shared/runtime'
 
 /** Recommended implementation for an operation. */
@@ -46,6 +46,8 @@ const BUN_WINS = new Set([
   'urlEncode',
   'urlDecode',
   'base64Encode',
+  'base64UrlEncode',
+  'hexEncode',
   'httpDate',
 ])
 

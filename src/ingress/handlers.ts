@@ -39,7 +39,7 @@
 import { getAddon } from '../native'
 import { getBunFFI } from '../native/ffi'
 import { BufferPool, type PooledBuffer } from '../shared/buffer-pool'
-import { decoder, viewForArrayBuffer } from '../shared/bytes'
+import { decoder, encoder, viewForArrayBuffer } from '../shared/bytes'
 import { createStructuredLogger } from '../shared/log'
 import { generateRequestId } from '../shared/request-id'
 import { pooledBodyResponse } from '../shared/response'
@@ -54,6 +54,8 @@ import {
 } from './constants'
 import { BakedIngressResult } from './decode/baked-result'
 import { buildBakedHeaderTemplates } from './headers/baked-templates'
+import type { SecurityHeadersOptions } from './headers/hsts'
+import { buildSecurityPairs } from './headers/hsts'
 import {
   assertIngressOptionValues,
   assertKnownIngressOptions,
@@ -62,8 +64,6 @@ import {
 } from './options'
 import { gatherRawHeadersPacked } from './packing/gather-raw-headers'
 import { IngressInputPacker } from './packing/input-packer'
-import { buildSecurityPairs } from './headers/hsts'
-import type { SecurityHeadersOptions } from './headers/hsts'
 import { ERROR_BODIES, ERROR_CODE_BODIES, rateLimitedBody } from './response/error-bodies'
 import {
   assertSyncCallback,
@@ -104,7 +104,6 @@ export type { RouteHandler as IngressNodeRouteHandler } from './server-node'
 // Node.js HTTP adapter (same pre-baked route handlers, node:http backend).
 export { createIngressServerNode } from './server-node'
 
-const encoder = new TextEncoder()
 const EMPTY_BODY = new Uint8Array(0)
 const EMPTY_IP = '0.0.0.0'
 

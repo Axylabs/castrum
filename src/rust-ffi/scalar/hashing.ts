@@ -3,12 +3,10 @@
 // Mirrors rust/crypto/hashing.rs + hmac_sha256.rs: crc32 / fnv1a64 / HMAC.
 // (HMAC reuses the context-cached signer to avoid re-constructing the key.)
 
-import { asBigInt, asNumber } from '../options'
-import { resolveNative, type RustClientContext } from '../context'
 import { getBunFFI } from '../../native/ffi'
 import { isBun } from '../../shared/runtime'
-
-const hexEncoder = new TextEncoder()
+import { type RustClientContext, resolveNative } from '../context'
+import { asBigInt, asNumber } from '../options'
 
 /** Hashing scalar methods (`Pick<RustScalar, ...>`). */
 export function buildHashing(ctx: RustClientContext) {
@@ -39,17 +37,16 @@ export function buildHashing(ctx: RustClientContext) {
       if (ffi) return ffi.xxh3(input)
       return asBigInt(resolveNative(ctx, 'xxh3')(input))
     },
-    hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
+    hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array | string {
       // Optimal by default under Bun: `Bun.CryptoHasher` (native) beats the
-      // rust+FFI crossing (~1.2x, decision matrix). Re-encoded to hex to match
-      // castrum's hex-return contract (64 lowercase-hex bytes — same as the
-      // addon). Node keeps the FFI path (`hmacSha256` is classified "proven"
-      // vs the node:crypto baseline). Napi fallback keeps the precompiled-key
-      // `HmacSigner` (identity semantics).
+      // rust+FFI crossing (~1.2x, decision matrix). Bun returns the 64-char
+      // lowercase-hex STRING (native transfer — no TextEncoder round-trip); the
+      // addon returns the same hex as bytes. Node keeps the FFI path
+      // (`hmacSha256` is classified "proven" vs the node:crypto baseline).
       if (isBun()) {
         const hasher = new Bun.CryptoHasher('sha256', key)
         hasher.update(data)
-        return hexEncoder.encode(Buffer.from(hasher.digest()).toString('hex'))
+        return Buffer.from(hasher.digest()).toString('hex')
       }
       const ffi = getBunFFI()
       if (ffi) return ffi.hmacSha256(key, data)

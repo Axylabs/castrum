@@ -206,9 +206,8 @@ fn is_ascii(bytes: &[u8]) -> bool {
     let mut chunks = bytes.chunks_exact(8);
     for chunk in &mut chunks {
         // SAFETY-free: chunks_exact guarantees exactly 8 bytes here.
-        let w = u64::from_le_bytes(
-            <[u8; 8]>::try_from(chunk).expect("chunks_exact yields 8 bytes"),
-        );
+        let w =
+            u64::from_le_bytes(<[u8; 8]>::try_from(chunk).expect("chunks_exact yields 8 bytes"));
         if (w & 0x8080_8080_8080_8080) != 0 {
             return false;
         }

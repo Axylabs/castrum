@@ -29,9 +29,9 @@ bench("rust.crc32 (small)", () => rust.crc32(data));
 bench("rust.fnv1a64 (small)", () => rust.fnv1a64(data));
 bench("rust.xxh3 (small)", () => rust.xxh3(data));
 bench("rust.jsonValid (small)", () => rust.jsonValid(data));
-bench("rust.hexEncode (small)", () => rust.hexEncode(data).byteLength);
-bench("rust.hexEncode (5.4KiB)", () => rust.hexEncode(big).byteLength);
-bench("rust.urlEncode (small)", () => rust.urlEncode(data).byteLength);
+bench("rust.hexEncode (small)", () => rust.hexEncode(data).length);
+bench("rust.hexEncode (5.4KiB)", () => rust.hexEncode(big).length);
+bench("rust.urlEncode (small)", () => rust.urlEncode(data).length);
 
 // Correctness: ffi results must equal napi results.
 import { getAddon } from "../src/native";
@@ -41,5 +41,5 @@ console.log("crc32 ffi===napi:", rust.crc32(data) === addon.crc32(data));
 console.log("fnv1a64 ffi===napi:", rust.fnv1a64(data) === addon.fnv1a64(data));
 console.log("xxh3 ffi===napi:", rust.xxh3(data) === addon.xxh3(data));
 console.log("jsonValid ffi===napi:", rust.jsonValid(data) === addon.jsonValid(data));
-console.log("hexEncode ffi===napi:", new TextDecoder().decode(rust.hexEncode(data)) === new TextDecoder().decode(addon.hexEncode(data)));
-console.log("urlEncode ffi===napi:", new TextDecoder().decode(rust.urlEncode(data)) === new TextDecoder().decode(addon.urlEncode(data)));
+console.log("hexEncode ffi===napi:", rust.hexEncode(data) === new TextDecoder().decode(addon.hexEncode(data)));
+console.log("urlEncode ffi===napi:", rust.urlEncode(data) === new TextDecoder().decode(addon.urlEncode(data)));

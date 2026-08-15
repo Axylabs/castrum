@@ -4,7 +4,6 @@
 
 use crate::util::bytes::{cookie_pairs, HEX_LOWER as JSON_HEX_LOWER};
 
-
 /// True when every byte is ASCII (< 0x80), checked word-at-a-time.
 ///
 /// Equivalent to `bytes.iter().all(|&b| b < 0x80)` but skips the per-byte

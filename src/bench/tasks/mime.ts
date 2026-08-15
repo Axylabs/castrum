@@ -1,5 +1,6 @@
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
+import { toBytes } from '../../shared/bytes'
 import type { BenchFixtures } from '../fixtures'
 import type { BenchTask } from '../types'
 
@@ -13,7 +14,7 @@ export function mimeTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'rust:mime',
-      run: () => rust.mimeFromExtension(f.mimeExt).byteLength,
+      run: () => toBytes(rust.mimeFromExtension(f.mimeExt)).byteLength,
       iterations: 1000,
       warmup: 100,
     },

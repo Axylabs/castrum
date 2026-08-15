@@ -38,34 +38,19 @@ pub(crate) fn terminal_preflight_forbidden(flags: u32, hv: u8, out: &mut [u8]) -
 
 /// Write a rate-limited response (429).
 #[cold]
-pub(crate) fn terminal_rate_limited(
-    flags: u32,
-    hv: u8,
-    rate: RateInfo,
-    out: &mut [u8],
-) -> usize {
+pub(crate) fn terminal_rate_limited(flags: u32, hv: u8, rate: RateInfo, out: &mut [u8]) -> usize {
     HeaderFields::terminal(1, ERR_CODE_RATE_LIMITED, 429, flags, rate, hv).write(out)
 }
 
 /// Write a body-too-large response (413).
 #[cold]
-pub(crate) fn terminal_body_too_large(
-    flags: u32,
-    hv: u8,
-    rate: RateInfo,
-    out: &mut [u8],
-) -> usize {
+pub(crate) fn terminal_body_too_large(flags: u32, hv: u8, rate: RateInfo, out: &mut [u8]) -> usize {
     HeaderFields::terminal(1, ERR_CODE_BODY_TOO_LARGE, 413, flags, rate, hv).write(out)
 }
 
 /// Write an invalid JSON response (400).
 #[cold]
-pub(crate) fn terminal_invalid_json(
-    flags: u32,
-    hv: u8,
-    rate: RateInfo,
-    out: &mut [u8],
-) -> usize {
+pub(crate) fn terminal_invalid_json(flags: u32, hv: u8, rate: RateInfo, out: &mut [u8]) -> usize {
     HeaderFields::terminal(1, ERR_CODE_INVALID_JSON, 400, flags, rate, hv).write(out)
 }
 

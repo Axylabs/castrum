@@ -4,7 +4,7 @@ import { HTTP_SCENARIO_NAMES, runHttpScenario } from "./load";
 import { getBunFFI } from "../src/native/ffi";
 import { isBun } from "../src/shared/runtime";
 
-const SERVERS: ServerKind[] = ["bun", "elysia", "ingress"];
+const SERVERS: ServerKind[] = ["bun", "elysia", "ingress", "router"];
 
 interface ServerHandle {
   proc: ReturnType<typeof Bun.spawn>;

@@ -8,11 +8,9 @@
  * corruption must not throw out of the process (websocket frames, multipart).
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { rust } from '../../../src/rust-ffi'
-
-const encoder = new TextEncoder()
-const decoder = new TextDecoder()
+import { decoder, encoder } from '../../../src/shared/bytes'
 
 describe('corruption-detection matrix (bit-flips must be rejected)', () => {
   test('gzip: any deflate/trailer bit-flip fails CRC → decompress throws', () => {
@@ -86,7 +84,7 @@ describe('corruption-detection matrix (bit-flips must be rejected)', () => {
   test('jwt: signature / header / claims tampering → verify null', () => {
     const secret = encoder.encode('s3cr3t-key-0123456789')
     const claims = encoder.encode('{"sub":"123","role":"admin"}')
-    const token = rust.jwtSignBytes(claims, secret)
+    const token = encoder.encode(rust.jwtSignBytes(claims, secret))
 
     expect(rust.jwtVerify(token, secret)).not.toBeNull()
 
@@ -113,7 +111,7 @@ describe('corruption-detection matrix (bit-flips must be rejected)', () => {
   test('signed cookies + CSRF: tampering → verify null/false', () => {
     const secret = encoder.encode('s3cr3t-secret')
     const value = encoder.encode('session=abc123')
-    const signed = rust.signCookie(value, secret)
+    const signed = encoder.encode(rust.signCookie(value, secret))
     expect(rust.verifyCookie(signed, secret)).not.toBeNull()
 
     // Tamper the value part (first byte).
@@ -131,7 +129,7 @@ describe('corruption-detection matrix (bit-flips must be rejected)', () => {
     expect(rust.verifyCookie(signed, encoder.encode('other-secret'))).toBeNull()
 
     // CSRF token: tamper → verify false.
-    const csrf = rust.csrfToken(secret)
+    const csrf = encoder.encode(rust.csrfToken(secret))
     expect(rust.csrfVerify(csrf, secret)).toBe(true)
     const badCsrf = csrf.slice()
     badCsrf[10] = ((badCsrf[10] ?? 0) ^ 0x01) & 0xff

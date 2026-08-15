@@ -301,10 +301,10 @@ fn unsupported_keywords_fall_back() {
         json!({"format":"date-time"}),
         json!({"exclusiveMinimum":true}), // draft-04/06 boolean form
         json!({"$ref":"other.json#/definitions/x"}), // external ref
-        json!({"$ref":"#anchor"}), // anchor ref (unsupported)
+        json!({"$ref":"#anchor"}),        // anchor ref (unsupported)
         json!({"$schema":"http://json-schema.org/draft-04/schema#"}),
         json!({"dependencies":{"a":{"type":"string"}}}), // schema form
-        json!({"enum":[1,2],"const":1}), // enum + const together
+        json!({"enum":[1,2],"const":1}),                 // enum + const together
     ];
     for s in &unsupported {
         assert!(compile(s).is_err(), "should fall back: {s}");
@@ -391,9 +391,19 @@ fn enum_const_parity() {
         json!({"enum":[{"x":[1,2]},{"x":[2,1]}]}),
     ];
     let docs = [
-        "1", "2", "3", "4", "1.0", "1e0",
-        r#""a""#, r#""b""#, r#""d""#, r#""""#,
-        "true", "false", "null",
+        "1",
+        "2",
+        "3",
+        "4",
+        "1.0",
+        "1e0",
+        r#""a""#,
+        r#""b""#,
+        r#""d""#,
+        r#""""#,
+        "true",
+        "false",
+        "null",
         r#"{"a":1,"b":2}"#,
         r#"{"b":2,"a":1}"#,
         r#"{"a":2,"b":2}"#,
@@ -416,11 +426,8 @@ fn multiple_of_parity() {
         json!({"multipleOf":1.5}),
     ];
     let docs = [
-        "0", "2", "4", "3", "-2", "2.5", "1", "0.5",
-        "0.01", "0.02", "0.03", "0.1", "1.23", "100",
-        "1.5", "3.0", "3.1", "4.5",
-        "1e1", "1.25", "2.25",
-        r#""x""#, "null", "{}",
+        "0", "2", "4", "3", "-2", "2.5", "1", "0.5", "0.01", "0.02", "0.03", "0.1", "1.23", "100",
+        "1.5", "3.0", "3.1", "4.5", "1e1", "1.25", "2.25", r#""x""#, "null", "{}",
     ];
     for s in &schemas {
         assert_parity(s.clone(), &docs);
@@ -456,9 +463,7 @@ fn combinators_parity() {
         json!({"allOf":[{"properties":{"a":{"type":"integer"}}},{"required":["a"]}]}),
     ];
     let docs = [
-        "5", "-5", r#""5""#, "0", "0.5", "null",
-        r#""s""#, "1", "1.5", "[]", "{}",
-        "2", "3", "-1",
+        "5", "-5", r#""5""#, "0", "0.5", "null", r#""s""#, "1", "1.5", "[]", "{}", "2", "3", "-1",
     ];
     for s in &schemas {
         assert_parity(s.clone(), &docs);
@@ -478,12 +483,20 @@ fn if_then_else_parity() {
         json!({"if":false,"then":{"type":"string"}}),
     ];
     let docs = [
-        "2", "3", "-2", "-3", "0",
+        "2",
+        "3",
+        "-2",
+        "-3",
+        "0",
         r#"{"type":"a","a":1}"#,
         r#"{"type":"a"}"#,
         r#"{"type":"b","b":1}"#,
         r#"{"type":"b"}"#,
-        r#""hi""#, "1", "1.5", "true", "null",
+        r#""hi""#,
+        "1",
+        "1.5",
+        "true",
+        "null",
     ];
     for s in &schemas {
         assert_parity(s.clone(), &docs);
@@ -567,7 +580,16 @@ fn contains_parity() {
         json!({"type":"array","contains":{"const":5}}),
         json!({"type":"array","contains":{"type":"string"},"minItems":1}),
     ];
-    let docs = [r#"[1]"#, r#"[1.5]"#, r#"["a",1]"#, r#"["a","b"]"#, r#"[5]"#, r#"[4,6]"#, r#"[]"#, r#"[{}]"#];
+    let docs = [
+        r#"[1]"#,
+        r#"[1.5]"#,
+        r#"["a",1]"#,
+        r#"["a","b"]"#,
+        r#"[5]"#,
+        r#"[4,6]"#,
+        r#"[]"#,
+        r#"[{}]"#,
+    ];
     for s in &schemas {
         assert_parity(s.clone(), &docs);
     }
@@ -629,7 +651,11 @@ fn ref_parity() {
         }),
     ];
     let docs = [
-        "1", "-1", "0", "5.5", r#""s""#,
+        "1",
+        "-1",
+        "0",
+        "5.5",
+        r#""s""#,
         r#"{"id":1}"#,
         r#"{"id":"x"}"#,
         r#"{"owner":{"id":1},"admin":{"id":2}}"#,
@@ -678,7 +704,10 @@ fn draft07_unknown_keywords_ignored() {
         json!({"type":"object","dependentRequired":{"a":["b"]}}),
         json!({"type":"array","minContains":1}),
     ] {
-        assert!(compile(&schema).is_ok(), "should compile (ignored keyword): {schema}");
+        assert!(
+            compile(&schema).is_ok(),
+            "should compile (ignored keyword): {schema}"
+        );
         assert_parity(schema, &[r#"{}"#, r#"[]"#, r#"[1,2]"#, r#"{"a":1}"#]);
     }
 }
@@ -700,7 +729,9 @@ fn error_reporting_paths_and_keywords() {
     let fast = compile(&schema).unwrap();
 
     // valid -> no errors
-    assert!(fast.validate_errors(br#"{"id":1,"name":"ab","tags":["x","y"]}"#, usize::MAX).is_empty());
+    assert!(fast
+        .validate_errors(br#"{"id":1,"name":"ab","tags":["x","y"]}"#, usize::MAX)
+        .is_empty());
 
     // missing required -> keyword required, root pointer
     let errs = fast.validate_errors(br#"{"id":1}"#, usize::MAX);
@@ -721,7 +752,10 @@ fn error_reporting_paths_and_keywords() {
 
     // additionalProperties at the offending key
     let errs = fast.validate_errors(br#"{"id":1,"name":"ab","extra":true}"#, usize::MAX);
-    let ap = errs.iter().find(|e| e.keyword == "additionalProperties").unwrap();
+    let ap = errs
+        .iter()
+        .find(|e| e.keyword == "additionalProperties")
+        .unwrap();
     assert_eq!(ap.instance_path, "/extra");
 
     // uniqueItems at /tags
@@ -733,9 +767,7 @@ fn error_reporting_paths_and_keywords() {
     let errs = fast.validate_errors(br#"{"id":"x","name":"AB","extra":1}"#, usize::MAX);
     let kw: Vec<&str> = errs.iter().map(|e| e.keyword.as_str()).collect();
     assert!(
-        kw.contains(&"type")
-            && kw.contains(&"pattern")
-            && kw.contains(&"additionalProperties"),
+        kw.contains(&"type") && kw.contains(&"pattern") && kw.contains(&"additionalProperties"),
         "expected type+pattern+additionalProperties errors, got {kw:?}"
     );
 
@@ -838,7 +870,7 @@ fn email_format_matches_reference_corpus() {
         r#"{"email":"a.b.c.d.e.f@example.com"}"#,
         r#"{"email":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"}"#, // 64-char local
         r#"{"email":"user@xn--11b2ezcw70k"}"#, // ZWJ after virama (valid punycode)
-        r#"{"email":"user@xn--ll-0ea"}"#, // punycode with valid middle dot context
+        r#"{"email":"user@xn--ll-0ea"}"#,      // punycode with valid middle dot context
         // ── invalid: domain shape ──
         r#"{"email":"not-an-email"}"#,
         r#"{"email":"a@"}"#,
@@ -851,7 +883,7 @@ fn email_format_matches_reference_corpus() {
         r#"{"email":"a@b.com."}"#,
         r#"{"email":"a@ex--ample.com"}"#, // hyphens 3rd+4th, not punycode
         r#"{"email":"a@xn--example.com"}"#, // invalid punycode
-        r#"{"email":"a@xn--x"}"#, // too-short punycode
+        r#"{"email":"a@xn--x"}"#,         // too-short punycode
         r#"{"email":"a@[IPv6:zzzz::1]"}"#,
         r#"{"email":"a@[999.999.999.999]"}"#,
         r#"{"email":"a@[not-a-literal]"}"#,
@@ -860,7 +892,7 @@ fn email_format_matches_reference_corpus() {
         r#"{"email":"a@example-.com"}"#,
         // ── invalid: local part / escapes ──
         r#"{"email":"a\u0040b.com"}"#, // JSON escape decodes to a@b.com (valid) — decode path
-        r#"{"email":"a\\@b.com"}"#, // backslash in local part
+        r#"{"email":"a\\@b.com"}"#,    // backslash in local part
         r#"{"email":"héllo@example.com"}"#, // non-ASCII local part rejected (format:email)
         // wrong root type
         r#"42"#,
@@ -889,7 +921,15 @@ fn email_only_schema_compiles_and_validates() {
 
 #[test]
 fn other_formats_and_unknown_formats_fall_back() {
-    for f in ["idn-email", "date-time", "uri", "uuid", "ipv4", "regex", "unknown"] {
+    for f in [
+        "idn-email",
+        "date-time",
+        "uri",
+        "uuid",
+        "ipv4",
+        "regex",
+        "unknown",
+    ] {
         let schema = json!({ "type": "string", "format": f });
         assert!(
             compile(&schema).is_err(),

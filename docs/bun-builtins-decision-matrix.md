@@ -60,14 +60,22 @@
 These rust ops lose to Bun's native implementation on the SAME workload — the
 FFI crossing cannot beat Bun's in-process C++:
 
+This table mirrors `BUN_WINS` in `src/selection.ts` (the 11 ops that delegate to
+Bun built-ins under Bun). `fnv1a64` is parity/either but is NOT delegated
+(`Bun.hash` is wyhash — a different algorithm — and rust `fnv1a64` stays the
+benchmarked impl).
+
 | Op | Recommendation |
 |---|---|
 | `crc32` | Prefer `Bun.hash.crc32`; keep rust as fallback (pure-TS path already exists). |
 | `xxh3` | Prefer `Bun.hash.xxHash3` (~4×); keep the rust export as the Node/non-Bun fast path. Classified `not-competitive` in `PROVEN_SURFACE`. |
-| `gzipCompress` / `gzipDecompress` | Prefer `Bun.gzipSync` / `Bun.gunzipSync`. |
+| `gzipCompress` | Prefer `Bun.gzipSync` (~2×). **`gzipDecompress` is deliberately NOT delegated** — `Bun.gunzipSync` has no decompression-bomb cap; the rust surface keeps its native 64 MiB-capped path under Bun. |
 | `randomToken` | Prefer `Bun.randomUUIDv7()` (or `crypto.getRandomValues`) for token-sized output; keep rust for byte-precise control. |
 | `hmacSha256` | Prefer `Bun.CryptoHasher("sha256", key)` (1.17× — mild; keep rust batch path, which wins on larger inputs). |
-| `fnv1a64` | Parity — either is fine; `Bun.hash` (wyhash) is a stronger algorithm, prefer it for NEW non-crypto hashing needs. |
+| `urlEncode` / `urlDecode` | Prefer `encodeURIComponent` / `decodeURIComponent` (JSC string builtins — ~11.5×, zero alloc). |
+| `base64Encode` / `base64UrlEncode` | Prefer `Buffer.toString('base64'|'base64url')`. |
+| `hexEncode` | Prefer `Buffer.toString('hex')`. |
+| `httpDate` | Prefer `Date.toUTCString()`. |
 
 **Delegation rule of thumb**: rust stays the default only where it is
 `proven` against its **Bun** baseline (not just its JS baseline). These are the

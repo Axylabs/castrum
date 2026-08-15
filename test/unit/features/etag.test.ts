@@ -4,33 +4,33 @@
  * instance) — cross-checked against the JS baselines.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { rust } from '../../../src/rust-ffi'
-import { decoder, encoder } from '../../../src/shared/bytes'
+import { describe, expect, test } from 'bun:test'
 import { nativeEtag, nativeHttpDate, nativeIsNotModified } from '../../../src/bench/etag-baseline'
+import { rust } from '../../../src/rust-ffi'
+import { decoder, encoder, toText } from '../../../src/shared/bytes'
 
 const DATA = encoder.encode('hello world, this is etag data')
 const SECS = 784111777 // Sun, 06 Nov 1994 08:49:37 GMT
 
 describe('rust.etag', () => {
   test('matches the crc32-based JS baseline byte-for-byte', () => {
-    expect(decoder.decode(rust.etag(DATA))).toBe(decoder.decode(nativeEtag(DATA)))
-    expect(decoder.decode(rust.etag(DATA, true))).toBe(decoder.decode(nativeEtag(DATA, true)))
+    expect(rust.etag(DATA)).toBe(decoder.decode(nativeEtag(DATA)))
+    expect(rust.etag(DATA, true)).toBe(decoder.decode(nativeEtag(DATA, true)))
   })
 
   test('formats weak/strong correctly', () => {
-    expect(decoder.decode(rust.etag(DATA))).toMatch(/^"[0-9a-f]{8}"$/)
-    expect(decoder.decode(rust.etag(DATA, true))).toMatch(/^W\/"[0-9a-f]{8}"$/)
+    expect(rust.etag(DATA)).toMatch(/^"[0-9a-f]{8}"$/)
+    expect(rust.etag(DATA, true)).toMatch(/^W\/"[0-9a-f]{8}"$/)
   })
 })
 
 describe('rust.httpDate / parseHttpDate', () => {
   test('matches Date.toUTCString()', () => {
-    expect(decoder.decode(rust.httpDate(SECS))).toBe(decoder.decode(nativeHttpDate(SECS)))
+    expect(rust.httpDate(SECS)).toBe(decoder.decode(nativeHttpDate(SECS)))
   })
 
   test('roundtrips through parseHttpDate', () => {
-    const formatted = decoder.decode(rust.httpDate(SECS))
+    const formatted = rust.httpDate(SECS)
     expect(rust.parseHttpDate(encoder.encode(formatted))).toBe(BigInt(SECS))
   })
 
@@ -40,18 +40,17 @@ describe('rust.httpDate / parseHttpDate', () => {
 })
 
 describe('ConditionalRequest (higher-order instance)', () => {
-  const etagBytes = rust.etag(DATA)
-  const etagStr = decoder.decode(etagBytes)
+  const etagStr = toText(rust.etag(DATA))
 
   test('If-None-Match match → 304', () => {
-    const c = rust.createConditionalRequest(etagBytes, SECS)
+    const c = rust.createConditionalRequest(encoder.encode(etagStr), SECS)
     expect(c.isNotModified(encoder.encode(`"x", ${etagStr}`), null)).toBe(true)
     expect(c.isNotModified(encoder.encode('"x", W/"y"'), null)).toBe(false)
     expect(c.isNotModified(encoder.encode('*'), null)).toBe(true)
   })
 
   test('If-Modified-Since parity with JS baseline', () => {
-    const c = rust.createConditionalRequest(etagBytes, SECS)
+    const c = rust.createConditionalRequest(encoder.encode(etagStr), SECS)
     for (const date of [
       'Sun, 06 Nov 1994 08:49:37 GMT',
       'Sun, 06 Nov 1994 08:49:36 GMT',
@@ -70,7 +69,7 @@ describe('rust.etagInto (reusable output)', () => {
     const written = rust.etagInto(DATA, out)
     const expected = rust.etag(DATA)
     expect(written).toBe(expected.length)
-    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected))
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(encoder.encode(expected)))
   })
 
   test('weak variant matches rust.etag(data, true)', () => {
@@ -78,7 +77,7 @@ describe('rust.etagInto (reusable output)', () => {
     const written = rust.etagInto(DATA, out, true)
     const expected = rust.etag(DATA, true)
     expect(written).toBe(expected.length)
-    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected))
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(encoder.encode(expected)))
   })
 
   test('too-small output throws', () => {

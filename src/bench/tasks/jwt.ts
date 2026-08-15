@@ -23,7 +23,7 @@ export function jwtTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'rust:jwt_sign_bytes',
-      run: () => rust.jwtSignBytes(claimsJson, f.jwtSecret, 3600, f.jwtNowSeconds).byteLength,
+      run: () => rust.jwtSignBytes(claimsJson, f.jwtSecret, 3600, f.jwtNowSeconds).length,
       iterations: 500,
       warmup: 50,
     },

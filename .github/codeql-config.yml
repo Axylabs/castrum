@@ -1,0 +1,17 @@
+name: 'castrum CodeQL configuration'
+
+# Scope analysis to the shipped JS/TS surface. `src/` is the runtime library
+# and `index.ts`/`index.js` the package entries; everything else is test,
+# benchmark, or generated scaffolding that would only add noise.
+paths:
+  - src
+  - index.ts
+  - index.js
+paths-ignore:
+  - test
+  - bench
+  - dist
+  - target
+  - node_modules
+  - scripts
+  - examples

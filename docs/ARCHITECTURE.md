@@ -31,14 +31,22 @@ The bridge between TypeScript and Rust has **two transports**, both loading the 
 cdylib (built with napi-rs):
 
 - **`bun:ffi` (PRIMARY on Bun)** — `src/native/ffi.ts` `dlopen`s the addon's
-  `extern "C"` exports (`rust/ffi.rs`, 47 `castrum_*` symbols) and Bun JIT-calls them
+  `extern "C"` exports (`rust/ffi.rs`, 75 `castrum_*` symbols — 67 direct + 4
+  `validator_c_abi!` + 4 `compress_to_out!`, parity guarded by
+  `test/unit/features/ffi-symbol-parity.test.ts`) and Bun JIT-calls them
   directly (~10-20ns crossing vs ~100-350ns N-API). A bind-time self-test guards
   correctness: on ANY failure the layer is disabled and calls fall back to napi.
   `CASTRUM_FFI_MODE=auto|ffi|napi` selects the transport (default `auto`).
 - **NAPI (napi-rs v3) — the fallback** — used under Node.js, when `bun:ffi` is
   unavailable (self-test failure, `CASTRUM_FFI_MODE=napi`), and for surfaces with no
-  C-ABI export (stateful instances, `rust.batch.*` / `rust.packed.*`, `text.*`, and
-  structured-return scalars like `jsonParse` / `jwtVerify`).
+  C-ABI export. Since Phase 6 the compiled-once instances are NOT napi-only — their
+  hot per-call ops route through the C-ABI via an opaque-`usize` handle
+  (`conditional_is_not_modified`, `media_type_matcher_matches`,
+  `accept_negotiator_negotiate`, `jwt_signer_sign`/`_verify`, `template_render`,
+  `schema_validator_validate`, `rate_limiter_check*`, `url_builder_resolve`), and
+  `jwtVerify` has `castrum_jwt_verify`. Still napi-only: `rust.batch.*` /
+  `rust.packed.*`, `text.*`, and the DOM `jsonParse` (only `castrum_json_parse_packed`
+  exists).
 
 Shared characteristics:
 
@@ -97,9 +105,15 @@ rust/
 │   └── random_token.rs    ── random hex tokens
 │
 ├── json/                  ── JSON & schema
-│   ├── json_ops.rs        ── zero-DOM validate/sum + DOM parse
+│   ├── json_ops.rs        ── zero-DOM validate/sum + DOM parse (sonic Value → JS)
+│   ├── napi_marshal.rs    ── sonic_rs::Value → napi walker (sonic_value_to_js, napi
+│   │                        serde-json Number parity) + sonic_values_equal
+│   │                        (jsonschema cmp::equal; shared by jwt_verify, json_parse,
+│   │                        fast_schema enum/const/uniqueItems)
 │   ├── json_ser.rs        ── zero-alloc JSON escaping + cookie/query → JSON writers
-│   ├── json_patch_ops.rs  ── RFC 6902 JSON patch
+│   ├── json_patch_ops.rs  ── CUSTOM sonic RFC 6902 engine (Pointer ~0/~1 unescape +
+│   │                        add/remove/replace/move/copy/test incl. array `-`/bounds +
+│   │                        1==1.0; json-patch/jsonptr deps REMOVED)
 │   ├── json_schema.rs     ── SchemaValidator napi class (fast + jsonschema fallback)
 │   └── fast_schema/       ── zero-DOM draft-07 JSON Schema fast path
 │       └── mod.rs + types.rs / cursor.rs / compile.rs / validate.rs / errors.rs / email.rs (format:"email" replica) / tests.rs
@@ -158,7 +172,9 @@ src/
 │   ├── request-id.ts      ── zero-alloc request ID generator
 │   ├── buffer-pool.ts     ── reusable output-buffer pool
 │   ├── response.ts        ── pooledBodyResponse (zero-copy response)
-│   ├── bytes.ts           ── shared TextEncoder/Decoder singletons
+│   ├── bytes.ts           ── codec-backed encoder/decoder + toBytes/toText normalizers
+│   ├── codec.ts           ── Bun-native UTF-8 codec (ArrayBufferSink / CString /
+│   │                        Buffer-view write; TextEncoder/Decoder ONLY as Node fallback)
 │   ├── packed.ts          ── packed-wire unpackers + packers
 │   └── proven.ts          ── PROVEN_SURFACE registry (single source for `proven`)
 │
@@ -382,6 +398,54 @@ Offset (bytes)
 3. **Zero-copy**: `Uint8Array` passed to Rust functions are used in-place, not copied
 4. **Slice overlap detection**: Rust checks for input/output buffer overlap and copies if needed
 5. **Thread-local caches**: Header buffers use thread-local recycling to reduce allocation pressure
+
+---
+
+## JSON & zero-DOM architecture
+
+- **`sonic_rs::Value` is the primary DOM** on every crate boundary that allows
+  it (compact 16-byte tagged nodes, borrowed/inline strings, zero per-key heap
+  `String`). `serde_json::Value` REMAINS only where a crate is hardwired to it
+  and cannot be swapped: the jsonschema 0.48 DOM fallback
+  (`json_schema.rs` + `pipeline.rs::IngressSchema`), `selection.rs`, and the
+  napi JS-object input of `jwt_sign` / `JwtSigner::sign`.
+- **`rust/json/napi_marshal.rs`** is the single sonic→JS bridge:
+  `sonic_value_to_js` walks a `sonic_rs::Value` into a napi value with
+  **byte-parity** to napi's `serde-json` `ToNapiValue for serde_json::Number`
+  (PosInt u64 ≤ u32::MAX → Number, larger → BigInt; NegInt within ±2^53-1 →
+  Number, outside → BigInt; Float → Number). `sonic_values_equal` replicates
+  jsonschema `cmp::equal` (exact cross-type numeric equality + insertion-order
+  object keys) for fast_schema enum/const/uniqueItems and is unit-pinned against
+  a serde_json reference over a value corpus.
+- **Zero-DOM hot paths** (no `serde_json::Value` on the per-request path):
+  - `castrum_json_parse_packed` (FFI) parses ONCE with sonic-rs and emits a
+    typed token stream (deduped string table) that the JS decoder assembles
+    with NO second JSON text parse.
+  - JWT verify (`verify_token_with_key`) decodes the payload ONCE, checks
+    `exp`/`nbf`/`iat` over `sonic_rs::Value`, and returns the payload BYTES
+    (no re-serialize); `jwt_verify` / `JwtSigner::verify` marshal via the
+    walker. JWT sign (`jwtSignBytes`, `JwtSigner::signBytes`,
+    `castrum_jwt_sign_bytes*`) injects `iat`/`exp` into a sonic object
+    (`inject_and_payload_b64_sonic`) and serializes with `sonic_rs::to_vec`.
+  - fast_schema enum/const/uniqueItems re-parse the doc into `sonic_rs::Value`
+    and compare with `sonic_values_equal` (no `Vec<serde_json::Value>`).
+  - minijinja contexts are `sonic_rs::Value` (implements `Serialize`).
+- **Custom RFC 6902 patch engine** (`json_patch_ops.rs`): no longer round-trips
+  through the serde_json-DOM `json-patch` crate. A `Pointer` type (`~0`/`~1`
+  unescape, RFC 6901) + `PatchOp` parser + applicator (add incl. array `-` and
+  bounds, remove, replace, move, copy, test incl. `1 == 1.0`) runs directly on
+  `sonic_rs::Value`, keeping `JsonPatchError` semantics, the input/output size
+  guards, and the packed batch entry points. `json-patch` and `jsonptr` deps
+  are removed.
+- **Serialization determinism (`sonic sort_keys`)**: sonic's owned `Value`
+  backs MUTABLE objects with `AHashMap` (non-deterministic iteration order), so
+  the crate enables `sort_keys` (`Cargo.toml`), swapping the owned map to
+  `BTreeMap` → deterministic sorted serialization. This is a hard wire-format
+  requirement: JWT sign and the patch engine must emit byte-identical output
+  across the FFI/napi/scalar/bulk transports. Parsed (unmutated) values keep
+  the shared Vec (insertion order) — only `as_object_mut()` + `insert` switches
+  to the map — so `sonic_values_equal` / `sonic_value_to_js` (which iterate the
+  shared representation) keep insertion-order semantics.
 
 ---
 

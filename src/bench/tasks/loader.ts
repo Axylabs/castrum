@@ -12,13 +12,13 @@
 // The loader instance here is created with `adaptive: false` so the batch
 // decision is deterministic for measurement (n >= batchMin=2 → packed batch).
 
-import { rust } from '../../rust-ffi'
-import { createLoader } from '../../loader'
-import { encoder } from '../../shared/bytes'
-import { nowMs } from '../now'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createLoader } from '../../loader'
+import { rust } from '../../rust-ffi'
+import { encoder } from '../../shared/bytes'
 import type { ComplexFixtures } from '../fixtures'
+import { nowMs } from '../now'
 import type { BenchTask } from '../types'
 
 export function loaderTasks(c: ComplexFixtures): BenchTask[] {
@@ -56,7 +56,7 @@ export function loaderTasks(c: ComplexFixtures): BenchTask[] {
     },
     {
       name: 'rust:loader_bulk_hmac_sha256',
-      run: () => hmac(c.batchTokens, c.batchSecret).reduce((acc, b) => acc + b.byteLength, 0),
+      run: () => hmac(c.batchTokens, c.batchSecret).reduce((acc, b) => acc + b.length, 0),
       iterations: 200,
       warmup: 20,
     },
@@ -71,7 +71,7 @@ export function loaderTasks(c: ComplexFixtures): BenchTask[] {
     {
       name: 'native:loader_naive_hmac_sha256',
       run: () =>
-        c.batchTokens.reduce((acc, t) => acc + rust.hmacSha256(c.batchSecret, t).byteLength, 0),
+        c.batchTokens.reduce((acc, t) => acc + rust.hmacSha256(c.batchSecret, t).length, 0),
       iterations: 200,
       warmup: 20,
     },
@@ -125,25 +125,25 @@ export function loaderTasks(c: ComplexFixtures): BenchTask[] {
     },
     {
       name: 'rust:loader_bulk_etag',
-      run: () => l('etag')(c.batchTokens).reduce((acc, b) => acc + b.byteLength, 0),
+      run: () => l('etag')(c.batchTokens).reduce((acc, b) => acc + b.length, 0),
       iterations: 1000,
       warmup: 100,
     },
     {
       name: 'native:loader_naive_etag',
-      run: () => c.batchTokens.reduce((acc, t) => acc + rust.etag(t).byteLength, 0),
+      run: () => c.batchTokens.reduce((acc, t) => acc + rust.etag(t).length, 0),
       iterations: 1000,
       warmup: 100,
     },
     {
       name: 'rust:loader_bulk_base64url',
-      run: () => l('base64UrlEncode')(c.batchTokens).reduce((acc, b) => acc + b.byteLength, 0),
+      run: () => l('base64UrlEncode')(c.batchTokens).reduce((acc, b) => acc + b.length, 0),
       iterations: 1000,
       warmup: 100,
     },
     {
       name: 'native:loader_naive_base64url',
-      run: () => c.batchTokens.reduce((acc, t) => acc + rust.base64UrlEncode(t).byteLength, 0),
+      run: () => c.batchTokens.reduce((acc, t) => acc + rust.base64UrlEncode(t).length, 0),
       iterations: 1000,
       warmup: 100,
     },

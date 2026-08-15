@@ -12,6 +12,8 @@
 import { describe, test, expect } from 'bun:test'
 import { createIngressHandler, readHandler } from '../../../src/ingress/handlers'
 import { buildSecurityPairs } from '../../../src/ingress/headers/hsts'
+import { buildResponseContext, buildTerminalResponse } from '../../../src/ingress/fast'
+import { ERR_CODE_NONE, HV_CORS_SIMPLE, HV_JSON } from '../../../src/ingress/constants'
 
 const baseOptions = {
   parseCookies: true,
@@ -92,5 +94,60 @@ describe('pre-baked security headers', () => {
     // per-request fast-path concern).
     const noHttps = buildSecurityPairs({ hsts: true }, undefined, true)
     expect(noHttps.some(([key]) => key === 'strict-transport-security')).toBe(false)
+  })
+})
+
+describe('header-injection defense (CRLF cannot reach the wire)', () => {
+  test('Headers / Response APIs reject CRLF in any header value (contract)', () => {
+    // The pipeline echoes input (e.g. the CORS `Origin`) into response
+    // headers. Even IF a hostile value reached the template, the Web-API
+    // layer refuses CR/LF — so no response header can be injected on the wire.
+    expect(() => new Headers([['x-test', 'a\r\nX-Evil: 1']])).toThrow()
+    expect(() => new Headers().set('x-test', 'a\rb')).toThrow()
+    expect(() => new Response('', { headers: { 'x-test': 'a\nb' } })).toThrow()
+  })
+
+  test('baked path CORS origin echo is exact and CRLF-free', async () => {
+    const h = createIngressHandler({
+      ...baseOptions,
+      cors: { allowOrigin: ['https://app.example.com'] },
+    })
+    const res = await readHandler(h)(
+      req('/health', { headers: { origin: 'https://app.example.com' } }),
+    )
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com')
+    for (const [, value] of res.headers) {
+      expect(value).not.toMatch(/[\r\n]/)
+    }
+  })
+
+  test('fast path CORS origin echo is exact and CRLF-free', () => {
+    const ctx = buildResponseContext({
+      cors: { allowOrigin: ['https://app.example.com'] },
+    })
+    const r = {
+      terminal: true,
+      isPreflight: false,
+      corsAllowed: true,
+      errorCode: ERR_CODE_NONE,
+      status: 200,
+      headerVariant: HV_JSON | HV_CORS_SIMPLE,
+      https: false,
+      rateLimit: 0,
+      rateRemaining: 0,
+      rateResetMs: 0,
+      retryAfterMs: 0,
+    }
+    const res = buildTerminalResponse(
+      ctx,
+      r,
+      new Request('http://localhost/', { headers: { origin: 'https://app.example.com' } }),
+      'rid-1',
+    )
+    expect(res).not.toBeNull()
+    expect(res?.headers.get('access-control-allow-origin')).toBe('https://app.example.com')
+    for (const [, value] of res?.headers ?? []) {
+      expect(value).not.toMatch(/[\r\n]/)
+    }
   })
 })

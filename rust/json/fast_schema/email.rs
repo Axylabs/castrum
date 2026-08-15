@@ -29,8 +29,7 @@ const VALID_HOSTNAME_CHARS: [bool; 256] = {
     let mut table = [false; 256];
     let mut byte: u8 = 0;
     while byte < 255 {
-        table[byte as usize] =
-            matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-');
+        table[byte as usize] = matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-');
         byte += 1;
     }
     // Handle byte 255 separately to avoid overflow.
@@ -113,36 +112,78 @@ fn validate_unicode_label(label: &str) -> bool {
     while let Some(current) = chars.next() {
         match current {
             // ZERO WIDTH JOINER — allowed only after a virama.
-            '\u{200D}' if !previous.is_some_and(|prev| {
-                matches!(
-                    prev,
-                    '\u{094D}' | '\u{09CD}' | '\u{0A4D}' | '\u{0ACD}' | '\u{0B4D}'
-                        | '\u{0BCD}' | '\u{0C4D}' | '\u{0CCD}' | '\u{0D4D}' | '\u{0DCA}'
-                        | '\u{0E3A}' | '\u{0F84}' | '\u{1039}' | '\u{1714}' | '\u{1734}'
-                        | '\u{17D2}' | '\u{1A60}' | '\u{1B44}' | '\u{1BAA}' | '\u{1BF2}'
-                        | '\u{1BF3}' | '\u{2D7F}' | '\u{A806}' | '\u{A8C4}' | '\u{A953}'
-                        | '\u{ABED}' | '\u{10A3F}' | '\u{11046}' | '\u{1107F}' | '\u{110B9}'
-                        | '\u{11133}' | '\u{111C0}' | '\u{11235}' | '\u{112EA}' | '\u{1134D}'
-                        | '\u{11442}' | '\u{114C2}' | '\u{115BF}' | '\u{1163F}' | '\u{116B6}'
-                        | '\u{1172B}' | '\u{11839}' | '\u{119E0}' | '\u{11A34}' | '\u{11A47}'
-                        | '\u{11A99}' | '\u{11C3F}' | '\u{11D44}' | '\u{11D45}' | '\u{11D97}'
-                )
-            }) =>
+            '\u{200D}'
+                if !previous.is_some_and(|prev| {
+                    matches!(
+                        prev,
+                        '\u{094D}'
+                            | '\u{09CD}'
+                            | '\u{0A4D}'
+                            | '\u{0ACD}'
+                            | '\u{0B4D}'
+                            | '\u{0BCD}'
+                            | '\u{0C4D}'
+                            | '\u{0CCD}'
+                            | '\u{0D4D}'
+                            | '\u{0DCA}'
+                            | '\u{0E3A}'
+                            | '\u{0F84}'
+                            | '\u{1039}'
+                            | '\u{1714}'
+                            | '\u{1734}'
+                            | '\u{17D2}'
+                            | '\u{1A60}'
+                            | '\u{1B44}'
+                            | '\u{1BAA}'
+                            | '\u{1BF2}'
+                            | '\u{1BF3}'
+                            | '\u{2D7F}'
+                            | '\u{A806}'
+                            | '\u{A8C4}'
+                            | '\u{A953}'
+                            | '\u{ABED}'
+                            | '\u{10A3F}'
+                            | '\u{11046}'
+                            | '\u{1107F}'
+                            | '\u{110B9}'
+                            | '\u{11133}'
+                            | '\u{111C0}'
+                            | '\u{11235}'
+                            | '\u{112EA}'
+                            | '\u{1134D}'
+                            | '\u{11442}'
+                            | '\u{114C2}'
+                            | '\u{115BF}'
+                            | '\u{1163F}'
+                            | '\u{116B6}'
+                            | '\u{1172B}'
+                            | '\u{11839}'
+                            | '\u{119E0}'
+                            | '\u{11A34}'
+                            | '\u{11A47}'
+                            | '\u{11A99}'
+                            | '\u{11C3F}'
+                            | '\u{11D44}'
+                            | '\u{11D45}'
+                            | '\u{11D97}'
+                    )
+                }) =>
             {
                 return false;
             }
             // MIDDLE DOT — must be between 'l' and 'l'.
             '\u{00B7}' if previous != Some('l') || chars.peek() != Some(&'l') => return false,
             // Greek KERAIA — must be followed by a Greek char.
-            '\u{0375}' if !chars
-                .peek()
-                .is_some_and(|next| ('\u{0370}'..='\u{03FF}').contains(next)) =>
+            '\u{0375}'
+                if !chars
+                    .peek()
+                    .is_some_and(|next| ('\u{0370}'..='\u{03FF}').contains(next)) =>
             {
                 return false;
             }
             // Hebrew GERESH / GERSHAYIM — must follow a Hebrew char.
-            '\u{05F3}' | '\u{05F4}' if !previous
-                .is_some_and(|prev| ('\u{0590}'..='\u{05FF}').contains(&prev)) =>
+            '\u{05F3}' | '\u{05F4}'
+                if !previous.is_some_and(|prev| ('\u{0590}'..='\u{05FF}').contains(&prev)) =>
             {
                 return false;
             }
@@ -217,10 +258,7 @@ fn is_valid_hostname(hostname: &str) -> bool {
 
 /// `[IPv6:...]` / `[IPv4...]` literals, else the hostname rules.
 fn validate_email_domain(domain: &str) -> bool {
-    if let Some(domain) = domain
-        .strip_prefix('[')
-        .and_then(|d| d.strip_suffix(']'))
-    {
+    if let Some(domain) = domain.strip_prefix('[').and_then(|d| d.strip_suffix(']')) {
         if let Some(domain) = domain.strip_prefix("IPv6:") {
             domain.parse::<Ipv6Addr>().is_ok()
         } else {

@@ -3,6 +3,7 @@ export const PORTS = {
   bun: 9120,
   elysia: 9121,
   ingress: 9122,
+  router: 9123,
 } as const;
 
 export type ServerKind = keyof typeof PORTS;

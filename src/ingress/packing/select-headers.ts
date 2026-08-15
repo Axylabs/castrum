@@ -1,21 +1,20 @@
 // src/ingress/packing/select-headers.ts — Shared header-selection iterator.
 //
 // Single source of truth for "which headers does a HeaderPlan select" across
-// the THREE packing paths:
+// the TWO packing paths (a string-array reference variant lives test-local in
+// header-packing.test.ts):
 //   - `packHeaders`             (fast path, ./header-packing.ts)
 //   - `gatherRawHeadersPacked`  (pre-baked packed path, ./gather-raw-headers.ts)
-//   - `gatherRawHeaders`        (pre-baked string-array reference, ./gather-raw-headers.ts)
 //
-// All three apply the SAME selection rules and the SAME per-header size guards
+// Both apply the SAME selection rules and the SAME per-header size guards
 // (an oversized value is dropped rather than forwarded, so the packed block can
 // never exceed the native `max_headers_bytes` (65536) and 500). This module
 // owns that logic plus the pre-encoded header-name bytes, so a rule or size
 // change cannot drift between the paths.
 
-import { METHOD_KIND, type HeaderPlan } from '../shared'
+import { encoder } from '../../shared/bytes'
+import { type HeaderPlan, METHOD_KIND } from '../shared'
 import { MAX_COOKIE_HEADER_BYTES, MAX_SMALL_HEADER_BYTES, MAX_XFF_HEADER_BYTES } from './scratch'
-
-const encoder = new TextEncoder()
 
 // ── Header name constants (pre-encoded) ────────────────────────
 /** Pre-encoded `cookie` header name. */

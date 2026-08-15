@@ -53,7 +53,7 @@ export function stressTasks(f: BenchFixtures, _c: ComplexFixtures): StressBenchT
     },
     {
       name: 'rust:hmac_sha256_stress',
-      run: () => rust.hmacSha256(f.hmacKey, f.hmacData).byteLength,
+      run: () => rust.hmacSha256(f.hmacKey, f.hmacData).length,
       durationMs: 2000,
       warmupMs: 200,
     },
@@ -131,7 +131,7 @@ export function stressTasks(f: BenchFixtures, _c: ComplexFixtures): StressBenchT
     },
     {
       name: 'rust:ws_accept_key_stress',
-      run: () => rust.wsAcceptKey(f.wsKeyBytes).byteLength,
+      run: () => rust.wsAcceptKey(f.wsKeyBytes).length,
       durationMs: 2000,
       warmupMs: 200,
     },

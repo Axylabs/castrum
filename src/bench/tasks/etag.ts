@@ -6,15 +6,16 @@
 
 import { rust } from '../../rust-ffi'
 import { decoder } from '../../shared/bytes'
-import { rawHttpDate } from '../raw-native'
+import { toBytes, toText } from '../assert'
 import { nativeEtag, nativeHttpDate, nativeIsNotModified } from '../etag-baseline'
 import type { BenchFixtures } from '../fixtures'
+import { rawHttpDate } from '../raw-native'
 import type { BenchTask } from '../types'
 
 export function etagTasks(f: BenchFixtures): BenchTask[] {
   // Per-resource state computed once; reused for every iteration.
-  const etagStr = decoder.decode(rust.etag(f.etagData))
-  const conditional = rust.createConditionalRequest(rust.etag(f.etagData), f.httpDateSecs)
+  const etagStr = toText(rust.etag(f.etagData))
+  const conditional = rust.createConditionalRequest(toBytes(rust.etag(f.etagData)), f.httpDateSecs)
   const inm = decoder.decode(f.ifNoneMatchHeader)
   const ims = decoder.decode(f.ifModifiedSinceHeader)
 
@@ -27,7 +28,7 @@ export function etagTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'rust:etag',
-      run: () => rust.etag(f.etagData).byteLength,
+      run: () => rust.etag(f.etagData).length,
       iterations: 500,
       warmup: 50,
     },

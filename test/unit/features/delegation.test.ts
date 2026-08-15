@@ -12,10 +12,9 @@
 import { describe, expect, test } from 'bun:test'
 import { getAddon } from '../../../src/native'
 import { rust } from '../../../src/rust-ffi'
+import { decoder, encoder, toText } from '../../../src/shared/bytes'
 import { isBun } from '../../../src/shared/runtime'
 
-const encoder = new TextEncoder()
-const decoder = new TextDecoder()
 const TEXT = 'hello world hello world hello world'
 
 describe('Bun delegation parity (rust.* vs addon)', () => {
@@ -36,7 +35,7 @@ describe('Bun delegation parity (rust.* vs addon)', () => {
 
   test('hmacSha256 returns the same hex digest as Bun.CryptoHasher and the addon', () => {
     const addonHex = new (getAddon().HmacSigner)(key).sign(data)
-    const rustHex = rust.hmacSha256(key, data)
+    const rustHex = encoder.encode(rust.hmacSha256(key, data))
     expect(Array.from(rustHex)).toEqual(Array.from(addonHex))
     expect(rustHex.byteLength).toBe(64) // hex contract: 2x 32-byte digest
     if (isBun()) {
@@ -53,7 +52,7 @@ describe('Bun delegation parity (rust.* vs addon)', () => {
     if (isBun()) {
       // Cross-transport: the addon decompresses Bun's output and vice versa
       // (only the gzip header OS byte differs: 0xFF vs 0x03).
-      const bunCompressed = Bun.gzipSync(data)
+      const bunCompressed = Bun.gzipSync(data as unknown as Uint8Array<ArrayBuffer>)
       expect(decoder.decode(rust.gzipDecompress(bunCompressed))).toBe(TEXT)
       expect(decoder.decode(Bun.gunzipSync(compressed as unknown as Uint8Array<ArrayBuffer>))).toBe(
         TEXT,
@@ -64,11 +63,8 @@ describe('Bun delegation parity (rust.* vs addon)', () => {
   test('randomToken returns byteLen*2 lowercase-hex bytes', () => {
     for (const len of [1, 8, 16, 32]) {
       const tok = rust.randomToken(len)
-      expect(tok.byteLength).toBe(len * 2)
-      for (const b of tok) {
-        const isHex = (b >= 48 && b <= 57) || (b >= 97 && b <= 102) // 0-9, a-f
-        expect(isHex).toBe(true)
-      }
+      expect(tok.length).toBe(len * 2)
+      expect(/^[0-9a-f]+$/.test(toText(tok))).toBe(true)
     }
     // Allocation guard preserved on the delegated path.
     expect(() => rust.randomToken(16 * 1024 * 1024 + 1)).toThrow()
@@ -79,8 +75,10 @@ describe('Bun delegation parity (rust.* vs addon)', () => {
     const expected = isBun()
       ? encoder.encode(encodeURIComponent(decoder.decode(input)))
       : getAddon().urlEncode(input)
-    expect(Array.from(rust.urlEncode(input))).toEqual(Array.from(expected))
-    expect(Array.from(rust.urlEncode(input))).toEqual(Array.from(getAddon().urlEncode(input)))
+    expect(Array.from(encoder.encode(rust.urlEncode(input)))).toEqual(Array.from(expected))
+    expect(Array.from(encoder.encode(rust.urlEncode(input)))).toEqual(
+      Array.from(getAddon().urlEncode(input)),
+    )
   })
 
   test('urlDecode matches decodeURIComponent and the addon (byte-for-byte)', () => {
@@ -97,8 +95,10 @@ describe('Bun delegation parity (rust.* vs addon)', () => {
     const expected = isBun()
       ? encoder.encode(Buffer.from(input).toString('base64'))
       : getAddon().base64Encode(input)
-    expect(Array.from(rust.base64Encode(input))).toEqual(Array.from(expected))
-    expect(Array.from(rust.base64Encode(input))).toEqual(Array.from(getAddon().base64Encode(input)))
+    expect(Array.from(encoder.encode(rust.base64Encode(input)))).toEqual(Array.from(expected))
+    expect(Array.from(encoder.encode(rust.base64Encode(input)))).toEqual(
+      Array.from(getAddon().base64Encode(input)),
+    )
   })
 
   test('httpDate matches Date.toUTCString() and the addon', () => {
@@ -106,7 +106,9 @@ describe('Bun delegation parity (rust.* vs addon)', () => {
     const expected = isBun()
       ? encoder.encode(new Date(secs * 1000).toUTCString())
       : getAddon().httpDate(secs)
-    expect(Array.from(rust.httpDate(secs))).toEqual(Array.from(expected))
-    expect(Array.from(rust.httpDate(secs))).toEqual(Array.from(getAddon().httpDate(secs)))
+    expect(Array.from(encoder.encode(rust.httpDate(secs)))).toEqual(Array.from(expected))
+    expect(Array.from(encoder.encode(rust.httpDate(secs)))).toEqual(
+      Array.from(getAddon().httpDate(secs)),
+    )
   })
 })

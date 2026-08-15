@@ -5,7 +5,7 @@
  * implementations; HMAC against node:crypto.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createHmac } from 'node:crypto'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'
@@ -98,14 +98,16 @@ describe('hmacSha256', () => {
 
   test('sign matches node:crypto HMAC-SHA256', () => {
     const sig = rust.hmacSha256(key, data)
-    expect(Array.from(sig)).toEqual(Array.from(jsHmacSha256(key, data)))
+    // Bun returns the hex STRING; the JS reference produces hex bytes —
+    // re-encode for a direct byte comparison.
+    expect(Array.from(encoder.encode(sig))).toEqual(Array.from(jsHmacSha256(key, data)))
   })
 
   test('verify accepts the correct signature and rejects tampered', () => {
     const sig = rust.hmacSha256(key, data)
-    expect(rust.hmacSha256Verify(key, data, sig)).toBe(true)
-    expect(rust.hmacSha256Verify(key, enc('different'), sig)).toBe(false)
-    const tampered = sig.slice()
+    expect(rust.hmacSha256Verify(key, data, encoder.encode(sig))).toBe(true)
+    expect(rust.hmacSha256Verify(key, enc('different'), encoder.encode(sig))).toBe(false)
+    const tampered = encoder.encode(sig)
     tampered[0] ^= 0xff
     expect(rust.hmacSha256Verify(key, data, tampered)).toBe(false)
   })
@@ -122,7 +124,7 @@ describe('hmacSha256', () => {
     const items = [enc('a'), enc('bb'), enc('ccc')]
     const out = rust.batch.hmacSha256(items, key)
     for (let i = 0; i < items.length; i++) {
-      expect(Array.from(out[i])).toEqual(Array.from(rust.hmacSha256(key, items[i])))
+      expect(Array.from(out[i])).toEqual(Array.from(encoder.encode(rust.hmacSha256(key, items[i]))))
     }
   })
 })

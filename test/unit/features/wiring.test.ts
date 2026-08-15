@@ -30,6 +30,7 @@ import {
   rawBase64Encode,
   rawCrc32,
   rawGzipCompress,
+  rawHexEncode,
   rawHmacSha256,
   rawHttpDate,
   rawRandomToken,
@@ -39,13 +40,13 @@ import {
 } from '../../../src/bench/raw-native'
 import { getAddon } from '../../../src/native'
 import { rust } from '../../../src/rust-ffi'
-import { isBun } from '../../../src/shared/runtime'
 import { opImpl } from '../../../src/selection'
+import { isBun } from '../../../src/shared/runtime'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-/** The 9 BUN_WINS ops (mirrors src/selection.ts) — delegated to Bun built-ins under Bun. */
+/** The 9 BUN_WINS ops with a baked Node decision (mirrors selection.ts — hexEncode/base64UrlEncode are Bun-only delegations not in selection.json). */
 const BUN_WINS = [
   'gzipCompress',
   'crc32',
@@ -136,6 +137,8 @@ describe('raw-accessor contract (CPU bench measures the ADDON, not the delegated
     expect(Array.from(rawUrlDecode(encoded))).toEqual(Array.from(addon.urlDecode(encoded)))
     // base64 (standard padded case)
     expect(Array.from(rawBase64Encode(input))).toEqual(Array.from(addon.base64Encode(input)))
+    // hex encode
+    expect(Array.from(rawHexEncode(input))).toEqual(Array.from(addon.hexEncode(input)))
     // http date
     expect(Array.from(rawHttpDate(1_700_000_000))).toEqual(
       Array.from(addon.httpDate(1_700_000_000)),

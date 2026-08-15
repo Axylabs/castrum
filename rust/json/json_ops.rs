@@ -63,15 +63,21 @@ pub fn json_valid(input: Uint8Array) -> bool {
     json_valid_bytes(input.as_ref())
 }
 
-/// Parse JSON into a JS value (sonic-rs → serde_json::Value → napi).
+/// Parse JSON into a JS value (sonic-rs → compact `sonic_rs::Value` → hand
+/// written napi marshal). This replaces the old `serde_json::Value` DOM +
+/// generic napi `serde-json` marshal — the sonic Value build is cheaper (no
+/// per-key heap `String`) and the walker avoids serde trait dispatch. Number
+/// marshaling stays byte-parity with the old path (PosInt → BigInt, NegInt/
+/// Float → Number).
 ///
 /// This is the "parse to a usable JS object" path — directly comparable to
 /// `JSON.parse`. Throws on invalid JSON. Note: napi marshaling of the DOM has
 /// real cost, so this is intentionally NOT a zero-copy / validation-only path.
 #[napi]
-pub fn json_parse(input: Uint8Array) -> Result<serde_json::Value> {
-    sonic_rs::from_slice(input.as_ref())
-        .map_err(|e| Error::from_reason(format!("JSON parse error: {e}")))
+pub fn json_parse(env: Env, input: Uint8Array) -> Result<Unknown<'static>> {
+    let value: sonic_rs::Value = sonic_rs::from_slice(input.as_ref())
+        .map_err(|e| Error::from_reason(format!("JSON parse error: {e}")))?;
+    crate::json::napi_marshal::sonic_value_to_js(&env, &value)
 }
 
 #[napi]

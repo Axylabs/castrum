@@ -30,6 +30,20 @@ pub fn cookie_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<us
     Ok(pos)
 }
 
+/// Compute the EXACT packed output size for `input` WITHOUT writing — the
+/// "needed-size" pass for the C-ABI convention. Mirrors
+/// [`cookie_parse_packed_into_slice`] (trim + DQUOTE-unwrap, no decode), so the
+/// reported size is byte-exact.
+#[inline]
+pub fn cookie_parse_packed_size(input: &[u8]) -> Result<usize> {
+    let mut size = 4usize; // count prefix
+    for (name, value) in crate::util::bytes::cookie_pairs(input) {
+        size += 4 + name.len();
+        size += 4 + value.len();
+    }
+    Ok(size)
+}
+
 /// Allocate and parse cookies. Uses conservative upper bound to avoid a pre-scan.
 #[inline]
 pub fn cookie_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {

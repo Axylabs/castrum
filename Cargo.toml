@@ -6,8 +6,17 @@ edition = "2021"
 
 [lib]
 name = "castrum"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 path = "rust/lib.rs"
+
+# Native-only benchmark binary: times the pure-Rust cores (crc32, hashing,
+# hex/base64/url, validators, packed parsers, gzip/brotli, ...) with NO JS / FFI
+# boundary, so bench/ffi-margin.ts can compare them against the same ops called
+# through bun:ffi and pinpoint exactly where the crossing cost is. Diagnostic
+# only — never shipped; NOT part of the addon surface.
+[[bin]]
+name = "native-bench"
+path = "rust/src/bin/native-bench.rs"
 
 [dependencies]
 napi = { version = "3", features = ["napi10", "serde-json"] }
@@ -18,13 +27,19 @@ serde = { version = "1", features = ["derive"] }
 # object lookups during jsonschema validation (BTreeMap default is O(log n)).
 # Key order becomes insertion order; correctness checks are order-insensitive.
 serde_json = { version = "1", features = ["preserve_order"] }
-sonic-rs = "0.5"
+# sort_keys: sonic's owned `Value` object backs mutable objects with
+# AHashMap (non-deterministic iteration order) unless `sort_keys` is enabled,
+# which swaps the owned map to BTreeMap → DETERMINISTIC sorted serialization.
+# Determinism is a hard wire-format requirement: JWT sign (iat/exp injection)
+# and the RFC 6902 patch engine must emit byte-identical output across the
+# FFI/napi/scalar/bulk transports. Parsed (unmutated) values keep the shared
+# Vec representation (insertion order) — only mutation switches to the map.
+sonic-rs = { version = "0.5", features = ["sort_keys"] }
 
 # default-features=false: drop resolve-http + tls-aws-lc-rs which pull in
 # reqwest -> hyper/h2/tokio/rustls (large binary, attack surface). Format
 # validators (email etc.) are built-in and NOT feature-gated in 0.48.
 jsonschema = { version = "0.48", default-features = false, features = ["resolve-file"] }
-json-patch = "4"
 aws-lc-rs = "1"
 # NOTE: base64 0.23 enables SIMD (SSE/AVX) by default via the `simd-unsafe`
 # feature (part of `default`); no explicit feature is needed.

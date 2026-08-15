@@ -203,8 +203,8 @@ pub fn decode_form_component_into(
                 let (b, next) = match src[i] {
                     b'+' => (b' ', i + 1),
                     _ => {
-                        let (byte, next) = decode_percent_at(src, i)
-                            .ok_or(FormDecodeError::Malformed)?;
+                        let (byte, next) =
+                            decode_percent_at(src, i).ok_or(FormDecodeError::Malformed)?;
                         (byte, next)
                     }
                 };
@@ -222,6 +222,45 @@ pub fn decode_form_component_into(
                 }
                 out[written..written + run.len()].copy_from_slice(run);
                 written += run.len();
+                i = src.len();
+            }
+        }
+    }
+    Ok(written)
+}
+
+/// Compute the decoded length of `src` WITHOUT writing (mirror of
+/// [`decode_form_component_into`], minus the output). Used by the C-ABI
+/// "needed-size" convention: when a packed/JSON writer hits a too-small output
+/// buffer, the caller runs this exact-size pass ONCE (only on the rare miss)
+/// and reports the required size so the JS wrapper can `growExact` and retry —
+/// no doubling re-run loop, no 9×/8× pre-size.
+///
+/// Same `Malformed` signal on a bad `%XX`, so a caller can disambiguate a
+/// too-small buffer from a real parse error.
+#[inline]
+pub fn decode_form_component_len(src: &[u8]) -> std::result::Result<usize, FormDecodeError> {
+    if memchr::memchr2(b'+', b'%', src).is_none() {
+        return Ok(src.len());
+    }
+    let mut i = 0usize;
+    let mut written = 0usize;
+    while i < src.len() {
+        match memchr::memchr2(b'+', b'%', &src[i..]) {
+            Some(rel) => {
+                written += rel;
+                i += rel;
+                let next = match src[i] {
+                    b'+' => i + 1,
+                    _ => decode_percent_at(src, i)
+                        .map(|(_, next)| next)
+                        .ok_or(FormDecodeError::Malformed)?,
+                };
+                written += 1;
+                i = next;
+            }
+            None => {
+                written += src.len() - i;
                 i = src.len();
             }
         }
@@ -332,8 +371,8 @@ mod tests {
 
     #[test]
     fn cookie_pairs_unwraps_dquote() {
-        let pairs: Vec<(&[u8], &[u8])> = cookie_pairs(b"a=1; b=\"quoted value\"; c=\"\"; d=\"abc; empty=")
-            .collect();
+        let pairs: Vec<(&[u8], &[u8])> =
+            cookie_pairs(b"a=1; b=\"quoted value\"; c=\"\"; d=\"abc; empty=").collect();
         assert_eq!(
             pairs,
             vec![
@@ -349,8 +388,7 @@ mod tests {
     #[test]
     fn cookie_pairs_keeps_unbalanced_quotes() {
         // A quote only at one end (or embedded) is left as-is — matches JS.
-        let pairs: Vec<(&[u8], &[u8])> = cookie_pairs(b"a=\"abc; b=ab\"c; c=\"quote")
-            .collect();
+        let pairs: Vec<(&[u8], &[u8])> = cookie_pairs(b"a=\"abc; b=ab\"c; c=\"quote").collect();
         assert_eq!(
             pairs,
             vec![

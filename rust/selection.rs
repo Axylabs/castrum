@@ -87,6 +87,9 @@ mod tests {
         // regeneration is caught; the values themselves come from the bench.
         assert_eq!(op_impl("fnv1a64".to_string()).as_deref(), Some("native"));
         assert_eq!(op_impl("validateEmail".to_string()).as_deref(), Some("js"));
-        assert_eq!(op_impl("gzipDecompress".to_string()).as_deref(), Some("native"));
+        assert_eq!(
+            op_impl("gzipDecompress".to_string()).as_deref(),
+            Some("native")
+        );
     }
 }

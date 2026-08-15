@@ -42,7 +42,8 @@ as a pre-baked pipeline, and still be usable from both runtimes.
 ### 2.1 One cdylib, two transports
 
 The addon is built with napi-rs (so Node can load it), but it *also* exports
-`extern "C"` symbols (`rust/ffi.rs`, **47 `castrum_*` symbols**) so Bun can
+`extern "C"` symbols (`rust/ffi.rs`, **75 `castrum_*` symbols** — 67 direct + 4
+`validator_c_abi!` + 4 `compress_to_out!`) so Bun can
 `dlopen` it directly:
 
 - **`bun:ffi` (primary on Bun)** — Bun JIT-calls the C-ABI exports at
@@ -55,7 +56,7 @@ The addon is built with napi-rs (so Node can load it), but it *also* exports
 
 ```mermaid
 flowchart LR
-    TS["TypeScript (index.ts)"] -->|"bun:ffi · 47 C-ABI symbols · ~10–20 ns"| RUST["Rust cdylib (rust/ffi.rs)"]
+    TS["TypeScript (index.ts)"] -->|"bun:ffi · 75 C-ABI symbols · ~10–20 ns"| RUST["Rust cdylib (rust/ffi.rs)"]
     TS -.->|"NAPI fallback (Node / self-test failure)"| RUST
     RUST --> PIPELINE["8-stage ingress pipeline"]
     TS --> PACKED["Packed, length-prefixed buffers (zero-copy)"]

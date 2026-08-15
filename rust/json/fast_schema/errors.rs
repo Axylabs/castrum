@@ -92,7 +92,12 @@ impl Ctx {
     }
 
     #[inline]
-    pub(crate) fn record(&mut self, schema_base: &str, keyword: &str, message: String) {
+    pub(crate) fn record(
+        &mut self,
+        schema_base: &str,
+        keyword: &str,
+        message: impl FnOnce() -> String,
+    ) {
         if self.suppress {
             return;
         }
@@ -111,7 +116,7 @@ impl Ctx {
             instance_path: build_pointer(&self.path),
             schema_path,
             keyword: keyword.to_string(),
-            message,
+            message: message(),
         });
     }
 
@@ -142,7 +147,8 @@ impl Ctx {
     #[inline]
     pub(crate) fn push_key(&mut self, key: &[u8]) {
         if self.errors.is_some() {
-            self.path.push(PathStep::Key(key.to_vec().into_boxed_slice()));
+            self.path
+                .push(PathStep::Key(key.to_vec().into_boxed_slice()));
         }
     }
 

@@ -13,8 +13,9 @@
  *   2. Every scalar / class / factory flux uses exists and behaves.
  *   3. Packed parsers produce the `readPairsPacked` wire format.
  */
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import * as mod from '../../index'
+import { toBytes } from '../../src/shared/bytes'
 import { readPairsPacked } from '../../src/shared/packed'
 
 /** The normalized surface exactly as flux's `@flux/native` loader sees it. */
@@ -61,11 +62,12 @@ describe('scalar surface', () => {
     expect(jwtVerify(token, enc.encode('s3cret'), 1_700_000_000)).not.toBeNull()
 
     const sig = hmacSha256(enc.encode('key'), enc.encode('data'))
-    expect(sig).toBeInstanceOf(Uint8Array)
+    // Bun returns the hex STRING (native transfer); Node returns bytes.
+    expect(sig instanceof Uint8Array || typeof sig === 'string').toBe(true)
 
     // Argon2 requires a salt of at least 8 bytes; "salt" (4) is too short.
     const phc = passwordHash(enc.encode('hunter2'), enc.encode('somesalt1234'))
-    expect(passwordVerify(enc.encode('hunter2'), phc)).toBe(true)
+    expect(passwordVerify(enc.encode('hunter2'), toBytes(phc as Uint8Array | string))).toBe(true)
 
     const key = new Uint8Array(32).fill(7)
     const nonce = new Uint8Array(12).fill(1)

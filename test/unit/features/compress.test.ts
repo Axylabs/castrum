@@ -85,3 +85,43 @@ describe('batch', () => {
     })
   })
 })
+
+describe('gzip stream-integrity edges', () => {
+  test('trailing garbage after a valid member is ignored (lenient, first member wins)', () => {
+    const g = rust.gzipCompress(encoder.encode('abc'))
+    const junk = new Uint8Array(g.byteLength + 4)
+    junk.set(g, 0)
+    junk.set(encoder.encode('XYZ!'), g.byteLength)
+    // The decoder stops at the end of the first valid member and ignores the
+    // trailing bytes — it must NOT throw and must NOT mis-parse the garbage.
+    expect(toBytes(rust.gzipDecompress(junk))).toEqual([...encoder.encode('abc')])
+  })
+
+  test('multi-member streams decode only the FIRST member (documented truncation)', () => {
+    const g1 = rust.gzipCompress(encoder.encode('abc'))
+    const g2 = rust.gzipCompress(encoder.encode('def'))
+    const multi = new Uint8Array(g1.byteLength + g2.byteLength)
+    multi.set(g1, 0)
+    multi.set(g2, g1.byteLength)
+    // flate2's GzDecoder reads a single member; a concatenated stream silently
+    // truncates at the first member rather than erroring or concatenating.
+    // Pin this so callers never assume multi-member concatenation.
+    expect(toBytes(rust.gzipDecompress(multi))).toEqual([...encoder.encode('abc')])
+  })
+
+  test('truncated gzip member throws (no silent partial output)', () => {
+    const g = rust.gzipCompress(encoder.encode('the quick brown fox jumps over the lazy dog'))
+    const cut = g.subarray(0, Math.floor(g.byteLength / 2))
+    expect(() => rust.gzipDecompress(cut)).toThrow()
+  })
+
+  test('advisory header metadata (MTIME) is ignored without corrupting output', () => {
+    const g = rust.gzipCompress(encoder.encode('payload'))
+    const tweaked = new Uint8Array(g)
+    // MTIME (bytes 4-7) is advisory metadata. Flip a bit — the payload must
+    // decode identically (the header is not part of the DEFLATE stream).
+    const mtime = tweaked[5] ?? 0
+    tweaked[5] = mtime ^ 0x40
+    expect(toBytes(rust.gzipDecompress(tweaked))).toEqual([...encoder.encode('payload')])
+  })
+})

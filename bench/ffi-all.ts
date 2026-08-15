@@ -14,6 +14,7 @@
 import { rust } from '../index'
 import { getAddon } from '../src/native'
 import { getBunFFI } from '../src/native/ffi'
+import { toBytes } from '../src/bench/assert'
 import { IngressInputPacker } from '../src/ingress/packing/input-packer'
 
 const addon = getAddon()
@@ -166,22 +167,22 @@ run(
 
 // ── Crypto ───────────────────────────────────────────────────────
 const hmacData = MEDIUM
-const hmacSig = rust.hmacSha256(hmacKey, hmacData)
+const hmacSig = toBytes(rust.hmacSha256(hmacKey, hmacData))
 run(
   [
     { name: 'hmacSha256 (medium)', n: 50_000, napi: () => addon.hmacSha256(hmacKey, hmacData), ffi: () => rust.hmacSha256(hmacKey, hmacData) },
     { name: 'hmacSha256Verify', n: 50_000, napi: () => addon.hmacSha256Verify(hmacKey, hmacData, hmacSig), ffi: () => rust.hmacSha256Verify(hmacKey, hmacData, hmacSig) },
     { name: 'signCookie', n: 50_000, napi: () => addon.signCookie(SMALL, cookieSecret), ffi: () => rust.signCookie(SMALL, cookieSecret) },
-    { name: 'verifyCookie', n: 50_000, napi: () => addon.verifyCookie(rust.signCookie(SMALL, cookieSecret), cookieSecret), ffi: () => rust.verifyCookie(rust.signCookie(SMALL, cookieSecret), cookieSecret) },
+    { name: 'verifyCookie', n: 50_000, napi: () => addon.verifyCookie(toBytes(rust.signCookie(SMALL, cookieSecret)), cookieSecret), ffi: () => rust.verifyCookie(toBytes(rust.signCookie(SMALL, cookieSecret)), cookieSecret) },
     { name: 'csrfToken', n: 50_000, napi: () => addon.csrfToken(cookieSecret), ffi: () => rust.csrfToken(cookieSecret) },
-    { name: 'csrfVerify', n: 50_000, napi: () => addon.csrfVerify(rust.csrfToken(cookieSecret), cookieSecret), ffi: () => rust.csrfVerify(rust.csrfToken(cookieSecret), cookieSecret) },
+    { name: 'csrfVerify', n: 50_000, napi: () => addon.csrfVerify(toBytes(rust.csrfToken(cookieSecret)), cookieSecret), ffi: () => rust.csrfVerify(toBytes(rust.csrfToken(cookieSecret)), cookieSecret) },
     { name: 'randomToken (16B)', n: 50_000, napi: () => addon.randomToken(16), ffi: () => rust.randomToken(16) },
     { name: 'pbkdf2Sha256 (c=1)', n: 10_000, napi: () => addon.pbkdf2Sha256(pass, passSalt, 1, 32), ffi: () => rust.pbkdf2Sha256(pass, passSalt, 1, 32) },
     { name: 'aeadEncrypt (AES-GCM)', n: 20_000, napi: () => addon.aeadEncrypt(hmacKey, aeadNonce, MEDIUM), ffi: () => rust.aeadEncrypt(hmacKey, aeadNonce, MEDIUM) },
     { name: 'aeadDecrypt', n: 20_000, napi: () => addon.aeadDecrypt(hmacKey, aeadNonce, rust.aeadEncrypt(hmacKey, aeadNonce, MEDIUM)), ffi: () => rust.aeadDecrypt(hmacKey, aeadNonce, rust.aeadEncrypt(hmacKey, aeadNonce, MEDIUM)) },
     { name: 'jwtSignBytes', n: 50_000, napi: () => addon.jwtSignBytes(jwtClaims, jwtSecret, 60, 1700000000), ffi: () => rust.jwtSignBytes(jwtClaims, jwtSecret, 60, 1700000000) },
     { name: 'passwordHash (m=8)', n: 2_000, napi: () => addon.passwordHash(pass, passSalt, pwOpts), ffi: () => rust.passwordHash(pass, passSalt, pwOpts) },
-    { name: 'passwordVerify (argon2)', n: 2_000, napi: () => addon.passwordVerify(pass, rust.passwordHash(pass, passSalt, pwOpts)), ffi: () => rust.passwordVerify(pass, rust.passwordHash(pass, passSalt, pwOpts)) },
+    { name: 'passwordVerify (argon2)', n: 2_000, napi: () => addon.passwordVerify(pass, toBytes(rust.passwordHash(pass, passSalt, pwOpts))), ffi: () => rust.passwordVerify(pass, toBytes(rust.passwordHash(pass, passSalt, pwOpts))) },
     { name: 'passwordHashBcrypt (c=4)', n: 2_000, napi: () => addon.passwordHashBcrypt(pass, 4), ffi: () => rust.passwordHashBcrypt(pass, 4) },
     { name: 'passwordVerifyBcrypt', n: 2_000, napi: () => addon.passwordVerifyBcrypt(pass, rust.passwordHashBcrypt(pass, 4)), ffi: () => rust.passwordVerifyBcrypt(pass, rust.passwordHashBcrypt(pass, 4)) },
   ],

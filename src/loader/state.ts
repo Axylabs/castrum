@@ -4,26 +4,28 @@
 // `LoaderState` shared by the dispatch core (index.ts). `KEY_SEP` is the
 // cache-key separator for `op + '\0' + key`.
 
-import type { LoaderCache, LoadRequest, TickCoalescer } from './batch'
+import type { LoaderCache, TickCoalescer } from './batch'
 import type { LoaderCostModel } from './cost'
-import type { LoaderOpFn, LoaderOpName, LoaderOptions } from './types'
+import type { LoaderOpName } from './ops'
+import type { LoaderOpFn, LoaderOptions } from './types'
 
 // ── Internal state ──────────────────────────────────────────────────────────
 
-interface OpCounters {
+/** Per-op dispatch counters: scalar calls, batch calls, items dispatched, and
+ * cache hits. Advanced on every dispatch and exposed via `loader.stats()`. */
+export interface OpCounters {
   scalarCalls: number
   batchCalls: number
   itemsDispatched: number
   cachedHits: number
 }
 
-
 /**
  * Pre-bound per-op dispatch context — avoids Map lookups on the hot path.
  * Holds the load-aware `load()` strategy plus its cheap integer signals so
  * the single-vs-coalesce decision costs no Map lookup or allocation.
  */
-interface OpDispatchCtx {
+export interface OpDispatchCtx {
   cost: LoaderCostModel
   counters: OpCounters
   sampleEvery: number
@@ -48,14 +50,17 @@ interface OpDispatchCtx {
 }
 
 /** A memoized op fn plus a hook to rebind its dispatch context on configure. */
-interface OpFnEntry {
+export interface OpFnEntry {
   op: LoaderOpName
   fn: LoaderOpFn<LoaderOpName>
   /** Rebind to a fresh context after `configure()` so dispatch + stats stay current. */
   rebind(ctx: OpDispatchCtx): void
 }
 
-interface LoaderState {
+/** Aggregate loader state shared by the dispatch core (index.ts): the resolved
+ * options, per-op dispatch contexts, the LRU cache + tick coalescer, memoized
+ * op fns, and the reusable zero-alloc pack/out/key scratch buffers. */
+export interface LoaderState {
   options: Required<
     Pick<
       LoaderOptions,
@@ -75,5 +80,5 @@ interface LoaderState {
   keyScratch: Uint8Array
 }
 
-const KEY_SEP = '\u0000'
-
+/** NUL separator used to join composite cache keys (never appears in keys). */
+export const KEY_SEP = '\u0000'

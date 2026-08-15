@@ -11,7 +11,7 @@
  * this test is the COMPLETENESS backstop (missing bindings are caught here).
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 
 const rustSource = readFileSync(new URL('../../../rust/ffi.rs', import.meta.url), 'utf8')
@@ -31,8 +31,10 @@ function rustExports(src: string): Set<string> {
     const name = m[1]
     if (name) names.add(name)
   }
-  // ...plus macro-generated exports (compress_to_out!, validator_c_abi!).
-  for (const m of src.matchAll(/(?:compress_to_out|validator_c_abi)!\((castrum_\w+)/g)) {
+  // ...plus macro-generated exports (compress_to_out!, validator_c_abi!). The
+  // invocation is formatted multi-line in rust/ffi.rs (name on its own line
+  // after the macro + `(`), so allow whitespace/newlines before the name.
+  for (const m of src.matchAll(/(?:compress_to_out|validator_c_abi)!\s*\(\s*(castrum_\w+)/g)) {
     const name = m[1]
     if (name) names.add(name)
   }

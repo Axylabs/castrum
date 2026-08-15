@@ -58,9 +58,10 @@ Everything is **synchronous** — there is no async/await in the FFI surface.
 
 > **Transport**: under Bun these calls run through `bun:ffi` (the PRIMARY
 > transport — see `rust.transport()` / `rust.ffiActive()`); Node and any
-> `CASTRUM_FFI_MODE=napi` fall back to the napi addon. Surfaces with no C-ABI
-> export (instances, `rust.batch.*`/`packed.*`, `text.*`, structured scalars)
-> always use the napi addon.
+> `CASTRUM_FFI_MODE=napi` fall back to the napi addon. Since Phase 6 the
+> compiled-once instances are NOT napi-only — their hot per-call ops route
+> through the C-ABI via opaque-`usize` handles. Still napi-only:
+> `rust.batch.*` / `rust.packed.*`, `text.*`, and the DOM `jsonParse`.
 
 > **Tip**: `rust` is a singleton created with sensible defaults. If you need
 > isolated state (own rayon threads, own HMAC cache), call

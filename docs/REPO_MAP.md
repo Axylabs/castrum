@@ -70,14 +70,17 @@ examples/                 Runnable sample app (basic-server.ts + README) — see
 
 src/
   native/                 The native transport layer: bun:ffi (primary on Bun) + NAPI fallback.
-    types.ts              NativeAddon interface + every instance type (mirrors index.d.ts).
+    types.ts              NativeAddon module-surface interface (mirrors index.d.ts).
+    types/instances.ts    Per-class INSTANCE types (Ingress, SchemaValidator, JwtSigner, ...) + result types.
     loader.ts             Addon path resolution (multi-root) + getAddon()/lazyAddon().
     ffi.ts                bun:ffi C-ABI bindings (Bun-only): lazy bind + bind-time self-test,
                           CASTRUM_FFI_MODE gating, castrum_ingress_layout blob for constants.ts.
+    ffi/                  ffi/types.ts (BunFFI interface) + constants.ts + selftest.ts (bind-time self-test).
     index.ts              Barrel.
   rust-ffi/               The flat `rust.*` FFI client (TS wrappers over the addon).
     client.ts             createRust() factory + the default `rust` instance + configure().
-    scalar/ / text.ts / batch.ts / packed.ts   namespaces (buildScalar, buildText, ...).
+    scalar/ / text.ts / packed.ts   namespaces (buildScalar, buildText, ...).
+    batch/                Array-of-bytes batch namespace: types.ts (RustBatch interface) + build.ts (impl) + index.ts.
     context.ts            Per-instance state (caches, rayon-pool bookkeeping).
     options.ts            RustOptions + rayon-thread resolution + coercion helpers.
     addon.ts              The single shared lazy addon proxy.
@@ -86,7 +89,11 @@ src/
   shared/                 Cross-cutting helpers.
     runtime.ts            THE ONLY place `typeof Bun` is checked (isBun/isNode).
     bytes.ts              Shared TextEncoder/Decoder singletons + toPlainBuffer.
-    packed.ts             Packed-wire unpackers (unpackU32Array, packBatch, readPairsPacked, ...).
+    packed/               Packed wire-format helpers (split from the old packed.ts monolith).
+      wire.ts             PURE byte encode/decode (u32/bitset/i64/byte-results/multipart, pairs, pack-scratch) — no addon.
+      schema.ts           SchemaValidator alias + schemaValidateBatch/Count.
+      parsers.ts          lazy-addon string parsers (parseQueryString/parseCookieHeader/parseFormBody).
+      index.ts            Barrel (existing `../shared/packed` imports unchanged).
     request-id.ts         Zero-alloc request-id generator (both ingress paths).
     buffer-pool.ts        Generic reusable byte-buffer pool (pooled ingress output).
     response.ts           pooledBodyResponse (releases the pool on body consume).
@@ -130,7 +137,9 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
   ingress/                THE ingress pipeline: mod.rs (napi boundary), pipeline.rs (core 8-stage),
                           options/time/packed, cors, proxy, ip_trust, rate_limit, terminal,
                           output.rs (single numeric layout source), ingress_constants.rs (napi projection).
-  ffi.rs                  #[no_mangle] extern "C" exports (47 castrum_* symbols) for Bun's bun:ffi
+  ffi.rs                  #[no_mangle] extern "C" exports (75 castrum_* symbols — 67 direct + 4
+                          validator_c_abi! + 4 compress_to_out!; parity guarded by
+                          test/unit/features/ffi-symbol-parity.test.ts) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).
   unit_tests.rs / test_support.rs   Cross-module Rust test suites.
 ```

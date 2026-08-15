@@ -13,7 +13,8 @@ use super::types::{
     T_NUM, T_OBJ, T_STR,
 };
 use fraction::One;
-use std::sync::Arc;
+
+use crate::json::napi_marshal::sonic_values_equal;
 
 impl FastNode {
     pub(crate) fn any() -> Self {
@@ -77,7 +78,11 @@ impl FastNode {
             if c.pos == bytes.len() {
                 return Vec::new();
             }
-            ctx.record("", "parse", "trailing data after the JSON value".to_string());
+            ctx.record(
+                "",
+                "parse",
+                || "trailing data after the JSON value".to_string(),
+            );
         }
         ctx.into_errors()
     }
@@ -93,7 +98,7 @@ impl FastNode {
             ctx.record(
                 "",
                 "maxDepth",
-                "maximum JSON nesting depth exceeded".to_string(),
+                || "maximum JSON nesting depth exceeded".to_string(),
             );
             return false;
         }
@@ -108,7 +113,7 @@ impl FastNode {
             ctx.record(
                 base,
                 "false schema",
-                "the schema is false and rejects every value".to_string(),
+                || "the schema is false and rejects every value".to_string(),
             );
             return false;
         }
@@ -118,14 +123,14 @@ impl FastNode {
             ctx.record(
                 base,
                 "type",
-                "expected a JSON value but found end of input".to_string(),
+                || "expected a JSON value but found end of input".to_string(),
             );
             return false;
         };
         // 1. `type`
         if self.types != 0 {
             let Some(k) = kind_of(b) else {
-                ctx.record(base, "type", "unexpected JSON token".to_string());
+                ctx.record(base, "type", || "unexpected JSON token".to_string());
                 return false;
             };
             let ok = match k {
@@ -140,7 +145,13 @@ impl FastNode {
                 ctx.record(
                     base,
                     "type",
-                    format!("expected {} but found {}", type_names(self.types), kind_name(k)),
+                    || {
+                        format!(
+                            "expected {} but found {}",
+                            type_names(self.types),
+                            kind_name(k)
+                        )
+                    },
                 );
                 return false;
             }
@@ -151,31 +162,31 @@ impl FastNode {
         if let Some(value) = &self.value {
             let data = c.data;
             if !c.skip_value(ctx.depth) {
-                ctx.record(base, "parse", "malformed JSON value".to_string());
+                ctx.record(base, "parse", || "malformed JSON value".to_string());
                 return false;
             }
             let raw = &data[vstart..c.pos];
-            let val: serde_json::Value = match serde_json::from_slice(raw) {
+            let val: sonic_rs::Value = match sonic_rs::from_slice(raw) {
                 Ok(v) => v,
                 Err(_) => {
-                    ctx.record(base, "parse", "malformed JSON value".to_string());
+                    ctx.record(base, "parse", || "malformed JSON value".to_string());
                     return false;
                 }
             };
             let (keyword, ok, message) = match value {
                 super::types::ValueConstraint::Enum(members) => (
                     "enum",
-                    members.iter().any(|m| values_equal(m, &val)),
-                    "value is not one of the allowed enum values".to_string(),
+                    members.iter().any(|m| sonic_values_equal(m, &val)),
+                    "value is not one of the allowed enum values",
                 ),
                 super::types::ValueConstraint::Const(x) => (
                     "const",
-                    values_equal(x, &val),
-                    "value is not equal to the required constant".to_string(),
+                    sonic_values_equal(x, &val),
+                    "value is not equal to the required constant",
                 ),
             };
             if !ok {
-                ctx.record(base, keyword, message);
+                ctx.record(base, keyword, || message.to_string());
                 return false;
             }
             // Run the structural + combinator constraints over the same value.
@@ -195,7 +206,7 @@ impl FastNode {
     fn validate_kind(&self, c: &mut Cursor, ctx: &mut Ctx) -> bool {
         let base = self.schema_path.as_deref().unwrap_or("");
         let Some(b) = c.peek() else {
-            ctx.record(base, "type", "expected a JSON value".to_string());
+            ctx.record(base, "type", || "expected a JSON value".to_string());
             return false;
         };
         match b {
@@ -209,7 +220,7 @@ impl FastNode {
             },
             b'"' => {
                 let Some(inner) = c.raw_string() else {
-                    ctx.record(base, "parse", "malformed string".to_string());
+                    ctx.record(base, "parse", || "malformed string".to_string());
                     return false;
                 };
                 match &self.str {
@@ -219,58 +230,66 @@ impl FastNode {
             }
             b't' => {
                 if !c.eat_token(b"true") {
-                    ctx.record(base, "parse", "malformed literal".to_string());
+                    ctx.record(base, "parse", || "malformed literal".to_string());
                     return false;
                 }
                 true
             }
             b'f' => {
                 if !c.eat_token(b"false") {
-                    ctx.record(base, "parse", "malformed literal".to_string());
+                    ctx.record(base, "parse", || "malformed literal".to_string());
                     return false;
                 }
                 true
             }
             b'n' => {
                 if !c.eat_token(b"null") {
-                    ctx.record(base, "parse", "malformed literal".to_string());
+                    ctx.record(base, "parse", || "malformed literal".to_string());
                     return false;
                 }
                 true
             }
             _ => {
                 let Some((n, _is_int)) = c.number() else {
-                    ctx.record(base, "parse", "malformed number".to_string());
+                    ctx.record(base, "parse", || "malformed number".to_string());
                     return false;
                 };
                 // `type: "integer"` (without `number`) rejects non-integral values.
                 if self.types & T_INT != 0 && self.types & T_NUM == 0 && n.fract() != 0.0 {
-                    ctx.record(base, "type", "expected an integer".to_string());
+                    ctx.record(base, "type", || "expected an integer".to_string());
                     return false;
                 }
                 match &self.num {
                     Some(num) => {
                         if let Some(min) = num.minimum {
                             if n < min {
-                                ctx.record(base, "minimum", format!("number must be >= {min}"));
+                                ctx.record(base, "minimum", || format!("number must be >= {min}"));
                                 return false;
                             }
                         }
                         if let Some(max) = num.maximum {
                             if n > max {
-                                ctx.record(base, "maximum", format!("number must be <= {max}"));
+                                ctx.record(base, "maximum", || format!("number must be <= {max}"));
                                 return false;
                             }
                         }
                         if let Some(e) = num.exclusive_min {
                             if n <= e {
-                                ctx.record(base, "exclusiveMinimum", format!("number must be > {e}"));
+                                ctx.record(
+                                    base,
+                                    "exclusiveMinimum",
+                                    || format!("number must be > {e}"),
+                                );
                                 return false;
                             }
                         }
                         if let Some(e) = num.exclusive_max {
                             if n >= e {
-                                ctx.record(base, "exclusiveMaximum", format!("number must be < {e}"));
+                                ctx.record(
+                                    base,
+                                    "exclusiveMaximum",
+                                    || format!("number must be < {e}"),
+                                );
                                 return false;
                             }
                         }
@@ -279,7 +298,7 @@ impl FastNode {
                                 ctx.record(
                                     base,
                                     "multipleOf",
-                                    format!("number must be a multiple of {m}"),
+                                    || format!("number must be a multiple of {m}"),
                                 );
                                 return false;
                             }
@@ -293,17 +312,27 @@ impl FastNode {
     }
 
     fn validate_string(&self, inner: &[u8], base: &str, ctx: &mut Ctx) -> bool {
-        let Some(s) = &self.str else { return true; };
+        let Some(s) = &self.str else {
+            return true;
+        };
         let len = count_chars(inner);
         if let Some(min) = s.min_len {
             if len < min {
-                ctx.record(base, "minLength", format!("string is shorter than {min} characters"));
+                ctx.record(
+                    base,
+                    "minLength",
+                    || format!("string is shorter than {min} characters"),
+                );
                 return false;
             }
         }
         if let Some(max) = s.max_len {
             if len > max {
-                ctx.record(base, "maxLength", format!("string is longer than {max} characters"));
+                ctx.record(
+                    base,
+                    "maxLength",
+                    || format!("string is longer than {max} characters"),
+                );
                 return false;
             }
         }
@@ -319,7 +348,7 @@ impl FastNode {
             let text = match std::str::from_utf8(content) {
                 Ok(t) => t,
                 Err(_) => {
-                    ctx.record(base, "pattern", "string is not valid UTF-8".to_string());
+                    ctx.record(base, "pattern", || "string is not valid UTF-8".to_string());
                     return false;
                 }
             };
@@ -327,7 +356,7 @@ impl FastNode {
                 ctx.record(
                     base,
                     "pattern",
-                    "string does not match the required pattern".to_string(),
+                    || "string does not match the required pattern".to_string(),
                 );
                 return false;
             }
@@ -341,7 +370,11 @@ impl FastNode {
                 inner
             };
             if !super::email::is_valid_email_format(content) {
-                ctx.record(base, "format", "string is not a valid email address".to_string());
+                ctx.record(
+                    base,
+                    "format",
+                    || "string is not a valid email address".to_string(),
+                );
                 return false;
             }
         }
@@ -350,7 +383,9 @@ impl FastNode {
 
     /// Run allOf / anyOf / oneOf / not / if-then-else over the value's raw bytes.
     fn validate_comb_raw(&self, raw: &[u8], ctx: &mut Ctx) -> bool {
-        let Some(comb) = &self.comb else { return true; };
+        let Some(comb) = &self.comb else {
+            return true;
+        };
         let base = self.schema_path.as_deref().unwrap_or("");
         // allOf: a failing branch IS the cause — run with the real ctx.
         for sub in &comb.all_of {
@@ -374,7 +409,7 @@ impl FastNode {
                 ctx.record(
                     base,
                     "anyOf",
-                    "value does not match any of the allowed schemas".to_string(),
+                    || "value does not match any of the allowed schemas".to_string(),
                 );
                 return false;
             }
@@ -388,19 +423,24 @@ impl FastNode {
                 }
             }
             if count != 1 {
-                let msg = if count == 0 {
-                    "value matches none of the required schemas".to_string()
-                } else {
-                    "value matches more than one of the required schemas".to_string()
-                };
-                ctx.record(base, "oneOf", msg);
+                ctx.record(base, "oneOf", || {
+                    if count == 0 {
+                        "value matches none of the required schemas".to_string()
+                    } else {
+                        "value matches more than one of the required schemas".to_string()
+                    }
+                });
                 return false;
             }
         }
         if let Some(sub) = &comb.not {
             let mut c = Cursor::new(raw);
             if ctx.with_suppressed(|ctx| sub.validate(&mut c, ctx)) {
-                ctx.record(base, "not", "value matches the forbidden schema".to_string());
+                ctx.record(
+                    base,
+                    "not",
+                    || "value matches the forbidden schema".to_string(),
+                );
                 return false;
             }
         }
@@ -478,66 +518,6 @@ fn is_multiple_of(value: f64, multiple: f64) -> bool {
     }
     let r = fraction::BigFraction::from(value) / fraction::BigFraction::from(multiple);
     r.denom().is_none_or(One::is_one)
-}
-
-/// JSON value equality replicating jsonschema's `cmp::equal` (exact across
-/// u64/i64/f64 via num_cmp, order-insensitive object keys). Used for enum,
-/// const, and uniqueItems so the fast path stays byte-parity with the crate.
-fn values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    match (a, b) {
-        (serde_json::Value::Null, serde_json::Value::Null) => true,
-        (serde_json::Value::Bool(x), serde_json::Value::Bool(y)) => x == y,
-        (serde_json::Value::Number(x), serde_json::Value::Number(y)) => numbers_equal(x, y),
-        (serde_json::Value::String(x), serde_json::Value::String(y)) => x == y,
-        (serde_json::Value::Array(x), serde_json::Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
-        }
-        (serde_json::Value::Object(x), serde_json::Value::Object(y)) => {
-            // Insertion-order comparison, replicating jsonschema's cmp::equal
-            // (key order is SIGNIFICANT in the crate's object equality).
-            x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|((ka, va), (kb, vb))| {
-                    ka == kb && values_equal(va, vb)
-                })
-        }
-        _ => false,
-    }
-}
-
-/// Exact cross-representation number equality (num_cmp semantics, matching
-/// jsonschema's `equal_numbers` without arbitrary-precision).
-fn numbers_equal(a: &serde_json::Number, b: &serde_json::Number) -> bool {
-    use num_cmp::NumCmp;
-    if let Some(x) = a.as_u64() {
-        if let Some(y) = b.as_u64() {
-            return x == y;
-        }
-        if let Some(y) = b.as_i64() {
-            return y >= 0 && x == y as u64;
-        }
-        return x.num_eq(b.as_f64().unwrap_or(f64::NAN));
-    }
-    if let Some(x) = a.as_i64() {
-        if let Some(y) = b.as_i64() {
-            return x == y;
-        }
-        if let Some(y) = b.as_u64() {
-            return x >= 0 && y == x as u64;
-        }
-        return x.num_eq(b.as_f64().unwrap_or(f64::NAN));
-    }
-    if let Some(x) = a.as_f64() {
-        if let Some(y) = b.as_f64() {
-            return x == y;
-        }
-        if let Some(y) = b.as_u64() {
-            return x.num_eq(y);
-        }
-        if let Some(y) = b.as_i64() {
-            return x.num_eq(y);
-        }
-    }
-    false
 }
 
 /// Exact distinct-key tracking for `minProperties`/`maxProperties`, WITHOUT a
@@ -627,11 +607,7 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
     } else {
         None
     };
-    let mut present: Option<Vec<Box<[u8]>>> = if need_present {
-        Some(Vec::new())
-    } else {
-        None
-    };
+    let mut present: Option<Vec<Box<[u8]>>> = if need_present { Some(Vec::new()) } else { None };
 
     if c.eat(b'}') {
         return finish_object(o, count, seen_required, &distinct, &present, ctx, base) && obj_ok;
@@ -669,18 +645,14 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
         c.skip_ws();
         // Schemas applying to this key: the `properties` schema (if any) plus
         // every matching `patternProperties` schema — ALL apply conjunctively
-        // (a key covered by either is not an "additional" property).
-        let prop_node = o.props.get(key).cloned();
-        let mut pat_nodes: Vec<Arc<FastNode>> = Vec::new();
-        for (re, n) in &o.patterns {
-            if std::str::from_utf8(key).is_ok_and(|k| re.is_match(k).unwrap_or(false)) {
-                pat_nodes.push(n.clone());
-            }
-        }
+        // (a key covered by either is not an "additional" property). `props`
+        // lookup borrows (no Arc clone per member); pattern matching runs the
+        // regexes once per applicable key, inlined (no per-member Vec).
+        let prop_node = o.props.get(key);
         let vstart = c.pos;
         ctx.capture_enter_key(c.data.as_ptr(), key);
         ctx.push_key(key);
-        let ok = if pat_nodes.is_empty() {
+        let ok = if o.patterns.is_empty() {
             match prop_node {
                 Some(node) => node.validate(c, ctx),
                 None => match &o.additional {
@@ -689,7 +661,7 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
                         ctx.record(
                             base,
                             "additionalProperties",
-                            "additional properties are not allowed".to_string(),
+                            || "additional properties are not allowed".to_string(),
                         );
                         false
                     }
@@ -697,13 +669,50 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
                 },
             }
         } else {
-            // property schema + every matching pattern schema (conjunctively)
-            let mut nodes: Vec<Arc<FastNode>> = Vec::with_capacity(1 + pat_nodes.len());
-            if let Some(p) = prop_node {
-                nodes.push(p);
+            // property schema + every matching pattern schema (conjunctively).
+            // No per-member heap Vec / Arc clones: capture the value span once,
+            // then re-scan each applicable schema on a fresh cursor.
+            let data = c.data;
+            if !c.skip_value(ctx.depth) {
+                false
+            } else {
+                let raw = &data[vstart..c.pos];
+                let mut all_ok = true;
+                if let Some(p) = prop_node {
+                    let mut cc = Cursor::new(raw);
+                    all_ok = p.validate(&mut cc, ctx);
+                }
+                let mut matched_pattern = false;
+                for (re, n) in &o.patterns {
+                    if !all_ok {
+                        break;
+                    }
+                    if std::str::from_utf8(key).is_ok_and(|k| re.is_match(k).unwrap_or(false)) {
+                        matched_pattern = true;
+                        let mut cc = Cursor::new(raw);
+                        all_ok = n.validate(&mut cc, ctx);
+                    }
+                }
+                if all_ok && !matched_pattern && prop_node.is_none() {
+                    // No schema covers this key → apply additionalProperties.
+                    match &o.additional {
+                        Additional::Allow => {}
+                        Additional::Deny => {
+                            ctx.record(
+                                base,
+                                "additionalProperties",
+                                || "additional properties are not allowed".to_string(),
+                            );
+                            all_ok = false;
+                        }
+                        Additional::Schema(s) => {
+                            let mut cc = Cursor::new(raw);
+                            all_ok = s.validate(&mut cc, ctx);
+                        }
+                    }
+                }
+                all_ok
             }
-            nodes.extend(pat_nodes);
-            validate_all(&nodes, c, ctx)
         };
         // One-pass derive capture: this member's value spans [vstart, c.pos).
         // Entered above (trie descend), recorded here, exited here — all on
@@ -744,13 +753,21 @@ pub(crate) fn finish_object(
     let total = distinct.as_ref().map(DistinctKeys::len).unwrap_or(count);
     if let Some(min) = o.min_props {
         if total < min {
-            ctx.record(base, "minProperties", format!("object must have at least {min} properties"));
+            ctx.record(
+                base,
+                "minProperties",
+                || format!("object must have at least {min} properties"),
+            );
             return false;
         }
     }
     if let Some(max) = o.max_props {
         if total > max {
-            ctx.record(base, "maxProperties", format!("object must have at most {max} properties"));
+            ctx.record(
+                base,
+                "maxProperties",
+                || format!("object must have at most {max} properties"),
+            );
             return false;
         }
     }
@@ -761,17 +778,15 @@ pub(crate) fn finish_object(
             (1u64 << o.required_count) - 1
         };
         if seen_required != full {
-            let missing: Vec<String> = o
-                .required
-                .iter()
-                .filter(|(_, &bit)| seen_required & (1u64 << bit) == 0)
-                .map(|(k, _)| String::from_utf8_lossy(k).into_owned())
-                .collect();
-            ctx.record(
-                base,
-                "required",
-                format!("missing required properties: {}", missing.join(", ")),
-            );
+            ctx.record(base, "required", || {
+                let missing: Vec<String> = o
+                    .required
+                    .iter()
+                    .filter(|(_, &bit)| seen_required & (1u64 << bit) == 0)
+                    .map(|(k, _)| String::from_utf8_lossy(k).into_owned())
+                    .collect();
+                format!("missing required properties: {}", missing.join(", "))
+            });
             return false;
         }
     }
@@ -783,11 +798,13 @@ pub(crate) fn finish_object(
                         ctx.record(
                             base,
                             "dependencies",
-                            format!(
-                                "property \"{}\" requires property \"{}\"",
-                                String::from_utf8_lossy(prop),
-                                String::from_utf8_lossy(r)
-                            ),
+                            || {
+                                format!(
+                                    "property \"{}\" requires property \"{}\"",
+                                    String::from_utf8_lossy(prop),
+                                    String::from_utf8_lossy(r)
+                                )
+                            },
                         );
                         return false;
                     }
@@ -805,11 +822,8 @@ pub(crate) fn validate_array(a: &FastArray, c: &mut Cursor, ctx: &mut Ctx, base:
     c.skip_ws();
     let mut count = 0usize;
     let mut arr_ok = true;
-    let mut unique_seen: Option<Vec<serde_json::Value>> = if a.unique {
-        Some(Vec::new())
-    } else {
-        None
-    };
+    let mut unique_seen: Option<Vec<sonic_rs::Value>> =
+        if a.unique { Some(Vec::new()) } else { None };
     let mut contains_found = a.contains.is_none();
     if c.eat(b']') {
         return check_array_counts(a, count, ctx, base)
@@ -820,7 +834,7 @@ pub(crate) fn validate_array(a: &FastArray, c: &mut Cursor, ctx: &mut Ctx, base:
         count += 1;
         if let Some(max) = a.max_items {
             if count > max {
-                ctx.record(base, "maxItems", format!("array has more than {max} items"));
+                ctx.record(base, "maxItems", || format!("array has more than {max} items"));
                 return false;
             }
         }
@@ -835,7 +849,7 @@ pub(crate) fn validate_array(a: &FastArray, c: &mut Cursor, ctx: &mut Ctx, base:
                     ctx.record(
                         base,
                         "additionalItems",
-                        "additional array items are not allowed".to_string(),
+                        || "additional array items are not allowed".to_string(),
                     );
                     ctx.pop();
                     false
@@ -860,9 +874,13 @@ pub(crate) fn validate_array(a: &FastArray, c: &mut Cursor, ctx: &mut Ctx, base:
         if let Some(seen) = &mut unique_seen {
             let data = c.data;
             let raw = &data[elem_start..c.pos];
-            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(raw) {
-                if seen.iter().any(|v| values_equal(v, &val)) {
-                    ctx.record(base, "uniqueItems", "array items must be unique".to_string());
+            if let Ok(val) = sonic_rs::from_slice::<sonic_rs::Value>(raw) {
+                if seen.iter().any(|v| sonic_values_equal(v, &val)) {
+                    ctx.record(
+                        base,
+                        "uniqueItems",
+                        || "array items must be unique".to_string(),
+                    );
                     arr_ok = false;
                 } else {
                     seen.push(val);
@@ -914,34 +932,13 @@ fn validate_element(node: &FastNode, c: &mut Cursor, ctx: &mut Ctx, idx: usize) 
     ok
 }
 
-/// Validate a value against several schemas conjunctively (properties +
-/// patternProperties). A single schema validates in place; multiple schemas
-/// capture the value's raw bytes and re-scan each on a fresh cursor.
-fn validate_all(nodes: &[Arc<FastNode>], c: &mut Cursor, ctx: &mut Ctx) -> bool {
-    match nodes {
-        [] => c.skip_value(ctx.depth),
-        [node] => node.validate(c, ctx),
-        _ => {
-            let vstart = c.pos;
-            let data = c.data;
-            if !c.skip_value(ctx.depth) {
-                return false;
-            }
-            let raw = &data[vstart..c.pos];
-            for node in nodes {
-                let mut cc = Cursor::new(raw);
-                if !node.validate(&mut cc, ctx) {
-                    return false;
-                }
-            }
-            true
-        }
-    }
-}
-
 fn contains_ok(a: &FastArray, contains_found: bool, base: &str, ctx: &mut Ctx) -> bool {
     if a.contains.is_some() && !contains_found {
-        ctx.record(base, "contains", "array does not contain a matching item".to_string());
+        ctx.record(
+            base,
+            "contains",
+            || "array does not contain a matching item".to_string(),
+        );
         return false;
     }
     true
@@ -950,13 +947,21 @@ fn contains_ok(a: &FastArray, contains_found: bool, base: &str, ctx: &mut Ctx) -
 pub(crate) fn check_array_counts(a: &FastArray, count: usize, ctx: &mut Ctx, base: &str) -> bool {
     if let Some(min) = a.min_items {
         if count < min {
-            ctx.record(base, "minItems", format!("array must have at least {min} items"));
+            ctx.record(
+                base,
+                "minItems",
+                || format!("array must have at least {min} items"),
+            );
             return false;
         }
     }
     if let Some(max) = a.max_items {
         if count > max {
-            ctx.record(base, "maxItems", format!("array must have at most {max} items"));
+            ctx.record(
+                base,
+                "maxItems",
+                || format!("array must have at most {max} items"),
+            );
             return false;
         }
     }

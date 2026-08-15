@@ -1,7 +1,7 @@
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
-import { rawUrlDecode, rawUrlEncode } from '../raw-native'
 import type { BenchFixtures } from '../fixtures'
+import { rawUrlDecode, rawUrlEncode } from '../raw-native'
 import type { BenchTask } from '../types'
 
 export function urlTasks(f: BenchFixtures): BenchTask[] {
@@ -53,6 +53,22 @@ export function urlTasks(f: BenchFixtures): BenchTask[] {
         const out = new Uint8Array(256)
         return () => rust.urlDecodeInto(f.urlDecodeInput, out)
       })(),
+      iterations: 1000,
+      warmup: 100,
+    },
+    // Raw-bytes percent-decode (`rust.urlDecodeBytes`): NO UTF-8 validation and
+    // no `+`→space mapping (RFC 3986 literal `+`), so it is a pure byte op.
+    // The JS baseline is a hand-rolled decoder (nativeUrlDecodeBytes) with the
+    // same semantics; this is the op that was previously "unmeasured".
+    {
+      name: 'native:url_decode_bytes',
+      run: () => native.nativeUrlDecodeBytes(f.urlDecodeInput).byteLength,
+      iterations: 1000,
+      warmup: 100,
+    },
+    {
+      name: 'rust:url_decode_bytes',
+      run: () => rust.urlDecodeBytes(f.urlDecodeInput).byteLength,
       iterations: 1000,
       warmup: 100,
     },

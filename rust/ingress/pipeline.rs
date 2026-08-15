@@ -126,19 +126,31 @@ impl IngressInner {
         let url_bytes = match read_section(input, &mut pos, self.limits.max_url_bytes) {
             Ok(v) => v,
             Err(_) => {
-                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 414))
+                return Ok(terminal_simple(
+                    out,
+                    crate::ingress::output::ERR_CODE_BAD_REQUEST,
+                    414,
+                ))
             }
         };
         let ip_bytes = match read_section(input, &mut pos, 128) {
             Ok(v) => v,
             Err(_) => {
-                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400))
+                return Ok(terminal_simple(
+                    out,
+                    crate::ingress::output::ERR_CODE_BAD_REQUEST,
+                    400,
+                ))
             }
         };
         let rid_bytes = match read_section(input, &mut pos, 128) {
             Ok(v) => v,
             Err(_) => {
-                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400))
+                return Ok(terminal_simple(
+                    out,
+                    crate::ingress::output::ERR_CODE_BAD_REQUEST,
+                    400,
+                ))
             }
         };
         let headers_packed = match read_section(input, &mut pos, self.limits.max_headers_bytes) {
@@ -184,9 +196,9 @@ impl IngressInner {
             let peer_trusted =
                 crate::ingress::ip_trust::socket_is_trusted(&self.proxy_trust, ip_bytes);
             (
-                crate::ingress::ip_trust::ResolvedIp::Raw(
-                    crate::util::trim_ascii_whitespace(ip_bytes),
-                ),
+                crate::ingress::ip_trust::ResolvedIp::Raw(crate::util::trim_ascii_whitespace(
+                    ip_bytes,
+                )),
                 peer_trusted,
             )
         };
@@ -321,19 +333,28 @@ impl IngressInner {
         let raw_query: &[u8] = if self.parse_query {
             let q = crate::ingress::proxy::extract_query(url_bytes);
             if q.len() > self.limits.max_query_bytes {
-                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 414));
+                return Ok(terminal_simple(
+                    out,
+                    crate::ingress::output::ERR_CODE_BAD_REQUEST,
+                    414,
+                ));
             }
             q
         } else {
             &[]
         };
 
-        let sections = match self.write_body_sections(url_bytes, rid_bytes, &headers, raw_query, out) {
-            Ok(s) => s,
-            Err(_) => {
-                return Ok(terminal_simple(out, crate::ingress::output::ERR_CODE_BAD_REQUEST, 400))
-            }
-        };
+        let sections =
+            match self.write_body_sections(url_bytes, rid_bytes, &headers, raw_query, out) {
+                Ok(s) => s,
+                Err(_) => {
+                    return Ok(terminal_simple(
+                        out,
+                        crate::ingress::output::ERR_CODE_BAD_REQUEST,
+                        400,
+                    ))
+                }
+            };
 
         if sections.cookies_json_len > 2 {
             flags |= FLAG_HAS_COOKIES;
@@ -402,27 +423,25 @@ impl IngressInner {
         // ── Query → JSON (direct, zero-alloc: no intermediate packed buffer,
         //     no second parse of packed pairs; the query was already extracted
         //     once by the caller for the size guard) ──
-        let query_json_len: u32 = if self.parse_query
-            && !raw_query.is_empty()
-            && data_pos < out.len()
-        {
-            match crate::json::json_ser::query_to_json_into_slice(
-                raw_query,
-                &mut out[data_pos..],
-                self.limits.max_pairs,
-            ) {
-                Ok(written) => written as u32,
-                Err(crate::json::json_ser::QueryJsonError::Malformed) => {
-                    return Err(Error::from_reason("query parse failed"))
+        let query_json_len: u32 =
+            if self.parse_query && !raw_query.is_empty() && data_pos < out.len() {
+                match crate::json::json_ser::query_to_json_into_slice(
+                    raw_query,
+                    &mut out[data_pos..],
+                    self.limits.max_pairs,
+                ) {
+                    Ok(written) => written as u32,
+                    Err(crate::json::json_ser::QueryJsonError::Malformed) => {
+                        return Err(Error::from_reason("query parse failed"))
+                    }
+                    Err(crate::json::json_ser::QueryJsonError::BufferTooSmall) => {
+                        truncated = true;
+                        0
+                    }
                 }
-                Err(crate::json::json_ser::QueryJsonError::BufferTooSmall) => {
-                    truncated = true;
-                    0
-                }
-            }
-        } else {
-            0
-        };
+            } else {
+                0
+            };
         let query_start = data_pos;
         data_pos += query_json_len as usize;
 

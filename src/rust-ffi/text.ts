@@ -3,9 +3,10 @@
 // `rust.text.*` is the ergonomic string API over the byte-level native
 // functions. Pure wrappers: encode input, call native, decode output.
 
+import { getBunFFI } from '../native/ffi'
 import { decoder, encoder } from '../shared/bytes'
 import { isBun } from '../shared/runtime'
-import { resolveNative, type RustClientContext } from './context'
+import { type RustClientContext, resolveNative } from './context'
 
 /** String-oriented FFI namespace. */
 export interface RustText {
@@ -58,7 +59,12 @@ export function buildText(ctx: RustClientContext): RustText {
     mimeFromExtension(ext) {
       let mime = mimeStrCache.get(ext)
       if (mime === undefined) {
-        mime = decoder.decode(ctx.cachedMime(encoder.encode(ext)))
+        // FFI-first: cstring MIME return (native transfer — zero decode). napi
+        // keeps the memoized-bytes path (cachedMime → decode).
+        const ffi = getBunFFI()
+        mime = ffi
+          ? (ffi.mimeFromExtension(encoder.encode(ext)) ?? 'application/octet-stream')
+          : decoder.decode(ctx.cachedMime(encoder.encode(ext)))
         mimeStrCache.set(ext, mime)
       }
       return mime
@@ -77,18 +83,30 @@ export function buildText(ctx: RustClientContext): RustText {
       return resolveNative(ctx, 'urlDecodeStr')(input) as string
     },
     wsAcceptKey(key) {
+      // FFI-first: cstring accept-key return (native transfer). napi keeps the
+      // decode path.
+      const ffi = getBunFFI()
+      if (ffi) return ffi.wsAcceptKey(encoder.encode(key))
       return decoder.decode(resolveNative(ctx, 'wsAcceptKey')(encoder.encode(key)) as Uint8Array)
     },
     validateEmail(input) {
+      const ffi = getBunFFI()
+      if (ffi) return ffi.validateEmail(encoder.encode(input))
       return resolveNative(ctx, 'validateEmail')(encoder.encode(input)) as boolean
     },
     validateUuid(input) {
+      const ffi = getBunFFI()
+      if (ffi) return ffi.validateUuid(encoder.encode(input))
       return resolveNative(ctx, 'validateUuid')(encoder.encode(input)) as boolean
     },
     validateIpv4(input) {
+      const ffi = getBunFFI()
+      if (ffi) return ffi.validateIpv4(encoder.encode(input))
       return resolveNative(ctx, 'validateIpv4')(encoder.encode(input)) as boolean
     },
     validateIpv6(input) {
+      const ffi = getBunFFI()
+      if (ffi) return ffi.validateIpv6(encoder.encode(input))
       return resolveNative(ctx, 'validateIpv6')(encoder.encode(input)) as boolean
     },
   }

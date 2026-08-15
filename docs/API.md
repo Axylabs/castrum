@@ -9,6 +9,26 @@ Everything is **synchronous**. All byte-level functions accept `Uint8Array`;
 
 ---
 
+## Runtime return-type divergence (Bun vs Node)
+
+On **Bun** the `bun:ffi` C-ABI transport returns text results as **JS strings**
+via JSC's native transfer (cstring → `new CString(ptr, 0, len)`), with **zero
+`TextEncoder`/`TextDecoder`** on the hot path. So `rust.urlEncode`,
+`rust.base64Encode`, `rust.hexEncode`, `rust.hmacSha256`, `rust.etag`,
+`rust.wsAcceptKey`, `rust.randomToken`, `rust.signCookie`, `rust.verifyCookie`
+(`string | null`), `rust.csrfToken`, `rust.passwordHash`,
+`rust.passwordHashBcrypt`, `rust.jwtSignBytes`, `rust.jwtVerify`
+(`string | null`), `rust.jsonPatch`, `rust.httpDate`, `rust.mimeFromExtension`,
+`rust.urlResolve`, `rust.urlEncodeQuery`, and `rust.acceptNegotiatorNegotiate`
+(`string | null` — the `null` is the C `NULL` sentinel) return **`string`** on Bun. On **Node** (napi fallback) the same
+functions return **`Uint8Array`**. The TypeScript surface types these as
+`Uint8Array | string`; normalize with `toBytes(value)` / `toText(value)` (from
+`src/shared/bytes`). The `*Into`/pooled variants always return bytes on both
+runtimes, and binary ops (`gzip*`, `brotli*`, `aead*`, `pbkdf2Sha256`,
+`wsFrame*`, packed parsers, `batch.*`/`packed.*`) return `Uint8Array` on both.
+
+---
+
 ## Core exports
 
 | Export | Description |
@@ -18,7 +38,7 @@ Everything is **synchronous**. All byte-level functions accept `Uint8Array`;
 | `proven`, `PROVEN_SURFACE`, `provenStatus`, `isProven`, `provenSurface`, `provenSummary` | The performance-annotated surface + its pure-data registry. |
 | `opImpl`, `isNativeOp`, `opDecision` | Native-vs-JS selection hints (benchmark-driven). |
 | `loader`, `createLoader` | Higher-order loader over the batch surface. |
-| `encoder`, `decoder` | Shared `TextEncoder` / `TextDecoder` singletons. |
+| `encoder`, `decoder` | Codec-backed UTF-8 helpers (Bun: `Bun.ArrayBufferSink` / `CString`; Node: `TextEncoder`/`TextDecoder`). `encode`/`decode` accept the `Uint8Array | string` union and normalize. |
 | `uuidv7()` | UUIDv7 — `Bun.randomUUIDv7` on Bun, `crypto.randomUUID` on Node. |
 | `AdaptiveEstimate`, `AdaptiveEstimateOptions` | Bounded EWMA adaptive-estimate utility. |
 | `createMetrics`, `DEFAULT_BUCKETS` | Zero-dependency metrics registry (counters/gauges/histograms + Prometheus text). |

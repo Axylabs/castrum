@@ -72,9 +72,18 @@ mod tests {
         // cost 3 is clamped up to 4 (cheap) — exercises the napi boundary.
         let h = password_hash_bcrypt(Uint8Array::new(b"pw".to_vec()), 3).unwrap();
         assert!(h.starts_with("$2b$04$"));
-        assert!(password_verify_bcrypt(Uint8Array::new(b"pw".to_vec()), h.clone()));
-        assert!(!password_verify_bcrypt(Uint8Array::new(b"nope".to_vec()), h));
+        assert!(password_verify_bcrypt(
+            Uint8Array::new(b"pw".to_vec()),
+            h.clone()
+        ));
+        assert!(!password_verify_bcrypt(
+            Uint8Array::new(b"nope".to_vec()),
+            h
+        ));
         // Malformed hash -> false (not a throw), matching argon2 semantics.
-        assert!(!password_verify_bcrypt(Uint8Array::new(b"pw".to_vec()), "garbage".to_string()));
+        assert!(!password_verify_bcrypt(
+            Uint8Array::new(b"pw".to_vec()),
+            "garbage".to_string()
+        ));
     }
 }

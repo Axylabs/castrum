@@ -5,6 +5,15 @@
 //! `json_patch_batch_packed`) are thin boundaries that map `JsonPatchError` →
 //! napi `Error` with stable context.
 //!
+//! **Sonic engine**: the `json-patch` crate is hardwired to `serde_json::Value`
+//! (a per-key heap `String` DOM). This module implements RFC 6902 directly over
+//! `sonic_rs::Value` (compact tagged nodes, no per-key heap `String`), so the
+//! patch path no longer builds a `serde_json` DOM. RFC 6901 pointer escapes
+//! (`~0`→`~`, `~1`→`/`) are validated eagerly at patch parse (bad escapes →
+//! `InvalidPatch`, matching the crate's eager deserialization). The `test` op
+//! uses sonic's `Value ==`, which has serde_json-identical number semantics
+//! (`1 != 1.0`), preserving the crate's behavior.
+//!
 //! Hardening / efficiency notes:
 //! - **Bounded sizes** — inputs are capped (`MAX_JSON_PATCH_INPUT`) and the
 //!   result is capped (`MAX_JSON_PATCH_OUTPUT`). A malicious chain of
@@ -21,9 +30,314 @@
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use serde_json::Value;
 
 use crate::util::{should_parallelize, total_bytes, unpack};
+
+// ── Custom sonic RFC 6902 engine ────────────────────────────────
+
+use sonic_rs::{JsonContainerTrait, JsonType, JsonValueMutTrait, JsonValueTrait};
+
+/// A parsed RFC 6901 JSON Pointer (segments already `~0`/`~1`-unescaped).
+#[derive(Debug, Clone, PartialEq)]
+struct Pointer {
+    segments: Vec<String>,
+}
+
+impl Pointer {
+    fn root() -> Self {
+        Pointer {
+            segments: Vec::new(),
+        }
+    }
+
+    /// Parse an RFC 6901 pointer string. `""` = root; any non-empty pointer
+    /// must start with `/`. `~0`→`~`, `~1`→`/`; any other `~x` (including a
+    /// trailing `~`) is an invalid escape → `Err` (the caller maps to
+    /// `InvalidPatch`, matching the json-patch crate's eager validation).
+    fn parse(s: &str) -> std::result::Result<Self, ()> {
+        if s.is_empty() {
+            return Ok(Self::root());
+        }
+        if !s.starts_with('/') {
+            return Err(());
+        }
+        let mut segments = Vec::new();
+        let mut cur = String::new();
+        let mut chars = s[1..].chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '/' => segments.push(std::mem::take(&mut cur)),
+                '~' => match chars.next() {
+                    Some('0') => cur.push('~'),
+                    Some('1') => cur.push('/'),
+                    _ => return Err(()),
+                },
+                other => cur.push(other),
+            }
+        }
+        segments.push(cur);
+        Ok(Pointer { segments })
+    }
+}
+
+/// A parsed RFC 6902 patch operation.
+#[derive(Debug)]
+enum PatchOp {
+    Add {
+        path: Pointer,
+        value: sonic_rs::Value,
+    },
+    Remove {
+        path: Pointer,
+    },
+    Replace {
+        path: Pointer,
+        value: sonic_rs::Value,
+    },
+    Move {
+        from: Pointer,
+        path: Pointer,
+    },
+    Copy {
+        from: Pointer,
+        path: Pointer,
+    },
+    Test {
+        path: Pointer,
+        value: sonic_rs::Value,
+    },
+}
+
+/// Parse one patch operation object. `Err(())` → `InvalidPatch`.
+fn parse_op(obj: &sonic_rs::Value) -> std::result::Result<PatchOp, ()> {
+    let op_str = obj.get("op").and_then(|v| v.as_str()).ok_or(())?;
+    let path = obj
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or(())
+        .and_then(Pointer::parse)?;
+    match op_str {
+        "add" | "replace" | "test" => {
+            let value = obj.get("value").cloned().ok_or(())?;
+            Ok(match op_str {
+                "add" => PatchOp::Add { path, value },
+                "replace" => PatchOp::Replace { path, value },
+                _ => PatchOp::Test { path, value },
+            })
+        }
+        "remove" => Ok(PatchOp::Remove { path }),
+        "move" | "copy" => {
+            let from = obj
+                .get("from")
+                .and_then(|v| v.as_str())
+                .ok_or(())
+                .and_then(Pointer::parse)?;
+            Ok(if op_str == "move" {
+                PatchOp::Move { from, path }
+            } else {
+                PatchOp::Copy { from, path }
+            })
+        }
+        _ => Err(()),
+    }
+}
+
+/// Immutably resolve a value by path segments.
+fn resolve<'a>(node: &'a sonic_rs::Value, segs: &[String]) -> Option<&'a sonic_rs::Value> {
+    let mut cur = node;
+    for seg in segs {
+        cur = child(cur, seg)?;
+    }
+    Some(cur)
+}
+
+fn child<'a>(node: &'a sonic_rs::Value, seg: &str) -> Option<&'a sonic_rs::Value> {
+    match node.get_type() {
+        JsonType::Object => node.get(seg),
+        JsonType::Array => {
+            if seg == "-" {
+                return None;
+            }
+            let idx: usize = seg.parse().ok()?;
+            node.get(idx)
+        }
+        _ => None,
+    }
+}
+
+/// Mutably resolve a value by path segments.
+fn resolve_mut<'a>(
+    node: &'a mut sonic_rs::Value,
+    segs: &[String],
+) -> Option<&'a mut sonic_rs::Value> {
+    let mut cur = node;
+    for seg in segs {
+        cur = child_mut(cur, seg)?;
+    }
+    Some(cur)
+}
+
+fn child_mut<'a>(node: &'a mut sonic_rs::Value, seg: &str) -> Option<&'a mut sonic_rs::Value> {
+    match node.get_type() {
+        JsonType::Object => node.get_mut(seg),
+        JsonType::Array => {
+            if seg == "-" {
+                return None;
+            }
+            let idx: usize = seg.parse().ok()?;
+            node.get_mut(idx)
+        }
+        _ => None,
+    }
+}
+
+/// RFC 6902 `add` (also the write half of `move`/`copy`). Root replaces the
+/// document; an object member is inserted/replaced; an array element is
+/// inserted at `idx` (`0..=len`, `-` appends).
+fn apply_add(
+    doc: &mut sonic_rs::Value,
+    path: &Pointer,
+    value: sonic_rs::Value,
+) -> std::result::Result<(), String> {
+    if path.segments.is_empty() {
+        *doc = value;
+        return Ok(());
+    }
+    let last = path.segments.last().unwrap();
+    let parent = resolve_mut(doc, &path.segments[..path.segments.len() - 1])
+        .ok_or("add: target parent does not exist")?;
+    match parent.get_type() {
+        JsonType::Object => {
+            let obj = parent.as_object_mut().unwrap();
+            obj.insert(last.as_str(), value);
+            Ok(())
+        }
+        JsonType::Array => {
+            let arr = parent.as_array_mut().unwrap();
+            if last == "-" {
+                arr.push(value);
+            } else {
+                let idx: usize = last.parse().map_err(|_| "add: invalid array index")?;
+                if idx > arr.len() {
+                    return Err("add: array index out of range".into());
+                }
+                arr.insert(idx, value);
+            }
+            Ok(())
+        }
+        _ => Err("add: target parent is not an object or array".into()),
+    }
+}
+
+/// RFC 6902 `remove`.
+fn apply_remove(
+    doc: &mut sonic_rs::Value,
+    path: &Pointer,
+) -> std::result::Result<(), String> {
+    if path.segments.is_empty() {
+        return Err("remove: cannot remove the document root".into());
+    }
+    let last = path.segments.last().unwrap();
+    let parent = resolve_mut(doc, &path.segments[..path.segments.len() - 1])
+        .ok_or("remove: target parent does not exist")?;
+    match parent.get_type() {
+        JsonType::Object => {
+            let obj = parent.as_object_mut().unwrap();
+            obj.remove(last)
+                .ok_or("remove: member does not exist")?;
+            Ok(())
+        }
+        JsonType::Array => {
+            let idx: usize = last.parse().map_err(|_| "remove: invalid array index")?;
+            let arr = parent.as_array_mut().unwrap();
+            if idx >= arr.len() {
+                return Err("remove: array index out of range".into());
+            }
+            arr.remove(idx);
+            Ok(())
+        }
+        _ => Err("remove: target parent is not an object or array".into()),
+    }
+}
+
+/// RFC 6902 `replace` (target must exist).
+fn apply_replace(
+    doc: &mut sonic_rs::Value,
+    path: &Pointer,
+    value: sonic_rs::Value,
+) -> std::result::Result<(), String> {
+    if path.segments.is_empty() {
+        *doc = value;
+        return Ok(());
+    }
+    let target =
+        resolve_mut(doc, &path.segments).ok_or("replace: target location does not exist")?;
+    *target = value;
+    Ok(())
+}
+
+/// RFC 6902 `move` — remove at `from`, then add at `path`. `from` MUST NOT be
+/// a proper prefix of `path` (cannot move a node into one of its children).
+fn apply_move(
+    doc: &mut sonic_rs::Value,
+    from: &Pointer,
+    path: &Pointer,
+) -> std::result::Result<(), String> {
+    if from.segments.len() < path.segments.len() && path.segments.starts_with(&from.segments) {
+        return Err("move: 'from' is a prefix of 'path'".into());
+    }
+    let value = resolve(doc, &from.segments)
+        .cloned()
+        .ok_or("move: 'from' location does not exist")?;
+    apply_remove(doc, from)?;
+    apply_add(doc, path, value)
+}
+
+/// Apply a parsed patch to a document (RFC 6902 semantics over sonic Value).
+fn apply_patch(
+    doc: &mut sonic_rs::Value,
+    ops: &[PatchOp],
+) -> std::result::Result<(), String> {
+    for op in ops {
+        match op {
+            PatchOp::Add { path, value } => apply_add(doc, path, value.clone())?,
+            PatchOp::Remove { path } => apply_remove(doc, path)?,
+            PatchOp::Replace { path, value } => apply_replace(doc, path, value.clone())?,
+            PatchOp::Move { from, path } => apply_move(doc, from, path)?,
+            PatchOp::Copy { from, path } => {
+                let value = resolve(doc, &from.segments)
+                    .cloned()
+                    .ok_or("copy: 'from' location does not exist")?;
+                apply_add(doc, path, value)?;
+            }
+            PatchOp::Test { path, value } => {
+                let actual =
+                    resolve(doc, &path.segments).ok_or("test: target location does not exist")?;
+                if actual != value {
+                    return Err("test: value does not match target".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a patch document into a list of operations (eager RFC 6901 pointer
+/// validation). `Err` → `InvalidPatch`.
+fn parse_patch(patch: &[u8]) -> std::result::Result<Vec<PatchOp>, JsonPatchError> {
+    let patch_val: sonic_rs::Value = sonic_rs::from_slice(patch)
+        .map_err(|e| JsonPatchError::InvalidPatch(e.to_string()))?;
+    let arr = patch_val
+        .as_array()
+        .ok_or_else(|| JsonPatchError::InvalidPatch("patch must be an array".into()))?;
+    let mut ops = Vec::with_capacity(arr.len());
+    for op in arr {
+        let op = parse_op(op)
+            .map_err(|_| JsonPatchError::InvalidPatch("invalid patch operation".into()))?;
+        ops.push(op);
+    }
+    Ok(ops)
+}
 
 /// Maximum accepted size of a single JSON document or patch (defense in depth
 /// before parsing). Generous; only adversarial inputs trip it.
@@ -94,20 +408,17 @@ fn apply_json_patch_bytes_limited(
         return Err(JsonPatchError::TooLarge("patch", patch.len()));
     }
 
-    let mut doc_val: Value =
-        sonic_rs::from_slice(doc).map_err(|e| JsonPatchError::InvalidDoc(e.to_string()))?;
+    let mut doc_val: sonic_rs::Value = sonic_rs::from_slice(doc)
+        .map_err(|e| JsonPatchError::InvalidDoc(e.to_string()))?;
 
-    let patch_val: json_patch::Patch =
-        sonic_rs::from_slice(patch).map_err(|e| JsonPatchError::InvalidPatch(e.to_string()))?;
-
-    json_patch::patch(&mut doc_val, &patch_val)
-        .map_err(|e| JsonPatchError::ApplyFailed(e.to_string()))?;
+    let ops = parse_patch(patch)?;
+    apply_patch(&mut doc_val, &ops).map_err(JsonPatchError::ApplyFailed)?;
 
     // The overwhelmingly common case is an in-place field/array edit, which
     // keeps the result ≈ the document size; grow only if the patch expands it.
-    // The output is then bounded as a *result guard*: the json-patch crate has
-    // already materialized the (potentially `copy`-amplified) DOM, so refusing
-    // oversized output prevents handing a giant buffer back to the caller.
+    // The output is then bounded as a *result guard*: the sonic DOM has
+    // already been (potentially `copy`-amplified), so refusing oversized
+    // output prevents handing a giant buffer back to the caller.
     let mut out = Vec::with_capacity(doc.len().min(max_output));
     sonic_rs::to_writer(&mut out, &doc_val)
         .map_err(|e| JsonPatchError::Serialize(e.to_string()))?;
@@ -226,6 +537,7 @@ pub fn json_patch_batch_packed(docs: Uint8Array, patches: Uint8Array) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn apply(doc: &[u8], patch: &[u8]) -> std::result::Result<Vec<u8>, JsonPatchError> {
         apply_json_patch_bytes(doc, patch)
@@ -352,17 +664,21 @@ mod tests {
 
     #[test]
     fn move_from_missing_path_fails() {
-        let err =
-            apply(br#"{"a":1}"#, br#"[{"op":"move","from":"/nope","path":"/b"}]"#)
-                .unwrap_err();
+        let err = apply(
+            br#"{"a":1}"#,
+            br#"[{"op":"move","from":"/nope","path":"/b"}]"#,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("apply failed"), "{err}");
     }
 
     #[test]
     fn copy_from_missing_path_fails() {
-        let err =
-            apply(br#"{"a":1}"#, br#"[{"op":"copy","from":"/nope","path":"/b"}]"#)
-                .unwrap_err();
+        let err = apply(
+            br#"{"a":1}"#,
+            br#"[{"op":"copy","from":"/nope","path":"/b"}]"#,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("apply failed"), "{err}");
     }
 
@@ -384,7 +700,10 @@ mod tests {
             br#"[{"op":"move","from":"/arr/0","path":"/obj/first"}]"#,
         )
         .unwrap();
-        assert_eq!(as_value(&out), as_value(br#"{"arr":[2],"obj":{"first":1}}"#));
+        assert_eq!(
+            as_value(&out),
+            as_value(br#"{"arr":[2],"obj":{"first":1}}"#)
+        );
     }
 
     #[test]
@@ -401,15 +720,13 @@ mod tests {
     #[test]
     fn add_dash_on_non_array_fails() {
         // RFC 6902: `-` in a path is only valid for arrays.
-        let err = apply(br#"{"a":1}"#, br#"[{"op":"add","path":"/a/-","value":2}]"#)
-            .unwrap_err();
+        let err = apply(br#"{"a":1}"#, br#"[{"op":"add","path":"/a/-","value":2}]"#).unwrap_err();
         assert!(err.to_string().contains("apply failed"), "{err}");
     }
 
     #[test]
     fn remove_out_of_range_array_index_fails() {
-        let err = apply(br#"{"arr":[1,2]}"#, br#"[{"op":"remove","path":"/arr/5"}]"#)
-            .unwrap_err();
+        let err = apply(br#"{"arr":[1,2]}"#, br#"[{"op":"remove","path":"/arr/5"}]"#).unwrap_err();
         assert!(err.to_string().contains("apply failed"), "{err}");
     }
 
@@ -417,9 +734,11 @@ mod tests {
     fn invalid_escape_tilde_2_rejected() {
         // RFC 6901: only `~0` and `~1` are valid escapes; `~2` is rejected at
         // patch deserialization (json-patch validates the pointer eagerly).
-        let err =
-            apply(br#"{"a/b":1}"#, br#"[{"op":"replace","path":"/a~2b","value":2}]"#)
-                .unwrap_err();
+        let err = apply(
+            br#"{"a/b":1}"#,
+            br#"[{"op":"replace","path":"/a~2b","value":2}]"#,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("invalid patch"), "{err}");
     }
 
@@ -427,8 +746,11 @@ mod tests {
     fn tilde_at_end_of_token_rejected() {
         // A trailing `~` is an incomplete escape (RFC 6901) and is rejected at
         // patch deserialization.
-        let err = apply(br#"{"a":1}"#, br#"[{"op":"replace","path":"/a~","value":2}]"#)
-            .unwrap_err();
+        let err = apply(
+            br#"{"a":1}"#,
+            br#"[{"op":"replace","path":"/a~","value":2}]"#,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("invalid patch"), "{err}");
     }
 
@@ -630,9 +952,8 @@ mod tests {
         let mut patches = Vec::with_capacity(n);
         for i in 0..n {
             docs.push(format!("{{\"i\":{i}}}").into_bytes());
-            patches.push(
-                format!("[{{\"op\":\"add\",\"path\":\"/k\",\"value\":{i}}}]").into_bytes(),
-            );
+            patches
+                .push(format!("[{{\"op\":\"add\",\"path\":\"/k\",\"value\":{i}}}]").into_bytes());
         }
         let doc_refs: Vec<&[u8]> = docs.iter().map(|d| d.as_slice()).collect();
         let patch_refs: Vec<&[u8]> = patches.iter().map(|p| p.as_slice()).collect();
@@ -657,9 +978,8 @@ mod tests {
         let mut patches = Vec::with_capacity(n);
         for i in 0..n {
             docs.push(format!("{{\"i\":{i}}}").into_bytes());
-            patches.push(
-                format!("[{{\"op\":\"add\",\"path\":\"/k\",\"value\":{i}}}]").into_bytes(),
-            );
+            patches
+                .push(format!("[{{\"op\":\"add\",\"path\":\"/k\",\"value\":{i}}}]").into_bytes());
         }
         let bad_index = n / 2;
         docs[bad_index] = b"not-json".to_vec();

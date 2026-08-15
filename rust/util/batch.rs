@@ -9,8 +9,8 @@ use crate::util::validation::{
     validate_email_bytes, validate_ipv4_bytes, validate_ipv6_bytes, validate_uuid_bytes,
 };
 use crate::util::{
-    count_batch, should_parallelize, sum_batch_i64, total_bytes, unpack,
-    write_bitset_batch_into, write_sum_batch_into,
+    count_batch, should_parallelize, sum_batch_i64, total_bytes, unpack, write_bitset_batch_into,
+    write_sum_batch_into,
 };
 
 // ── Internal helpers (serial zero-alloc + direct-write variants) ──
@@ -129,7 +129,11 @@ pub(crate) fn run_bitset_batch(
 ) -> Result<Vec<u8>> {
     let (_iter, parallel, items) = packed_routing(data)?;
     if parallel {
-        Ok(crate::util::validation_bitset_chunked(&items, f, chunk_items))
+        Ok(crate::util::validation_bitset_chunked(
+            &items,
+            f,
+            chunk_items,
+        ))
     } else {
         bitset_serial(data, f)
     }
@@ -199,11 +203,7 @@ pub(crate) fn run_packed_batch_idx(
     out.extend_from_slice(&(count as u32).to_le_bytes());
     if parallel {
         use rayon::prelude::*;
-        let results: Vec<Vec<u8>> = items
-            .par_iter()
-            .enumerate()
-            .map(|(i, c)| f(c, i))
-            .collect();
+        let results: Vec<Vec<u8>> = items.par_iter().enumerate().map(|(i, c)| f(c, i)).collect();
         for r in results {
             out.extend_from_slice(&(r.len() as u32).to_le_bytes());
             out.extend_from_slice(&r);
@@ -243,11 +243,16 @@ fn hmac_sha256_verify_batch_bytes(
     sigs: &[u8],
     key: &aws_lc_rs::hmac::Key,
 ) -> Result<Vec<u8>> {
-    let count = PackedIter::new(data)?.len().min(PackedIter::new(sigs)?.len());
+    let count = PackedIter::new(data)?
+        .len()
+        .min(PackedIter::new(sigs)?.len());
     let mut out = Vec::with_capacity(4 + count.div_ceil(8));
     out.extend_from_slice(&(count as u32).to_le_bytes());
     out.resize(4 + count.div_ceil(8), 0);
-    for (i, (item, sig)) in PackedIter::new(data)?.zip(PackedIter::new(sigs)?).enumerate() {
+    for (i, (item, sig)) in PackedIter::new(data)?
+        .zip(PackedIter::new(sigs)?)
+        .enumerate()
+    {
         let sig = crate::util::bytes::trim_ascii_whitespace(sig);
         if let Some(sig_bytes) = crate::util::bytes::hex_decode_32(sig) {
             if aws_lc_rs::hmac::verify(key, item, &sig_bytes).is_ok() {
@@ -274,14 +279,11 @@ fn http_parse_request_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[inline]
-fn form_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {
-    crate::http::form::form_parse_packed_vec(input)
-}
-
-#[inline]
 fn sign_cookie_batch_bytes(data: &[u8], secret: &[u8]) -> Result<Vec<u8>> {
     let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
-    bytes_map_serial(data, |v| crate::crypto::cookie_sign::sign_cookie_bytes(v, &key))
+    bytes_map_serial(data, |v| {
+        crate::crypto::cookie_sign::sign_cookie_bytes(v, &key)
+    })
 }
 
 #[inline]
@@ -380,24 +382,60 @@ fn json_sum_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
     run_sum_batch(data, |item| json_sum_ids_bytes(item).unwrap_or(0))
 }
 
+/// Shared scratch writer for the packed-pairs parse batches (query/cookie/form).
+///
+/// Each item parses via its `*_into_slice` writer into ONE reused scratch buffer
+/// (grown to the worst-case `9·len + 16` bound) instead of allocating a fresh
+/// `vec![0u8; 9·len + 16]` per item (which the allocating `*_packed_vec` helpers
+/// do). A malformed item emits an empty result frame — byte-parity with the
+/// old `*_packed_vec(...).unwrap_or_default()` behavior.
+#[inline]
+fn parse_pairs_batch(
+    data: &[u8],
+    parse: impl Fn(&[u8], &mut [u8]) -> Result<usize>,
+) -> Result<Vec<u8>> {
+    let iter = PackedIter::new(data)?;
+    let count = iter.len();
+    let mut out = Vec::with_capacity(4 + count * 32);
+    out.extend_from_slice(&(count as u32).to_le_bytes());
+    let mut scratch: Vec<u8> = Vec::new();
+    for item in iter {
+        let cap = item.len().saturating_mul(9).saturating_add(16);
+        if scratch.len() < cap {
+            scratch.resize(cap, 0);
+        }
+        match parse(item, &mut scratch) {
+            Ok(written) => {
+                out.extend_from_slice(&(written as u32).to_le_bytes());
+                out.extend_from_slice(&scratch[..written]);
+            }
+            // Malformed %XX → empty result frame (parity with `unwrap_or_default`).
+            Err(_) => out.extend_from_slice(&0u32.to_le_bytes()),
+        }
+    }
+    Ok(out)
+}
+
 #[inline]
 fn query_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
-    bytes_map_serial(data, |v| query_parse_packed_vec(v).unwrap_or_default())
+    parse_pairs_batch(data, crate::http::query_parser::query_parse_packed_into_slice)
 }
 
 #[inline]
 fn cookie_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
-    bytes_map_serial(data, |v| cookie_parse_packed_vec(v).unwrap_or_default())
+    parse_pairs_batch(data, crate::http::cookie_parser::cookie_parse_packed_into_slice)
 }
 
 #[inline]
 fn form_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
-    bytes_map_serial(data, |v| form_parse_packed_vec(v).unwrap_or_default())
+    parse_pairs_batch(data, crate::http::query_parser::query_parse_packed_into_slice)
 }
 
 #[inline]
 fn http_parse_request_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
-    bytes_map_serial(data, |v| http_parse_request_packed_vec(v).unwrap_or_default())
+    bytes_map_serial(data, |v| {
+        http_parse_request_packed_vec(v).unwrap_or_default()
+    })
 }
 
 #[inline]
@@ -505,10 +543,7 @@ pub fn csrf_verify_batch_packed(data: Uint8Array, secret: Uint8Array) -> Result<
 #[napi]
 pub fn hmac_sha256_batch_packed(input: Uint8Array, key: Uint8Array) -> Result<Buffer> {
     let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, key.as_ref());
-    Ok(Buffer::from(hmac_sha256_batch_bytes(
-        input.as_ref(),
-        &key,
-    )?))
+    Ok(Buffer::from(hmac_sha256_batch_bytes(input.as_ref(), &key)?))
 }
 
 #[napi]
@@ -895,14 +930,11 @@ mod tests {
     fn u32_into_matches_expected_layout() {
         let packed = pack_items(&[b"a", b"bb", b"ccc"]);
         let mut out = vec![0u8; 4 + 3 * 4];
-        let written = crate::util::write_u32_batch_into(&packed, &mut out, |x| x.len() as u32)
-            .unwrap();
+        let written =
+            crate::util::write_u32_batch_into(&packed, &mut out, |x| x.len() as u32).unwrap();
         assert_eq!(written, 4 + 3 * 4);
         assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), 3);
-        for (i, x) in [&b"a"[..], b"bb", b"ccc"]
-            .iter()
-            .enumerate()
-        {
+        for (i, x) in [&b"a"[..], b"bb", b"ccc"].iter().enumerate() {
             let v = u32::from_le_bytes(out[4 + i * 4..4 + (i + 1) * 4].try_into().unwrap());
             assert_eq!(v as usize, x.len());
         }

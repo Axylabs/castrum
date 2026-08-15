@@ -1,16 +1,83 @@
-/**
- * Shared TextEncoder instance for encoding strings to UTF-8 bytes.
- *
- * Reusing a single encoder avoids allocation overhead in hot paths.
- */
-export const encoder = new TextEncoder()
+import { decodeUtf8, encodeUtf8, encodeUtf8Into } from './codec'
 
 /**
- * Shared TextDecoder instance for decoding UTF-8 bytes to strings.
+ * Shared UTF-8 encoder (encode / encodeInto), backed by the runtime-native
+ * codec (`src/shared/codec.ts`): on Bun the work is done by Bun's native
+ * transfer machinery (`Bun.ArrayBufferSink` / a zero-copy `Buffer` view
+ * write); under Node it falls back to `TextEncoder`. Reusing a single object
+ * avoids allocation overhead in hot paths.
  *
- * Reusing a single decoder avoids allocation overhead in hot paths.
+ * `encode` accepts the string-or-bytes union the text-returning `rust.*` ops
+ * surface (Bun returns strings, Node returns bytes) and normalizes to bytes —
+ * a string is UTF-8 encoded, bytes pass through unchanged.
  */
-export const decoder = new TextDecoder()
+export const encoder: {
+  encode(s: Uint8Array | string): Uint8Array
+  encodeInto(s: string, dest: Uint8Array): { read: number; written: number }
+} = {
+  encode(s) {
+    return typeof s === 'string' ? encodeUtf8(s) : s
+  },
+  encodeInto(s, dest) {
+    const written = encodeUtf8Into(s, dest)
+    // `read` mirrors `TextEncoder.encodeInto`'s shape; callers here only use
+    // `written` (a truncated write consumes the whole source in our call
+    // sites), so this is a documented approximation.
+    return { read: s.length, written }
+  },
+}
+
+/**
+ * Shared UTF-8 decoder, backed by the runtime-native codec
+ * (`src/shared/codec.ts`): on Bun it uses `new CString(ptr, 0, len)` from
+ * `bun:ffi` (JSC-native, exact-length clone); under Node it falls back to
+ * `TextDecoder`. Reusing a single object avoids allocation overhead in hot
+ * paths.
+ *
+ * `decode` accepts the string-or-bytes union the text-returning `rust.*` ops
+ * surface and normalizes to a string — bytes are UTF-8 decoded, strings pass
+ * through unchanged.
+ */
+export const decoder: {
+  decode(bytes: Uint8Array | string): string
+} = {
+  decode(bytes) {
+    return typeof bytes === 'string' ? bytes : decodeUtf8(bytes)
+  },
+}
+
+/**
+ * Normalize the string-or-bytes union (the text-returning `rust.*` ops return
+ * STRINGS on the Bun path — native transfer — and bytes on the napi path) to
+ * bytes. Codec-backed — no `TextEncoder` runs on the Bun path.
+ *
+ * @param v - A string or UTF-8 byte buffer.
+ * @returns The UTF-8 bytes of `v` (identity when `v` is already bytes).
+ *
+ * @example
+ * ```ts
+ * toBytes('aGVsbG8=') // Uint8Array(8)
+ * ```
+ */
+export function toBytes(v: Uint8Array | string): Uint8Array {
+  return typeof v === 'string' ? encodeUtf8(v) : v
+}
+
+/**
+ * Normalize the string-or-bytes union to a string. Codec-backed — no
+ * `TextDecoder` runs on the Bun path.
+ *
+ * @param v - A string or UTF-8 byte buffer.
+ * @returns The decoded string (identity when `v` is already a string).
+ *
+ * @example
+ * ```ts
+ * toText(new Uint8Array([104, 105])) // 'hi'
+ * ```
+ */
+export function toText(v: Uint8Array | string): string {
+  return typeof v === 'string' ? v : decodeUtf8(v)
+}
 
 /**
  * Cache of `DataView`s keyed by their backing buffer + creation offset.

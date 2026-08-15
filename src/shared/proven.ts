@@ -345,7 +345,7 @@ export const PROVEN_SURFACE = [
     nativeTask: 'native:json_parse',
     rustTask: 'rust:json_parse',
     status: 'not-competitive',
-    note: "Bun's JSON.parse beats the native DOM + napi marshaling path (~5x).",
+    note: "The FFI packed structural path closed the old 3.92x gap to ~1.9x, but Bun's JSON.parse still wins for DOM construction — exact parity needs Bun delegation.",
   },
   {
     name: 'jwtSign',
@@ -525,9 +525,10 @@ export const PROVEN_SURFACE = [
   {
     name: 'urlDecodeBytes',
     label: 'URL decode (bytes)',
-    nativeTask: '',
-    rustTask: '',
-    status: 'unmeasured',
+    nativeTask: 'native:url_decode_bytes',
+    rustTask: 'rust:url_decode_bytes',
+    status: 'parity',
+    note: 'Raw-bytes percent-decode (no UTF-8 validation, no +→space) vs a hand-rolled JS baseline with identical semantics. Previously unmeasured; added 2026-08-14.',
   },
   {
     name: 'configure',

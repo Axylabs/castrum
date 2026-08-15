@@ -4,14 +4,14 @@
  * including unicode and raw-byte (`%FF`) round-trips.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { getAddon } from '../../../src/native'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'
 
 describe('urlEncode / urlDecode', () => {
   test('encodes reserved characters', () => {
-    expect(decoder.decode(rust.urlEncode(encoder.encode('a b&c=d')))).toBe('a%20b%26c%3Dd')
+    expect(rust.urlEncode(encoder.encode('a b&c=d'))).toBe('a%20b%26c%3Dd')
   })
 
   test('decodes percent-encoded input', () => {
@@ -28,7 +28,7 @@ describe('urlEncode / urlDecode', () => {
     ]
     for (const input of inputs) {
       const enc = rust.urlEncode(encoder.encode(input))
-      expect(decoder.decode(rust.urlDecode(enc))).toBe(input)
+      expect(decoder.decode(rust.urlDecode(encoder.encode(enc)))).toBe(input)
     }
   })
 
@@ -46,13 +46,14 @@ describe('urlEncode / urlDecode', () => {
   test('reusable-output variants agree with allocating', () => {
     const input = encoder.encode('a b&c=d')
     const alloc = rust.urlEncode(input)
-    const out = new Uint8Array(alloc.byteLength + 16)
+    const allocBytes = encoder.encode(alloc)
+    const out = new Uint8Array(allocBytes.byteLength + 16)
     const written = rust.urlEncodeInto(input, out)
-    expect(written).toBe(alloc.byteLength)
-    expect(Array.from(out.subarray(0, written))).toEqual(Array.from(alloc))
+    expect(written).toBe(allocBytes.byteLength)
+    expect(Array.from(out.subarray(0, written))).toEqual(Array.from(allocBytes))
 
     const decOut = new Uint8Array(input.byteLength + 16)
-    const decWritten = rust.urlDecodeInto(alloc, decOut)
+    const decWritten = rust.urlDecodeInto(allocBytes, decOut)
     expect(Array.from(decOut.subarray(0, decWritten))).toEqual(Array.from(input))
   })
 
@@ -69,7 +70,9 @@ describe('urlEncode / urlDecode', () => {
     const inputs = ['a b&c=d', 'héllo wörld', 'emoji 🚀 test', 'reserved /?:@&=+$,#%', "~!*'()_-.0"]
     for (const input of inputs) {
       const bytes = encoder.encode(input)
-      expect(Array.from(rust.urlEncode(bytes))).toEqual(Array.from(addon.urlEncode(bytes)))
+      expect(Array.from(encoder.encode(rust.urlEncode(bytes)))).toEqual(
+        Array.from(addon.urlEncode(bytes)),
+      )
       const encoded = addon.urlEncode(bytes)
       expect(Array.from(rust.urlDecode(encoded))).toEqual(Array.from(addon.urlDecode(encoded)))
     }

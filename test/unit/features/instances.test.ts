@@ -7,7 +7,7 @@
  * per-call path skips derivation — behavior must match the scalar FFI exactly.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'
 
@@ -96,7 +96,7 @@ describe('Argon2Hasher (precompiled params)', () => {
       tCost: 2,
       pCost: 1,
     })
-    expect(Array.from(phc)).toEqual(Array.from(scalar))
+    expect(Array.from(phc)).toEqual(Array.from(encoder.encode(scalar)))
 
     expect(hasher.verify(password, phc)).toBeTrue()
     expect(hasher.verify(encoder.encode('wrong'), phc)).toBeFalse()

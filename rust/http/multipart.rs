@@ -601,7 +601,12 @@ mod tests {
     fn boundary_like_data_mid_part() {
         // A bare `--{boundary}` inside data (no leading CRLF) is NOT a
         // delimiter; only `\r\n--{boundary}` is.
-        let mut b = body("f", None, None, b"abc --WebKitFormBoundary7MA4YWxkTrZu0gW def");
+        let mut b = body(
+            "f",
+            None,
+            None,
+            b"abc --WebKitFormBoundary7MA4YWxkTrZu0gW def",
+        );
         b.extend_from_slice(b"--\r\n");
         let parts = parse_multipart(&b, BOUNDARY);
         assert_eq!(parts.len(), 1);

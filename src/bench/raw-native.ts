@@ -13,6 +13,7 @@
 
 import { getAddon } from '../native'
 import { getBunFFI } from '../native/ffi'
+import { encodeUtf8 } from '../shared/codec'
 
 /** Raw addon crc32 (FFI-first, napi fallback), unsigned-32. */
 export function rawCrc32(input: Uint8Array): number {
@@ -24,7 +25,7 @@ export function rawCrc32(input: Uint8Array): number {
 /** Raw addon hmacSha256 (FFI-first, napi HmacSigner fallback), hex output. */
 export function rawHmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
   const ffi = getBunFFI()
-  if (ffi) return ffi.hmacSha256(key, data)
+  if (ffi) return encodeUtf8(ffi.hmacSha256(key, data))
   return new (getAddon().HmacSigner)(key).sign(data)
 }
 
@@ -38,7 +39,7 @@ export function rawGzipCompress(data: Uint8Array, level?: number | null): Uint8A
 /** Raw addon randomToken (FFI-first, napi fallback), hex output. */
 export function rawRandomToken(byteLen: number): Uint8Array {
   const ffi = getBunFFI()
-  if (ffi) return ffi.randomToken(byteLen)
+  if (ffi) return encodeUtf8(ffi.randomToken(byteLen))
   return getAddon().randomToken(byteLen)
 }
 
@@ -52,7 +53,7 @@ export function rawXxh3(input: Uint8Array): bigint {
 /** Raw addon urlEncode (FFI-first, napi fallback). */
 export function rawUrlEncode(input: Uint8Array): Uint8Array {
   const ffi = getBunFFI()
-  if (ffi) return ffi.urlEncode(input)
+  if (ffi) return encodeUtf8(ffi.urlEncode(input))
   return getAddon().urlEncode(input)
 }
 
@@ -74,15 +75,26 @@ export function rawBase64Encode(
   padding?: boolean,
 ): Uint8Array {
   const ffi = getBunFFI()
-  if (ffi) return ffi.base64Encode(input, urlSafe, padding)
+  if (ffi) return encodeUtf8(ffi.base64Encode(input, urlSafe, padding))
   return getAddon().base64Encode(input, urlSafe ?? undefined, padding ?? undefined)
 }
 
 /**
- * Raw addon httpDate (napi only — there is no `castrum_*` C-ABI export for
- * HTTP dates, so this has no FFI branch; matches the pre-delegation path the
- * wrapper takes under Node).
+ * Raw addon httpDate (FFI-first now that `castrum_http_date_into` exists;
+ * napi fallback). BUN_WINS delegates the public wrapper to Date.toUTCString
+ * under Bun; this measures the addon path directly.
  */
 export function rawHttpDate(secs: number): Uint8Array {
+  const ffi = getBunFFI()
+  if (ffi) return encodeUtf8(ffi.httpDate(secs))
   return getAddon().httpDate(secs)
+}
+/** Raw addon hexEncode (FFI-first, napi fallback). BUN_WINS delegates the
+ * public wrapper to `Buffer.toString('hex')` under Bun; this measures the
+ * addon path directly (same as Node).
+ */
+export function rawHexEncode(input: Uint8Array): Uint8Array {
+  const ffi = getBunFFI()
+  if (ffi) return encodeUtf8(ffi.hexEncode(input))
+  return getAddon().hexEncode(input)
 }

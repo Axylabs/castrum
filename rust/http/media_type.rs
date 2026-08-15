@@ -216,12 +216,10 @@ impl MediaTypeParser {
         ) else {
             return false;
         };
-        let ty_ok =
-            crate::util::bytes::ascii_eq_ignore_case(ety, b"*")
-                || crate::util::bytes::ascii_eq_ignore_case(ety, aty);
-        let st_ok =
-            crate::util::bytes::ascii_eq_ignore_case(est, b"*")
-                || crate::util::bytes::ascii_eq_ignore_case(est, ast);
+        let ty_ok = crate::util::bytes::ascii_eq_ignore_case(ety, b"*")
+            || crate::util::bytes::ascii_eq_ignore_case(ety, aty);
+        let st_ok = crate::util::bytes::ascii_eq_ignore_case(est, b"*")
+            || crate::util::bytes::ascii_eq_ignore_case(est, ast);
         ty_ok && st_ok
     }
 }
@@ -262,6 +260,34 @@ impl MediaTypeMatcher {
             || crate::util::bytes::ascii_eq_ignore_case(subtype, self.expected_subtype.as_bytes());
         ty_ok && st_ok
     }
+
+    /// Opaque handle to the precompiled expected type, for the `bun:ffi` C-ABI
+    /// fast path (`castrum_media_type_matcher_matches` in rust/ffi.rs). Only
+    /// valid while THIS instance is alive; the JS wrapper holds the instance.
+    #[napi]
+    pub fn inner_ptr(&self) -> u64 {
+        self as *const MediaTypeMatcher as u64
+    }
+}
+
+/// C-ABI support: wildcard match against the precompiled expected type.
+///
+/// # Safety
+/// `p` must be a valid `*const MediaTypeMatcher` from `inner_ptr`, alive for
+/// the call (the JS wrapper holds the napi instance).
+pub(crate) unsafe fn media_type_matcher_matches_core(
+    p: *const MediaTypeMatcher,
+    actual: &[u8],
+) -> bool {
+    let this = &*p;
+    let Some((ty, subtype)) = split_type_subtype(actual) else {
+        return false;
+    };
+    let ty_ok = this.expected_ty == "*"
+        || crate::util::bytes::ascii_eq_ignore_case(ty, this.expected_ty.as_bytes());
+    let st_ok = this.expected_subtype == "*"
+        || crate::util::bytes::ascii_eq_ignore_case(subtype, this.expected_subtype.as_bytes());
+    ty_ok && st_ok
 }
 
 #[cfg(test)]

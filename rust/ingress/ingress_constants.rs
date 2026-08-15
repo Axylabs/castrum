@@ -137,10 +137,7 @@ mod tests {
             INGRESS_OUT_BODY_JSON_LEN as u32,
             output::OUT_BODY_JSON_LEN as u32
         );
-        assert_eq!(
-            INGRESS_OUT_DATA_START as u32,
-            output::OUT_DATA_START as u32
-        );
+        assert_eq!(INGRESS_OUT_DATA_START as u32, output::OUT_DATA_START as u32);
     }
 
     #[test]
@@ -160,10 +157,7 @@ mod tests {
     #[test]
     fn hv_constants_match_output_source() {
         assert_eq!(INGRESS_HV_JSON as u32, output::HV_JSON as u32);
-        assert_eq!(
-            INGRESS_HV_CORS_SIMPLE as u32,
-            output::HV_CORS_SIMPLE as u32
-        );
+        assert_eq!(INGRESS_HV_CORS_SIMPLE as u32, output::HV_CORS_SIMPLE as u32);
         assert_eq!(
             INGRESS_HV_CORS_PREFLIGHT as u32,
             output::HV_CORS_PREFLIGHT as u32
@@ -207,6 +201,9 @@ mod tests {
             INGRESS_ERR_REQUEST_TOO_LARGE as u32,
             output::ERR_CODE_REQUEST_TOO_LARGE as u32
         );
-        assert_eq!(INGRESS_ERR_INTERNAL as u32, output::ERR_CODE_INTERNAL as u32);
+        assert_eq!(
+            INGRESS_ERR_INTERNAL as u32,
+            output::ERR_CODE_INTERNAL as u32
+        );
     }
 }

@@ -9,12 +9,12 @@
 // `rust/` (hashing, json, http, crypto, payload, factories).
 
 import type { RustClientContext } from '../context'
-import { buildHashing } from './hashing'
-import { buildJson } from './json'
-import { buildHttp } from './http'
 import { buildCrypto } from './crypto'
-import { buildPayload } from './payload'
 import { buildFactories } from './factories'
+import { buildHashing } from './hashing'
+import { buildHttp } from './http'
+import { buildJson } from './json'
+import { buildPayload } from './payload'
 
 export type { RustScalar } from './interface'
 

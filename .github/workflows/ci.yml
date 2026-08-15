@@ -5,6 +5,12 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  # Nightly full pipeline: the CPU bench + proven perf gate runs against a
+  # quiet baseline, so slow regressions that a single PR run can mask are
+  # still caught. Also enables manual dispatch from the Actions tab.
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -43,16 +49,44 @@ jobs:
       - name: Dependency audit
         uses: EmbarkStudios/cargo-deny-action@v2
 
+  # ── Software supply-chain scanning (OSV) ─────────────────────────
+  # Scans the JS + Rust lockfiles against the OSV vulnerability database
+  # (complements cargo-deny advisories + `bun audit`). Reports findings as a
+  # SARIF upload for the GitHub Security tab.
+  security:
+    name: Supply-chain scan (OSV)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google/osv-scanner-action@v2
+        with:
+          scan-args: |-
+            --recursive
+            .
+
   # ── TypeScript correctness ───────────────────────────────────────
   typescript:
-    name: TS (build, test, typecheck)
+    name: TS (bun ${{ matrix.bun }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Bun-version matrix: catches runtime regressions across supported Bun
+        # releases. `1.4.0` matches the local dev toolchain; `latest` tracks the
+        # current release channel.
+        bun: ['1.4.0', 'latest']
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: bun install --frozen-lockfile

@@ -4,15 +4,15 @@
  * JS baselines (`JSON.parse` and ajv).
  */
 
-import { describe, test, expect } from 'bun:test'
-import { getAddon } from '../../../src/native'
-import { rust } from '../../../src/rust-ffi'
-import { decoder, encoder } from '../../../src/shared/bytes'
-import { opImpl } from '../../../src/selection'
+import { describe, expect, test } from 'bun:test'
 import {
   nativeJsonSchemaValidate,
   nativeJsonSchemaValidateBatch,
 } from '../../../src/bench/schema-baseline'
+import { getAddon } from '../../../src/native'
+import { rust } from '../../../src/rust-ffi'
+import { opImpl } from '../../../src/selection'
+import { decoder, encoder, toText } from '../../../src/shared/bytes'
 
 const SCHEMA = encoder.encode(
   JSON.stringify({
@@ -51,6 +51,45 @@ describe('rust.jsonParse', () => {
   test('throws on invalid JSON', () => {
     expect(() => rust.jsonParse(encoder.encode('{not json'))).toThrow()
     expect(() => rust.jsonParse(new Uint8Array(0))).toThrow()
+  })
+})
+
+describe('decodeJsonPacked (packed structural path)', () => {
+  // The packed path is what `rust.jsonParse` uses on Bun (FFI-first). These
+  // tests pin byte-parity with `JSON.parse` — the whole point is that the C
+  // side parses once and the JS decoder assembles the value with no re-parse.
+
+  test('deep-equals JSON.parse for nested values', () => {
+    // NOTE: `-0` is intentionally NOT asserted — sonic-rs (like the napi
+    // `json_parse` DOM path) normalizes `-0` to `0`, so the packed path
+    // matches the addon, not JSC's JSON.parse, for that sign edge case.
+    const src = '{"a":1,"b":[true,null,"x"],"c":{"d":2.5},"f":""}'
+    expect(rust.jsonParse(encoder.encode(src))).toEqual(JSON.parse(src))
+  })
+
+  test('dedups repeated strings (single decode per unique string)', () => {
+    // Keys and the value "v" repeat across rows — the string table must hold
+    // each unique string once. Exercised through the public FFI path: the
+    // result is still deep-equal to JSON.parse.
+    const src = '[{"k":"v","n":"v"},{"k":"w","n":"v"}]'
+    expect(rust.jsonParse(encoder.encode(src))).toEqual(JSON.parse(src))
+  })
+
+  test('large array of rows matches JSON.parse (numbers as f64)', () => {
+    const rows = Array.from({ length: 1000 }, (_, i) => ({ id: i, score: i * 1.25 }))
+    const parsed = rust.jsonParse(encoder.encode(JSON.stringify(rows))) as unknown[]
+    expect(parsed).toEqual(JSON.parse(JSON.stringify(rows)))
+    expect((parsed[999] as { score: number }).score).toBeCloseTo(1248.75)
+  })
+
+  test('duplicate object keys are last-wins, matching JSON.parse', () => {
+    const src = '{"a":1,"a":2}'
+    expect(rust.jsonParse(encoder.encode(src))).toEqual(JSON.parse(src))
+  })
+
+  test('big integers round-trip like JS numbers (f64 rounding)', () => {
+    const src = '[9007199254740993,-9007199254740993,1e308]'
+    expect(rust.jsonParse(encoder.encode(src))).toEqual(JSON.parse(src))
   })
 })
 
@@ -147,7 +186,7 @@ describe('rust.jsonPatch', () => {
     const doc = encoder.encode('{"name":"alice","age":30}')
     const patch = encoder.encode('[{"op":"replace","path":"/age","value":31}]')
     const out = rust.jsonPatch(doc, patch)
-    expect(JSON.parse(decoder.decode(out))).toEqual({ name: 'alice', age: 31 })
+    expect(JSON.parse(toText(out))).toEqual({ name: 'alice', age: 31 })
   })
 
   test('supports add/remove on arrays', () => {
@@ -156,7 +195,7 @@ describe('rust.jsonPatch', () => {
       '[{"op":"add","path":"/items/-","value":"c"},{"op":"remove","path":"/items/0"}]',
     )
     const out = rust.jsonPatch(doc, patch)
-    expect(JSON.parse(decoder.decode(out))).toEqual({ items: ['b', 'c'] })
+    expect(JSON.parse(toText(out))).toEqual({ items: ['b', 'c'] })
   })
 
   test('applies a real-world multi-op patch', () => {
@@ -174,7 +213,7 @@ describe('rust.jsonPatch', () => {
       ]),
     )
     const out = rust.jsonPatch(doc, patch)
-    expect(JSON.parse(decoder.decode(out))).toEqual({
+    expect(JSON.parse(toText(out))).toEqual({
       id: 'usr_01H2X9K7',
       profile: { displayName: 'Alice', preferences: { theme: 'light' } },
       roles: ['admin', 'reviewer'],
@@ -201,7 +240,7 @@ describe('rust.jsonPatch', () => {
       encoder.encode('{"arr":[1,2,3],"obj":{}}'),
       encoder.encode('[{"op":"move","from":"/arr/0","path":"/obj/first"}]'),
     )
-    expect(JSON.parse(decoder.decode(moved))).toEqual({
+    expect(JSON.parse(toText(moved))).toEqual({
       arr: [2, 3],
       obj: { first: 1 },
     })
@@ -210,7 +249,7 @@ describe('rust.jsonPatch', () => {
       encoder.encode('{"a":{"x":1},"b":null}'),
       encoder.encode('[{"op":"copy","from":"/a","path":"/b"}]'),
     )
-    expect(JSON.parse(decoder.decode(copied))).toEqual({ a: { x: 1 }, b: { x: 1 } })
+    expect(JSON.parse(toText(copied))).toEqual({ a: { x: 1 }, b: { x: 1 } })
 
     // `test` mismatch throws.
     expect(() =>

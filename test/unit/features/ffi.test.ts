@@ -13,11 +13,10 @@ import { spawnSync } from 'node:child_process'
 import * as constants from '../../../src/ingress/constants'
 import { IngressInputPacker } from '../../../src/ingress/packing/input-packer'
 import { getAddon, type WsFrame } from '../../../src/native'
-import { getBunFFI } from '../../../src/native/ffi'
+import { ffiBufferMode, getBunFFI } from '../../../src/native/ffi'
 import { rust } from '../../../src/rust-ffi'
+import { encoder, toText } from '../../../src/shared/bytes'
 import { isBun } from '../../../src/shared/runtime'
-
-const encoder = new TextEncoder()
 
 /**
  * gzip from `Bun.gzipSync` (zlib) and from the native flate2 core differ ONLY
@@ -45,6 +44,27 @@ describe('bun:ffi fast path', () => {
     expect(ffi).not.toBeNull()
   })
 
+  test('buffer/buffer_length fast path is live on a supporting Bun', () => {
+    // `probeBufferLength` (src/native/ffi.ts) verifies the engine-native
+    // `buffer`/`buffer_length` ABI pair at bind time; when it passes, the
+    // `abi()` transformer rewrites every `(ptr,usize)` pair to
+    // `(buffer,buffer_length)` — the atomic ptr+byteLength snapshot. Pin the
+    // resolved mode here so a future Bun regression (or a probe bug) that
+    // silently falls back to `(ptr, usize)` is caught instead of slowing the
+    // hot path. Node / forced-napi / self-test-failure must report null, never
+    // a stale value.
+    if (!isBun()) {
+      expect(ffiBufferMode()).toBeNull()
+      return
+    }
+    const ffi = getBunFFI()
+    if (ffi === null) {
+      expect(ffiBufferMode()).toBeNull()
+      return
+    }
+    expect(ffiBufferMode()).toBe('buffer-pair')
+  })
+
   test('scalar results match the napi addon byte-for-byte', () => {
     if (!isBun() || getBunFFI() === null) {
       return // ffi unavailable — napi path covered by the rest of the suite
@@ -59,12 +79,16 @@ describe('bun:ffi fast path', () => {
     expect(rust.xxh3(input)).toBe(addon.xxh3(input))
     expect(rust.jsonValid(input)).toBe(addon.jsonValid(input))
 
-    expect(Array.from(rust.hexEncode(input))).toEqual(Array.from(addon.hexEncode(input)))
+    expect(Array.from(encoder.encode(rust.hexEncode(input)))).toEqual(
+      Array.from(addon.hexEncode(input)),
+    )
     const out = new Uint8Array(input.length * 2)
     expect(rust.hexEncodeInto(input, out)).toBe(input.length * 2)
     expect(Array.from(out)).toEqual(Array.from(addon.hexEncode(input)))
 
-    expect(Array.from(rust.urlEncode(input))).toEqual(Array.from(addon.urlEncode(input)))
+    expect(Array.from(encoder.encode(rust.urlEncode(input)))).toEqual(
+      Array.from(addon.urlEncode(input)),
+    )
     const uout = new Uint8Array(input.length * 3)
     const uw = rust.urlEncodeInto(input, uout)
     expect(Array.from(uout.subarray(0, uw))).toEqual(Array.from(addon.urlEncode(input)))
@@ -90,8 +114,8 @@ describe('bun:ffi fast path', () => {
     ]
     for (const c of cases) {
       expect(rust.crc32(c)).toBe(addon.crc32(c))
-      expect(Array.from(rust.hexEncode(c))).toEqual(Array.from(addon.hexEncode(c)))
-      expect(Array.from(rust.urlEncode(c))).toEqual(Array.from(addon.urlEncode(c)))
+      expect(Array.from(encoder.encode(rust.hexEncode(c)))).toEqual(Array.from(addon.hexEncode(c)))
+      expect(Array.from(encoder.encode(rust.urlEncode(c)))).toEqual(Array.from(addon.urlEncode(c)))
     }
   })
 
@@ -126,9 +150,11 @@ describe('bun:ffi fast path', () => {
     expect(rust.jsonSumIds(doc)).toBe(BigInt(addon.jsonSumIds(doc)))
     expect(
       Array.from(
-        rust.jsonPatch(
-          encoder.encode('{"a":"b"}'),
-          encoder.encode('[{"op":"add","path":"/c","value":"d"}]'),
+        encoder.encode(
+          rust.jsonPatch(
+            encoder.encode('{"a":"b"}'),
+            encoder.encode('[{"op":"add","path":"/c","value":"d"}]'),
+          ),
         ),
       ),
     ).toEqual(
@@ -139,6 +165,19 @@ describe('bun:ffi fast path', () => {
         ),
       ),
     )
+  })
+
+  test('jsonParse (packed FFI) matches the napi addon value', () => {
+    if (!isBun() || getBunFFI() === null) return
+    const addon = getAddon()
+    // The FFI path now goes through the packed structural decode; it must
+    // still produce the exact value the napi sonic-rs DOM path produces.
+    // NOTE: avoid small INTEGERS here — the napi marshal surfaces them as
+    // BigInt (1n) while the packed path (and JSON.parse) surface JS numbers,
+    // so integers are compared in json.test.ts against JSON.parse instead.
+    const src = '{"a":1.5,"b":[true,null,"x"],"c":{"d":2.5},"rows":[{"score":1.25},{"score":2.25}]}'
+    const bytes = encoder.encode(src)
+    expect(rust.jsonParse(bytes)).toEqual(addon.jsonParse(bytes))
   })
 
   test('jsonSumIds ok-byte semantics: zero-sum valid, non-array throws', () => {
@@ -187,30 +226,34 @@ describe('bun:ffi fast path', () => {
     const addon = getAddon()
     const key = new Uint8Array(20).fill(0x0b)
     const data = encoder.encode('Hi There')
-    expect(Array.from(rust.hmacSha256(key, data))).toEqual(Array.from(addon.hmacSha256(key, data)))
+    expect(Array.from(encoder.encode(rust.hmacSha256(key, data)))).toEqual(
+      Array.from(addon.hmacSha256(key, data)),
+    )
 
     const secret = encoder.encode('s3cr3t-secret')
     const value = encoder.encode('session-id-123')
     const signed = rust.signCookie(value, secret)
-    expect(Array.from(signed)).toEqual(Array.from(addon.signCookie(value, secret)))
-    const verified = rust.verifyCookie(signed, secret)
-    const verifiedAddon = addon.verifyCookie(signed, secret)
+    expect(Array.from(encoder.encode(signed))).toEqual(Array.from(addon.signCookie(value, secret)))
+    const verified = rust.verifyCookie(encoder.encode(signed), secret)
+    const verifiedAddon = addon.verifyCookie(encoder.encode(signed), secret)
     expect(verified).not.toBeNull()
-    expect(Array.from(verified as Uint8Array)).toEqual(Array.from(verifiedAddon as Uint8Array))
+    expect(Array.from(encoder.encode(verified as string))).toEqual(
+      Array.from(verifiedAddon as Uint8Array),
+    )
     expect(rust.verifyCookie(encoder.encode('bad.signature'), secret)).toBeNull()
 
     // CSRF: a token issued via ffi verifies through BOTH paths.
     const token = rust.csrfToken(secret)
     expect(token.length).toBe(129)
-    expect(rust.csrfVerify(token, secret)).toBe(true)
-    expect(addon.csrfVerify(token, secret)).toBe(true)
+    expect(rust.csrfVerify(encoder.encode(token), secret)).toBe(true)
+    expect(addon.csrfVerify(encoder.encode(token), secret)).toBe(true)
   })
 
   test('random token produces the expected shape', () => {
     if (!isBun() || getBunFFI() === null) return
     const t = rust.randomToken(16)
     expect(t.length).toBe(32)
-    expect(/^[0-9a-f]{32}$/.test(new TextDecoder().decode(t))).toBe(true)
+    expect(/^[0-9a-f]{32}$/.test(toText(t))).toBe(true)
   })
 
   test('password hashing round-trips through both paths', () => {
@@ -220,12 +263,12 @@ describe('bun:ffi fast path', () => {
     const salt = encoder.encode('salty-salt-16b')
     const opts = { mCost: 8, tCost: 1, pCost: 1, outLen: 16 }
     // Argon2 is deterministic given (password, salt, params) → byte-identical.
-    expect(Array.from(rust.passwordHash(pw, salt, opts))).toEqual(
+    expect(Array.from(encoder.encode(rust.passwordHash(pw, salt, opts)))).toEqual(
       Array.from(addon.passwordHash(pw, salt, opts)),
     )
     const phc = rust.passwordHash(pw, salt, opts)
-    expect(rust.passwordVerify(pw, phc)).toBe(true)
-    expect(addon.passwordVerify(pw, phc)).toBe(true)
+    expect(rust.passwordVerify(pw, encoder.encode(phc))).toBe(true)
+    expect(addon.passwordVerify(pw, encoder.encode(phc))).toBe(true)
 
     // bcrypt embeds a random salt → verify-only cross-check both directions.
     const bc = rust.passwordHashBcrypt(pw, 4)
@@ -286,11 +329,15 @@ describe('bun:ffi fast path', () => {
     if (!isBun() || getBunFFI() === null) return
     const addon = getAddon()
     const wsKey = encoder.encode('dGhlIHNhbXBsZSBub25jZQ==')
-    expect(Array.from(rust.wsAcceptKey(wsKey))).toEqual(Array.from(addon.wsAcceptKey(wsKey)))
+    expect(Array.from(encoder.encode(rust.wsAcceptKey(wsKey)))).toEqual(
+      Array.from(addon.wsAcceptKey(wsKey)),
+    )
 
     const data = encoder.encode('hello world')
-    expect(Array.from(rust.etag(data))).toEqual(Array.from(addon.etag(data)))
-    expect(Array.from(rust.etag(data, true))).toEqual(Array.from(addon.etag(data, true)))
+    expect(Array.from(encoder.encode(rust.etag(data)))).toEqual(Array.from(addon.etag(data)))
+    expect(Array.from(encoder.encode(rust.etag(data, true)))).toEqual(
+      Array.from(addon.etag(data, true)),
+    )
 
     const req = encoder.encode('GET /a?b=1 HTTP/1.1\r\nHost: example.com\r\n\r\n')
     expect(Array.from(rust.httpParseRequestPacked(req))).toEqual(
@@ -312,12 +359,12 @@ describe('bun:ffi fast path', () => {
     const claims = encoder.encode(JSON.stringify({ sub: 'user-1', role: 'admin' }))
     const secret = encoder.encode('my-secret')
     const now = 1_700_000_000
-    expect(Array.from(rust.jwtSignBytes(claims, secret, 60, now))).toEqual(
-      Array.from(addon.jwtSignBytes(claims, secret, 60, now)),
+    expect(rust.jwtSignBytes(claims, secret, 60, now)).toBe(
+      new TextDecoder().decode(addon.jwtSignBytes(claims, secret, 60, now)),
     )
     // ttl null (no iat/exp injection) → deterministic.
-    expect(Array.from(rust.jwtSignBytes(claims, secret, null, now))).toEqual(
-      Array.from(addon.jwtSignBytes(claims, secret, null, now)),
+    expect(rust.jwtSignBytes(claims, secret, null, now)).toBe(
+      new TextDecoder().decode(addon.jwtSignBytes(claims, secret, null, now)),
     )
   })
 
@@ -421,13 +468,13 @@ describe('bun:ffi fast path', () => {
 
     const hm = new Uint8Array(64)
     expect(rust.hmacSha256Into(key, data, hm)).toBe(64)
-    expect(Array.from(hm)).toEqual(Array.from(rust.hmacSha256(key, data)))
+    expect(Array.from(hm)).toEqual(Array.from(encoder.encode(rust.hmacSha256(key, data))))
 
     const value = encoder.encode('session=abc')
     const secret = encoder.encode('secret-key')
     const sc = new Uint8Array(value.length + 65)
     expect(rust.signCookieInto(value, secret, sc)).toBe(value.length + 65)
-    expect(Array.from(sc)).toEqual(Array.from(rust.signCookie(value, secret)))
+    expect(Array.from(sc)).toEqual(Array.from(encoder.encode(rust.signCookie(value, secret))))
 
     const aeadKey = new Uint8Array(32).fill(0x42)
     const nonce = new Uint8Array(12).fill(0x07)

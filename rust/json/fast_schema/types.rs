@@ -101,8 +101,7 @@ pub(crate) struct FastObject {
 }
 
 /// `(if, then, else)` — then/else are optional (draft-07).
-pub(crate) type IfThenElse =
-    (Arc<FastNode>, Option<Arc<FastNode>>, Option<Arc<FastNode>>);
+pub(crate) type IfThenElse = (Arc<FastNode>, Option<Arc<FastNode>>, Option<Arc<FastNode>>);
 
 /// Logical combinators: allOf / anyOf / oneOf / not / if-then-else.
 pub(crate) struct FastComb {
@@ -115,11 +114,13 @@ pub(crate) struct FastComb {
 
 /// `enum` / `const` constraints, stored as the schema's literal values and
 /// compared with jsonschema-compatible exact equality (incl. `1 == 1.0` and
-/// order-insensitive object keys).
+/// order-insensitive object keys). Values are `sonic_rs::Value` (compact,
+/// zero per-key heap `String`) instead of `serde_json::Value` so the runtime
+/// compare on the zero-DOM fast path never builds a serde_json DOM.
 #[derive(Clone)]
 pub(crate) enum ValueConstraint {
-    Enum(Vec<Arc<serde_json::Value>>),
-    Const(Arc<serde_json::Value>),
+    Enum(Vec<Arc<sonic_rs::Value>>),
+    Const(Arc<sonic_rs::Value>),
 }
 
 /// One compiled schema node. `types` is a bitmask of allowed kinds (0 = any).

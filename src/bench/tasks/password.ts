@@ -18,7 +18,7 @@ export function passwordTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'rust:password_hash',
-      run: () => rust.passwordHash(f.passwordBytes, f.passwordSalt, options).byteLength,
+      run: () => rust.passwordHash(f.passwordBytes, f.passwordSalt, options).length,
       iterations: 10,
       warmup: 2,
     },

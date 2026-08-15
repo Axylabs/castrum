@@ -2,7 +2,11 @@
 //
 // Backend-framework feature: server-side templating. minijinja is a fast, safe,
 // Jinja2-compatible engine (no eval, no unsafe). Templates are compiled once and
-// cached inside the `Environment`; renders accept a `serde_json::Value` context.
+// cached inside the `Environment`. The napi JS-object `render` accepts a
+// `serde_json::Value` (marshal from JS); the pre-serialized byte paths
+// (`render_bytes` / batch / C-ABI) parse straight into `sonic_rs::Value`
+// (compact, zero per-key heap `String`) — both render via the `Serialize`
+// trait, so behavior is identical.
 //
 // The napi class keeps an owned `Environment<'static>` (templates added via
 // `add_template_owned`), so it is `Send + Sync` and safe to hold across calls.
@@ -28,6 +32,14 @@ impl TemplateRenderer {
         Ok(Self { env })
     }
 
+    /// Opaque handle to the compiled template, for the `bun:ffi` C-ABI fast
+    /// path (`castrum_template_render` in rust/ffi.rs). Only valid while THIS
+    /// instance is alive; the JS wrapper holds the instance.
+    #[napi]
+    pub fn inner_ptr(&self) -> u64 {
+        self as *const TemplateRenderer as u64
+    }
+
     /// Render the template with the given JSON context → UTF-8 bytes.
     #[napi]
     pub fn render(&self, context: serde_json::Value) -> Result<Buffer> {
@@ -44,14 +56,15 @@ impl TemplateRenderer {
     /// Render the template with a PRE-SERIALIZED JSON context (bytes) → UTF-8
     /// bytes. Avoids the napi `serde_json::Value` DOM marshal of `render` for
     /// callers that already hold the context bytes (same core as the packed
-    /// batch path).
+    /// batch path). The context is parsed straight into a `sonic_rs::Value`
+    /// (compact, no per-key heap `String`) instead of `serde_json::Value`.
     #[napi]
     pub fn render_bytes(&self, context_json: Uint8Array) -> Result<Buffer> {
         let tpl = self
             .env
             .get_template("main")
             .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
-        let context: serde_json::Value = serde_json::from_slice(context_json.as_ref())
+        let context: sonic_rs::Value = sonic_rs::from_slice(context_json.as_ref())
             .map_err(|e| Error::from_reason(format!("template context is not valid JSON: {e}")))?;
         let out = tpl
             .render(&context)
@@ -72,7 +85,7 @@ impl TemplateRenderer {
             .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
 
         let render_one = |context_json: &[u8]| -> Vec<u8> {
-            let Ok(context) = serde_json::from_slice::<serde_json::Value>(context_json) else {
+            let Ok(context) = sonic_rs::from_slice::<sonic_rs::Value>(context_json) else {
                 return Vec::new();
             };
             tpl.render(&context)
@@ -82,6 +95,23 @@ impl TemplateRenderer {
 
         crate::util::run_packed_batch(data.as_ref(), render_one).map(Buffer::from)
     }
+}
+
+/// C-ABI support: render the compiled template with a pre-serialized JSON
+/// context. `Err(())` on invalid JSON context / render error (napi parity).
+///
+/// # Safety
+/// `p` must be a valid `*const TemplateRenderer` from `inner_ptr`, alive for
+/// the call (the JS wrapper holds the napi instance).
+pub(crate) unsafe fn template_render_core(
+    p: *const TemplateRenderer,
+    context_json: &[u8],
+) -> std::result::Result<Vec<u8>, ()> {
+    let this = &*p;
+    let tpl = this.env.get_template("main").map_err(|_| ())?;
+    let context: sonic_rs::Value = sonic_rs::from_slice(context_json).map_err(|_| ())?;
+    let out = tpl.render(&context).map_err(|_| ())?;
+    Ok(out.into_bytes())
 }
 
 /// Parallel render batch: packed `[u32 count]{[u32 len][context-json]}` in →
@@ -94,7 +124,7 @@ pub fn template_render_batch_packed(data: Uint8Array, source: String) -> Result<
         .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
 
     let render_one = |context_json: &[u8]| -> Vec<u8> {
-        let Ok(context) = serde_json::from_slice::<serde_json::Value>(context_json) else {
+        let Ok(context) = sonic_rs::from_slice::<sonic_rs::Value>(context_json) else {
             return Vec::new();
         };
         let Ok(tpl) = env.get_template("main") else {
@@ -211,7 +241,9 @@ mod tests {
     #[test]
     fn render_bytes_rejects_invalid_json_context() {
         let r = TemplateRenderer::new("x".to_string()).unwrap();
-        assert!(r.render_bytes(Uint8Array::new(b"not json".to_vec())).is_err());
+        assert!(r
+            .render_bytes(Uint8Array::new(b"not json".to_vec()))
+            .is_err());
     }
 
     #[test]

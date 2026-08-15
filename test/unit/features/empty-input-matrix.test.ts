@@ -7,19 +7,20 @@
  * inline in individual tests (or not at all for some ops).
  */
 
-import { describe, test, expect } from 'bun:test'
-import { rust } from '../../../src/rust-ffi'
+import { describe, expect, test } from 'bun:test'
 import { getBunFFI } from '../../../src/native/ffi'
+import { rust } from '../../../src/rust-ffi'
 
 const empty = new Uint8Array(0)
-const enc = (s: string): Uint8Array => new TextEncoder().encode(s)
+const enc = (s: string | Uint8Array): Uint8Array =>
+  typeof s === 'string' ? new TextEncoder().encode(s) : s
 
 describe('empty-input matrix', () => {
   test('encoders accept empty and round-trip to empty', () => {
-    expect(rust.hexDecode(rust.hexEncode(empty)).length).toBe(0)
-    expect(rust.base64Decode(rust.base64Encode(empty)).length).toBe(0)
-    expect(rust.base64UrlDecode(rust.base64UrlEncode(empty)).length).toBe(0)
-    expect(rust.urlDecodeBytes(rust.urlEncode(empty)).length).toBe(0)
+    expect(rust.hexDecode(enc(rust.hexEncode(empty))).length).toBe(0)
+    expect(rust.base64Decode(enc(rust.base64Encode(empty))).length).toBe(0)
+    expect(rust.base64UrlDecode(enc(rust.base64UrlEncode(empty))).length).toBe(0)
+    expect(rust.urlDecodeBytes(enc(rust.urlEncode(empty))).length).toBe(0)
   })
 
   test('decoders accept empty without throwing', () => {

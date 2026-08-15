@@ -5,26 +5,26 @@
  * the Buffer baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { Buffer } from 'node:buffer'
+import { nativeHexDecode, nativeHexEncode } from '../../../src/bench/encoding-baseline'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'
-import { nativeHexDecode, nativeHexEncode } from '../../../src/bench/encoding-baseline'
 
 const DATA = new Uint8Array([104, 105, 0, 255, 32, 64, 126, 10]) // "hi\0\xff @~\n"
 
 describe('base64', () => {
   test('encode matches Buffer baseline', () => {
-    expect(Array.from(rust.base64Encode(DATA))).toEqual(
+    expect(Array.from(encoder.encode(rust.base64Encode(DATA)))).toEqual(
       Array.from(encoder.encode(Buffer.from(DATA).toString('base64'))),
     )
-    expect(Array.from(rust.base64UrlEncode(DATA))).toEqual(
+    expect(Array.from(encoder.encode(rust.base64UrlEncode(DATA)))).toEqual(
       Array.from(encoder.encode(Buffer.from(DATA).toString('base64url'))),
     )
   })
 
   test('decode roundtrips byte-for-byte', () => {
-    const enc = rust.base64Encode(DATA)
+    const enc = encoder.encode(rust.base64Encode(DATA))
     expect(Array.from(rust.base64Decode(enc))).toEqual(Array.from(DATA))
   })
 
@@ -41,11 +41,13 @@ describe('base64', () => {
 
 describe('hex', () => {
   test('encode matches Buffer baseline', () => {
-    expect(Array.from(rust.hexEncode(DATA))).toEqual(Array.from(nativeHexEncode(DATA)))
+    expect(Array.from(encoder.encode(rust.hexEncode(DATA)))).toEqual(
+      Array.from(nativeHexEncode(DATA)),
+    )
   })
 
   test('decode roundtrips byte-for-byte', () => {
-    const enc = decoder.decode(rust.hexEncode(DATA))
+    const enc = rust.hexEncode(DATA)
     expect(Array.from(rust.hexDecode(encoder.encode(enc)))).toEqual(Array.from(DATA))
     expect(Array.from(rust.hexDecode(nativeHexEncode(DATA)))).toEqual(
       Array.from(nativeHexDecode(nativeHexEncode(DATA))),
@@ -63,12 +65,17 @@ describe('rust.batch hex/base64 (packed batch)', () => {
     const items = [DATA, encoder.encode('abc')]
     const results = rust.batch.hexEncode(items)
     expect(results.length).toBe(2)
-    expect(Array.from(results[0])).toEqual(Array.from(rust.hexEncode(DATA)))
-    expect(Array.from(results[1])).toEqual(Array.from(rust.hexEncode(encoder.encode('abc'))))
+    expect(Array.from(results[0])).toEqual(Array.from(encoder.encode(rust.hexEncode(DATA))))
+    expect(Array.from(results[1])).toEqual(
+      Array.from(encoder.encode(rust.hexEncode(encoder.encode('abc')))),
+    )
   })
 
   test('hexDecode batch roundtrips byte-for-byte', () => {
-    const items = [rust.hexEncode(DATA), rust.hexEncode(encoder.encode('xyz'))]
+    const items = [
+      encoder.encode(rust.hexEncode(DATA)),
+      encoder.encode(rust.hexEncode(encoder.encode('xyz'))),
+    ]
     const results = rust.batch.hexDecode(items)
     expect(Array.from(results[0])).toEqual(Array.from(DATA))
     expect(Array.from(results[1])).toEqual(Array.from(encoder.encode('xyz')))
@@ -78,12 +85,17 @@ describe('rust.batch hex/base64 (packed batch)', () => {
     const items = [DATA, encoder.encode('abc')]
     const results = rust.batch.base64Encode(items)
     expect(results.length).toBe(2)
-    expect(Array.from(results[0])).toEqual(Array.from(rust.base64Encode(DATA)))
-    expect(Array.from(results[1])).toEqual(Array.from(rust.base64Encode(encoder.encode('abc'))))
+    expect(Array.from(results[0])).toEqual(Array.from(encoder.encode(rust.base64Encode(DATA))))
+    expect(Array.from(results[1])).toEqual(
+      Array.from(encoder.encode(rust.base64Encode(encoder.encode('abc')))),
+    )
   })
 
   test('base64Decode batch roundtrips byte-for-byte', () => {
-    const items = [rust.base64Encode(DATA), rust.base64Encode(encoder.encode('xyz'))]
+    const items = [
+      encoder.encode(rust.base64Encode(DATA)),
+      encoder.encode(rust.base64Encode(encoder.encode('xyz'))),
+    ]
     const results = rust.batch.base64Decode(items)
     expect(Array.from(results[0])).toEqual(Array.from(DATA))
     expect(Array.from(results[1])).toEqual(Array.from(encoder.encode('xyz')))
@@ -94,7 +106,9 @@ describe('rust.batch hex/base64 (packed batch)', () => {
     const std = rust.batch.base64Encode(items, false, true)
     const url = rust.batch.base64Encode(items, true, false)
     expect(Array.from(url[0])).toEqual(Array.from(encoder.encode('-w')))
-    expect(Array.from(std[0])).toEqual(Array.from(rust.base64Encode(new Uint8Array([0xfb]))))
+    expect(Array.from(std[0])).toEqual(
+      Array.from(encoder.encode(rust.base64Encode(new Uint8Array([0xfb])))),
+    )
   })
 })
 
@@ -104,11 +118,11 @@ describe('reusable-output (_into) variants', () => {
     const written = rust.hexEncodeInto(DATA, out)
     const expected = rust.hexEncode(DATA)
     expect(written).toBe(expected.length)
-    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected))
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(encoder.encode(expected)))
   })
 
   test('hexDecodeInto roundtrips byte-for-byte', () => {
-    const enc = rust.hexEncode(DATA)
+    const enc = encoder.encode(rust.hexEncode(DATA))
     const out = new Uint8Array(DATA.length)
     const written = rust.hexDecodeInto(enc, out)
     expect(written).toBe(DATA.length)
@@ -125,11 +139,11 @@ describe('reusable-output (_into) variants', () => {
     const written = rust.base64EncodeInto(DATA, out)
     const expected = rust.base64Encode(DATA)
     expect(written).toBe(expected.length)
-    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected))
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(encoder.encode(expected)))
   })
 
   test('base64DecodeInto roundtrips byte-for-byte', () => {
-    const enc = rust.base64Encode(DATA)
+    const enc = encoder.encode(rust.base64Encode(DATA))
     const out = new Uint8Array(DATA.length)
     const written = rust.base64DecodeInto(enc, out)
     expect(written).toBe(DATA.length)
@@ -142,9 +156,13 @@ describe('reusable-output (_into) variants', () => {
 
   test('too-small output buffer throws', () => {
     expect(() => rust.hexEncodeInto(DATA, new Uint8Array(2))).toThrow()
-    expect(() => rust.hexDecodeInto(rust.hexEncode(DATA), new Uint8Array(1))).toThrow()
+    expect(() =>
+      rust.hexDecodeInto(encoder.encode(rust.hexEncode(DATA)), new Uint8Array(1)),
+    ).toThrow()
     expect(() => rust.base64EncodeInto(DATA, new Uint8Array(2))).toThrow()
-    expect(() => rust.base64DecodeInto(rust.base64Encode(DATA), new Uint8Array(1))).toThrow()
+    expect(() =>
+      rust.base64DecodeInto(encoder.encode(rust.base64Encode(DATA)), new Uint8Array(1)),
+    ).toThrow()
   })
 
   test('urlEncodeInto matches urlEncode', () => {
@@ -153,7 +171,7 @@ describe('reusable-output (_into) variants', () => {
     const written = rust.urlEncodeInto(src, out)
     const expected = rust.urlEncode(src)
     expect(written).toBe(expected.length)
-    expect(Array.from(out.slice(0, written))).toEqual(Array.from(expected))
+    expect(Array.from(out.slice(0, written))).toEqual(Array.from(encoder.encode(expected)))
   })
 
   test('urlDecodeInto matches urlDecode', () => {

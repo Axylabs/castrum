@@ -1,28 +1,35 @@
-import * as native from '../baseline'
 import { Buffer } from 'node:buffer'
+import * as native from '../baseline'
 import { rust } from '../rust-ffi'
+
 // The public `rustBatch` alias was removed in 0.8.0 — keep a bench-local
 // shorthand for `rust.batch` so the checks below stay readable.
 const rustBatch = rust.batch
+
 import { decoder, encoder } from '../shared/bytes'
+
+// The text-returning rust.* ops return STRINGS on the Bun path (native
+// transfer) and bytes on the napi path — normalize for comparison.
+const toStr = (v: Uint8Array | string): string => (typeof v === 'string' ? v : decoder.decode(v))
+
+import { createLoader } from '../loader'
 import { pairsToObject, readHttpPacked, readPairsPacked } from '../shared/packed'
-import { nativeJsonSchemaValidate, nativeJsonSchemaValidateBatch } from './schema-baseline'
-import { nativeFormParsePacked } from './form-baseline'
-import { nativeParseMediaType } from './media-type-baseline'
-import { nativeEtag, nativeHttpDate, nativeIsNotModified } from './etag-baseline'
 import { nativeNegotiateEncoding } from './accept-baseline'
+import { assertDeepEqual, assertEqual, parseJsonBytes, toBytes } from './assert'
+import { nativeSignCookie } from './cookie-sign-baseline'
+import { nativeCsrfVerify } from './csrf-baseline'
 import {
   nativeBase64Decode,
   nativeBase64Encode,
   nativeHexDecode,
   nativeHexEncode,
 } from './encoding-baseline'
-import { nativeSignCookie } from './cookie-sign-baseline'
-import { nativeCsrfVerify } from './csrf-baseline'
-import { nativeUrlEncodeQuery, nativeUrlResolve } from './url-join-baseline'
-import { assertDeepEqual, assertEqual, parseJsonBytes } from './assert'
+import { nativeEtag, nativeHttpDate, nativeIsNotModified } from './etag-baseline'
 import type { BenchFixtures, ComplexFixtures } from './fixtures'
-import { createLoader } from '../loader'
+import { nativeFormParsePacked } from './form-baseline'
+import { nativeParseMediaType } from './media-type-baseline'
+import { nativeJsonSchemaValidate, nativeJsonSchemaValidateBatch } from './schema-baseline'
+import { nativeUrlEncodeQuery, nativeUrlResolve } from './url-join-baseline'
 
 export function runCorrectnessChecks(f: BenchFixtures): void {
   assertDeepEqual(
@@ -113,15 +120,11 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
   )
 
   // ── ETag / HTTP-date / conditional (M3) ──
-  const etagStr = decoder.decode(rust.etag(f.etagData))
+  const etagStr = toStr(rust.etag(f.etagData))
   assertEqual(etagStr, decoder.decode(nativeEtag(f.etagData)), 'etag parity')
+  assertEqual(toStr(rust.etag(f.etagData, true)).startsWith('W/"'), true, 'etag weak prefix')
   assertEqual(
-    decoder.decode(rust.etag(f.etagData, true)).startsWith('W/"'),
-    true,
-    'etag weak prefix',
-  )
-  assertEqual(
-    decoder.decode(rust.httpDate(f.httpDateSecs)),
+    toStr(rust.httpDate(f.httpDateSecs)),
     decoder.decode(nativeHttpDate(f.httpDateSecs)),
     'http date parity',
   )
@@ -130,7 +133,7 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     BigInt(f.httpDateSecs),
     'http date parse',
   )
-  const conditional = rust.createConditionalRequest(rust.etag(f.etagData), f.httpDateSecs)
+  const conditional = rust.createConditionalRequest(toBytes(rust.etag(f.etagData)), f.httpDateSecs)
   assertEqual(
     conditional.isNotModified(encoder.encode(`"nope", ${etagStr}`), null),
     true,
@@ -167,17 +170,17 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
 
   // ── Base64 / hex encoding (M5) ──
   assertEqual(
-    decoder.decode(rust.base64Encode(f.encodeData)),
+    toStr(rust.base64Encode(f.encodeData)),
     decoder.decode(nativeBase64Encode(f.encodeData)),
     'base64 encode parity',
   )
   assertEqual(
-    decoder.decode(rust.base64UrlEncode(f.encodeData)),
+    toStr(rust.base64UrlEncode(f.encodeData)),
     Buffer.from(f.encodeData).toString('base64url'),
     'base64url encode parity',
   )
   assertEqual(
-    decoder.decode(rust.hexEncode(f.encodeData)),
+    toStr(rust.hexEncode(f.encodeData)),
     decoder.decode(nativeHexEncode(f.encodeData)),
     'hex encode parity',
   )
@@ -252,7 +255,7 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
 
   assertEqual(
     decoder.decode(native.nativeWsAcceptKey(f.wsKey)),
-    decoder.decode(rust.wsAcceptKey(f.wsKeyBytes)),
+    toStr(rust.wsAcceptKey(f.wsKeyBytes)),
     'ws accept key',
   )
 
@@ -264,7 +267,7 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
 
   assertEqual(
     decoder.decode(f.hmacSig),
-    decoder.decode(rust.hmacSha256(f.hmacKey, f.hmacData)),
+    toStr(rust.hmacSha256(f.hmacKey, f.hmacData)),
     'hmac sha256',
   )
 
@@ -296,7 +299,7 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
 
   assertEqual(
     native.nativeUrlEncode('hello world & foo=bar'),
-    decoder.decode(rust.urlEncode(f.urlEncodeInput)),
+    toStr(rust.urlEncode(f.urlEncodeInput)),
     'url encode',
   )
 
@@ -304,6 +307,42 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     native.nativeUrlDecode('hello%20world%20%26%20foo%3Dbar'),
     decoder.decode(rust.urlDecode(f.urlDecodeInput)),
     'url decode',
+  )
+
+  // Raw-bytes percent-decode parity (no UTF-8 validation, no +→space).
+  assertEqual(
+    decoder.decode(native.nativeUrlDecodeBytes(f.urlDecodeInput)),
+    decoder.decode(rust.urlDecodeBytes(f.urlDecodeInput)),
+    'url decode bytes parity',
+  )
+  // Pooled zero-alloc `*Into` writers must match their allocating siblings.
+  const encodeOut = new Uint8Array(4096)
+  let w = rust.base64EncodeInto(f.encodeData, encodeOut)
+  assertEqual(
+    decoder.decode(encodeOut.subarray(0, w)),
+    toStr(rust.base64Encode(f.encodeData)),
+    'base64 encode into parity',
+  )
+  const hexOut = new Uint8Array(4096)
+  w = rust.hexEncodeInto(f.encodeData, hexOut)
+  assertEqual(
+    decoder.decode(hexOut.subarray(0, w)),
+    toStr(rust.hexEncode(f.encodeData)),
+    'hex encode into parity',
+  )
+  const etagOut = new Uint8Array(32)
+  w = rust.etagInto(f.etagData, etagOut)
+  assertEqual(
+    decoder.decode(etagOut.subarray(0, w)),
+    toStr(rust.etag(f.etagData)),
+    'etag into parity',
+  )
+  const hmacOut = new Uint8Array(64)
+  w = rust.hmacSha256Into(f.hmacKey, f.hmacData, hmacOut)
+  assertEqual(
+    decoder.decode(hmacOut.subarray(0, w)),
+    toStr(rust.hmacSha256(f.hmacKey, f.hmacData)),
+    'hmac sha256 into parity',
   )
 
   // ── Backend-framework feature checks ──
@@ -428,9 +467,10 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     tCost: 1,
     pCost: 1,
   })
-  assertEqual(rust.passwordVerify(f.passwordBytes, phc), true, 'argon2 hash then verify')
+  const phcBytes = typeof phc === 'string' ? encoder.encode(phc) : phc
+  assertEqual(rust.passwordVerify(f.passwordBytes, phcBytes), true, 'argon2 hash then verify')
   assertEqual(
-    rust.passwordVerify(encoder.encode('wrong password'), phc),
+    rust.passwordVerify(encoder.encode('wrong password'), phcBytes),
     false,
     'argon2 rejects wrong password',
   )

@@ -4,7 +4,8 @@
 // headers) into a single growable Uint8Array in the layout the native
 // `Ingress.handleRequestPacked` expects.
 
-const encoder = new TextEncoder()
+import { encoder } from '../../shared/bytes'
+
 const EMPTY_BYTES = new Uint8Array(0)
 const EMPTY_IP_BYTES = encoder.encode('0.0.0.0')
 

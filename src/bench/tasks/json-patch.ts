@@ -13,7 +13,7 @@ export function jsonPatchTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'rust:json_patch',
-      run: () => rust.jsonPatch(f.jsonDoc, f.jsonPatch).byteLength,
+      run: () => rust.jsonPatch(f.jsonDoc, f.jsonPatch).length,
       iterations: 500,
       warmup: 50,
     },

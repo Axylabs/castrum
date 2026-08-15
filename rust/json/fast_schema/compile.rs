@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::types::{
-    Additional, FastArray, FastComb, FastNode, FastNumber, FastObject, FastString,
-    ValueConstraint, T_ARR, T_BOOL, T_INT, T_NULL, T_NUM, T_OBJ, T_STR,
+    Additional, FastArray, FastComb, FastNode, FastNumber, FastObject, FastString, ValueConstraint,
+    T_ARR, T_BOOL, T_INT, T_NULL, T_NUM, T_OBJ, T_STR,
 };
 
 /// Compile a schema into the zero-DOM fast representation, or `Err(())` if the
@@ -181,9 +181,15 @@ fn compile_node(schema: &Value, path: &str, ctx: &mut CompileCtx<'_>) -> Result<
             {
                 node.str = Some(Arc::new(compile_string_constraints(map)?));
             }
-            if ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"]
-                .iter()
-                .any(|k| map.contains_key(*k))
+            if [
+                "minimum",
+                "maximum",
+                "exclusiveMinimum",
+                "exclusiveMaximum",
+                "multipleOf",
+            ]
+            .iter()
+            .any(|k| map.contains_key(*k))
             {
                 node.num = Some(Arc::new(compile_number_constraints(map)?));
             }
@@ -196,7 +202,7 @@ fn compile_node(schema: &Value, path: &str, ctx: &mut CompileCtx<'_>) -> Result<
             if let Some(v) = map.get("enum") {
                 node.value = Some(compile_enum(v)?);
             } else if let Some(v) = map.get("const") {
-                node.value = Some(ValueConstraint::Const(Arc::new(v.clone())));
+                node.value = Some(ValueConstraint::Const(Arc::new(serde_to_sonic(v))));
             }
 
             Ok(node)
@@ -410,7 +416,11 @@ fn compile_array_constraints(
         };
     }
     if let Some(v) = map.get("contains") {
-        a.contains = Some(Arc::new(compile_node(v, &format!("{}/contains", path), ctx)?));
+        a.contains = Some(Arc::new(compile_node(
+            v,
+            &format!("{}/contains", path),
+            ctx,
+        )?));
     }
     Ok(a)
 }
@@ -531,8 +541,16 @@ fn compile_combinators(
     Ok(c)
 }
 
+/// Convert a `serde_json::Value` schema literal into a `sonic_rs::Value`.
+/// Compile-time only: the enum/const literals are stored as compact sonic
+/// values and compared against runtime doc values with the zero-DOM
+/// `sonic_values_equal` (no per-document serde_json DOM on the fast path).
+fn serde_to_sonic(v: &serde_json::Value) -> sonic_rs::Value {
+    sonic_rs::from_slice::<sonic_rs::Value>(&serde_json::to_vec(v).unwrap()).unwrap()
+}
+
 fn compile_enum(v: &Value) -> Result<ValueConstraint, ()> {
     let arr = v.as_array().ok_or(())?;
-    let members = arr.iter().map(|m| Arc::new(m.clone())).collect();
+    let members = arr.iter().map(|m| Arc::new(serde_to_sonic(m))).collect();
     Ok(ValueConstraint::Enum(members))
 }

@@ -1,7 +1,9 @@
 import * as native from '../baseline'
 import { rust } from '../rust-ffi'
+
 // Public `rustBatch` alias removed in 0.8.0 — bench-local shorthand.
 const rustBatch = rust.batch
+
 import { checksumValue } from './checksum'
 
 type HmacPayload = {
@@ -30,7 +32,7 @@ function runOnce(op: string, payload: unknown): unknown {
     }
     case 'rust:hmac_sha256': {
       const p = payload as HmacPayload
-      return rust.hmacSha256(p.key, p.data).byteLength
+      return rust.hmacSha256(p.key, p.data).length
     }
 
     case 'native:validate_email':

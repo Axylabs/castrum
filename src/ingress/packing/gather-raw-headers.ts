@@ -10,7 +10,6 @@ import type { HeaderPlan } from '../shared'
 import { writeHeaderPair } from './header-packing'
 import { forEachSelectedHeader } from './select-headers'
 import { getHeaderBuf } from './scratch'
-import { decoder } from '../../shared/bytes'
 
 // Shared per-header size guards (single source of truth in scratch.ts).
 // Re-exported for back-compat with imports that referenced them here.
@@ -21,28 +20,13 @@ export {
 } from './scratch'
 
 /**
- * Gather the request headers selected by `plan` as a `[name, value][]` array.
- * `methodKind` is the native method-kind enum (see `METHOD_KIND`).
- */
-export function gatherRawHeaders(
-  req: Request,
-  plan: HeaderPlan,
-  methodKind: number,
-): [string, string][] {
-  const headers: [string, string][] = []
-  forEachSelectedHeader(req, plan, methodKind, undefined, (name, value) => {
-    headers.push([decoder.decode(name), value])
-  })
-  return headers
-}
-
-/**
  * Gather the request headers selected by `plan` as a packed byte block
  * (`[u16 count] { [u16 name_len][name][u32 val_len][value] }`) written into a
  * reusable thread-local buffer.
  *
- * This is the zero-intermediate-string equivalent of [`gatherRawHeaders`] for
- * the packed-input pipeline: identical header selection and per-header size
+ * This is the zero-intermediate-string equivalent of the legacy string-array
+ * header gathering (a test-local reference in header-packing.test.ts) for the
+ * packed-input pipeline: identical header selection and per-header size
  * guards, but no `[string, string][]` array and no napi string marshaling.
  * The returned view is valid only until the next call on this call site.
  *

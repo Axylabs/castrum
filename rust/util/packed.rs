@@ -274,9 +274,27 @@ where
     write_u32_le(out, &mut pos, count as u32)?;
     ensure_capacity(out, pos, bitset_len)?;
     if crate::util::should_parallelize(count, total) {
+        use rayon::prelude::*;
         let items = crate::util::unpack(data)?;
-        let bits = crate::util::validation_bitset_chunked(&items, f, 4096);
-        out[pos..pos + bitset_len].copy_from_slice(&bits[4..]);
+        // Write the bitset DIRECTLY into the caller's buffer — no intermediate
+        // `Vec<u8>` allocation + copy (mirrors `validation_bitset_chunked`'s
+        // parallel logic, but writes in place). Zero first (the pooled output
+        // buffer may hold stale bytes).
+        out[pos..pos + bitset_len].fill(0);
+        let bits = &mut out[pos..pos + bitset_len];
+        let chunk_bytes = (4096usize).div_ceil(8);
+        bits.par_chunks_mut(chunk_bytes)
+            .enumerate()
+            .for_each(|(chunk_idx, chunk)| {
+                let start_item = chunk_idx * chunk_bytes * 8;
+                let end_item = (start_item + chunk.len() * 8).min(count);
+                let start_byte = start_item / 8;
+                for i in start_item..end_item {
+                    if f(items[i]) {
+                        chunk[(i / 8) - start_byte] |= 1 << (i & 7);
+                    }
+                }
+            });
     } else {
         // The pooled output buffer may hold stale bytes — zero the bits first.
         out[pos..pos + bitset_len].fill(0);
@@ -392,7 +410,7 @@ mod tests {
     fn packed_iter_truncated_item() {
         let mut buf = packed_from(&[b"abc", b"defg"]);
         buf.truncate(buf.len() - 1); // cut into the last item
-        // The Iterator stops silently on a malformed tail…
+                                     // The Iterator stops silently on a malformed tail…
         let iter = PackedIter::new(&buf).unwrap();
         let items: Vec<&[u8]> = iter.collect();
         assert_eq!(items, vec![b"abc"]);

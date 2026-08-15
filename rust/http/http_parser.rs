@@ -89,9 +89,7 @@ mod tests {
     /// `[u32 method_len][method][u32 path_len][path][u32 version_len][version]
     /// [u32 header_count]{ [u32 name_len][name][u32 value_len][value] }`.
     #[allow(clippy::type_complexity)]
-    fn decode_packed(
-        packed: &[u8],
-    ) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>) {
+    fn decode_packed(packed: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>) {
         let mut pos = 0usize;
         fn take_len(p: &[u8], pos: &mut usize) -> usize {
             let n = u32::from_le_bytes([p[*pos], p[*pos + 1], p[*pos + 2], p[*pos + 3]]) as usize;
@@ -134,10 +132,8 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn parse_once(
         input: &[u8],
-    ) -> std::result::Result<
-        (Vec<u8>, Vec<u8>, Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>),
-        napi::Error,
-    > {
+    ) -> std::result::Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>), napi::Error>
+    {
         let mut out = vec![0u8; 4096];
         let written = http_parse_request_packed_into_slice(input, &mut out)?;
         Ok(decode_packed(&out[..written]))

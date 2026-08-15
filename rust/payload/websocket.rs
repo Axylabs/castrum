@@ -38,8 +38,10 @@ pub fn ws_accept_key(key: Uint8Array) -> Result<Buffer> {
 /// `[u32 count]{[u32 len][accept]}` out.
 #[napi]
 pub fn ws_accept_key_batch_packed(input: Uint8Array) -> Result<Buffer> {
-    crate::util::run_packed_batch(input.as_ref(), |k| ws_accept_key_bytes(k).unwrap_or_default())
-        .map(Buffer::from)
+    crate::util::run_packed_batch(input.as_ref(), |k| {
+        ws_accept_key_bytes(k).unwrap_or_default()
+    })
+    .map(Buffer::from)
 }
 
 #[cfg(test)]

@@ -6,47 +6,49 @@
 
 import { decoder } from '../shared/bytes'
 import { generateRequestId } from '../shared/request-id'
-import { assertSyncCallback, DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from './shared'
+import { readRequestBodyOnce } from './body'
+import { ERR_CODE_BODY_TOO_LARGE, ERR_CODE_REQUEST_TIMEOUT } from './constants'
+import { internalContext, snapshotResult, syntheticContext } from './context'
 import { createIngressFast } from './fast'
 import { buildResponseContext } from './headers/fast-templates'
 import { buildTerminalResponse } from './response/terminal'
-import { snapshotResult, syntheticContext, internalContext } from './context'
-import { readRequestBodyOnce } from './body'
-import { ERR_CODE_BODY_TOO_LARGE, ERR_CODE_REQUEST_TIMEOUT } from './constants'
-import type { IngressOptions, IngressContext, SyncIngressHandler, IngressHandler } from './types'
+import { assertSyncCallback, DEFAULT_BODY_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES } from './shared'
+import type { IngressContext, IngressHandler, IngressOptions, SyncIngressHandler } from './types'
 
-// ── Re-export the full public ingress API ─────────────────────────
-export * from './constants'
-export * from './status'
-export * from './errors'
-export * from './handlers'
-export { createIngressFast, FastIngressResult } from './fast'
-export { buildTerminalResponse } from './response/terminal'
-export { buildResponseContext, headersForResult } from './headers/fast-templates'
 export { generateRequestId } from '../shared/request-id'
-export { METHOD_KIND, DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from './shared'
-export type { HeaderPlan } from './shared'
-export type { ResponseBuildContext, HeaderTemplate } from './headers/fast-templates'
-export type { CorsStaticStrings, CorsOptions } from './headers/cors'
-export type { SecurityHeadersOptions } from './headers/hsts'
-export type { IngressFastHandler, IngressFastOptions } from './options'
-// ── Observability (zero-dep): metrics, health probes ─────────────
-export { createIngressMetrics, metricsHandler } from './metrics'
-export type { IngressMetrics } from './metrics'
-export { livenessHandler, readinessHandler, healthHandler } from './health'
+export type { TraceContext } from '../shared/trace'
 // W3C trace context helpers (parse `traceparent` for log/hook correlation).
 export {
-  parseTraceParent,
-  createTraceId,
   createSpanId,
+  createTraceId,
+  parseTraceParent,
   serializeTraceParent,
 } from '../shared/trace'
-export type { TraceContext } from '../shared/trace'
+// ── Re-export the full public ingress API ─────────────────────────
+export * from './constants'
+export * from './errors'
+export { createIngressFast, FastIngressResult } from './fast'
+export * from './handlers'
+export type { CorsOptions, CorsStaticStrings } from './headers/cors'
+export type { HeaderTemplate, ResponseBuildContext } from './headers/fast-templates'
+export { buildResponseContext, headersForResult } from './headers/fast-templates'
+export type { SecurityHeadersOptions } from './headers/hsts'
+export { healthHandler, livenessHandler, readinessHandler } from './health'
+export type { IngressMetrics } from './metrics'
+// ── Observability (zero-dep): metrics, health probes ─────────────
+export { createIngressMetrics, metricsHandler } from './metrics'
+export type { IngressFastHandler, IngressFastOptions } from './options'
+export { buildTerminalResponse } from './response/terminal'
+export type { CreateIngressRouterOptions, IngressRouter, RouterRouteSpec } from './router'
+export { createIngressRouter } from './router'
+export type { HeaderPlan } from './shared'
+export { DEFAULT_BODY_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES, METHOD_KIND } from './shared'
+export * from './status'
 export type {
-  IngressOptions,
   IngressContext,
-  SyncIngressHandler,
   IngressHandler,
+  IngressOptions,
+  SyncIngressHandler,
 } from './types'
 
 // ── Sync factory ─────────────────────────────────────────────────

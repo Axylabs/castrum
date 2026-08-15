@@ -47,9 +47,9 @@ pub(crate) mod proxy;
 pub(crate) mod rate_limit;
 pub(crate) mod terminal;
 
-use self::options::{IngressOptions, Limits};
-use self::packed::build_packed_input_sync;
-use self::pipeline::IngressSchema;
+pub(crate) use self::options::{IngressOptions, Limits};
+pub(crate) use self::packed::build_packed_input_sync;
+pub(crate) use self::pipeline::IngressSchema;
 
 // ── Ingress state ─────────────────────────────────────────────────
 #[derive(Clone)]
@@ -81,9 +81,10 @@ impl Ingress {
         let parse_cookies = options.parse_cookies.unwrap_or(false);
         let parse_query = options.parse_query.unwrap_or(false);
         let require_json_body = options.require_json_body.unwrap_or(false);
-        let max_body_bytes = options.max_body_bytes.unwrap_or(
-            crate::ingress::options::DEFAULT_MAX_BODY_BYTES as u32,
-        ) as usize;
+        let max_body_bytes = options
+            .max_body_bytes
+            .unwrap_or(crate::ingress::options::DEFAULT_MAX_BODY_BYTES as u32)
+            as usize;
         let guard_enabled = options.enable_body_size_guard.unwrap_or(true);
         let emit_metadata_json = options.emit_metadata_json.unwrap_or(false);
 
@@ -127,12 +128,10 @@ impl Ingress {
                 let max_entries = rl_opts.max_entries.map(|v| v as usize);
                 // Shared per-configuration across the process: prevents a client
                 // from bypassing a per-IP limit by spreading requests across routes.
-                RateLimiterState::Enabled(crate::ingress::rate_limit::shared_limiter(
-                    limit,
-                    window_ms,
-                    max_entries,
+                RateLimiterState::Enabled(
+                    crate::ingress::rate_limit::shared_limiter(limit, window_ms, max_entries)
+                        .map_err(|e| Error::new(Status::InvalidArg, e))?,
                 )
-                .map_err(|e| Error::new(Status::InvalidArg, e))?)
             }
         } else {
             RateLimiterState::Disabled
@@ -225,8 +224,6 @@ impl Ingress {
         body: Option<Uint8Array>,
         output_buffer_size: Option<u32>,
     ) -> Result<Uint8Array> {
-        let output_size = clamp_output_size(output_buffer_size);
-
         // The fresh `out` vec cannot alias `body` (a distinct JS buffer), so it
         // is safe to borrow the body without copying.
         let body_bytes: &[u8] = match &body {
@@ -234,18 +231,44 @@ impl Ingress {
             None => &[],
         };
 
+        // Default SMALL (the packed decision + metadata JSON is typically a few
+        // hundred bytes — a flat 256 KiB zero-fill per call is wasteful) and
+        // grow on the pipeline's "output buffer too small" signal, capped at
+        // `MAX_OUTPUT_BUFFER_SIZE`. Hot paths use the pooled `_into` variant.
+        let mut output_size = match output_buffer_size {
+            Some(s) => clamp_output_size(Some(s)),
+            // `OUT_DATA_START + 8192` is within `[OUT_DATA_START, MAX]` by
+            // construction, so no clamp is needed for the default.
+            None => OUT_DATA_START + 8192,
+        };
         let mut out = vec![0u8; output_size];
-        let written = self.full_sync_into(
-            method_kind,
-            &url,
-            &ip,
-            &request_id,
-            headers,
-            body_bytes,
-            &mut out,
-        )?;
-        out.truncate(written);
-        Ok(Uint8Array::new(out))
+        let mut attempt_headers = headers.clone();
+        loop {
+            match self.full_sync_into(
+                method_kind,
+                &url,
+                &ip,
+                &request_id,
+                attempt_headers,
+                body_bytes,
+                &mut out,
+            ) {
+                Ok(written) => {
+                    out.truncate(written);
+                    return Ok(Uint8Array::new(out));
+                }
+                Err(e)
+                    if e.reason == "output buffer too small"
+                        && output_size < MAX_OUTPUT_BUFFER_SIZE as usize =>
+                {
+                    // Grow (bounded) and retry with a fresh header marshal.
+                    output_size = (output_size * 2).min(MAX_OUTPUT_BUFFER_SIZE as usize);
+                    out.resize(output_size, 0);
+                    attempt_headers = headers.clone();
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Reusable-output variant of [`Self::handle_request_full_sync`]: packs raw

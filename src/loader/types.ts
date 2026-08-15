@@ -4,14 +4,8 @@
 // specialized op-function type (`LoaderOpFn`), and the `load()` helpers.
 // No runtime code — erased at compile time.
 
-import type {
-  LoaderBulk,
-  LoaderBulkArgs,
-  LoaderOpArgs,
-  LoaderOpName,
-  LoaderScalar,
-} from './ops'
 import type { SchemaValidator } from '../shared/packed'
+import type { LoaderBulk, LoaderBulkArgs, LoaderOpArgs, LoaderOpName, LoaderScalar } from './ops'
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -93,7 +87,7 @@ type LoaderLoadFn<K extends LoaderOpName> = (
 ) => Promise<LoaderScalar<K>>
 
 /** Ops whose extra args are all optional/empty → they support `load()`. */
-type LoadableName = {
+export type LoadableName = {
   [K in LoaderOpName]: LoaderOpArgs[K] extends
     | []
     | [unknown?]
@@ -147,7 +141,5 @@ export interface Loader {
   readonly opNames: LoaderOpName[]
 }
 
-
 /** Load-dispatch strategy selector for `load()`. */
-type LoadStrategy = 'auto' | 'single' | 'coalesce'
-
+export type LoadStrategy = 'auto' | 'single' | 'coalesce'

@@ -7,11 +7,11 @@
  * parity with `rust.*`, and hmac bulk byte parity.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { runMany, runOne, validateCount, validateMany } from '../../../src/integration/batch'
+import { loader } from '../../../src/loader'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'
-import { loader } from '../../../src/loader'
-import { validateMany, validateCount, runMany, runOne } from '../../../src/integration/batch'
 
 const bytes = (s: string): Uint8Array => encoder.encode(s)
 
@@ -52,7 +52,7 @@ describe('integration/batch (loader-backed)', () => {
     const items = [bytes('a'), bytes('b')]
     const sigs = runMany('hmacSha256', items, key)
     expect(sigs.length).toBe(2)
-    expect(sigs[0]).toEqual(rust.hmacSha256(key, bytes('a')))
-    expect(sigs[1]).toEqual(rust.hmacSha256(key, bytes('b')))
+    expect(sigs[0]).toEqual(encoder.encode(rust.hmacSha256(key, bytes('a'))))
+    expect(sigs[1]).toEqual(encoder.encode(rust.hmacSha256(key, bytes('b'))))
   })
 })

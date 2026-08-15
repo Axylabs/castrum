@@ -4,10 +4,10 @@
  * cross-checked against the node:crypto baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { nativeCsrfToken, nativeCsrfVerify } from '../../../src/bench/csrf-baseline'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'
-import { nativeCsrfToken, nativeCsrfVerify } from '../../../src/bench/csrf-baseline'
 
 const SECRET = encoder.encode('csrf-secret')
 
@@ -32,7 +32,7 @@ describe('CsrfProtector (higher-order instance)', () => {
 
 describe('rust.csrfToken / csrfVerify (scalar)', () => {
   test('roundtrip + parity with native baseline', () => {
-    const token = rust.csrfToken(SECRET)
+    const token = encoder.encode(rust.csrfToken(SECRET))
     expect(rust.csrfVerify(token, SECRET)).toBe(true)
     expect(nativeCsrfVerify(token, SECRET)).toBe(true)
   })
@@ -45,7 +45,7 @@ describe('rust.csrfToken / csrfVerify (scalar)', () => {
 
 describe('rust.batch.csrfVerify', () => {
   test('bitset matches', () => {
-    const good = rust.csrfToken(SECRET)
+    const good = encoder.encode(rust.csrfToken(SECRET))
     const bits = rust.batch.csrfVerify([good, encoder.encode('bad.bad')], SECRET)
     expect(Array.from(bits)).toEqual([1, 0])
   })

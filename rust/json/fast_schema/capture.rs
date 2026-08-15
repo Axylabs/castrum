@@ -66,8 +66,7 @@ pub fn parse_target(pointer: &str) -> Option<TargetPath> {
         // Array-index steps are unsupported: a token that is `-` or all ASCII
         // digits is treated as an array index (JSON-pointer convention) and
         // rejected. (A rare all-digit OBJECT key is thereby excluded too.)
-        let is_index = !tok.is_empty()
-            && (*tok == "-" || tok.bytes().all(|b| b.is_ascii_digit()));
+        let is_index = !tok.is_empty() && (*tok == "-" || tok.bytes().all(|b| b.is_ascii_digit()));
         if is_index {
             return None;
         }
@@ -268,10 +267,7 @@ mod tests {
     fn parse_nested() {
         let t = parse_target("/customer/email").unwrap();
         assert_eq!(t.kind, CaptureKind::Value);
-        assert_eq!(
-            t.steps,
-            vec![b"customer".to_vec(), b"email".to_vec()]
-        );
+        assert_eq!(t.steps, vec![b"customer".to_vec(), b"email".to_vec()]);
     }
 
     #[test]

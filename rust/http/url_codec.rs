@@ -125,7 +125,9 @@ pub fn url_decode_batch_packed(input: Uint8Array) -> Result<Buffer> {
 #[napi]
 pub fn url_decode_bytes_batch_packed(input: Uint8Array) -> Result<Buffer> {
     crate::util::run_packed_batch(input.as_ref(), |v| {
-        url_decode_bytes_vec(v).map(|(out, _)| out).unwrap_or_default()
+        url_decode_bytes_vec(v)
+            .map(|(out, _)| out)
+            .unwrap_or_default()
     })
     .map(Buffer::from)
 }
@@ -272,7 +274,11 @@ mod tests {
             "a/b?c=d#e",
         ] {
             let encoded = url_encode_str(s.to_string());
-            assert_eq!(encoded.as_bytes(), url_encode_bytes(s.as_bytes()), "input: {s}");
+            assert_eq!(
+                encoded.as_bytes(),
+                url_encode_bytes(s.as_bytes()),
+                "input: {s}"
+            );
         }
     }
 
@@ -286,4 +292,5 @@ mod tests {
     fn url_decode_str_rejects_invalid_utf8() {
         // Decoded %FF is a lone high byte — not valid UTF-8.
         assert!(url_decode_str("%FF".to_string()).is_err());
-    }}
+    }
+}

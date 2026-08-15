@@ -170,13 +170,24 @@ fn http_date_parts(secs: i64) -> HttpDateParts {
     let (y, m, d) = civil_from_days(days);
     // 1970-01-01 was a Thursday; weekday Mon=0 → (days+3) mod 7.
     let wd = ((days.rem_euclid(7) + 3) % 7) as usize;
-    HttpDateParts { y, m, d, hh, mm, ss, wd }
+    HttpDateParts {
+        y,
+        m,
+        d,
+        hh,
+        mm,
+        ss,
+        wd,
+    }
 }
 
 /// Write the fixed-width `ddd, dd mmm yyyy hh:mm:ss GMT` layout into `out`
 /// (29 bytes, no heap allocation). `Err` only for years outside 0..=9999
 /// (where the fixed-width layout is undefined) or a too-small buffer.
-fn write_http_date_parts(p: &HttpDateParts, out: &mut [u8]) -> std::result::Result<usize, &'static str> {
+fn write_http_date_parts(
+    p: &HttpDateParts,
+    out: &mut [u8],
+) -> std::result::Result<usize, &'static str> {
     // 3 + 2 (", ") + 2 + 1 (" ") + 3 + 1 (" ") + 4 + 1 (" ") + 2 + 1 (":") + 2
     // + 1 (":") + 2 + 1 (" ") + 3 = 29
     if out.len() < 29 {
@@ -328,6 +339,35 @@ pub struct ConditionalRequest {
     last_modified_secs: i64,
 }
 
+/// Pure core: evaluate is-not-modified against a precompiled etag + last
+/// modified. Shared by the napi method and the C-ABI opaque-handle path, so
+/// both transports answer identically (304 semantics: If-None-Match wins over
+/// If-Modified-Since).
+pub(crate) fn is_not_modified_core(
+    etag_value: &[u8],
+    last_modified_secs: i64,
+    if_none_match: Option<&[u8]>,
+    if_modified_since: Option<&[u8]>,
+) -> bool {
+    if let Some(inm) = if_none_match {
+        let header = trim_ascii_whitespace(inm);
+        if header == b"*" {
+            return true;
+        }
+        return header
+            .split(|&b| b == b',')
+            .any(|candidate| etag_weak_eq(candidate, etag_value));
+    }
+    if let Some(ims) = if_modified_since {
+        if last_modified_secs > 0 {
+            if let Some(secs) = parse_http_date_secs(ims) {
+                return last_modified_secs <= secs;
+            }
+        }
+    }
+    false
+}
+
 #[napi]
 impl ConditionalRequest {
     #[napi(constructor)]
@@ -338,6 +378,15 @@ impl ConditionalRequest {
         }
     }
 
+    /// Opaque handle to the precompiled state, for the `bun:ffi` C-ABI fast path
+    /// (`castrum_conditional_is_not_modified` in rust/ffi.rs). Only valid while
+    /// THIS instance is alive; the JS wrapper holds the instance for the handle
+    /// lifetime (same contract as `Ingress::ingress_inner_ptr`).
+    #[napi]
+    pub fn inner_ptr(&self) -> u64 {
+        self as *const ConditionalRequest as u64
+    }
+
     /// true → "304 Not Modified" (If-None-Match wins over If-Modified-Since).
     #[napi]
     pub fn is_not_modified(
@@ -345,24 +394,27 @@ impl ConditionalRequest {
         if_none_match: Option<Uint8Array>,
         if_modified_since: Option<Uint8Array>,
     ) -> bool {
-        if let Some(inm) = if_none_match {
-            let header = trim_ascii_whitespace(inm.as_ref());
-            if header == b"*" {
-                return true;
-            }
-            return header
-                .split(|&b| b == b',')
-                .any(|candidate| etag_weak_eq(candidate, &self.etag_value));
-        }
-        if let Some(ims) = if_modified_since {
-            if self.last_modified_secs > 0 {
-                if let Some(secs) = parse_http_date_secs(ims.as_ref()) {
-                    return self.last_modified_secs <= secs;
-                }
-            }
-        }
-        false
+        is_not_modified_core(
+            &self.etag_value,
+            self.last_modified_secs,
+            if_none_match.as_deref(),
+            if_modified_since.as_deref(),
+        )
     }
+}
+
+/// C-ABI support: evaluate is-not-modified against the precompiled state.
+///
+/// # Safety
+/// `p` must be a valid `*const ConditionalRequest` obtained from `inner_ptr`
+/// and must stay alive for the call (the JS wrapper holds the napi instance).
+pub(crate) unsafe fn conditional_is_not_modified(
+    p: *const ConditionalRequest,
+    inm: Option<&[u8]>,
+    ims: Option<&[u8]>,
+) -> bool {
+    let c = &*p;
+    is_not_modified_core(&c.etag_value, c.last_modified_secs, inm, ims)
 }
 
 #[cfg(test)]
@@ -437,7 +489,15 @@ mod tests {
 
     #[test]
     fn http_date_into_matches_allocating() {
-        for secs in [0i64, 1, 946_684_800, 784_111_777, 1_700_000_000, -1, -86_400] {
+        for secs in [
+            0i64,
+            1,
+            946_684_800,
+            784_111_777,
+            1_700_000_000,
+            -1,
+            -86_400,
+        ] {
             let expected = http_date_from_secs(secs);
             let mut out = [0u8; 32];
             let n = http_date_into_slice(secs, &mut out).unwrap();

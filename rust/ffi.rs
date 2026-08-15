@@ -24,6 +24,7 @@ use aws_lc_rs::hmac;
 use lru::LruCache;
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
+use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
 use std::ptr;
@@ -148,6 +149,44 @@ pub unsafe extern "C" fn castrum_xxh3(data: *const u8, len: usize) -> u64 {
     crate::crypto::hashing::fast_hash_bytes(bytes)
 }
 
+// ── Diagnostic C-ABI probes (bench-only, NOT in the ffi.ts surface) ────────
+//
+// Used ONLY by bench/ffi-margin.ts to isolate the fixed per-call FFI cost into
+// its components: the bare trampoline (noop), scalar-arg/return conversion
+// (echo_usize, which can be bound with either `usize` or `u64_fast` to measure
+// BigInt boxing in isolation), and TypedArray-view→pointer resolution
+// (echo_view). They are trivial, non-fallible, allocate nothing, and are NOT
+// part of the shipped `src/native/ffi.ts` dlopen map, so the bind-time
+// self-test does not cover them. The `ffi_probe_*` prefix (NOT `castrum_*`)
+// keeps them out of the shipped-symbol namespace so the source-level symbol-
+// parity guard (test/unit/features/ffi-symbol-parity.test.ts) stays meaningful.
+
+/// Bare C-ABI trampoline floor: does nothing, returns nothing.
+#[no_mangle]
+pub extern "C" fn ffi_probe_noop() {}
+
+/// Scalar pass-through: returns `v` unchanged. Measures scalar-arg + return
+/// conversion only (bind with `usize` vs `u64_fast` to isolate BigInt boxing).
+#[no_mangle]
+pub extern "C" fn ffi_probe_echo_usize(v: usize) -> usize {
+    v
+}
+
+/// View pass-through: returns the byte length of the `(ptr, len)` pair.
+/// Measures TypedArray-view→pointer resolution + (ptr,len) arg conversion.
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes (the pointer is only used to
+/// form a slice whose length we return — never dereferenced).
+#[no_mangle]
+pub unsafe extern "C" fn ffi_probe_echo_view(data: *const u8, len: usize) -> usize {
+    if data.is_null() && len != 0 {
+        return 0;
+    }
+    let _ = slice::from_raw_parts(data, len);
+    len
+}
+
 /// JSON-validity check over `data[0..len]`. Returns 1 if the bytes are
 /// well-formed JSON, 0 otherwise.
 ///
@@ -160,6 +199,21 @@ pub unsafe extern "C" fn castrum_json_valid(data: *const u8, len: usize) -> u8 {
     }
     let bytes = slice::from_raw_parts(data, len);
     u8::from(crate::json::json_ops::json_valid_bytes(bytes))
+}
+
+/// UTF-8 validity check over `data[0..len]`. Returns 1 if the bytes are valid
+/// UTF-8, 0 otherwise. Used by the JS `urlDecode` wrapper to mirror the napi
+/// fatal UTF-8 validation without a `TextDecoder` on the Bun path.
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_utf8_valid(data: *const u8, len: usize) -> u8 {
+    if data.is_null() {
+        return 0;
+    }
+    let bytes = slice::from_raw_parts(data, len);
+    u8::from(std::str::from_utf8(bytes).is_ok())
 }
 
 /// Lowercase-hex encode `data[0..len]` into `out[0..out_cap]`. Returns bytes
@@ -266,10 +320,22 @@ macro_rules! validator_c_abi {
     };
 }
 
-validator_c_abi!(castrum_validate_email, crate::util::validation::validate_email_bytes);
-validator_c_abi!(castrum_validate_uuid, crate::util::validation::validate_uuid_bytes);
-validator_c_abi!(castrum_validate_ipv4, crate::util::validation::validate_ipv4_bytes);
-validator_c_abi!(castrum_validate_ipv6, crate::util::validation::validate_ipv6_bytes);
+validator_c_abi!(
+    castrum_validate_email,
+    crate::util::validation::validate_email_bytes
+);
+validator_c_abi!(
+    castrum_validate_uuid,
+    crate::util::validation::validate_uuid_bytes
+);
+validator_c_abi!(
+    castrum_validate_ipv4,
+    crate::util::validation::validate_ipv4_bytes
+);
+validator_c_abi!(
+    castrum_validate_ipv6,
+    crate::util::validation::validate_ipv6_bytes
+);
 
 /// Sum of `id` fields across a JSON array (sonic-rs zero-DOM) → packed
 /// `[u8 ok][i64 sum LE]` output (9 B: 1 = valid array — the sum may be 0 —,
@@ -393,70 +459,508 @@ pub unsafe extern "C" fn castrum_password_verify_bcrypt(
 
 // ── Fixed / bounded-size output writers ──────────────────────────
 
-/// RFC 6455 Sec-WebSocket-Accept (28 bytes) into `out`.
+/// RFC 6455 Sec-WebSocket-Accept (28 bytes) returned as a null-terminated C
+/// string into the per-thread reused buffer (`cstring` return).
+///
+/// # Safety
+/// `key` must be valid for reads of `klen` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_ws_accept_key(
+    key: *const u8,
+    klen: usize,
+) -> *const std::os::raw::c_char {
+    if key.is_null() {
+        return std::ptr::null();
+    }
+    cstring_return(28, |out| {
+        crate::payload::websocket::ws_accept_key_into(slice::from_raw_parts(key, klen), out).ok()
+    })
+}
+
+/// RFC 6455 Sec-WebSocket-Accept written directly into a caller buffer — the
+/// pooled sibling of `castrum_ws_accept_key` (no cstring round-trip). Writes 28
+/// bytes; returns bytes written, the exact required size when `out_cap` is too
+/// small, or 0 on a malformed key.
 ///
 /// # Safety
 /// `key` must be valid for reads of `klen` bytes; `out` for writes up to `out_cap`.
 #[no_mangle]
-pub unsafe extern "C" fn castrum_ws_accept_key(
+pub unsafe extern "C" fn castrum_ws_accept_key_into(
     key: *const u8,
     klen: usize,
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if key.is_null() || out.is_null() || out_cap < 28 {
+    if key.is_null() || out.is_null() {
         return 0;
     }
-    crate::payload::websocket::ws_accept_key_into(
+    if out_cap < 28 {
+        return 28;
+    }
+    match crate::payload::websocket::ws_accept_key_into(
         slice::from_raw_parts(key, klen),
-        slice::from_raw_parts_mut(out, out_cap),
-    )
-    .unwrap_or(0)
+        slice::from_raw_parts_mut(out, 28),
+    ) {
+        Ok(28) => 28,
+        _ => 0,
+    }
 }
 
 /// crc32-based ETag (10 strong / 12 weak) into `out`; `weak` is a u8 flag.
 ///
 /// # Safety
-/// `data` must be valid for reads of `len` bytes; `out` for writes up to `out_cap`.
+/// ETag (`"<8-hex>"` or `W/"<8-hex>"`) returned as a null-terminated C string
+/// into the per-thread reused buffer (`cstring` return — the engine clones it).
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_etag(
     data: *const u8,
     len: usize,
+    weak: u8,
+) -> *const std::os::raw::c_char {
+    if data.is_null() {
+        return std::ptr::null();
+    }
+    let crc = crc32fast::hash(slice::from_raw_parts(data, len));
+    let needed = if weak != 0 { 12 } else { 10 };
+    cstring_return(needed, |out| {
+        crate::http::etag::etag_from_crc32_into(crc, weak != 0, out).ok()
+    })
+}
+
+/// crc32-based ETag written directly into a caller buffer — the pooled sibling
+/// of `castrum_etag` (no cstring round-trip). Writes 10 strong / 12 weak bytes;
+/// returns bytes written, the exact required size when `out_cap` is too small,
+/// or 0 on invalid input.
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes; `out` for writes up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_etag_into(
+    data: *const u8,
+    len: usize,
+    weak: u8,
     out: *mut u8,
     out_cap: usize,
-    weak: u8,
 ) -> usize {
     if data.is_null() || out.is_null() {
         return 0;
     }
-    let crc = crc32fast::hash(slice::from_raw_parts(data, len));
-    let need = if weak != 0 { 12 } else { 10 };
-    if out_cap < need {
-        return 0;
+    let needed = if weak != 0 { 12 } else { 10 };
+    if out_cap < needed {
+        return needed;
     }
-    crate::http::etag::etag_from_crc32_into(crc, weak != 0, slice::from_raw_parts_mut(out, out_cap))
-        .unwrap_or(0)
+    let crc = crc32fast::hash(slice::from_raw_parts(data, len));
+    crate::http::etag::etag_from_crc32_into(
+        crc,
+        weak != 0,
+        slice::from_raw_parts_mut(out, needed),
+    )
+    .unwrap_or_default()
 }
 
-/// Random hex token: `byte_len` random bytes → `byte_len*2` hex chars into `out`.
+/// Evaluate `ConditionalRequest::is_not_modified` against the precompiled state
+/// via its opaque inner handle (from the napi `inner_ptr()`). `flags` bit0 =
+/// If-None-Match present, bit1 = If-Modified-Since present (a present-but-empty
+/// header is distinct from absent, matching the napi `Option` semantics).
+/// Returns 1 → 304. A null handle (0) → 0, so a dropped instance can never
+/// dereference freed state.
+///
+/// # Safety
+/// `inner` must be a valid `ConditionalRequest` pointer obtained from
+/// `inner_ptr()` and must stay alive for the call (the JS wrapper holds the
+/// napi instance). `inm`/`ims` must be valid for reads of their lengths.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_conditional_is_not_modified(
+    inner: usize,
+    inm: *const u8,
+    inm_len: usize,
+    ims: *const u8,
+    ims_len: usize,
+    flags: u8,
+) -> u8 {
+    if inner == 0 {
+        return 0;
+    }
+    let inm_opt = if flags & 1 != 0 {
+        Some(slice::from_raw_parts(inm, inm_len))
+    } else {
+        None
+    };
+    let ims_opt = if flags & 2 != 0 {
+        Some(slice::from_raw_parts(ims, ims_len))
+    } else {
+        None
+    };
+    panic_guard(
+        || {
+            u8::from(unsafe {
+                crate::http::etag::conditional_is_not_modified(
+                    inner as *const crate::http::etag::ConditionalRequest,
+                    inm_opt,
+                    ims_opt,
+                )
+            })
+        },
+        0,
+    )
+}
+
+/// MediaTypeMatcher: wildcard match against the PRECOMPILED expected type via
+/// its opaque inner handle. Returns 1 = match. A null handle (0) → 0.
+///
+/// # Safety
+/// `inner` must be a valid `MediaTypeMatcher` pointer from `inner_ptr()`, alive
+/// for the call (the JS wrapper holds the napi instance).
+#[no_mangle]
+pub unsafe extern "C" fn castrum_media_type_matcher_matches(
+    inner: usize,
+    actual: *const u8,
+    actual_len: usize,
+) -> u8 {
+    if inner == 0 || actual.is_null() {
+        return 0;
+    }
+    let a = slice::from_raw_parts(actual, actual_len);
+    panic_guard(
+        || {
+            u8::from(unsafe {
+                crate::http::media_type::media_type_matcher_matches_core(
+                    inner as *const crate::http::media_type::MediaTypeMatcher,
+                    a,
+                )
+            })
+        },
+        0,
+    )
+}
+
+/// AcceptNegotiator: best supported encoding for `header` against the
+/// PRECOMPILED supported list via its opaque inner handle → cstring (`null` =
+/// identity, matching napi `Option<String>`).
+///
+/// # Safety
+/// `inner` must be a valid `AcceptNegotiator` pointer from `inner_ptr()`, alive
+/// for the call.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_accept_negotiator_negotiate(
+    inner: usize,
+    header: *const u8,
+    header_len: usize,
+) -> *const std::os::raw::c_char {
+    if inner == 0 || header.is_null() {
+        return std::ptr::null();
+    }
+    let h = slice::from_raw_parts(header, header_len);
+    let Some(bytes) = panic_guard(
+        || unsafe {
+            crate::http::accept::accept_negotiator_negotiate_core(
+                inner as *const crate::http::accept::AcceptNegotiator,
+                h,
+            )
+        },
+        None,
+    ) else {
+        return std::ptr::null();
+    };
+    cstring_return(bytes.len(), |out| {
+        out[..bytes.len()].copy_from_slice(&bytes);
+        Some(bytes.len())
+    })
+}
+
+/// JwtSigner: sign pre-serialized claim JSON with the PRECOMPILED key + ttl via
+/// its opaque inner handle. Needed-size convention; 0 = invalid claims JSON /
+/// null handle (real error).
+///
+/// # Safety
+/// `inner` must be a valid `JwtSigner` pointer from `inner_ptr()`, alive for
+/// the call; `out` for writes up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_jwt_signer_sign(
+    inner: usize,
+    claims: *const u8,
+    claims_len: usize,
+    now_seconds: i64,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if inner == 0 || claims.is_null() || out.is_null() {
+        return 0;
+    }
+    let c = slice::from_raw_parts(claims, claims_len);
+    let Some(token) = panic_guard(
+        || unsafe {
+            crate::crypto::jwt::jwt_signer_sign_bytes_core(
+                inner as *const crate::crypto::jwt::JwtSigner,
+                c,
+                now_seconds,
+            )
+            .ok()
+        },
+        None,
+    ) else {
+        return 0;
+    };
+    if token.len() > out_cap {
+        return token.len();
+    }
+    slice::from_raw_parts_mut(out, token.len()).copy_from_slice(&token);
+    token.len()
+}
+
+/// JwtSigner: verify a JWT with the PRECOMPILED key → claims JSON bytes.
+/// Returns bytes written (0 = invalid signature / expired / malformed → null).
+///
+/// # Safety
+/// `inner` must be a valid `JwtSigner` pointer from `inner_ptr()`, alive for
+/// the call; `out` for writes up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_jwt_signer_verify(
+    inner: usize,
+    token: *const u8,
+    token_len: usize,
+    now_seconds: i64,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if inner == 0 || token.is_null() || out.is_null() {
+        return 0;
+    }
+    let t = slice::from_raw_parts(token, token_len);
+    let Some(claims) = panic_guard(
+        || unsafe {
+            crate::crypto::jwt::jwt_signer_verify_core(
+                inner as *const crate::crypto::jwt::JwtSigner,
+                t,
+                now_seconds,
+            )
+        },
+        None,
+    ) else {
+        return 0;
+    };
+    if claims.len() > out_cap {
+        return claims.len();
+    }
+    slice::from_raw_parts_mut(out, claims.len()).copy_from_slice(&claims);
+    claims.len()
+}
+
+/// TemplateRenderer: render the compiled template with a pre-serialized JSON
+/// context via its opaque inner handle. Needed-size convention; 0 = invalid
+/// context / render error / null handle (real error).
+///
+/// # Safety
+/// `inner` must be a valid `TemplateRenderer` pointer from `inner_ptr()`, alive
+/// for the call; `out` for writes up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_template_render(
+    inner: usize,
+    context: *const u8,
+    context_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if inner == 0 || context.is_null() || out.is_null() {
+        return 0;
+    }
+    let c = slice::from_raw_parts(context, context_len);
+    let Some(rendered) = panic_guard(
+        || unsafe {
+            crate::payload::template::template_render_core(
+                inner as *const crate::payload::template::TemplateRenderer,
+                c,
+            )
+            .ok()
+        },
+        None,
+    ) else {
+        return 0;
+    };
+    if rendered.len() > out_cap {
+        return rendered.len();
+    }
+    slice::from_raw_parts_mut(out, rendered.len()).copy_from_slice(&rendered);
+    rendered.len()
+}
+
+/// SchemaValidator: validate a document against the COMPILED schema via its
+/// opaque inner handle. Returns 1 = valid. A null handle (0) → 0.
+///
+/// # Safety
+/// `inner` must be a valid `SchemaValidator` pointer from `inner_ptr()`, alive
+/// for the call.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_schema_validator_validate(
+    inner: usize,
+    doc: *const u8,
+    doc_len: usize,
+) -> u8 {
+    if inner == 0 || doc.is_null() {
+        return 0;
+    }
+    let d = slice::from_raw_parts(doc, doc_len);
+    panic_guard(
+        || {
+            u8::from(unsafe {
+                crate::json::json_schema::schema_validator_validate_core(
+                    inner as *const crate::json::json_schema::SchemaValidator,
+                    d,
+                )
+            })
+        },
+        0,
+    )
+}
+
+/// RateLimiter: check a rate limit for a STRING key (hashed internally) at
+/// `now_ms` via its opaque inner handle. Writes packed `[u8 allowed][u32
+/// remaining LE][i64 reset_ms LE]` (13 bytes); needed-size convention; 0 =
+/// null handle (real error).
+///
+/// # Safety
+/// `inner` must be a valid `RateLimiter` pointer from `inner_ptr()`, alive for
+/// the call; `out` for writes up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_rate_limiter_check(
+    inner: usize,
+    key: *const u8,
+    key_len: usize,
+    now_ms: i64,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if inner == 0 || key.is_null() || out.is_null() {
+        return 0;
+    }
+    let k = slice::from_raw_parts(key, key_len);
+    let hashed = crate::crypto::hashing::fast_hash_bytes(k);
+    let (allowed, remaining, reset_ms) = panic_guard(
+        || unsafe {
+            crate::ingress::rate_limit::rate_limiter_check_core(
+                inner as *const crate::ingress::rate_limit::RateLimiter,
+                hashed,
+                now_ms as u64,
+            )
+        },
+        (false, 0, 0),
+    );
+    write_rate_check(allowed, remaining, reset_ms, out, out_cap)
+}
+
+/// RateLimiter: check a rate limit for a PRE-HASHED i64 key at `now_ms` via its
+/// opaque inner handle (packed `[u8 allowed][u32 remaining LE][i64 reset_ms LE]`).
+///
+/// # Safety
+/// `inner` must be a valid `RateLimiter` pointer from `inner_ptr()`, alive for
+/// the call; `out` for writes up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_rate_limiter_check_key(
+    inner: usize,
+    key: i64,
+    now_ms: i64,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if inner == 0 || out.is_null() {
+        return 0;
+    }
+    let (allowed, remaining, reset_ms) = panic_guard(
+        || unsafe {
+            crate::ingress::rate_limit::rate_limiter_check_core(
+                inner as *const crate::ingress::rate_limit::RateLimiter,
+                key as u64,
+                now_ms as u64,
+            )
+        },
+        (false, 0, 0),
+    );
+    write_rate_check(allowed, remaining, reset_ms, out, out_cap)
+}
+
+/// Write the packed `[u8 allowed][u32 remaining LE][i64 reset_ms LE]` verdict;
+/// returns bytes written or the exact required size (13) when `out_cap` is too
+/// small. Never returns 0 on a valid call.
 ///
 /// # Safety
 /// `out` must be valid for writes up to `out_cap`.
+unsafe fn write_rate_check(
+    allowed: bool,
+    remaining: u32,
+    reset_ms: i64,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if out_cap < 13 {
+        return 13;
+    }
+    let o = slice::from_raw_parts_mut(out, 13);
+    o[0] = u8::from(allowed);
+    o[1..5].copy_from_slice(&remaining.to_le_bytes());
+    o[5..13].copy_from_slice(&reset_ms.to_le_bytes());
+    13
+}
+
+/// Random hex token: `byte_len` random bytes → `byte_len*2` hex chars, returned
+/// as a null-terminated C string into the per-thread reused buffer.
+///
+/// # Safety
+/// `byte_len` must be ≤ 16 MiB (else `null`).
 #[no_mangle]
-pub unsafe extern "C" fn castrum_random_token(byte_len: u32, out: *mut u8, out_cap: usize) -> usize {
+pub unsafe extern "C" fn castrum_random_token(byte_len: u32) -> *const std::os::raw::c_char {
+    const MAX: usize = 16 * 1024 * 1024;
+    let len = byte_len as usize;
+    let Some(out_len) = len.checked_mul(2) else {
+        return std::ptr::null();
+    };
+    if len > MAX {
+        return std::ptr::null();
+    }
+    let mut bytes = vec![0u8; len];
+    if getrandom::fill(&mut bytes).is_err() {
+        return std::ptr::null();
+    }
+    cstring_return(out_len, |out| {
+        crate::util::bytes::hex_encode(&bytes, out);
+        Some(out_len)
+    })
+}
+
+/// Random hex token written directly into a caller buffer — the pooled sibling
+/// of `castrum_random_token` (no cstring round-trip on the Bun side). Writes
+/// `byte_len*2` hex chars for `byte_len` random bytes. Returns bytes written
+/// (`byte_len*2`), the exact required size when `out_cap` is too small, or 0 on
+/// a real error (over the 16 MiB cap or the random source failing).
+///
+/// # Safety
+/// `out` must be valid for writes up to `out_cap` (and `out` non-null).
+#[no_mangle]
+pub unsafe extern "C" fn castrum_random_token_into(
+    byte_len: u32,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
     const MAX: usize = 16 * 1024 * 1024;
     let len = byte_len as usize;
     let Some(out_len) = len.checked_mul(2) else {
         return 0;
     };
-    if len > MAX || out.is_null() || out_cap < out_len {
+    if len > MAX || out.is_null() {
         return 0;
+    }
+    if out_cap < out_len {
+        // Needed-size convention: report the exact required size.
+        return out_len;
     }
     let mut bytes = vec![0u8; len];
     if getrandom::fill(&mut bytes).is_err() {
         return 0;
     }
-    crate::util::bytes::hex_encode(&bytes, slice::from_raw_parts_mut(out, out_len));
+    let o = slice::from_raw_parts_mut(out, out_len);
+    crate::util::bytes::hex_encode(&bytes, o);
     out_len
 }
 
@@ -539,12 +1043,39 @@ pub unsafe extern "C" fn castrum_hmac_sha256(
     64
 }
 
-/// Sign a cookie `value` as `value.<64-hex sig>` into `out`.
+/// Sign a cookie `value` as `value.<64-hex sig>`, returned as a null-terminated
+/// C string into the per-thread reused buffer (`cstring` return).
 ///
 /// # Safety
-/// `value`/`secret` must be valid for reads of their lengths; `out` for `out_cap`.
+/// `value`/`secret` must be valid for reads of their lengths.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_sign_cookie(
+    value: *const u8,
+    vlen: usize,
+    secret: *const u8,
+    slen: usize,
+) -> *const std::os::raw::c_char {
+    if value.is_null() || secret.is_null() {
+        return std::ptr::null();
+    }
+    let v = slice::from_raw_parts(value, vlen);
+    let key = hmac_key_cached(slice::from_raw_parts(secret, slen));
+    cstring_return(vlen + 65, |out| {
+        crate::crypto::cookie_sign::sign_cookie_into(v, &key, out)
+    })
+}
+
+/// Sign a cookie `value` as `value.<64-hex sig>` written directly into a caller
+/// buffer — the pooled sibling of `castrum_sign_cookie` (no cstring round-trip;
+/// this is the path `signCookieInto` must use). Writes `vlen + 65` bytes;
+/// returns bytes written, the exact required size when `out_cap` is too small,
+/// or 0 on invalid input.
+///
+/// # Safety
+/// `value`/`secret` must be valid for reads of their lengths; `out` for writes
+/// up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_sign_cookie_into(
     value: *const u8,
     vlen: usize,
     secret: *const u8,
@@ -555,21 +1086,55 @@ pub unsafe extern "C" fn castrum_sign_cookie(
     if value.is_null() || secret.is_null() || out.is_null() {
         return 0;
     }
+    let needed = vlen + 65;
+    if out_cap < needed {
+        return needed;
+    }
+    let v = slice::from_raw_parts(value, vlen);
+    let key = hmac_key_cached(slice::from_raw_parts(secret, slen));
     crate::crypto::cookie_sign::sign_cookie_into(
-        slice::from_raw_parts(value, vlen),
-        &hmac_key_cached(slice::from_raw_parts(secret, slen)),
+        v,
+        &key,
         slice::from_raw_parts_mut(out, out_cap),
     )
-    .unwrap_or(0)
+    .unwrap_or_default()
 }
 
-/// Verify a signed cookie into `out` (the value without its signature); returns
-/// 0 on invalid signature / malformed input.
+/// Verify a signed cookie → the value without its signature, returned as a
+/// null-terminated C string into the per-thread reused buffer. `null` on an
+/// invalid signature / malformed input (the JS side maps to verify-fail).
 ///
 /// # Safety
-/// `signed`/`secret` must be valid for reads of their lengths; `out` for `out_cap`.
+/// `signed`/`secret` must be valid for reads of their lengths.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_verify_cookie(
+    signed: *const u8,
+    slen: usize,
+    secret: *const u8,
+    klen: usize,
+) -> *const std::os::raw::c_char {
+    if signed.is_null() || secret.is_null() {
+        return std::ptr::null();
+    }
+    let s = slice::from_raw_parts(signed, slen);
+    let key = hmac_key_cached(slice::from_raw_parts(secret, klen));
+    cstring_return(slen, |out| {
+        crate::crypto::cookie_sign::verify_cookie_into(s, &key, out)
+    })
+}
+
+/// Verify a signed cookie → its value written directly into a caller buffer —
+/// the pooled sibling of `castrum_verify_cookie` (no cstring round-trip; the
+/// value length is unknown a priori, so the caller sizes to `slen` — the value
+/// is always a prefix of `signed`). Returns the value length, the exact
+/// required size when `out_cap` is too small, or 0 on invalid signature /
+/// malformed input.
+///
+/// # Safety
+/// `signed`/`secret` must be valid for reads of their lengths; `out` for writes
+/// up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_verify_cookie_into(
     signed: *const u8,
     slen: usize,
     secret: *const u8,
@@ -580,27 +1145,77 @@ pub unsafe extern "C" fn castrum_verify_cookie(
     if signed.is_null() || secret.is_null() || out.is_null() {
         return 0;
     }
+    let s = slice::from_raw_parts(signed, slen);
+    let key = hmac_key_cached(slice::from_raw_parts(secret, klen));
+    // The value is a prefix of `signed` (everything before the last `.`), so
+    // `slen` is always a sufficient bound — needed-size only differs when the
+    // caller passed less.
+    if out_cap < slen {
+        // Compute the actual needed length without writing (a full verify is
+        // wasted if we're just sizing; the caller retries at most once).
+        let dot = s.iter().rposition(|&b| b == b'.').map_or(0, |i| i);
+        if dot != 0 {
+            return dot;
+        }
+        return slen;
+    }
     crate::crypto::cookie_sign::verify_cookie_into(
-        slice::from_raw_parts(signed, slen),
-        &hmac_key_cached(slice::from_raw_parts(secret, klen)),
+        s,
+        &key,
         slice::from_raw_parts_mut(out, out_cap),
     )
-    .unwrap_or(0)
+    .unwrap_or_default()
 }
 
-/// CSRF token (129 bytes: 64 rnd-hex + '.' + 64 sig-hex) into `out`.
+/// CSRF token (`<64-hex(rnd)>.<64-hex(sig)>`, 129 bytes) returned as a
+/// null-terminated C string into the per-thread reused buffer.
 ///
 /// # Safety
-/// `secret` must be valid for reads of `slen` bytes; `out` for `out_cap`.
+/// `secret` must be valid for reads of `slen` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_csrf_token(
+    secret: *const u8,
+    slen: usize,
+) -> *const std::os::raw::c_char {
+    if secret.is_null() {
+        return std::ptr::null();
+    }
+    let k = hmac_key_cached(slice::from_raw_parts(secret, slen));
+    let mut rnd = [0u8; 32];
+    if getrandom::fill(&mut rnd).is_err() {
+        return std::ptr::null();
+    }
+    let mut rnd_hex = [0u8; 64];
+    crate::util::bytes::hex_encode(&rnd, &mut rnd_hex);
+    let mut sig_hex = [0u8; 64];
+    crate::util::bytes::hex_encode(hmac::sign(&k, &rnd_hex).as_ref(), &mut sig_hex);
+    cstring_return(129, |out| {
+        out[..64].copy_from_slice(&rnd_hex);
+        out[64] = b'.';
+        out[65..129].copy_from_slice(&sig_hex);
+        Some(129)
+    })
+}
+
+/// CSRF token (`<64-hex(rnd)>.<64-hex(sig)>`, 129 bytes) written directly into
+/// a caller buffer — the pooled sibling of `castrum_csrf_token` (no cstring
+/// round-trip). Returns 129, the exact required size when `out_cap` is too
+/// small, or 0 on RNG failure.
+///
+/// # Safety
+/// `secret` must be valid for reads of `slen` bytes; `out` for writes up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_csrf_token_into(
     secret: *const u8,
     slen: usize,
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if secret.is_null() || out.is_null() || out_cap < 129 {
+    if secret.is_null() || out.is_null() {
         return 0;
+    }
+    if out_cap < 129 {
+        return 129;
     }
     let k = hmac_key_cached(slice::from_raw_parts(secret, slen));
     let mut rnd = [0u8; 32];
@@ -614,7 +1229,7 @@ pub unsafe extern "C" fn castrum_csrf_token(
     let o = slice::from_raw_parts_mut(out, 129);
     o[..64].copy_from_slice(&rnd_hex);
     o[64] = b'.';
-    o[65..].copy_from_slice(&sig_hex);
+    o[65..129].copy_from_slice(&sig_hex);
     129
 }
 
@@ -717,8 +1332,10 @@ pub unsafe extern "C" fn castrum_pbkdf2_sha256(
     if password.is_null() || salt.is_null() || out.is_null() {
         return 0;
     }
-    let dk_len = dk_len.clamp(crate::crypto::pbkdf2::PBKDF2_MIN_LEN, crate::crypto::pbkdf2::PBKDF2_MAX_LEN)
-        as usize;
+    let dk_len = dk_len.clamp(
+        crate::crypto::pbkdf2::PBKDF2_MIN_LEN,
+        crate::crypto::pbkdf2::PBKDF2_MAX_LEN,
+    ) as usize;
     if out_cap < dk_len {
         return 0;
     }
@@ -926,10 +1543,26 @@ macro_rules! compress_to_out {
     };
 }
 
-compress_to_out!(castrum_gzip_compress, crate::payload::compress::gzip_compress_into, u32);
-compress_to_out!(castrum_gzip_decompress, crate::payload::compress::gzip_decompress_into, usize);
-compress_to_out!(castrum_brotli_compress, crate::payload::compress::brotli_compress_into, u32);
-compress_to_out!(castrum_brotli_decompress, crate::payload::compress::brotli_decompress_into, usize);
+compress_to_out!(
+    castrum_gzip_compress,
+    crate::payload::compress::gzip_compress_into,
+    u32
+);
+compress_to_out!(
+    castrum_gzip_decompress,
+    crate::payload::compress::gzip_decompress_into,
+    usize
+);
+compress_to_out!(
+    castrum_brotli_compress,
+    crate::payload::compress::brotli_compress_into,
+    u32
+);
+compress_to_out!(
+    castrum_brotli_decompress,
+    crate::payload::compress::brotli_decompress_into,
+    usize
+);
 
 /// Read the original (uncompressed) size from a gzip stream's ISIZE trailer
 /// (last 4 bytes, little-endian, original size mod 2^32). Returns the EXACT
@@ -977,6 +1610,12 @@ pub unsafe extern "C" fn castrum_http_parse_request_packed(
 
 /// Query string parse → packed output into `out`.
 ///
+/// # Convention (needed-size)
+/// The single-pass writer runs first; on a too-small buffer the exact-size pass
+/// runs (rare) and returns the EXACT required size, so the JS wrapper allocates
+/// ONCE and retries — no 9× pre-size, no re-run loop. `0` remains a REAL error
+/// (malformed `%XX`).
+///
 /// # Safety
 /// `data` must be valid for reads of `len` bytes; `out` for writes up to `out_cap`.
 #[no_mangle]
@@ -989,14 +1628,19 @@ pub unsafe extern "C" fn castrum_query_parse_packed(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    crate::http::query_parser::query_parse_packed_into_slice(
-        slice::from_raw_parts(data, len),
-        slice::from_raw_parts_mut(out, out_cap),
-    )
-    .unwrap_or(0)
+    let input = slice::from_raw_parts(data, len);
+    let output = slice::from_raw_parts_mut(out, out_cap);
+    match crate::http::query_parser::query_parse_packed_into_slice(input, output) {
+        Ok(w) => w,
+        // Too-small OR malformed — the size pass disambiguates: it parses the
+        // same input, so Ok(needed) ⇒ too-small, Err ⇒ malformed (real error).
+        Err(_) => crate::http::query_parser::query_parse_packed_size(input).unwrap_or(0),
+    }
 }
 
 /// Cookie header parse → packed output into `out`.
+///
+/// Same needed-size convention as `castrum_query_parse_packed`.
 ///
 /// # Safety
 /// `data` must be valid for reads of `len` bytes; `out` for writes up to `out_cap`.
@@ -1010,11 +1654,12 @@ pub unsafe extern "C" fn castrum_cookie_parse_packed(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    crate::http::cookie_parser::cookie_parse_packed_into_slice(
-        slice::from_raw_parts(data, len),
-        slice::from_raw_parts_mut(out, out_cap),
-    )
-    .unwrap_or(0)
+    let input = slice::from_raw_parts(data, len);
+    let output = slice::from_raw_parts_mut(out, out_cap);
+    match crate::http::cookie_parser::cookie_parse_packed_into_slice(input, output) {
+        Ok(w) => w,
+        Err(_) => crate::http::cookie_parser::cookie_parse_packed_size(input).unwrap_or(0),
+    }
 }
 
 /// Parse an `application/x-www-form-urlencoded` body into packed pairs — the
@@ -1031,6 +1676,820 @@ pub unsafe extern "C" fn castrum_form_parse_packed(
     out_cap: usize,
 ) -> usize {
     castrum_query_parse_packed(data, len, out, out_cap)
+}
+
+/// Write an HTTP-date (`Sun, 06 Nov 1994 08:49:37 GMT`) into `out`. Returns
+/// bytes written (29), or 0 on a too-small buffer / out-of-range year (use the
+/// allocating `httpDate` napi path for that fallback). Fixed 32-byte stack
+/// buffer core — the FFI sibling of the napi `httpDateInto` (kills the napi
+/// crossing on the hot `httpDateInto` path).
+///
+/// # Safety
+/// `out` must be valid for writes of up to `out_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_http_date_into(
+    secs: f64,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if out.is_null() {
+        return 0;
+    }
+    let output = slice::from_raw_parts_mut(out, out_cap);
+    crate::http::etag::http_date_into_slice(secs as i64, output).unwrap_or(0)
+}
+
+/// Encode one SSE event into `out`. Optional fields use `flags` bits
+/// (1 = event present, 2 = id present, 4 = retry present) so a present-but-empty
+/// string is distinct from an absent one, matching the napi `Option<String>`.
+/// Returns bytes written, or 0 on a too-small buffer / invalid UTF-8 in
+/// event/id (JS sizes `data_len + 64` to guarantee success). FFI sibling of the
+/// napi `sse_encode_event` — the wrapper decodes nothing (output is raw SSE
+/// bytes), so this just removes the napi crossing.
+///
+/// # Safety
+/// `event`/`id` must be valid for reads of `event_len`/`id_len` bytes when their
+/// flag is set; `data` valid for `data_len` reads; `out` for `out_cap` writes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_sse_encode_into(
+    event: *const u8,
+    event_len: usize,
+    data: *const u8,
+    data_len: usize,
+    id: *const u8,
+    id_len: usize,
+    flags: u8,
+    retry: u32,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if data.is_null() || out.is_null() {
+        return 0;
+    }
+    // A PRESENT but empty event/id is valid (emits the line) — only a null
+    // pointer with its flag set is malformed (would be UB to slice).
+    if (flags & 1 != 0 && event.is_null()) || (flags & 2 != 0 && id.is_null()) {
+        return 0;
+    }
+    panic_guard(
+        || -> Option<usize> {
+            let data_bytes = slice::from_raw_parts(data, data_len);
+            let output = slice::from_raw_parts_mut(out, out_cap);
+            let event_opt = if flags & 1 != 0 {
+                Some(std::str::from_utf8(slice::from_raw_parts(event, event_len)).ok()?)
+            } else {
+                None
+            };
+            let id_opt = if flags & 2 != 0 {
+                Some(std::str::from_utf8(slice::from_raw_parts(id, id_len)).ok()?)
+            } else {
+                None
+            };
+            let retry_opt = if flags & 4 != 0 {
+                Some(u64::from(retry))
+            } else {
+                None
+            };
+            match crate::payload::sse::encode_event_into_slice(
+                event_opt,
+                data_bytes,
+                id_opt,
+                retry_opt,
+                output,
+            ) {
+                Ok(w) => Some(w),
+                // Too-small buffer: return the exact required size so the JS
+                // wrapper allocates ONCE and retries (needed-size convention);
+                // 0 stays a real error (invalid UTF-8 in event/id above).
+                Err(_) => Some(crate::payload::sse::encode_event_size(
+                    event_opt,
+                    data_bytes,
+                    id_opt,
+                    retry_opt,
+                )),
+            }
+        },
+        None,
+    )
+    .unwrap_or(0)
+}
+
+// ── cstring-returning writers (per-thread reused buffer) ─────────
+// Bun's `cstring` FFI return type has the ENGINE clone the result string out
+// of the returned pointer at the moment of the call (bun:ffi docs), so the JS
+// side pays ZERO decode + ZERO allocation for these single-string outputs.
+// The buffer is thread-local and reused across calls (same pattern as
+// HMAC_KEY_CACHE above) — valid only until the next call on the same thread,
+// which is all the engine needs (it clones synchronously at return).
+thread_local! {
+    static CSTR_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Write `write` into the per-thread buffer sized to `needed` (reused across
+/// calls), null-terminate, and return the pointer. `null` = write error
+/// (malformed input / crypto failure — the caller maps to a throw or sentinel).
+fn cstring_return(
+    needed: usize,
+    write: impl FnOnce(&mut [u8]) -> Option<usize>,
+) -> *const std::os::raw::c_char {
+    CSTR_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        if buf.len() < needed + 1 {
+            buf.resize(needed + 1, 0);
+        }
+        let cap = buf.len() - 1;
+        match write(&mut buf[..cap]) {
+            Some(w) => {
+                buf[w] = 0;
+                buf.as_ptr() as *const std::os::raw::c_char
+            }
+            None => std::ptr::null(),
+        }
+    })
+}
+
+// ── Phase 3: remaining stateless scalar cores ─────────────────────
+// C-ABI siblings of the last napi-only scalar fns so every Rust hot surface
+// has a bun:ffi path. String results use the `cstring` return (the engine
+// clones the NUL-terminated buffer at call time — zero JS decode); structured
+// verdicts use the packed / needed-size convention (`0` = real error,
+// `w > out_cap` = exact required size so the JS side allocates once and
+// retries). Every fallible / allocating core routes through `panic_guard`.
+
+// ── Packed JSON token stream (structural parse, no re-parse) ────────
+// `castrum_json_parse_packed` parses ONCE with sonic-rs and emits a typed
+// token stream with a DEDUPLICATED string table. The JS side assembles the
+// value directly from the tokens — it never re-parses JSON text, and repeated
+// keys/values are decoded exactly once (the old cstring path re-serialized the
+// whole doc to text and `JSON.parse`d it again, measured 3.92x slower than
+// Bun's JSON.parse on the 5k-row fixture).
+//
+// Layout: `[u32 strCount]{[u32 len][utf8 bytes]}... [u32 treeLen][tree]`
+// The tree is a single value encoded as a start/end-marker token stream
+// (little-endian; no counts — the sonic-rs SeqAccess/MapAccess expose no
+// size_hint, and markers let JS decode iteratively with `push`/`pop`):
+//   0 = null | 1 = false | 2 = true | 3 = number (f64 LE, 8 bytes)
+//   4 = string (u32 index into the string table)
+//   5 = array start | 6 = object start
+//   7 = array end | 8 = object end
+//   9 = object key (u32 index into the string table)
+// Object body: `6, (9, keyIdx, value)*, 8`.
+
+const JSON_PACKED_NULL: u8 = 0;
+const JSON_PACKED_FALSE: u8 = 1;
+const JSON_PACKED_TRUE: u8 = 2;
+const JSON_PACKED_NUMBER: u8 = 3;
+const JSON_PACKED_STRING: u8 = 4;
+const JSON_PACKED_ARRAY_START: u8 = 5;
+const JSON_PACKED_OBJECT_START: u8 = 6;
+const JSON_PACKED_ARRAY_END: u8 = 7;
+const JSON_PACKED_OBJECT_END: u8 = 8;
+const JSON_PACKED_KEY: u8 = 9;
+
+/// Single-pass emitter. sonic-rs's fast parser drives this via serde, writing
+/// the packed token stream DIRECTLY — there is NO intermediate `sonic_rs::Value`
+/// DOM (building it measured ~1.0ms for the 5k-row fixture). Strings (keys +
+/// values) are interned into a deduplicated table keyed by OWNED bytes
+/// (`Vec<u8>`) so escaped strings work uniformly; lookups borrow (`get(&[u8])`)
+/// without allocating. `FxHashMap` (rustc-hash) is used because default SipHash
+/// is slow on short keys (same choice fast_schema makes); a hash collision only
+/// costs an extra byte compare, never a wrong index. Dedup keeps the JS-side
+/// decode to ~1 decode per unique string (a per-occurrence blob was ~10x worse
+/// on the JS side due to rope-slicing).
+struct JsonPackedEmitter {
+    strings: FxHashMap<Vec<u8>, u32>,
+    table: Vec<u8>,
+    tree: Vec<u8>,
+}
+
+impl JsonPackedEmitter {
+    #[inline]
+    fn intern(&mut self, bytes: &[u8]) -> u32 {
+        if let Some(&idx) = self.strings.get(bytes) {
+            return idx;
+        }
+        let idx = self.strings.len() as u32;
+        self.strings.insert(bytes.to_vec(), idx);
+        self.table.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        self.table.extend_from_slice(bytes);
+        idx
+    }
+
+    #[inline]
+    fn emit_u32(&mut self, v: u32) {
+        self.tree.extend_from_slice(&v.to_le_bytes());
+    }
+
+    #[inline]
+    fn emit_string(&mut self, s: &str) {
+        self.tree.push(JSON_PACKED_STRING);
+        let idx = self.intern(s.as_bytes());
+        self.emit_u32(idx);
+    }
+
+    #[inline]
+    fn emit_key(&mut self, s: &str) {
+        self.tree.push(JSON_PACKED_KEY);
+        let idx = self.intern(s.as_bytes());
+        self.emit_u32(idx);
+    }
+
+    #[inline]
+    fn emit_number(&mut self, f: f64) {
+        self.tree.push(JSON_PACKED_NUMBER);
+        self.tree.extend_from_slice(&f.to_le_bytes());
+    }
+}
+
+/// Seed that deserializes any nested value through the shared emitter.
+struct JsonPackedSeed<'a> {
+    out: &'a mut JsonPackedEmitter,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for JsonPackedSeed<'_> {
+    type Value = ();
+
+    #[inline]
+    fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        d.deserialize_any(JsonPackedVisitor { out: self.out })
+    }
+}
+
+/// Seed for object KEYS (always JSON strings).
+struct JsonPackedKeySeed<'a> {
+    out: &'a mut JsonPackedEmitter,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for JsonPackedKeySeed<'_> {
+    type Value = ();
+
+    #[inline]
+    fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        d.deserialize_str(JsonPackedKeyVisitor { out: self.out })
+    }
+}
+
+struct JsonPackedKeyVisitor<'a> {
+    out: &'a mut JsonPackedEmitter,
+}
+
+impl<'de> serde::de::Visitor<'de> for JsonPackedKeyVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("an object key")
+    }
+
+    #[inline]
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out.emit_key(v);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(v)
+    }
+
+    #[inline]
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(v.as_str())
+    }
+}
+
+struct JsonPackedVisitor<'a> {
+    out: &'a mut JsonPackedEmitter,
+}
+
+impl<'de> serde::de::Visitor<'de> for JsonPackedVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("any JSON value")
+    }
+
+    #[inline]
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out
+            .tree
+            .push(if v { JSON_PACKED_TRUE } else { JSON_PACKED_FALSE });
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        // f64 = JS number semantics (the napi serde_json::Value path rounds the
+        // same way JSON.parse does).
+        self.out.emit_number(v as f64);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out.emit_number(v as f64);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out.emit_number(v);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out.emit_string(v);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out.emit_string(v);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out.emit_string(v.as_str());
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out.tree.push(JSON_PACKED_NULL);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.out.tree.push(JSON_PACKED_NULL);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_some<D>(self, d: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        d.deserialize_any(self)
+    }
+
+    #[inline]
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        self.out.tree.push(JSON_PACKED_ARRAY_START);
+        while let Some(()) = seq.next_element_seed(JsonPackedSeed { out: &mut *self.out })? {}
+        self.out.tree.push(JSON_PACKED_ARRAY_END);
+        Ok(())
+    }
+
+    #[inline]
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        self.out.tree.push(JSON_PACKED_OBJECT_START);
+        while let Some(()) = map.next_key_seed(JsonPackedKeySeed { out: &mut *self.out })? {
+            map.next_value_seed(JsonPackedSeed { out: &mut *self.out })?;
+        }
+        self.out.tree.push(JSON_PACKED_OBJECT_END);
+        Ok(())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for JsonPackedEmitter {
+    #[inline]
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        let mut out = JsonPackedEmitter {
+            strings: FxHashMap::default(),
+            table: Vec::new(),
+            tree: Vec::new(),
+        };
+        d.deserialize_any(JsonPackedVisitor { out: &mut out })?;
+        Ok(out)
+    }
+}
+
+/// Parse JSON → packed token stream (see the layout above). Needed-size
+/// convention: `0` = invalid JSON (real error → JS throws); `w > out_cap` =
+/// exact required size (JS allocates once and retries); else bytes written.
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes; `out` for `out_cap` writes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_json_parse_packed(
+    data: *const u8,
+    len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if data.is_null() || out.is_null() {
+        return 0;
+    }
+    let input = slice::from_raw_parts(data, len);
+    let Some(packed) = panic_guard(
+        || {
+            let emitter = sonic_rs::from_slice::<JsonPackedEmitter>(input).ok()?;
+            let mut packed = Vec::with_capacity(4 + emitter.table.len() + 4 + emitter.tree.len());
+            packed.extend_from_slice(&(emitter.strings.len() as u32).to_le_bytes());
+            packed.extend_from_slice(&emitter.table);
+            packed.extend_from_slice(&(emitter.tree.len() as u32).to_le_bytes());
+            packed.extend_from_slice(&emitter.tree);
+            Some(packed)
+        },
+        None,
+    ) else {
+        return 0;
+    };
+    if packed.len() > out_cap {
+        return packed.len();
+    }
+    slice::from_raw_parts_mut(out, packed.len()).copy_from_slice(&packed);
+    packed.len()
+}
+
+/// Parse a `Content-Type` header into a packed verdict:
+/// `[u32 mediaTypeLen][mediaType][u32 charsetLen (0xFFFFFFFF = none)][charset]
+/// [u32 boundaryLen (0xFFFFFFFF = none)][boundary][u32 paramCount]{[u32 keyLen]
+/// [key][u32 valLen][val]}`. Needed-size convention: `0` = invalid media type
+/// (real error → throw); `w > out_cap` = exact required size; else written.
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes; `out` for `out_cap` writes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_parse_media_type(
+    data: *const u8,
+    len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if data.is_null() || out.is_null() {
+        return 0;
+    }
+    let input = slice::from_raw_parts(data, len);
+    let Some(packed) = panic_guard(
+        || {
+            let parsed = crate::http::media_type::parse_media_type_core(input).ok()?;
+            let media_type = format!("{}/{}", parsed.ty, parsed.subtype);
+            let charset = parsed
+                .params
+                .iter()
+                .find(|(k, _)| k == "charset")
+                .map(|(_, val)| val.clone());
+            let boundary = parsed
+                .params
+                .iter()
+                .find(|(k, _)| k == "boundary")
+                .map(|(_, val)| val.clone());
+            let mut v = Vec::with_capacity(12 + media_type.len() + parsed.params.len() * 16);
+            v.extend_from_slice(&(media_type.len() as u32).to_le_bytes());
+            v.extend_from_slice(media_type.as_bytes());
+            let write_opt = |v: &mut Vec<u8>, s: &Option<String>| match s {
+                Some(s) => {
+                    v.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                    v.extend_from_slice(s.as_bytes());
+                }
+                None => v.extend_from_slice(&u32::MAX.to_le_bytes()),
+            };
+            write_opt(&mut v, &charset);
+            write_opt(&mut v, &boundary);
+            v.extend_from_slice(&(parsed.params.len() as u32).to_le_bytes());
+            for (k, val) in &parsed.params {
+                v.extend_from_slice(&(k.len() as u32).to_le_bytes());
+                v.extend_from_slice(k.as_bytes());
+                v.extend_from_slice(&(val.len() as u32).to_le_bytes());
+                v.extend_from_slice(val.as_bytes());
+            }
+            Some(v)
+        },
+        None,
+    ) else {
+        return 0;
+    };
+    if packed.len() > out_cap {
+        return packed.len();
+    }
+    slice::from_raw_parts_mut(out, packed.len()).copy_from_slice(&packed);
+    packed.len()
+}
+
+/// Parse an IMF-fixdate back to unix seconds → packed `[u8 ok][i64 secs LE]`
+/// (9 bytes; ok=0 → invalid). Mirrors the `castrum_json_sum_ids` ok-byte
+/// convention so a legit epoch (`0`) is distinct from "invalid". Needed-size
+/// convention: `0` = buffer too small (real error).
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes; `out` for `out_cap` writes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_parse_http_date(
+    data: *const u8,
+    len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if data.is_null() || out.is_null() {
+        return 0;
+    }
+    let input = slice::from_raw_parts(data, len);
+    let secs = panic_guard(|| crate::http::etag::parse_http_date_secs(input), None);
+    match secs {
+        Some(secs) => {
+            if out_cap < 9 {
+                return 9;
+            }
+            let o = slice::from_raw_parts_mut(out, 9);
+            o[0] = 1;
+            o[1..9].copy_from_slice(&secs.to_le_bytes());
+            9
+        }
+        None => {
+            if out_cap < 1 {
+                return 1;
+            }
+            slice::from_raw_parts_mut(out, 1)[0] = 0;
+            1
+        }
+    }
+}
+
+/// Parse an Accept-Encoding header into a packed verdict:
+/// `[u32 count]{[u32 encLen][enc][f32 q][u32 order]}` (empty header → count 0,
+/// 4 bytes). Needed-size convention: `0` = buffer too small (real error);
+/// `w > out_cap` = exact required size; else bytes written.
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes; `out` for `out_cap` writes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_parse_accept_encoding(
+    data: *const u8,
+    len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if data.is_null() || out.is_null() {
+        return 0;
+    }
+    let input = slice::from_raw_parts(data, len);
+    let Some(packed) = panic_guard(
+        || {
+            let prefs = crate::http::accept::parse_accept_encoding_core(input);
+            let mut v = Vec::with_capacity(4 + prefs.len() * 16);
+            v.extend_from_slice(&(prefs.len() as u32).to_le_bytes());
+            for p in &prefs {
+                v.extend_from_slice(&(p.encoding.len() as u32).to_le_bytes());
+                v.extend_from_slice(p.encoding.as_bytes());
+                v.extend_from_slice(&p.q.to_le_bytes());
+                v.extend_from_slice(&p.order.to_le_bytes());
+            }
+            Some(v)
+        },
+        None,
+    ) else {
+        return 0;
+    };
+    if packed.len() > out_cap {
+        return packed.len();
+    }
+    slice::from_raw_parts_mut(out, packed.len()).copy_from_slice(&packed);
+    packed.len()
+}
+
+/// Percent-encode a query string from a packed `[u32 count]{[u32 keyLen][key]
+/// [u32 valLen][val]}` input (the JS `packPairs` layout) → cstring, keys
+/// SORTED (matches the napi `BTreeMap` ordering). Returns `null` on malformed
+/// packed input / non-UTF-8 (napi parity: throws).
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_url_encode_query(
+    data: *const u8,
+    len: usize,
+) -> *const std::os::raw::c_char {
+    if data.is_null() {
+        return std::ptr::null();
+    }
+    let input = slice::from_raw_parts(data, len);
+    let Some(s) = panic_guard(
+        || {
+            if input.len() < 4 {
+                return None;
+            }
+            let count =
+                u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
+            let mut map = std::collections::BTreeMap::new();
+            let mut off = 4usize;
+            for _ in 0..count {
+                if off + 4 > input.len() {
+                    return None;
+                }
+                let klen = u32::from_le_bytes([
+                    input[off],
+                    input[off + 1],
+                    input[off + 2],
+                    input[off + 3],
+                ]) as usize;
+                off += 4;
+                if off + klen > input.len() {
+                    return None;
+                }
+                let key = std::str::from_utf8(&input[off..off + klen])
+                    .ok()?
+                    .to_string();
+                off += klen;
+                if off + 4 > input.len() {
+                    return None;
+                }
+                let vlen = u32::from_le_bytes([
+                    input[off],
+                    input[off + 1],
+                    input[off + 2],
+                    input[off + 3],
+                ]) as usize;
+                off += 4;
+                if off + vlen > input.len() {
+                    return None;
+                }
+                let val = std::str::from_utf8(&input[off..off + vlen])
+                    .ok()?
+                    .to_string();
+                off += vlen;
+                map.insert(key, val);
+            }
+            let mut out = Vec::new();
+            let mut scratch = Vec::new();
+            for (i, (k, v)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(b'&');
+                }
+                crate::http::url_join::encode_query_component(k.as_bytes(), &mut scratch, &mut out)
+                    .ok()?;
+                out.push(b'=');
+                crate::http::url_join::encode_query_component(v.as_bytes(), &mut scratch, &mut out)
+                    .ok()?;
+            }
+            String::from_utf8(out).ok()
+        },
+        None,
+    ) else {
+        return std::ptr::null();
+    };
+    cstring_return(s.len(), |out| {
+        out[..s.len()].copy_from_slice(s.as_bytes());
+        Some(s.len())
+    })
+}
+
+/// RFC 3986 URL resolution → cstring (base + reference). Returns `null` on
+/// non-UTF-8 input (napi parity: throws). Mirrors the napi `url_resolve`.
+///
+/// # Safety
+/// `base`/`reference` must be valid for reads of their lengths.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_url_resolve(
+    base: *const u8,
+    blen: usize,
+    reference: *const u8,
+    rlen: usize,
+) -> *const std::os::raw::c_char {
+    if base.is_null() || reference.is_null() {
+        return std::ptr::null();
+    }
+    let b = slice::from_raw_parts(base, blen);
+    let r = slice::from_raw_parts(reference, rlen);
+    let Some(s) = panic_guard(
+        || {
+            let bs = std::str::from_utf8(b).ok()?;
+            let rs = std::str::from_utf8(r).ok()?;
+            Some(crate::http::url_join::recompose(
+                &crate::http::url_join::resolve_target(
+                    &crate::http::url_join::parse_ref(bs),
+                    &crate::http::url_join::parse_ref(rs),
+                ),
+            ))
+        },
+        None,
+    ) else {
+        return std::ptr::null();
+    };
+    cstring_return(s.len(), |out| {
+        out[..s.len()].copy_from_slice(s.as_bytes());
+        Some(s.len())
+    })
+}
+
+/// Resolve a reference against a `UrlBuilder`'s PRECOMPILED base via its opaque
+/// inner handle (from the napi `inner_ptr()`). Returns bytes written (0 = null
+/// handle / non-UTF-8 reference / panic → real error); a result larger than
+/// `out_cap` reports the exact needed size so the caller retries once
+/// (growExact).
+///
+/// # Safety
+/// `inner` must be a valid `UrlBuilder` pointer from `inner_ptr()` and must
+/// stay alive for the call (the JS wrapper holds the napi instance).
+/// `reference` must be valid for reads of `reference_len`; `out` for
+/// `out_cap` writes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_url_builder_resolve(
+    inner: usize,
+    reference: *const u8,
+    reference_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if inner == 0 || reference.is_null() || out.is_null() {
+        return 0;
+    }
+    let r = slice::from_raw_parts(reference, reference_len);
+    let Some(bytes) = panic_guard(
+        || {
+            crate::http::url_join::url_builder_resolve_core(
+                inner as *const crate::http::url_join::UrlBuilder,
+                r,
+            )
+            .ok()
+        },
+        None,
+    ) else {
+        return 0;
+    };
+    if bytes.len() > out_cap {
+        return bytes.len();
+    }
+    slice::from_raw_parts_mut(out, bytes.len()).copy_from_slice(&bytes);
+    bytes.len()
+}
+
+/// Extension → MIME type → cstring (unknown → `application/octet-stream`).
+/// Never fails (the core's fallback is infallible) — `null` only on a null
+/// pointer or a panic (programmer error).
+///
+/// # Safety
+/// `ext` must be valid for reads of `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_mime_from_extension(
+    ext: *const u8,
+    len: usize,
+) -> *const std::os::raw::c_char {
+    if ext.is_null() {
+        return std::ptr::null();
+    }
+    let input = slice::from_raw_parts(ext, len);
+    let mime = panic_guard(
+        || crate::http::mime_lookup::mime_from_extension_bytes(input),
+        b"application/octet-stream".to_vec(),
+    );
+    cstring_return(mime.len(), |out| {
+        out[..mime.len()].copy_from_slice(&mime);
+        Some(mime.len())
+    })
 }
 
 /// Parse a `multipart/form-data` body into the packed parts layout (the same
@@ -1093,8 +2552,7 @@ pub unsafe extern "C" fn castrum_ws_frame_decode_packed(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    let Some(frame) =
-        crate::payload::ws_frames::decode_frame(slice::from_raw_parts(data, len))
+    let Some(frame) = crate::payload::ws_frames::decode_frame(slice::from_raw_parts(data, len))
     else {
         return 0;
     };
@@ -1129,20 +2587,20 @@ pub unsafe extern "C" fn castrum_jwt_sign_bytes(
     slen: usize,
     ttl: i64,
     now: i64,
-    out: *mut u8,
-    out_cap: usize,
-) -> usize {
-    if claims.is_null() || secret.is_null() || out.is_null() {
-        return 0;
+) -> *const std::os::raw::c_char {
+    if claims.is_null() || secret.is_null() {
+        return std::ptr::null();
     }
-    // Wrap in panic_guard: serde parse + token build allocate — a panic must
-    // not unwind through the C ABI (process crash); it becomes 0 instead.
-    let Some(token) = panic_guard(
+    // Wrap in panic_guard: sonic parse + token build allocate — a panic must
+    // not unwind through the C ABI (process crash); it becomes null instead.
+    let token = panic_guard(
         || {
-            let Ok(mut value) = serde_json::from_slice(slice::from_raw_parts(claims, clen)) else {
+            let Ok(mut value) =
+                sonic_rs::from_slice::<sonic_rs::Value>(slice::from_raw_parts(claims, clen))
+            else {
                 return None;
             };
-            let Ok(payload_b64) = crate::crypto::jwt::inject_and_payload_b64(
+            let Ok(payload_b64) = crate::crypto::jwt::inject_and_payload_b64_sonic(
                 &mut value,
                 if ttl > 0 { Some(ttl) } else { None },
                 now,
@@ -1156,15 +2614,111 @@ pub unsafe extern "C" fn castrum_jwt_sign_bytes(
             ))
         },
         None,
-    ) else {
+    );
+    let Some(token) = token else {
+        return std::ptr::null();
+    };
+    cstring_return(token.len(), |out| {
+        out[..token.len()].copy_from_slice(&token);
+        Some(token.len())
+    })
+}
+
+/// Sign a JWT (HS256) written directly into a caller buffer — the pooled
+/// sibling of `castrum_jwt_sign_bytes` (no cstring round-trip; the caller
+/// sizes from the claim JSON — same bound the cstring path uses). Returns
+/// bytes written, the exact required size when `out_cap` is too small, or 0 on
+/// invalid claims JSON.
+///
+/// # Safety
+/// `claims`/`secret` must be valid for reads of their lengths; `out` for
+/// writes up to `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_jwt_sign_bytes_into(
+    claims: *const u8,
+    clen: usize,
+    secret: *const u8,
+    slen: usize,
+    ttl: i64,
+    now: i64,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if claims.is_null() || secret.is_null() || out.is_null() {
+        return 0;
+    }
+    // Wrap in panic_guard: sonic parse + token build allocate — a panic must
+    // not unwind through the C ABI (process crash); it becomes 0 instead.
+    let token = panic_guard(
+        || {
+            let Ok(mut value) =
+                sonic_rs::from_slice::<sonic_rs::Value>(slice::from_raw_parts(claims, clen))
+            else {
+                return None;
+            };
+            let Ok(payload_b64) = crate::crypto::jwt::inject_and_payload_b64_sonic(
+                &mut value,
+                if ttl > 0 { Some(ttl) } else { None },
+                now,
+            ) else {
+                return None;
+            };
+            Some(crate::crypto::jwt::build_token(
+                crate::crypto::jwt::jwt_header_b64(),
+                &payload_b64,
+                slice::from_raw_parts(secret, slen),
+            ))
+        },
+        None,
+    );
+    let Some(token) = token else {
         return 0;
     };
-    if token.len() > out_cap {
-        // Needed-size convention (see compress_to_out!): exact retry, no re-run.
+    if out_cap < token.len() {
+        // Needed-size convention: exact retry, no re-run.
         return token.len();
     }
-    slice::from_raw_parts_mut(out, token.len()).copy_from_slice(&token);
+    let o = slice::from_raw_parts_mut(out, token.len());
+    o.copy_from_slice(&token);
     token.len()
+}
+
+/// Verify an HS256 compact JWT → its claims as a null-terminated JSON C string
+/// into the per-thread reused buffer (`cstring` return). `null` on invalid
+/// signature / expired / malformed. This replaces the NAPI `jwtVerify` object
+/// marshal (which builds a `serde_json::Value` + napi value on the verify
+/// path) with a plain string crossing for the claims.
+///
+/// # Safety
+/// `token`/`secret` must be valid for reads of their lengths.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_jwt_verify(
+    token: *const u8,
+    tlen: usize,
+    secret: *const u8,
+    slen: usize,
+    now: i64,
+) -> *const std::os::raw::c_char {
+    if token.is_null() || secret.is_null() {
+        return std::ptr::null();
+    }
+    let claims = panic_guard(
+        || {
+            crate::crypto::jwt::verify_token(
+                slice::from_raw_parts(token, tlen),
+                slice::from_raw_parts(secret, slen),
+                now,
+            )
+        },
+        None,
+    );
+    let Some(json) = claims else {
+        return std::ptr::null();
+    };
+    cstring_return(json.len(), |out| {
+        out[..json.len()].copy_from_slice(&json);
+        Some(json.len())
+    })
 }
 
 // ── Ingress pipeline (opaque-handle fast path) ─────────────────
@@ -1359,6 +2913,20 @@ pub unsafe extern "C" fn castrum_ingress_layout(out: *mut u8, out_cap: usize) ->
     n
 }
 
+/// Read the bytes of a `cstring`-returning FFI symbol's result. The engine
+/// cloned the string at the call, so the per-thread buffer reuse is safe here.
+/// Test-only: the sole production consumer was the removed task-group dispatch
+/// (`run_one_task`); remaining callers are in the C-ABI unit tests below.
+#[cfg(test)]
+unsafe fn cstr_bytes(p: *const std::os::raw::c_char) -> Option<Vec<u8>> {
+    if p.is_null() {
+        return None;
+    }
+    Some(std::ffi::CStr::from_ptr(p).to_bytes().to_vec())
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1415,9 +2983,15 @@ mod tests {
         assert_eq!(l.err_rate_limited, output::ERR_CODE_RATE_LIMITED as u32);
         assert_eq!(l.err_body_too_large, output::ERR_CODE_BODY_TOO_LARGE as u32);
         assert_eq!(l.err_invalid_json, output::ERR_CODE_INVALID_JSON as u32);
-        assert_eq!(l.err_schema_validation, output::ERR_CODE_SCHEMA_VALIDATION as u32);
+        assert_eq!(
+            l.err_schema_validation,
+            output::ERR_CODE_SCHEMA_VALIDATION as u32
+        );
         assert_eq!(l.err_bad_request, output::ERR_CODE_BAD_REQUEST as u32);
-        assert_eq!(l.err_request_too_large, output::ERR_CODE_REQUEST_TOO_LARGE as u32);
+        assert_eq!(
+            l.err_request_too_large,
+            output::ERR_CODE_REQUEST_TOO_LARGE as u32
+        );
         assert_eq!(l.err_internal, output::ERR_CODE_INTERNAL as u32);
     }
 
@@ -1434,6 +3008,18 @@ mod tests {
         assert_eq!(unsafe { castrum_json_valid(good.as_ptr(), good.len()) }, 1);
         let bad = b"{not json";
         assert_eq!(unsafe { castrum_json_valid(bad.as_ptr(), bad.len()) }, 0);
+    }
+
+    #[test]
+    fn utf8_valid_c_abi() {
+        assert_eq!(unsafe { castrum_utf8_valid(b"hello".as_ptr(), 5) }, 1);
+        assert_eq!(unsafe { castrum_utf8_valid("héllo 🚀".as_bytes().as_ptr(), "héllo 🚀".len()) }, 1);
+        assert_eq!(unsafe { castrum_utf8_valid(b"\xff\xfe".as_ptr(), 2) }, 0);
+        // A lone 0xC3 (incomplete 2-byte sequence) is invalid.
+        assert_eq!(unsafe { castrum_utf8_valid(b"\xc3".as_ptr(), 1) }, 0);
+        // Null pointer / zero-length → 0 / empty is valid.
+        assert_eq!(unsafe { castrum_utf8_valid(std::ptr::null(), 0) }, 0);
+        assert_eq!(unsafe { castrum_utf8_valid(b"".as_ptr(), 0) }, 1);
     }
 
     #[test]
@@ -1488,9 +3074,8 @@ mod tests {
     fn hex_encode_c_abi_roundtrip() {
         let input = b"hello";
         let mut out = [0u8; 16];
-        let written = unsafe {
-            castrum_hex_encode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len())
-        };
+        let written =
+            unsafe { castrum_hex_encode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len()) };
         assert_eq!(written, 10);
         assert_eq!(&out[..10], b"68656c6c6f");
     }
@@ -1499,9 +3084,8 @@ mod tests {
     fn hex_encode_c_abi_undersized_returns_zero() {
         let input = b"hello";
         let mut out = [0u8; 4];
-        let written = unsafe {
-            castrum_hex_encode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len())
-        };
+        let written =
+            unsafe { castrum_hex_encode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len()) };
         assert_eq!(written, 0);
     }
 
@@ -1509,9 +3093,8 @@ mod tests {
     fn hex_decode_c_abi_roundtrip() {
         let input = b"68656c6c6f";
         let mut out = [0u8; 8];
-        let written = unsafe {
-            castrum_hex_decode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len())
-        };
+        let written =
+            unsafe { castrum_hex_decode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len()) };
         assert_eq!(written, 5);
         assert_eq!(&out[..5], b"hello");
     }
@@ -1520,9 +3103,8 @@ mod tests {
     fn hex_decode_c_abi_rejects_invalid() {
         let bad = b"6x";
         let mut out = [0u8; 4];
-        let written = unsafe {
-            castrum_hex_decode(bad.as_ptr(), bad.len(), out.as_mut_ptr(), out.len())
-        };
+        let written =
+            unsafe { castrum_hex_decode(bad.as_ptr(), bad.len(), out.as_mut_ptr(), out.len()) };
         assert_eq!(written, 0);
     }
 
@@ -1530,9 +3112,8 @@ mod tests {
     fn url_encode_c_abi() {
         let input = b"a b/c";
         let mut out = [0u8; 16];
-        let written = unsafe {
-            castrum_url_encode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len())
-        };
+        let written =
+            unsafe { castrum_url_encode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len()) };
         assert_eq!(&out[..written], b"a%20b%2Fc");
     }
 
@@ -1540,9 +3121,8 @@ mod tests {
     fn url_decode_c_abi() {
         let input = b"a%20b%2Fc";
         let mut out = [0u8; 8];
-        let written = unsafe {
-            castrum_url_decode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len())
-        };
+        let written =
+            unsafe { castrum_url_decode(input.as_ptr(), input.len(), out.as_mut_ptr(), out.len()) };
         assert_eq!(&out[..written], b"a b/c");
     }
 
@@ -1550,27 +3130,44 @@ mod tests {
     fn validators_c_abi() {
         // Values mirror the core `#[cfg(test)]` vectors in rust/util/validation.rs.
         let email = b"a@b.com";
-        assert_eq!(unsafe { castrum_validate_email(email.as_ptr(), email.len()) }, 1);
-        assert_eq!(unsafe { castrum_validate_email(b"not-an-email".as_ptr(), 12) }, 0);
+        assert_eq!(
+            unsafe { castrum_validate_email(email.as_ptr(), email.len()) },
+            1
+        );
+        assert_eq!(
+            unsafe { castrum_validate_email(b"not-an-email".as_ptr(), 12) },
+            0
+        );
         let uuid = b"550e8400-e29b-41d4-a716-446655440000";
-        assert_eq!(unsafe { castrum_validate_uuid(uuid.as_ptr(), uuid.len()) }, 1);
-        assert_eq!(unsafe { castrum_validate_uuid(b"not-a-uuid".as_ptr(), 10) }, 0);
+        assert_eq!(
+            unsafe { castrum_validate_uuid(uuid.as_ptr(), uuid.len()) },
+            1
+        );
+        assert_eq!(
+            unsafe { castrum_validate_uuid(b"not-a-uuid".as_ptr(), 10) },
+            0
+        );
         let v4 = b"192.168.0.1";
         assert_eq!(unsafe { castrum_validate_ipv4(v4.as_ptr(), v4.len()) }, 1);
-        assert_eq!(unsafe { castrum_validate_ipv4(b"999.1.1.1".as_ptr(), 9) }, 0);
+        assert_eq!(
+            unsafe { castrum_validate_ipv4(b"999.1.1.1".as_ptr(), 9) },
+            0
+        );
         let v6 = b"2001:db8::1";
         assert_eq!(unsafe { castrum_validate_ipv6(v6.as_ptr(), v6.len()) }, 1);
         let bad_v6 = b"2001:::1";
-        assert_eq!(unsafe { castrum_validate_ipv6(bad_v6.as_ptr(), bad_v6.len()) }, 0);
+        assert_eq!(
+            unsafe { castrum_validate_ipv6(bad_v6.as_ptr(), bad_v6.len()) },
+            0
+        );
     }
 
     #[test]
     fn json_sum_ids_c_abi_packed_output() {
         let doc = b"[{\"id\":1},{\"id\":2},{\"id\":3}]";
         let mut out = [0u8; 9];
-        let w = unsafe {
-            castrum_json_sum_ids(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len())
-        };
+        let w =
+            unsafe { castrum_json_sum_ids(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len()) };
         assert_eq!(w, 9);
         assert_eq!(out[0], 1);
         assert_eq!(i64::from_le_bytes(out[1..9].try_into().unwrap()), 6);
@@ -1578,9 +3175,8 @@ mod tests {
         // A legit zero-sum array is still "ok" (the old scalar i64 conflated
         // this with invalid input).
         let zero = b"[{\"id\":0},{\"id\":0}]";
-        let w = unsafe {
-            castrum_json_sum_ids(zero.as_ptr(), zero.len(), out.as_mut_ptr(), out.len())
-        };
+        let w =
+            unsafe { castrum_json_sum_ids(zero.as_ptr(), zero.len(), out.as_mut_ptr(), out.len()) };
         assert_eq!(w, 9);
         assert_eq!(out[0], 1);
         assert_eq!(i64::from_le_bytes(out[1..9].try_into().unwrap()), 0);
@@ -1597,47 +3193,678 @@ mod tests {
         assert_eq!(w, 1);
     }
 
+    /// Test-side decoder for the packed token stream → `serde_json::Value`,
+    /// so the C-ABI layout is verified end-to-end without the JS side.
+    fn decode_packed(bytes: &[u8]) -> serde_json::Value {
+        fn read_u32(p: &mut usize, b: &[u8]) -> u32 {
+            let v = u32::from_le_bytes(b[*p..*p + 4].try_into().unwrap());
+            *p += 4;
+            v
+        }
+        fn value(p: &mut usize, b: &[u8], strings: &[&str]) -> serde_json::Value {
+            let tag = b[*p];
+            *p += 1;
+            match tag {
+                0 => serde_json::Value::Null,
+                1 => serde_json::Value::Bool(false),
+                2 => serde_json::Value::Bool(true),
+                3 => {
+                    let f = f64::from_le_bytes(b[*p..*p + 8].try_into().unwrap());
+                    *p += 8;
+                    serde_json::Value::from(f)
+                }
+                4 => serde_json::Value::String(strings[read_u32(p, b) as usize].to_string()),
+                5 => {
+                    // array start … array end (7)
+                    let mut arr = Vec::new();
+                    while b[*p] != 7 {
+                        arr.push(value(p, b, strings));
+                    }
+                    *p += 1;
+                    serde_json::Value::Array(arr)
+                }
+                6 => {
+                    // object start: (9, keyIdx, value)* … object end (8)
+                    let mut obj = serde_json::Map::new();
+                    while b[*p] != 8 {
+                        assert_eq!(b[*p], 9, "expected object key tag");
+                        *p += 1;
+                        let k = strings[read_u32(p, b) as usize];
+                        obj.insert(k.to_string(), value(p, b, strings));
+                    }
+                    *p += 1;
+                    serde_json::Value::Object(obj)
+                }
+                _ => panic!("bad packed tag {tag}"),
+            }
+        }
+        let mut p = 0usize;
+        let str_count = read_u32(&mut p, bytes) as usize;
+        let mut strings = Vec::with_capacity(str_count);
+        for _ in 0..str_count {
+            let n = read_u32(&mut p, bytes) as usize;
+            strings.push(std::str::from_utf8(&bytes[p..p + n]).unwrap());
+            p += n;
+        }
+        let tree_len = read_u32(&mut p, bytes) as usize;
+        let end = p + tree_len;
+        let top = value(&mut p, bytes, &strings);
+        assert_eq!(p, end, "tree length must consume exactly the tree");
+        assert_eq!(end, bytes.len(), "stream must end at the tree");
+        top
+    }
+
+    /// Normalize every JSON number to f64 so int/float representations compare
+    /// equal — JS numbers are all doubles (`1 === 1.0`), and serde_json's
+    /// `Number` deliberately distinguishes them.
+    fn json_f64_normalize(v: serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Number(n) => {
+                serde_json::Value::from(n.as_f64().unwrap_or(0.0))
+            }
+            serde_json::Value::Array(a) => serde_json::Value::Array(
+                a.into_iter().map(json_f64_normalize).collect(),
+            ),
+            serde_json::Value::Object(m) => serde_json::Value::Object(
+                m.into_iter().map(|(k, v)| (k, json_f64_normalize(v))).collect(),
+            ),
+            other => other,
+        }
+    }
+
+    #[test]
+    fn json_parse_packed_c_abi() {
+        // Valid JSON → packed token stream that round-trips exactly.
+        let doc = br#"{"a":1,"b":[true,null,"x"],"c":{"d":2.5}}"#;
+        let mut out = [0u8; 512];
+        let w = unsafe {
+            castrum_json_parse_packed(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len())
+        };
+        assert!(w > 0 && w <= out.len());
+        let parsed = json_f64_normalize(decode_packed(&out[..w]));
+        let expected: serde_json::Value =
+            serde_json::from_str(r#"{"a":1,"b":[true,null,"x"],"c":{"d":2.5}}"#).unwrap();
+        assert_eq!(parsed, json_f64_normalize(expected));
+
+        // Too-small output → exact required size, no write past cap.
+        let mut tiny = [0u8; 4];
+        let w2 = unsafe {
+            castrum_json_parse_packed(doc.as_ptr(), doc.len(), tiny.as_mut_ptr(), tiny.len())
+        };
+        assert!(w2 > 4);
+
+        // Invalid JSON → 0 (real error, JS growExact throws).
+        let w3 = unsafe {
+            castrum_json_parse_packed(b"nope".as_ptr(), 4, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w3, 0);
+        // Null pointers → 0, never UB.
+        let w4 = unsafe {
+            castrum_json_parse_packed(std::ptr::null(), 0, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w4, 0);
+    }
+
+    #[test]
+    fn json_parse_packed_dedup_strings() {
+        // Repeated keys/values must be interned ONCE into the string table so
+        // the JS side decodes each unique string a single time.
+        let doc = br#"[{"k":"v","n":"v"},{"k":"w","n":"v"}]"#;
+        let mut out = [0u8; 512];
+        let w = unsafe {
+            castrum_json_parse_packed(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len())
+        };
+        assert!(w > 0 && w <= out.len());
+        // keys k,n + values v,w = 4 unique strings (not 10 raw occurrences).
+        let str_count = u32::from_le_bytes(out[..4].try_into().unwrap());
+        assert_eq!(str_count, 4);
+        let parsed = decode_packed(&out[..w]);
+        let expected: serde_json::Value =
+            serde_json::from_str(r#"[{"k":"v","n":"v"},{"k":"w","n":"v"}]"#).unwrap();
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn parse_media_type_c_abi_packed() {
+        let ct = b"application/json; charset=utf-8; foo=bar";
+        let mut out = [0u8; 256];
+        let w = unsafe {
+            castrum_parse_media_type(ct.as_ptr(), ct.len(), out.as_mut_ptr(), out.len())
+        };
+        assert!(w > 0 && w <= out.len());
+
+        let mut off = 0usize;
+        let mt_len = u32::from_le_bytes(out[0..4].try_into().unwrap()) as usize;
+        off += 4;
+        assert_eq!(
+            String::from_utf8(out[off..off + mt_len].to_vec()).unwrap(),
+            "application/json"
+        );
+        off += mt_len;
+
+        // charset present.
+        let cs_len = u32::from_le_bytes(out[off..off + 4].try_into().unwrap()) as usize;
+        assert_ne!(cs_len, u32::MAX as usize);
+        off += 4;
+        assert_eq!(
+            String::from_utf8(out[off..off + cs_len].to_vec()).unwrap(),
+            "utf-8"
+        );
+        off += cs_len;
+
+        // boundary absent → u32::MAX.
+        let b_len = u32::from_le_bytes(out[off..off + 4].try_into().unwrap());
+        assert_eq!(b_len, u32::MAX);
+        off += 4;
+
+        // params = charset + foo (2).
+        let count = u32::from_le_bytes(out[off..off + 4].try_into().unwrap()) as usize;
+        assert_eq!(count, 2);
+        off += 4;
+        for _ in 0..count {
+            let klen = u32::from_le_bytes(out[off..off + 4].try_into().unwrap()) as usize;
+            off += 4;
+            off += klen;
+            let vlen = u32::from_le_bytes(out[off..off + 4].try_into().unwrap()) as usize;
+            off += 4;
+            off += vlen;
+        }
+        assert_eq!(off, w);
+
+        // Invalid media type → 0 (real error → JS throws).
+        let w = unsafe {
+            castrum_parse_media_type(b"not-a-type".as_ptr(), 10, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 0);
+
+        // Too-small output → exact required size.
+        let small_cap = 1usize;
+        let w = unsafe {
+            castrum_parse_media_type(ct.as_ptr(), ct.len(), out.as_mut_ptr(), small_cap)
+        };
+        assert!(w > small_cap);
+    }
+
+    #[test]
+    fn parse_http_date_c_abi_packed() {
+        let date = b"Sun, 06 Nov 1994 08:49:37 GMT";
+        let mut out = [0u8; 9];
+        let w = unsafe { castrum_parse_http_date(date.as_ptr(), date.len(), out.as_mut_ptr(), out.len()) };
+        assert_eq!(w, 9);
+        assert_eq!(out[0], 1);
+        assert_eq!(i64::from_le_bytes(out[1..9].try_into().unwrap()), 784_111_777);
+
+        // Malformed → ok=0, 1 byte.
+        let w = unsafe { castrum_parse_http_date(b"nope".as_ptr(), 4, out.as_mut_ptr(), out.len()) };
+        assert_eq!(w, 1);
+        assert_eq!(out[0], 0);
+
+        // Too-small output → exact required size (9 / 1).
+        let w = unsafe { castrum_parse_http_date(date.as_ptr(), date.len(), out.as_mut_ptr(), 0) };
+        assert_eq!(w, 9);
+    }
+
+    #[test]
+    fn parse_accept_encoding_c_abi_packed() {
+        let header = b"gzip, deflate;q=0.5, identity;q=0.2";
+        let mut out = [0u8; 256];
+        let w = unsafe {
+            castrum_parse_accept_encoding(header.as_ptr(), header.len(), out.as_mut_ptr(), out.len())
+        };
+        assert!(w > 0 && w <= out.len());
+
+        let count = u32::from_le_bytes(out[0..4].try_into().unwrap()) as usize;
+        assert_eq!(count, 3);
+        let mut off = 4usize;
+        let enc_len = u32::from_le_bytes(out[off..off + 4].try_into().unwrap()) as usize;
+        off += 4;
+        assert_eq!(
+            String::from_utf8(out[off..off + enc_len].to_vec()).unwrap(),
+            "gzip"
+        );
+        off += enc_len;
+        let q = f32::from_le_bytes(out[off..off + 4].try_into().unwrap());
+        assert_eq!(q, 1.0);
+        off += 4;
+        let order = u32::from_le_bytes(out[off..off + 4].try_into().unwrap());
+        assert_eq!(order, 0);
+
+        // Empty header → count 0 (4 bytes), never an error.
+        let w = unsafe {
+            castrum_parse_accept_encoding(b"".as_ptr(), 0, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 4);
+        assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn url_encode_query_c_abi() {
+        // Packed [u32 count]{[u32 keyLen][key][u32 valLen][val]} — unsorted.
+        let mut packed: Vec<u8> = Vec::new();
+        packed.extend_from_slice(&2u32.to_le_bytes());
+        for (k, v) in [("b", "2"), ("a", "1")] {
+            packed.extend_from_slice(&(k.len() as u32).to_le_bytes());
+            packed.extend_from_slice(k.as_bytes());
+            packed.extend_from_slice(&(v.len() as u32).to_le_bytes());
+            packed.extend_from_slice(v.as_bytes());
+        }
+        let s = unsafe { castrum_url_encode_query(packed.as_ptr(), packed.len()) };
+        assert!(!s.is_null());
+        assert_eq!(unsafe { cstr_bytes(s) }.unwrap(), b"a=1&b=2");
+
+        // Malformed packed input (truncated) → null.
+        let malformed = [1u8, 0, 0, 0];
+        let s = unsafe { castrum_url_encode_query(malformed.as_ptr(), malformed.len()) };
+        assert!(s.is_null());
+    }
+
+    #[test]
+    fn url_resolve_c_abi() {
+        // RFC 3986 §5.4.1: base "http://a/b/c/d;p?q" + "g" → "http://a/b/c/g".
+        let base = b"http://a/b/c/d;p?q";
+        let s = unsafe { castrum_url_resolve(base.as_ptr(), base.len(), b"g".as_ptr(), 1) };
+        assert!(!s.is_null());
+        assert_eq!(unsafe { cstr_bytes(s) }.unwrap(), b"http://a/b/c/g");
+
+        // Non-UTF-8 → null (napi parity: throws).
+        let bad = [0xffu8, 0xfe, 0xfd];
+        let s = unsafe { castrum_url_resolve(base.as_ptr(), base.len(), bad.as_ptr(), bad.len()) };
+        assert!(s.is_null());
+    }
+
+    #[test]
+    fn url_builder_resolve_c_abi() {
+        use napi::bindgen_prelude::Uint8Array;
+        let b = crate::http::url_join::UrlBuilder::new(Uint8Array::new(
+            b"http://a/b/c/d;p?q".to_vec(),
+        ))
+        .unwrap();
+        let inner = b.inner_ptr() as usize;
+        let mut out = [0u8; 256];
+        // Precompiled base + "g" → "http://a/b/c/g" (RFC 3986 §5.4.1).
+        let w = unsafe {
+            castrum_url_builder_resolve(inner, b"g".as_ptr(), 1, out.as_mut_ptr(), out.len())
+        };
+        assert!(w > 0 && w <= out.len());
+        assert_eq!(&out[..w], b"http://a/b/c/g");
+        // Null handle → 0 (never dereferences freed state).
+        let w = unsafe {
+            castrum_url_builder_resolve(0, b"g".as_ptr(), 1, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 0);
+        // Non-UTF-8 reference → 0 (napi parity: throws).
+        let bad = [0xffu8, 0xfe];
+        let w = unsafe {
+            castrum_url_builder_resolve(inner, bad.as_ptr(), bad.len(), out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 0);
+        // Too-small buffer → exact needed size.
+        let w = unsafe {
+            castrum_url_builder_resolve(inner, b"g".as_ptr(), 1, out.as_mut_ptr(), 1)
+        };
+        assert!(w > 1);
+    }
+
+    #[test]
+    fn media_type_matcher_matches_c_abi() {
+        use napi::bindgen_prelude::Uint8Array;
+        let m = crate::http::media_type::MediaTypeMatcher::new(Uint8Array::new(
+            b"application/*".to_vec(),
+        ))
+        .unwrap();
+        let inner = m.inner_ptr() as usize;
+        let f = |a: &[u8]| unsafe { castrum_media_type_matcher_matches(inner, a.as_ptr(), a.len()) };
+        assert_eq!(f(b"application/json"), 1);
+        assert_eq!(f(b"Application/JSON"), 1); // case-insensitive
+        assert_eq!(f(b"text/html"), 0);
+        assert_eq!(
+            unsafe { castrum_media_type_matcher_matches(0, b"a".as_ptr(), 1) },
+            0
+        ); // null handle
+    }
+
+    #[test]
+    fn accept_negotiator_negotiate_c_abi() {
+        let n = crate::http::accept::AcceptNegotiator::new(vec!["gzip".to_string()]);
+        let inner = n.inner_ptr() as usize;
+        let f = |h: &[u8]| -> Option<Vec<u8>> {
+            let s = unsafe { castrum_accept_negotiator_negotiate(inner, h.as_ptr(), h.len()) };
+            if s.is_null() {
+                None
+            } else {
+                unsafe { cstr_bytes(s) }
+            }
+        };
+        assert_eq!(f(b"gzip, deflate;q=0.5"), Some(b"gzip".to_vec()));
+        assert_eq!(f(b"identity;q=0.9"), None); // no supported match → identity
+        assert!(
+            unsafe { castrum_accept_negotiator_negotiate(0, b"gzip".as_ptr(), 4) }.is_null()
+        );
+    }
+
+    #[test]
+    fn jwt_signer_sign_verify_c_abi() {
+        use napi::bindgen_prelude::Uint8Array;
+        let s = crate::crypto::jwt::JwtSigner::new(Uint8Array::new(b"my-secret".to_vec()), Some(0));
+        let inner = s.inner_ptr() as usize;
+        let claims = b"{\"sub\":\"user-1\"}";
+        let mut out = [0u8; 512];
+        let mut vout = [0u8; 512];
+        let w = unsafe {
+            castrum_jwt_signer_sign(inner, claims.as_ptr(), claims.len(), 0, out.as_mut_ptr(), out.len())
+        };
+        assert!(w > 0 && w <= out.len());
+        let token = &out[..w];
+        assert_eq!(token.iter().filter(|&&b| b == b'.').count(), 2);
+        // Verify round-trip → claims JSON.
+        let vw = unsafe {
+            castrum_jwt_signer_verify(inner, token.as_ptr(), token.len(), 0, vout.as_mut_ptr(), vout.len())
+        };
+        assert!(vw > 0);
+        assert!(String::from_utf8(vout[..vw].to_vec()).unwrap().contains("\"sub\":\"user-1\""));
+        // Tampered → 0 (invalid).
+        let mut bad = token.to_vec();
+        let last = bad.len() - 1;
+        bad[last] ^= 0x01;
+        let bw = unsafe {
+            castrum_jwt_signer_verify(inner, bad.as_ptr(), bad.len(), 0, vout.as_mut_ptr(), vout.len())
+        };
+        assert_eq!(bw, 0);
+        // Invalid claims JSON → 0; null handle → 0.
+        let w = unsafe {
+            castrum_jwt_signer_sign(inner, b"nope".as_ptr(), 4, 0, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 0);
+        let w = unsafe {
+            castrum_jwt_signer_sign(0, claims.as_ptr(), claims.len(), 0, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 0);
+    }
+
+    #[test]
+    fn template_render_c_abi() {
+        let t = crate::payload::template::TemplateRenderer::new("Hello {{ name }}!".to_string())
+            .unwrap();
+        let inner = t.inner_ptr() as usize;
+        let ctx = b"{\"name\":\"world\"}";
+        let mut out = [0u8; 128];
+        let w = unsafe {
+            castrum_template_render(inner, ctx.as_ptr(), ctx.len(), out.as_mut_ptr(), out.len())
+        };
+        assert!(w > 0);
+        assert_eq!(&out[..w], b"Hello world!");
+        // Invalid context JSON → 0; null handle → 0.
+        let w = unsafe {
+            castrum_template_render(inner, b"nope".as_ptr(), 4, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 0);
+        let w = unsafe {
+            castrum_template_render(0, ctx.as_ptr(), ctx.len(), out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 0);
+    }
+
+    #[test]
+    fn schema_validator_validate_c_abi() {
+        use napi::bindgen_prelude::Uint8Array;
+        let schema = b"{\"type\":\"object\",\"required\":[\"a\"],\"properties\":{\"a\":{\"type\":\"number\"}}}";
+        let v = crate::json::json_schema::SchemaValidator::new(Uint8Array::new(schema.to_vec()))
+            .unwrap();
+        let inner = v.inner_ptr() as usize;
+        let f = |d: &[u8]| unsafe { castrum_schema_validator_validate(inner, d.as_ptr(), d.len()) };
+        assert_eq!(f(b"{\"a\":1}"), 1);
+        assert_eq!(f(b"{}"), 0); // missing required "a"
+        assert_eq!(f(b"not-json"), 0);
+        assert_eq!(
+            unsafe { castrum_schema_validator_validate(0, b"{}".as_ptr(), 2) },
+            0
+        );
+    }
+
+    #[test]
+    fn rate_limiter_check_c_abi() {
+        let r = crate::ingress::rate_limit::RateLimiter::new(2, 60_000, Some(1024));
+        let inner = r.inner_ptr() as usize;
+        let now = 1_700_000_000_000i64;
+        let key = b"user-42";
+        let mut out = [0u8; 13];
+        let w = unsafe {
+            castrum_rate_limiter_check(inner, key.as_ptr(), key.len(), now, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 13);
+        assert_eq!(out[0], 1); // allowed (1/2)
+        unsafe { castrum_rate_limiter_check(inner, key.as_ptr(), key.len(), now, out.as_mut_ptr(), out.len()) };
+        let w = unsafe {
+            castrum_rate_limiter_check(inner, key.as_ptr(), key.len(), now, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 13);
+        assert_eq!(out[0], 0); // blocked (3/2)
+        // Pre-hashed check_key shares the SAME budget.
+        let hashed = crate::crypto::hashing::fast_hash_bytes(key);
+        let w = unsafe {
+            castrum_rate_limiter_check_key(inner, hashed as i64, now, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 13);
+        assert_eq!(out[0], 0);
+        // Null handle → 0; too-small → exact needed size.
+        let w = unsafe {
+            castrum_rate_limiter_check(0, key.as_ptr(), key.len(), now, out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 0);
+        let w = unsafe {
+            castrum_rate_limiter_check(inner, key.as_ptr(), key.len(), now, out.as_mut_ptr(), 1)
+        };
+        assert_eq!(w, 13);
+    }
+
+    #[test]
+    fn mime_from_extension_c_abi() {
+        let s = unsafe { castrum_mime_from_extension(b".js".as_ptr(), 3) };
+        assert!(!s.is_null());
+        assert_eq!(unsafe { cstr_bytes(s) }.unwrap(), b"text/javascript");
+
+        // Unknown extension → application/octet-stream (never null).
+        let s = unsafe { castrum_mime_from_extension(b"nope".as_ptr(), 4) };
+        assert!(!s.is_null());
+        assert_eq!(unsafe { cstr_bytes(s) }.unwrap(), b"application/octet-stream");
+    }
+
+    #[test]
+    fn conditional_is_not_modified_c_abi() {
+        use napi::bindgen_prelude::Uint8Array;
+        let c = crate::http::etag::ConditionalRequest::new(
+            Uint8Array::new(b"\"abc123\"".to_vec()),
+            Some(784_111_777f64),
+        );
+        let inner = c.inner_ptr() as usize;
+        let f = |flags: u8, inm: Option<&[u8]>, ims: Option<&[u8]>| -> u8 {
+            let (ip, il) = match inm {
+                Some(b) => (b.as_ptr(), b.len()),
+                None => (std::ptr::null(), 0),
+            };
+            let (sp, sl) = match ims {
+                Some(b) => (b.as_ptr(), b.len()),
+                None => (std::ptr::null(), 0),
+            };
+            unsafe { castrum_conditional_is_not_modified(inner, ip, il, sp, sl, flags) }
+        };
+        // If-None-Match "*" → 304.
+        assert_eq!(f(1, Some(b"*"), None), 1);
+        // Exact etag → 304; weak compare W/"abc123" → 304.
+        assert_eq!(f(1, Some(b"\"abc123\""), None), 1);
+        assert_eq!(f(1, Some(b"W/\"abc123\""), None), 1);
+        // Non-matching list → not 304.
+        assert_eq!(f(1, Some(b"\"xyz\", \"other\""), None), 0);
+        // If-Modified-Since == lastModified → 304; 1s before → not 304.
+        assert_eq!(f(2, None, Some(b"Sun, 06 Nov 1994 08:49:37 GMT")), 1);
+        assert_eq!(f(2, None, Some(b"Sun, 06 Nov 1994 08:49:36 GMT")), 0);
+        // Absent flags → not 304 (nothing to match).
+        assert_eq!(f(0, None, None), 0);
+        // Null handle → 0 (never dereferences freed state).
+        assert_eq!(
+            unsafe { castrum_conditional_is_not_modified(0, std::ptr::null(), 0, std::ptr::null(), 0, 0) },
+            0
+        );
+    }
+
     #[test]
     fn ws_accept_key_c_abi_rfc6455() {
         // RFC 6455 Sec-WebSocket-Accept test vector.
         let key = b"dGhlIHNhbXBsZSBub25jZQ==";
-        let mut out = [0u8; 28];
-        let written = unsafe {
-            castrum_ws_accept_key(key.as_ptr(), key.len(), out.as_mut_ptr(), out.len())
-        };
-        assert_eq!(written, 28);
-        assert_eq!(&out[..], b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        let accept = unsafe { castrum_ws_accept_key(key.as_ptr(), key.len()) };
+        assert!(!accept.is_null());
+        let bytes = unsafe { cstr_bytes(accept) }.unwrap();
+        assert_eq!(bytes, b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 
     #[test]
     fn etag_c_abi() {
         let data = b"hello";
-        let mut strong = [0u8; 12];
-        let w = unsafe {
-            castrum_etag(data.as_ptr(), data.len(), strong.as_mut_ptr(), strong.len(), 0)
-        };
-        assert_eq!(w, 10);
+        let strong = unsafe { castrum_etag(data.as_ptr(), data.len(), 0) };
+        assert!(!strong.is_null());
+        let strong_bytes = unsafe { cstr_bytes(strong) }.unwrap();
         let crc = crc32fast::hash(b"hello");
         let expected = format!("\"{crc:08x}\"");
-        assert_eq!(&strong[..10], expected.as_bytes());
+        assert_eq!(strong_bytes, expected.as_bytes());
 
-        let mut weak = [0u8; 12];
-        let w = unsafe {
-            castrum_etag(data.as_ptr(), data.len(), weak.as_mut_ptr(), weak.len(), 1)
-        };
-        assert_eq!(w, 12);
-        assert_eq!(&weak[..2], b"W/");
+        let weak = unsafe { castrum_etag(data.as_ptr(), data.len(), 1) };
+        assert!(!weak.is_null());
+        let weak_bytes = unsafe { cstr_bytes(weak) }.unwrap();
+        assert_eq!(&weak_bytes[..2], b"W/");
     }
 
     #[test]
     fn random_token_c_abi() {
-        let mut out = [0u8; 32];
-        let w = unsafe { castrum_random_token(16, out.as_mut_ptr(), out.len()) };
+        let t = unsafe { castrum_random_token(16) };
+        assert!(!t.is_null());
+        let bytes = unsafe { cstr_bytes(t) }.unwrap();
+        assert_eq!(bytes.len(), 32);
+        assert!(bytes.iter().all(u8::is_ascii_hexdigit));
+        // byte_len 0 → valid empty string, not null.
+        assert!(!unsafe { castrum_random_token(0) }.is_null());
+        // Huge len → null (real error).
+        assert!(unsafe { castrum_random_token(u32::MAX) }.is_null());
+    }
+
+    #[test]
+    fn random_token_into_c_abi() {
+        let mut out = [0u8; 64];
+        let w = unsafe { castrum_random_token_into(16, out.as_mut_ptr(), out.len()) };
         assert_eq!(w, 32);
-        assert!(out.iter().all(u8::is_ascii_hexdigit));
-        // Too-small buffer → 0.
-        let mut tiny = [0u8; 4];
-        assert_eq!(unsafe { castrum_random_token(16, tiny.as_mut_ptr(), tiny.len()) }, 0);
+        assert!(out[..32].iter().all(u8::is_ascii_hexdigit));
+        // Too-small buffer → exact needed size (not a partial write).
+        let mut small = [0u8; 16];
+        let w2 = unsafe { castrum_random_token_into(16, small.as_mut_ptr(), small.len()) };
+        assert_eq!(w2, 32);
+        assert_eq!(&small[..], &[0u8; 16]);
+        // byte_len 0 → writes 0 bytes.
+        let mut zero = [0u8; 4];
+        let w3 = unsafe { castrum_random_token_into(0, zero.as_mut_ptr(), zero.len()) };
+        assert_eq!(w3, 0);
+        // Huge len → 0 (real error); null out → 0.
+        assert_eq!(unsafe { castrum_random_token_into(u32::MAX, out.as_mut_ptr(), out.len()) }, 0);
+        assert_eq!(unsafe { castrum_random_token_into(16, std::ptr::null_mut(), 0) }, 0);
+    }
+
+    #[test]
+    fn cstring_into_variants_match_cstring() {
+        // ws_accept_key: into == cstring bytes.
+        let key = b"dGhlIHNhbXBsZSBub25jZQ==";
+        let mut out = [0u8; 28];
+        let w = unsafe {
+            castrum_ws_accept_key_into(key.as_ptr(), key.len(), out.as_mut_ptr(), out.len())
+        };
+        assert_eq!(w, 28);
+        let cstr_result = unsafe { cstr_bytes(castrum_ws_accept_key(key.as_ptr(), key.len())) }.unwrap();
+        assert_eq!(&out[..], &cstr_result[..]);
+        // Too-small → 28.
+        let mut small = [0u8; 8];
+        assert_eq!(
+            unsafe { castrum_ws_accept_key_into(key.as_ptr(), key.len(), small.as_mut_ptr(), small.len()) },
+            28
+        );
+
+        // etag strong/weak.
+        let data = b"hello";
+        for weak in [0u8, 1u8] {
+            let mut eout = [0u8; 16];
+            let ew = unsafe {
+                castrum_etag_into(data.as_ptr(), data.len(), weak, eout.as_mut_ptr(), eout.len())
+            };
+            let expect = if weak != 0 { 12 } else { 10 };
+            assert_eq!(ew, expect);
+            let ecstr_result = unsafe { cstr_bytes(castrum_etag(data.as_ptr(), data.len(), weak)) }.unwrap();
+            assert_eq!(&eout[..ew], &ecstr_result[..]);
+        }
+
+        // sign/verify cookie round-trip via into.
+        let value = b"session=abc123";
+        let secret = b"secret-key";
+        let mut sout = [0u8; 256];
+        let sw = unsafe {
+            castrum_sign_cookie_into(
+                value.as_ptr(), value.len(), secret.as_ptr(), secret.len(),
+                sout.as_mut_ptr(), sout.len(),
+            )
+        };
+        assert_eq!(sw, value.len() + 65);
+        let signed = &sout[..sw];
+        // Cross-check against the cstring path.
+        let scstr_result = unsafe {
+            cstr_bytes(castrum_sign_cookie(value.as_ptr(), value.len(), secret.as_ptr(), secret.len()))
+        }.unwrap();
+        assert_eq!(signed, &scstr_result[..]);
+        // Verify via into.
+        let mut vout = [0u8; 256];
+        let vw = unsafe {
+            castrum_verify_cookie_into(
+                signed.as_ptr(), signed.len(), secret.as_ptr(), secret.len(),
+                vout.as_mut_ptr(), vout.len(),
+            )
+        };
+        assert_eq!(vw, value.len());
+        assert_eq!(&vout[..vw], value);
+        // Tampered → 0.
+        let mut tampered = signed.to_vec();
+        tampered[0] ^= 1;
+        let vw0 = unsafe {
+            castrum_verify_cookie_into(
+                tampered.as_ptr(), tampered.len(), secret.as_ptr(), secret.len(),
+                vout.as_mut_ptr(), vout.len(),
+            )
+        };
+        assert_eq!(vw0, 0);
+
+        // csrf_token into: 129 bytes, hex.hex.
+        let mut cout = [0u8; 129];
+        let cw = unsafe {
+            castrum_csrf_token_into(secret.as_ptr(), secret.len(), cout.as_mut_ptr(), cout.len())
+        };
+        assert_eq!(cw, 129);
+        assert_eq!(cout[64], b'.');
+        assert!(cout[..64].iter().all(u8::is_ascii_hexdigit));
+        assert!(cout[65..].iter().all(u8::is_ascii_hexdigit));
+        // Too-small → 129.
+        let mut csmall = [0u8; 8];
+        assert_eq!(
+            unsafe { castrum_csrf_token_into(secret.as_ptr(), secret.len(), csmall.as_mut_ptr(), csmall.len()) },
+            129
+        );
+
+        // jwt_sign_bytes into == cstring.
+        let claims = b"{\"sub\":\"user-1\"}";
+        let mut jout = [0u8; 512];
+        let jw = unsafe {
+            castrum_jwt_sign_bytes_into(
+                claims.as_ptr(), claims.len(), secret.as_ptr(), secret.len(),
+                0, 0, jout.as_mut_ptr(), jout.len(),
+            )
+        };
+        assert!(jw > 0);
+        let jcstr = unsafe {
+            cstr_bytes(castrum_jwt_sign_bytes(claims.as_ptr(), claims.len(), secret.as_ptr(), secret.len(), 0, 0))
+        }.unwrap();
+        assert_eq!(&jout[..jw], &jcstr[..]);
     }
 
     #[test]
@@ -1649,9 +3876,8 @@ mod tests {
         };
         assert_eq!(&enc[..w], b"aGVsbG8gd29ybGQ=");
         let mut dec = [0u8; 32];
-        let d = unsafe {
-            castrum_base64_decode(enc.as_ptr(), w, dec.as_mut_ptr(), dec.len(), 0, 1)
-        };
+        let d =
+            unsafe { castrum_base64_decode(enc.as_ptr(), w, dec.as_mut_ptr(), dec.len(), 0, 1) };
         assert_eq!(&dec[..d], data);
         // Invalid input → 0.
         assert_eq!(
@@ -1666,7 +3892,14 @@ mod tests {
         let data = b"The quick brown fox jumps over the lazy dog";
         let mut out = [0u8; 64];
         let w = unsafe {
-            castrum_hmac_sha256(key.as_ptr(), key.len(), data.as_ptr(), data.len(), out.as_mut_ptr(), out.len())
+            castrum_hmac_sha256(
+                key.as_ptr(),
+                key.len(),
+                data.as_ptr(),
+                data.len(),
+                out.as_mut_ptr(),
+                out.len(),
+            )
         };
         assert_eq!(w, 64);
         assert_eq!(
@@ -1674,12 +3907,26 @@ mod tests {
             b"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
         );
         let ok = unsafe {
-            castrum_hmac_sha256_verify(key.as_ptr(), key.len(), data.as_ptr(), data.len(), out.as_ptr(), out.len())
+            castrum_hmac_sha256_verify(
+                key.as_ptr(),
+                key.len(),
+                data.as_ptr(),
+                data.len(),
+                out.as_ptr(),
+                out.len(),
+            )
         };
         assert_eq!(ok, 1);
         out[0] ^= 1;
         let bad = unsafe {
-            castrum_hmac_sha256_verify(key.as_ptr(), key.len(), data.as_ptr(), data.len(), out.as_ptr(), out.len())
+            castrum_hmac_sha256_verify(
+                key.as_ptr(),
+                key.len(),
+                data.as_ptr(),
+                data.len(),
+                out.as_ptr(),
+                out.len(),
+            )
         };
         assert_eq!(bad, 0);
     }
@@ -1688,38 +3935,66 @@ mod tests {
     fn sign_verify_cookie_c_abi() {
         let value = b"session=abc";
         let secret = b"secret-key";
-        let mut signed = [0u8; 128];
-        let w = unsafe {
-            castrum_sign_cookie(value.as_ptr(), value.len(), secret.as_ptr(), secret.len(), signed.as_mut_ptr(), signed.len())
+        let signed = unsafe {
+            castrum_sign_cookie(value.as_ptr(), value.len(), secret.as_ptr(), secret.len())
         };
-        assert!(w > value.len());
-        let mut out = [0u8; 128];
-        let v = unsafe {
-            castrum_verify_cookie(signed.as_ptr(), w, secret.as_ptr(), secret.len(), out.as_mut_ptr(), out.len())
+        assert!(!signed.is_null());
+        let signed_bytes = unsafe { cstr_bytes(signed) }.unwrap();
+        assert!(signed_bytes.len() > value.len());
+
+        let verified = unsafe {
+            castrum_verify_cookie(
+                signed_bytes.as_ptr(),
+                signed_bytes.len(),
+                secret.as_ptr(),
+                secret.len(),
+            )
         };
-        assert_eq!(&out[..v], value);
-        // Tampered signature → 0.
-        let last = w - 1;
-        signed[last] ^= 1;
+        assert!(!verified.is_null());
+        let out = unsafe { cstr_bytes(verified) }.unwrap();
+        assert_eq!(out, value);
+
+        // Tampered signature → null.
+        let mut tampered = signed_bytes.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
         let bad = unsafe {
-            castrum_verify_cookie(signed.as_ptr(), w, secret.as_ptr(), secret.len(), out.as_mut_ptr(), out.len())
+            castrum_verify_cookie(
+                tampered.as_ptr(),
+                tampered.len(),
+                secret.as_ptr(),
+                secret.len(),
+            )
         };
-        assert_eq!(bad, 0);
+        assert!(bad.is_null());
     }
 
     #[test]
     fn csrf_c_abi() {
         let secret = b"csrf-secret";
-        let mut token = [0u8; 129];
-        let w = unsafe { castrum_csrf_token(secret.as_ptr(), secret.len(), token.as_mut_ptr(), token.len()) };
-        assert_eq!(w, 129);
-        assert_eq!(token[64], b'.');
+        let token = unsafe { castrum_csrf_token(secret.as_ptr(), secret.len()) };
+        assert!(!token.is_null());
+        let token_bytes = unsafe { cstr_bytes(token) }.unwrap();
+        assert_eq!(token_bytes.len(), 129);
+        assert_eq!(token_bytes[64], b'.');
         let ok = unsafe {
-            castrum_csrf_verify(token.as_ptr(), token.len(), secret.as_ptr(), secret.len())
+            castrum_csrf_verify(
+                token_bytes.as_ptr(),
+                token_bytes.len(),
+                secret.as_ptr(),
+                secret.len(),
+            )
         };
         assert_eq!(ok, 1);
         // Wrong secret → 0.
-        let bad = unsafe { castrum_csrf_verify(token.as_ptr(), token.len(), b"other".as_ptr(), 5) };
+        let bad = unsafe {
+            castrum_csrf_verify(
+                token_bytes.as_ptr(),
+                token_bytes.len(),
+                b"other".as_ptr(),
+                5,
+            )
+        };
         assert_eq!(bad, 0);
     }
 
@@ -1729,7 +4004,18 @@ mod tests {
         let salt = b"saltsalt";
         let mut phc = [0u8; 512];
         let w = unsafe {
-            castrum_password_hash(pw.as_ptr(), pw.len(), salt.as_ptr(), salt.len(), 19_456, 2, 1, 32, phc.as_mut_ptr(), phc.len())
+            castrum_password_hash(
+                pw.as_ptr(),
+                pw.len(),
+                salt.as_ptr(),
+                salt.len(),
+                19_456,
+                2,
+                1,
+                32,
+                phc.as_mut_ptr(),
+                phc.len(),
+            )
         };
         assert!(w > 0);
         let ok = unsafe { castrum_password_verify(pw.as_ptr(), pw.len(), phc.as_ptr(), w) };
@@ -1742,7 +4028,9 @@ mod tests {
     fn bcrypt_c_abi() {
         let pw = b"hunter2";
         let mut phc = [0u8; 128];
-        let w = unsafe { castrum_password_hash_bcrypt(pw.as_ptr(), pw.len(), 4, phc.as_mut_ptr(), phc.len()) };
+        let w = unsafe {
+            castrum_password_hash_bcrypt(pw.as_ptr(), pw.len(), 4, phc.as_mut_ptr(), phc.len())
+        };
         assert!(w > 0);
         assert_eq!(&phc[..4], b"$2b$");
         let ok = unsafe { castrum_password_verify_bcrypt(pw.as_ptr(), pw.len(), phc.as_ptr(), w) };
@@ -1755,7 +4043,16 @@ mod tests {
         let salt = b"salt";
         let mut out = [0u8; 32];
         let w = unsafe {
-            castrum_pbkdf2_sha256(pw.as_ptr(), pw.len(), salt.as_ptr(), salt.len(), 1, 32, out.as_mut_ptr(), out.len())
+            castrum_pbkdf2_sha256(
+                pw.as_ptr(),
+                pw.len(),
+                salt.as_ptr(),
+                salt.len(),
+                1,
+                32,
+                out.as_mut_ptr(),
+                out.len(),
+            )
         };
         assert_eq!(w, 32);
         // Cross-check against the napi fn (which pins the RFC 7914 vector).
@@ -1771,7 +4068,16 @@ mod tests {
         let mut tiny = [0u8; 4];
         assert_eq!(
             unsafe {
-                castrum_pbkdf2_sha256(pw.as_ptr(), pw.len(), salt.as_ptr(), salt.len(), 1, 32, tiny.as_mut_ptr(), tiny.len())
+                castrum_pbkdf2_sha256(
+                    pw.as_ptr(),
+                    pw.len(),
+                    salt.as_ptr(),
+                    salt.len(),
+                    1,
+                    32,
+                    tiny.as_mut_ptr(),
+                    tiny.len(),
+                )
             },
             0
         );
@@ -1784,18 +4090,48 @@ mod tests {
         let plaintext = b"sensitive payload";
         let mut ct = [0u8; 128];
         let w = unsafe {
-            castrum_aead_encrypt(key.as_ptr(), key.len(), nonce.as_ptr(), nonce.len(), plaintext.as_ptr(), plaintext.len(), 0, ct.as_mut_ptr(), ct.len())
+            castrum_aead_encrypt(
+                key.as_ptr(),
+                key.len(),
+                nonce.as_ptr(),
+                nonce.len(),
+                plaintext.as_ptr(),
+                plaintext.len(),
+                0,
+                ct.as_mut_ptr(),
+                ct.len(),
+            )
         };
         assert_eq!(w, plaintext.len() + 16);
         let mut pt = [0u8; 128];
         let d = unsafe {
-            castrum_aead_decrypt(key.as_ptr(), key.len(), nonce.as_ptr(), nonce.len(), ct.as_ptr(), w, 0, pt.as_mut_ptr(), pt.len())
+            castrum_aead_decrypt(
+                key.as_ptr(),
+                key.len(),
+                nonce.as_ptr(),
+                nonce.len(),
+                ct.as_ptr(),
+                w,
+                0,
+                pt.as_mut_ptr(),
+                pt.len(),
+            )
         };
         assert_eq!(&pt[..d], plaintext);
         // Tampered ciphertext → auth failure → 0.
         ct[0] ^= 1;
         let bad = unsafe {
-            castrum_aead_decrypt(key.as_ptr(), key.len(), nonce.as_ptr(), nonce.len(), ct.as_ptr(), w, 0, pt.as_mut_ptr(), pt.len())
+            castrum_aead_decrypt(
+                key.as_ptr(),
+                key.len(),
+                nonce.as_ptr(),
+                nonce.len(),
+                ct.as_ptr(),
+                w,
+                0,
+                pt.as_mut_ptr(),
+                pt.len(),
+            )
         };
         assert_eq!(bad, 0);
     }
@@ -1805,7 +4141,15 @@ mod tests {
         let payload = b"hello";
         let mut out = [0u8; 32];
         let w = unsafe {
-            castrum_ws_frame_encode(1, payload.as_ptr(), payload.len(), 1, 1, out.as_mut_ptr(), out.len())
+            castrum_ws_frame_encode(
+                1,
+                payload.as_ptr(),
+                payload.len(),
+                1,
+                1,
+                out.as_mut_ptr(),
+                out.len(),
+            )
         };
         // masked text frame, fin: 0x81, len 5 | 0x80, 4-byte mask + payload.
         assert_eq!(w, 2 + 4 + payload.len());
@@ -1819,7 +4163,14 @@ mod tests {
         let patch = br#"[{"op":"add","path":"/b","value":2}]"#;
         let mut out = [0u8; 64];
         let w = unsafe {
-            castrum_json_patch(doc.as_ptr(), doc.len(), patch.as_ptr(), patch.len(), out.as_mut_ptr(), out.len())
+            castrum_json_patch(
+                doc.as_ptr(),
+                doc.len(),
+                patch.as_ptr(),
+                patch.len(),
+                out.as_mut_ptr(),
+                out.len(),
+            )
         };
         let patched: serde_json::Value = serde_json::from_slice(&out[..w]).unwrap();
         assert_eq!(patched["b"], 2);
@@ -1835,18 +4186,36 @@ mod tests {
         assert!(cw > 0 && cw < data.len());
         let mut decomp = [0u8; 1024];
         let dw = unsafe {
-            castrum_gzip_decompress(comp.as_ptr(), cw, 1024 * 1024, decomp.as_mut_ptr(), decomp.len())
+            castrum_gzip_decompress(
+                comp.as_ptr(),
+                cw,
+                1024 * 1024,
+                decomp.as_mut_ptr(),
+                decomp.len(),
+            )
         };
         assert_eq!(&decomp[..dw], data);
 
         let mut bcomp = [0u8; 2048];
         let bw = unsafe {
-            castrum_brotli_compress(data.as_ptr(), data.len(), 5, bcomp.as_mut_ptr(), bcomp.len())
+            castrum_brotli_compress(
+                data.as_ptr(),
+                data.len(),
+                5,
+                bcomp.as_mut_ptr(),
+                bcomp.len(),
+            )
         };
         assert!(bw > 0);
         let mut bdecomp = [0u8; 1024];
         let bdw = unsafe {
-            castrum_brotli_decompress(bcomp.as_ptr(), bw, 1024 * 1024, bdecomp.as_mut_ptr(), bdecomp.len())
+            castrum_brotli_decompress(
+                bcomp.as_ptr(),
+                bw,
+                1024 * 1024,
+                bdecomp.as_mut_ptr(),
+                bdecomp.len(),
+            )
         };
         assert_eq!(&bdecomp[..bdw], data);
     }
@@ -1863,7 +4232,10 @@ mod tests {
         let isize = unsafe { castrum_gzip_isize(comp.as_ptr(), cw) };
         assert_eq!(isize as usize, data.len());
         // Not gzip magic → 0.
-        assert_eq!(unsafe { castrum_gzip_isize(b"hello world, this is not gzip at all".as_ptr(), 40) }, 0);
+        assert_eq!(
+            unsafe { castrum_gzip_isize(b"hello world, this is not gzip at all".as_ptr(), 40) },
+            0
+        );
         // Too short → 0.
         assert_eq!(unsafe { castrum_gzip_isize(b"\x1f\x8b".as_ptr(), 2) }, 0);
     }
@@ -1882,13 +4254,25 @@ mod tests {
         // Allocating exactly `needed` succeeds in one retry.
         let mut exact = vec![0u8; needed];
         let w = unsafe {
-            castrum_gzip_compress(data.as_ptr(), data.len(), 6, exact.as_mut_ptr(), exact.len())
+            castrum_gzip_compress(
+                data.as_ptr(),
+                data.len(),
+                6,
+                exact.as_mut_ptr(),
+                exact.len(),
+            )
         };
         assert_eq!(w, needed);
         // Invalid input → 0 (a REAL error, not "too small").
         let mut out = [0u8; 256];
         let err = unsafe {
-            castrum_gzip_decompress(b"not-a-gzip-stream".as_ptr(), 17, 1024 * 1024, out.as_mut_ptr(), out.len())
+            castrum_gzip_decompress(
+                b"not-a-gzip-stream".as_ptr(),
+                17,
+                1024 * 1024,
+                out.as_mut_ptr(),
+                out.len(),
+            )
         };
         assert_eq!(err, 0);
 
@@ -1897,40 +4281,80 @@ mod tests {
         let patch = br#"[{"op":"add","path":"/d","value":4}]"#;
         let mut ptiny = [0u8; 4];
         let pneed = unsafe {
-            castrum_json_patch(doc.as_ptr(), doc.len(), patch.as_ptr(), patch.len(), ptiny.as_mut_ptr(), ptiny.len())
+            castrum_json_patch(
+                doc.as_ptr(),
+                doc.len(),
+                patch.as_ptr(),
+                patch.len(),
+                ptiny.as_mut_ptr(),
+                ptiny.len(),
+            )
         };
         assert!(pneed > ptiny.len());
         let mut pexact = vec![0u8; pneed];
         let pw = unsafe {
-            castrum_json_patch(doc.as_ptr(), doc.len(), patch.as_ptr(), patch.len(), pexact.as_mut_ptr(), pexact.len())
+            castrum_json_patch(
+                doc.as_ptr(),
+                doc.len(),
+                patch.as_ptr(),
+                patch.len(),
+                pexact.as_mut_ptr(),
+                pexact.len(),
+            )
         };
         assert_eq!(pw, pneed);
 
-        // jwtSignBytes: too-small returns the exact needed size.
+        // jwtSignBytes: cstring return — the engine clones the token string.
         let claims = br#"{"sub":"user-1"}"#;
         let secret = b"my-secret";
-        let mut jtiny = [0u8; 4];
-        let jneed = unsafe {
-            castrum_jwt_sign_bytes(claims.as_ptr(), claims.len(), secret.as_ptr(), secret.len(), 60, 1_700_000_000, jtiny.as_mut_ptr(), jtiny.len())
+        let jp = unsafe {
+            castrum_jwt_sign_bytes(
+                claims.as_ptr(),
+                claims.len(),
+                secret.as_ptr(),
+                secret.len(),
+                60,
+                1_700_000_000,
+            )
         };
-        assert!(jneed > jtiny.len());
-        let mut jexact = vec![0u8; jneed];
-        let jw = unsafe {
-            castrum_jwt_sign_bytes(claims.as_ptr(), claims.len(), secret.as_ptr(), secret.len(), 60, 1_700_000_000, jexact.as_mut_ptr(), jexact.len())
-        };
-        assert_eq!(jw, jneed);
+        assert!(!jp.is_null());
+        let jtoken = unsafe { cstr_bytes(jp) }.unwrap();
+        assert!(!jtoken.is_empty());
+        assert_eq!(jtoken.iter().filter(|&&b| b == b'.').count(), 2);
 
         // passwordHash (argon2) too-small returns the exact PHC length.
         let pw = b"hunter2";
         let salt = b"saltsalt";
         let mut tiny = [0u8; 8];
         let hneed = unsafe {
-            castrum_password_hash(pw.as_ptr(), pw.len(), salt.as_ptr(), salt.len(), 19_456, 2, 1, 32, tiny.as_mut_ptr(), tiny.len())
+            castrum_password_hash(
+                pw.as_ptr(),
+                pw.len(),
+                salt.as_ptr(),
+                salt.len(),
+                19_456,
+                2,
+                1,
+                32,
+                tiny.as_mut_ptr(),
+                tiny.len(),
+            )
         };
         assert!(hneed > tiny.len());
         let mut hexact = vec![0u8; hneed];
         let hw = unsafe {
-            castrum_password_hash(pw.as_ptr(), pw.len(), salt.as_ptr(), salt.len(), 19_456, 2, 1, 32, hexact.as_mut_ptr(), hexact.len())
+            castrum_password_hash(
+                pw.as_ptr(),
+                pw.len(),
+                salt.as_ptr(),
+                salt.len(),
+                19_456,
+                2,
+                1,
+                32,
+                hexact.as_mut_ptr(),
+                hexact.len(),
+            )
         };
         assert_eq!(hw, hneed);
     }
@@ -1955,9 +4379,57 @@ mod tests {
         let cookie = b"sid=abc123; theme=dark";
         let mut cout = [0u8; 256];
         let cw = unsafe {
-            castrum_cookie_parse_packed(cookie.as_ptr(), cookie.len(), cout.as_mut_ptr(), cout.len())
+            castrum_cookie_parse_packed(
+                cookie.as_ptr(),
+                cookie.len(),
+                cout.as_mut_ptr(),
+                cout.len(),
+            )
         };
         assert!(cw > 0);
+    }
+
+    #[test]
+    fn packed_parsers_needed_size_c_abi() {
+        // The packed pair writers + JSON-text writers report the EXACT needed
+        // size on a too-small buffer (growExact), and 0 stays a real error
+        // (malformed %XX). This removes the JS 9×/8× pre-size AND the re-run
+        // loop — a miss allocates once and retries.
+        let too_small = [0u8; 8];
+
+        // query → packed pairs (strict writer; malformed %XX is a real error).
+        let q = b"a=1&b=hello%20world&c=2";
+        let qneed = unsafe {
+            castrum_query_parse_packed(
+                q.as_ptr(),
+                q.len(),
+                too_small.as_ptr() as *mut u8,
+                too_small.len(),
+            )
+        };
+        assert!(qneed > too_small.len());
+        let mut qexact = vec![0u8; qneed];
+        let qw = unsafe {
+            castrum_query_parse_packed(q.as_ptr(), q.len(), qexact.as_mut_ptr(), qexact.len())
+        };
+        assert_eq!(qw, qneed);
+
+        // cookie → packed pairs.
+        let c = b"sid=abc123; theme=dark";
+        let cneed = unsafe {
+            castrum_cookie_parse_packed(
+                c.as_ptr(),
+                c.len(),
+                too_small.as_ptr() as *mut u8,
+                too_small.len(),
+            )
+        };
+        assert!(cneed > too_small.len());
+        let mut cexact = vec![0u8; cneed];
+        let cw = unsafe {
+            castrum_cookie_parse_packed(c.as_ptr(), c.len(), cexact.as_mut_ptr(), cexact.len())
+        };
+        assert_eq!(cw, cneed);
     }
 
     #[test]
@@ -2043,8 +4515,7 @@ mod tests {
     fn jwt_sign_bytes_c_abi() {
         let claims = br#"{"sub":"user-1"}"#;
         let secret = b"my-secret";
-        let mut out = [0u8; 256];
-        let w = unsafe {
+        let signed = unsafe {
             castrum_jwt_sign_bytes(
                 claims.as_ptr(),
                 claims.len(),
@@ -2052,18 +4523,19 @@ mod tests {
                 secret.len(),
                 60,
                 1_700_000_000,
-                out.as_mut_ptr(),
-                out.len(),
             )
         };
-        assert!(w > 0);
-        let token = &out[..w];
+        assert!(!signed.is_null());
+        let token = unsafe { cstr_bytes(signed) }.unwrap();
         // Compact JWT: header.payload.sig → exactly two dots.
         assert_eq!(token.iter().filter(|&&b| b == b'.').count(), 2);
-        assert!(crate::crypto::jwt::verify_signature_with_key(token, &hmac_key(secret)));
+        assert!(crate::crypto::jwt::verify_signature_with_key(
+            &token,
+            &hmac_key(secret)
+        ));
 
         // ttl <= 0 → no iat/exp injection (still signs).
-        let w0 = unsafe {
+        let s0 = unsafe {
             castrum_jwt_sign_bytes(
                 claims.as_ptr(),
                 claims.len(),
@@ -2071,12 +4543,10 @@ mod tests {
                 secret.len(),
                 0,
                 1_700_000_000,
-                out.as_mut_ptr(),
-                out.len(),
             )
         };
-        assert!(w0 > 0);
-        // Invalid claims JSON → 0.
+        assert!(!s0.is_null());
+        // Invalid claims JSON → null.
         let bad = unsafe {
             castrum_jwt_sign_bytes(
                 b"not-json".as_ptr(),
@@ -2085,11 +4555,66 @@ mod tests {
                 secret.len(),
                 60,
                 1,
-                out.as_mut_ptr(),
-                out.len(),
             )
         };
-        assert_eq!(bad, 0);
+        assert!(bad.is_null());
+    }
+
+    #[test]
+    fn jwt_verify_c_abi() {
+        let claims = br#"{"sub":"user-1"}"#;
+        let secret = b"my-secret";
+        let signed = unsafe {
+            castrum_jwt_sign_bytes(
+                claims.as_ptr(),
+                claims.len(),
+                secret.as_ptr(),
+                secret.len(),
+                60,
+                1_700_000_000,
+            )
+        };
+        assert!(!signed.is_null());
+        let token = unsafe { cstr_bytes(signed) }.unwrap();
+
+        // Valid within TTL → claims JSON.
+        let verified = unsafe {
+            castrum_jwt_verify(
+                token.as_ptr(),
+                token.len(),
+                secret.as_ptr(),
+                secret.len(),
+                1_700_000_030,
+            )
+        };
+        assert!(!verified.is_null());
+        let claims_json = unsafe { cstr_bytes(verified) }.unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&claims_json).unwrap();
+        assert_eq!(parsed["sub"], "user-1");
+
+        // Expired (now beyond exp) → null.
+        let expired = unsafe {
+            castrum_jwt_verify(
+                token.as_ptr(),
+                token.len(),
+                secret.as_ptr(),
+                secret.len(),
+                1_700_000_100,
+            )
+        };
+        assert!(expired.is_null());
+
+        // Wrong secret → null.
+        let wrong = unsafe {
+            castrum_jwt_verify(
+                token.as_ptr(),
+                token.len(),
+                b"other".as_ptr(),
+                5,
+                1_700_000_030,
+            )
+        };
+        assert!(wrong.is_null());
     }
 
     #[test]
@@ -2116,7 +4641,11 @@ mod tests {
         // Packed frame: [method 0 = GET][url][ip][rid] sections + empty headers.
         let mut input = Vec::new();
         input.push(0);
-        for section in [b"/api/users".as_slice(), b"127.0.0.1".as_slice(), b"rid-1".as_slice()] {
+        for section in [
+            b"/api/users".as_slice(),
+            b"127.0.0.1".as_slice(),
+            b"rid-1".as_slice(),
+        ] {
             input.extend_from_slice(&(section.len() as u32).to_le_bytes());
             input.extend_from_slice(section);
         }
@@ -2199,7 +4728,11 @@ mod tests {
         };
         let mut input = Vec::new();
         input.push(0);
-        for section in [b"/api/users".as_slice(), b"127.0.0.1".as_slice(), b"rid-1".as_slice()] {
+        for section in [
+            b"/api/users".as_slice(),
+            b"127.0.0.1".as_slice(),
+            b"rid-1".as_slice(),
+        ] {
             input.extend_from_slice(&(section.len() as u32).to_le_bytes());
             input.extend_from_slice(section);
         }
@@ -2229,6 +4762,10 @@ mod tests {
             )
         };
         assert!(w > 0, "pipeline should succeed despite input/out overlap");
-        assert_eq!(unsafe { *out_ptr }, 0, "verdict (ok) must land at out start");
+        assert_eq!(
+            unsafe { *out_ptr },
+            0,
+            "verdict (ok) must land at out start"
+        );
     }
 }

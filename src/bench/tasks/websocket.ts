@@ -13,7 +13,7 @@ export function websocketTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'rust:ws_accept_key',
-      run: () => rust.wsAcceptKey(f.wsKeyBytes).byteLength,
+      run: () => rust.wsAcceptKey(f.wsKeyBytes).length,
       iterations: 1000,
       warmup: 100,
     },

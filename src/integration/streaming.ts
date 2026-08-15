@@ -1,7 +1,8 @@
 // src/integration/streaming.ts — SSE response helper.
 
 import { rust } from '../rust-ffi'
-/** One SSE event to frame via `sseResponse` (event/id/retry/data). */export interface SseEvent {
+import { encoder } from '../shared/bytes'
+/** One SSE event to frame via `sseResponse` (event/id/retry/data). */ export interface SseEvent {
   /** Optional `event:` field. */
   event?: string | null
   /** Optional `id:` field. */
@@ -33,7 +34,6 @@ export function sseResponse(
   events: AsyncIterable<SseEvent> | Iterable<SseEvent>,
   init: ResponseInit = {},
 ): Response {
-  const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {

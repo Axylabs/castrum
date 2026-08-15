@@ -11,7 +11,9 @@
 use base64::Engine as _;
 use memchr::memchr;
 use napi::bindgen_prelude::*;
+use napi::bindgen_prelude::Unknown;
 use napi_derive::napi;
+use sonic_rs::{JsonValueMutTrait, JsonValueTrait};
 use std::sync::OnceLock;
 
 /// Clock-skew tolerance (seconds) for the `iat` claim in `jwt_verify`.
@@ -23,7 +25,7 @@ const CLOCK_SKEW_LEEWAY_SECS: i64 = 60;
 /// re-serializing the constant header on every call.
 static JWT_HEADER_B64: OnceLock<Vec<u8>> = OnceLock::new();
 
-pub(crate) fn jwt_header_b64() -> &'static [u8] {
+pub fn jwt_header_b64() -> &'static [u8] {
     JWT_HEADER_B64.get_or_init(|| {
         let header = serde_json::json!({ "alg": "HS256", "typ": "JWT" });
         b64url_encode(&serde_json::to_vec(&header).expect("constant JWT header serializes"))
@@ -155,7 +157,7 @@ pub fn verify_signature_with_key(token: &[u8], key: &aws_lc_rs::hmac::Key) -> bo
 /// Inject `iat`/`exp` into object claims when `ttl_seconds` is set, then
 /// serialize + base64url-encode the payload. Shared by the scalar, instance,
 /// and byte-JSON sign paths so the injection semantics can't drift.
-pub(crate) fn inject_and_payload_b64(
+pub fn inject_and_payload_b64(
     claims: &mut serde_json::Value,
     ttl_seconds: Option<i64>,
     now_seconds: i64,
@@ -170,7 +172,38 @@ pub(crate) fn inject_and_payload_b64(
             }
         }
     }
-    Ok(b64url_encode(&serde_json::to_vec(claims).map_err(napi_err)?))
+    Ok(b64url_encode(
+        &serde_json::to_vec(claims).map_err(napi_err)?,
+    ))
+}
+
+/// Inject `iat`/`exp` into a sonic object when `ttl_seconds` is set (unless
+/// already present) — shared by the sonic byte-sign paths.
+fn inject_ttl_claims(claims: &mut sonic_rs::Value, ttl_seconds: Option<i64>, now_seconds: i64) {
+    if let Some(ttl) = ttl_seconds {
+        if ttl > 0 {
+            if let Some(obj) = claims.as_object_mut() {
+                if obj.get(&"iat").is_none() {
+                    obj.insert("iat", now_seconds);
+                }
+                if obj.get(&"exp").is_none() {
+                    obj.insert("exp", now_seconds + ttl);
+                }
+            }
+        }
+    }
+}
+
+/// Sonic twin of [`inject_and_payload_b64`] for the pre-serialized-claim-byte
+/// sign paths (no `serde_json::Value` DOM): parse the claims once into a
+/// compact `sonic_rs::Value`, inject `iat`/`exp`, serialize + base64url.
+pub fn inject_and_payload_b64_sonic(
+    claims: &mut sonic_rs::Value,
+    ttl_seconds: Option<i64>,
+    now_seconds: i64,
+) -> Result<Vec<u8>> {
+    inject_ttl_claims(claims, ttl_seconds, now_seconds);
+    Ok(b64url_encode(&sonic_rs::to_vec(claims).map_err(napi_err)?))
 }
 
 /// Sign a JWT (HS256). `claims` is any JSON value; when it is an object and a
@@ -195,8 +228,10 @@ pub fn jwt_sign(
 
 /// Sign a JWT (HS256) from pre-serialized claim JSON bytes. Avoids the napi
 /// `serde_json::Value` DOM marshal of `jwt_sign` for callers that already hold
-/// the claim bytes (e.g. JSON.stringify'd on the JS side). Semantics are
-/// identical to `jwt_sign` (incl. `iat`/`exp` injection).
+/// the claim bytes (e.g. JSON.stringify'd on the JS side). The claims are
+/// parsed straight into a `sonic_rs::Value` (compact, no per-key heap
+/// `String`). Semantics are identical to `jwt_sign` (incl. `iat`/`exp`
+/// injection).
 #[napi]
 pub fn jwt_sign_bytes(
     claims_json: Uint8Array,
@@ -204,9 +239,9 @@ pub fn jwt_sign_bytes(
     ttl_seconds: Option<i64>,
     now_seconds: i64,
 ) -> Result<Buffer> {
-    let mut claims: serde_json::Value =
-        serde_json::from_slice(claims_json.as_ref()).map_err(napi_err)?;
-    let payload_b64 = inject_and_payload_b64(&mut claims, ttl_seconds, now_seconds)?;
+    let mut claims: sonic_rs::Value =
+        sonic_rs::from_slice(claims_json.as_ref()).map_err(napi_err)?;
+    let payload_b64 = inject_and_payload_b64_sonic(&mut claims, ttl_seconds, now_seconds)?;
     Ok(Buffer::from(build_token(
         jwt_header_b64(),
         &payload_b64,
@@ -215,18 +250,21 @@ pub fn jwt_sign_bytes(
 }
 
 /// Pure-core JWT verification: HS256 signature + `alg` allowlist + time claims
-/// (`exp`/`nbf`/`iat`). Returns the decoded claims, or `None` on any failure.
-pub fn verify_token(token: &[u8], secret: &[u8], now_seconds: i64) -> Option<serde_json::Value> {
+/// (`exp`/`nbf`/`iat`). Returns the decoded payload BYTES (valid JSON claims),
+/// or `None` on any failure — no `serde_json::Value` DOM and no re-serialize.
+pub fn verify_token(token: &[u8], secret: &[u8], now_seconds: i64) -> Option<Vec<u8>> {
     let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
     verify_token_with_key(token, &key, now_seconds)
 }
 
-/// Verify with a PRE-COMPILED key (no per-call key derivation).
+/// Verify with a PRE-COMPILED key (no per-call key derivation). Time-claim
+/// checks run over a compact `sonic_rs::Value` (zero per-key heap `String`);
+/// the decoded payload bytes are returned verbatim.
 pub fn verify_token_with_key(
     token: &[u8],
     key: &aws_lc_rs::hmac::Key,
     now_seconds: i64,
-) -> Option<serde_json::Value> {
+) -> Option<Vec<u8>> {
     if !verify_signature_with_key(token, key) {
         return None;
     }
@@ -239,16 +277,16 @@ pub fn verify_token_with_key(
     // accepts alternative key order / extra header fields), so behavior is
     // identical to the previous always-parse path.
     if parts.header_b64 != jwt_header_b64() {
-        let header: serde_json::Value =
-            serde_json::from_slice(&b64url_decode(parts.header_b64)?).ok()?;
+        let header: sonic_rs::Value =
+            sonic_rs::from_slice(&b64url_decode(parts.header_b64)?).ok()?;
         if header.get("alg").and_then(|v| v.as_str()) != Some("HS256") {
             return None;
         }
     }
 
-    // ── Payload ──
-    let value: serde_json::Value =
-        serde_json::from_slice(&b64url_decode(parts.payload_b64)?).ok()?;
+    // ── Payload: decode once; zero-DOM time-claim checks ──
+    let payload = b64url_decode(parts.payload_b64)?;
+    let value: sonic_rs::Value = sonic_rs::from_slice(&payload).ok()?;
 
     // `exp`: reject when now >= exp.
     if let Some(exp) = value.get("exp").and_then(|v| v.as_i64()) {
@@ -272,15 +310,28 @@ pub fn verify_token_with_key(
         }
     }
 
-    Some(value)
+    Some(payload)
 }
 
 /// Verify a JWT (HS256 signature + time claims). Returns the decoded claims
-/// object, or `null` on any failure (malformed, bad signature, wrong `alg`,
-/// expired, not-yet-valid `nbf`/`iat`, non-JSON payload).
+/// object (marshaled from the compact sonic Value), or `null` on any failure
+/// (malformed, bad signature, wrong `alg`, expired, not-yet-valid `nbf`/`iat`,
+/// non-JSON payload).
 #[napi]
-pub fn jwt_verify(token: Uint8Array, secret: Uint8Array, now_seconds: i64) -> serde_json::Value {
-    verify_token(token.as_ref(), secret.as_ref(), now_seconds).unwrap_or(serde_json::Value::Null)
+pub fn jwt_verify(
+    env: Env,
+    token: Uint8Array,
+    secret: Uint8Array,
+    now_seconds: i64,
+) -> Result<Unknown<'static>> {
+    let Some(payload) = verify_token(token.as_ref(), secret.as_ref(), now_seconds) else {
+        return crate::json::napi_marshal::sonic_value_to_js(&env, &sonic_rs::Value::new());
+    };
+    match sonic_rs::from_slice::<sonic_rs::Value>(&payload) {
+        Ok(v) => crate::json::napi_marshal::sonic_value_to_js(&env, &v),
+        // The payload already parsed for the time-claim check — unreachable.
+        Err(_) => crate::json::napi_marshal::sonic_value_to_js(&env, &sonic_rs::Value::new()),
+    }
 }
 
 /// Higher-order instance: precompiles the HMAC-SHA256 key once from `secret`,
@@ -302,6 +353,14 @@ impl JwtSigner {
         }
     }
 
+    /// Opaque handle to the precompiled key + ttl, for the `bun:ffi` C-ABI
+    /// fast path (`castrum_jwt_signer_*` in rust/ffi.rs). Only valid while THIS
+    /// instance is alive; the JS wrapper holds the instance.
+    #[napi]
+    pub fn inner_ptr(&self) -> u64 {
+        self as *const JwtSigner as u64
+    }
+
     /// Sign a JWT with the precompiled key. When `ttl` was set at construction,
     /// `iat`/`exp` are injected into object claims (unless already present).
     #[napi]
@@ -319,9 +378,10 @@ impl JwtSigner {
     /// key — no napi `serde_json::Value` marshal, no per-call key derivation.
     #[napi]
     pub fn sign_bytes(&self, claims_json: Uint8Array, now_seconds: i64) -> Result<Buffer> {
-        let mut claims: serde_json::Value =
-            serde_json::from_slice(claims_json.as_ref()).map_err(napi_err)?;
-        let payload_b64 = inject_and_payload_b64(&mut claims, self.ttl_seconds, now_seconds)?;
+        let mut claims: sonic_rs::Value =
+            sonic_rs::from_slice(claims_json.as_ref()).map_err(napi_err)?;
+        let payload_b64 =
+            inject_and_payload_b64_sonic(&mut claims, self.ttl_seconds, now_seconds)?;
         Ok(Buffer::from(build_token_with_key(
             jwt_header_b64(),
             &payload_b64,
@@ -330,12 +390,50 @@ impl JwtSigner {
     }
 
     /// Verify a JWT with the precompiled key (signature + `alg` + time claims).
-    /// Returns the decoded claims, or `null` on any failure.
+    /// Returns the decoded claims object, or `null` on any failure.
     #[napi]
-    pub fn verify(&self, token: Uint8Array, now_seconds: i64) -> serde_json::Value {
-        verify_token_with_key(token.as_ref(), &self.key, now_seconds)
-            .unwrap_or(serde_json::Value::Null)
+    pub fn verify(&self, env: Env, token: Uint8Array, now_seconds: i64) -> Result<Unknown<'static>> {
+        let Some(payload) = verify_token_with_key(token.as_ref(), &self.key, now_seconds) else {
+            return crate::json::napi_marshal::sonic_value_to_js(&env, &sonic_rs::Value::new());
+        };
+        match sonic_rs::from_slice::<sonic_rs::Value>(&payload) {
+            Ok(v) => crate::json::napi_marshal::sonic_value_to_js(&env, &v),
+            // The payload already parsed for the time-claim check — unreachable.
+            Err(_) => crate::json::napi_marshal::sonic_value_to_js(&env, &sonic_rs::Value::new()),
+        }
     }
+}
+
+/// C-ABI support: sign pre-serialized claim JSON with the precompiled key.
+/// `Err(())` on invalid claims JSON (napi parity: throws).
+///
+/// # Safety
+/// `p` must be a valid `*const JwtSigner` from `inner_ptr`, alive for the call.
+pub(crate) unsafe fn jwt_signer_sign_bytes_core(
+    p: *const JwtSigner,
+    claims_json: &[u8],
+    now_seconds: i64,
+) -> std::result::Result<Vec<u8>, ()> {
+    let this = &*p;
+    let mut claims: sonic_rs::Value = sonic_rs::from_slice(claims_json).map_err(|_| ())?;
+    let payload_b64 =
+        inject_and_payload_b64_sonic(&mut claims, this.ttl_seconds, now_seconds).map_err(|_| ())?;
+    Ok(build_token_with_key(jwt_header_b64(), &payload_b64, &this.key))
+}
+
+/// C-ABI support: verify a JWT with the precompiled key → the decoded payload
+/// BYTES (valid JSON claims), or None on invalid signature / expired /
+/// malformed. No `serde_json::Value` DOM, no re-serialize.
+///
+/// # Safety
+/// `p` must be a valid `*const JwtSigner` from `inner_ptr`, alive for the call.
+pub(crate) unsafe fn jwt_signer_verify_core(
+    p: *const JwtSigner,
+    token: &[u8],
+    now_seconds: i64,
+) -> Option<Vec<u8>> {
+    let this = &*p;
+    verify_token_with_key(token, &this.key, now_seconds)
 }
 
 fn napi_err(e: impl std::fmt::Display) -> Error {
@@ -357,22 +455,12 @@ pub fn jwt_sign_batch_packed(
     let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret.as_ref());
 
     let sign_one = |claims_json: &[u8]| -> Vec<u8> {
-        let Ok(claims) = serde_json::from_slice::<serde_json::Value>(claims_json) else {
+        let Ok(mut claims) = sonic_rs::from_slice::<sonic_rs::Value>(claims_json) else {
             return Vec::new();
         };
-        let mut claims = claims;
-        if let Some(obj) = claims.as_object_mut() {
-            if let Some(ttl) = ttl_seconds {
-                if ttl > 0 {
-                    obj.entry("iat")
-                        .or_insert_with(|| serde_json::json!(now_seconds));
-                    obj.entry("exp")
-                        .or_insert_with(|| serde_json::json!(now_seconds + ttl));
-                }
-            }
-        }
+        inject_ttl_claims(&mut claims, ttl_seconds, now_seconds);
         let header_b64 = jwt_header_b64();
-        let Ok(payload_bytes) = serde_json::to_vec(&claims) else {
+        let Ok(payload_bytes) = sonic_rs::to_vec(&claims) else {
             return Vec::new();
         };
         let payload_b64 = b64url_encode(&payload_bytes);
@@ -474,7 +562,8 @@ mod tests {
     fn verify_token_accepts_valid_claims() {
         let claims = serde_json::json!({ "sub": "123", "role": "admin" });
         let t = token(&claims, SECRET);
-        let v = verify_token(&t, SECRET, 1_000_000).expect("valid token verifies");
+        let payload = verify_token(&t, SECRET, 1_000_000).expect("valid token verifies");
+        let v: sonic_rs::Value = sonic_rs::from_slice(&payload).unwrap();
         assert_eq!(v["sub"], "123");
     }
 
@@ -548,22 +637,22 @@ mod tests {
         let token = signer.sign(claims.clone(), now).unwrap();
 
         // ttl injected iat/exp at construction time.
-        let verified = signer.verify(Uint8Array::new(token.to_vec()), now);
+        let verified_payload =
+            verify_token_with_key(&token, &signer.key, now).expect("token verifies");
+        let verified: sonic_rs::Value = sonic_rs::from_slice(&verified_payload).unwrap();
         assert_eq!(verified["sub"], "123");
         assert_eq!(verified["iat"], now);
         assert_eq!(verified["exp"], now + 3600);
 
         // Same instance verifies, wrong key instance rejects.
         let other = JwtSigner::new(Uint8Array::new(b"other-secret".to_vec()), None);
-        assert_eq!(
-            other.verify(Uint8Array::new(token.to_vec()), now),
-            serde_json::Value::Null
-        );
+        assert!(verify_token_with_key(&token, &other.key, now).is_none());
 
         // No ttl -> no iat/exp injected.
         let no_ttl = JwtSigner::new(Uint8Array::new(SECRET.to_vec()), None);
         let t2 = no_ttl.sign(claims.clone(), now).unwrap();
-        let v2 = no_ttl.verify(Uint8Array::new(t2.to_vec()), now);
+        let v2_payload = verify_token_with_key(&t2, &no_ttl.key, now).unwrap();
+        let v2: sonic_rs::Value = sonic_rs::from_slice(&v2_payload).unwrap();
         assert!(v2.get("iat").is_none());
         assert!(v2.get("exp").is_none());
     }
@@ -573,7 +662,11 @@ mod tests {
         let claims_json = br#"{"sub":"123","name":"John"}"#.to_vec();
         let secret = Uint8Array::new(SECRET.to_vec());
 
-        // Byte-JSON sign (no napi Value marshal) matches the Value sign exactly.
+        // Byte-JSON sign (no napi Value marshal) matches the Value sign
+        // semantically. Key ORDER differs between the two serializers — sonic
+        // (`sort_keys` → BTreeMap) emits sorted keys, serde_json
+        // (`preserve_order` → IndexMap) emits insertion order — so compare the
+        // decoded claims, not the raw token bytes.
         let from_bytes = jwt_sign_bytes(
             Uint8Array::new(claims_json.clone()),
             secret,
@@ -584,14 +677,19 @@ mod tests {
         let claims: serde_json::Value = serde_json::from_slice(&claims_json).unwrap();
         let from_value =
             jwt_sign(claims, Uint8Array::new(SECRET.to_vec()), None, 1_000_000).unwrap();
-        assert_eq!(from_bytes.as_ref(), from_value.as_ref());
+        let claims_from_bytes: sonic_rs::Value = sonic_rs::from_slice(
+            &b64url_decode(split_token(&from_bytes).unwrap().payload_b64).unwrap(),
+        )
+        .unwrap();
+        let claims_from_value: sonic_rs::Value = sonic_rs::from_slice(
+            &b64url_decode(split_token(&from_value).unwrap().payload_b64).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claims_from_bytes, claims_from_value);
 
         // The bytes-signed token verifies and carries the claims.
-        let verified = jwt_verify(
-            Uint8Array::new(from_bytes.to_vec()),
-            Uint8Array::new(SECRET.to_vec()),
-            1_000_000,
-        );
+        let verified_payload = verify_token(from_bytes.as_ref(), SECRET, 1_000_000).unwrap();
+        let verified: sonic_rs::Value = sonic_rs::from_slice(&verified_payload).unwrap();
         assert_eq!(verified["sub"], "123");
         assert_eq!(verified["name"], "John");
     }
@@ -606,11 +704,8 @@ mod tests {
             1_000_000,
         )
         .unwrap();
-        let v = jwt_verify(
-            Uint8Array::new(token.to_vec()),
-            Uint8Array::new(SECRET.to_vec()),
-            1_000_000,
-        );
+        let payload = verify_token(&token, SECRET, 1_000_000).unwrap();
+        let v: sonic_rs::Value = sonic_rs::from_slice(&payload).unwrap();
         assert_eq!(v["iat"], 1_000_000);
         assert_eq!(v["exp"], 1_000_000 + 3600);
 
@@ -619,7 +714,8 @@ mod tests {
         let t2 = signer
             .sign_bytes(Uint8Array::new(claims_json), 2_000_000)
             .unwrap();
-        let v2 = signer.verify(Uint8Array::new(t2.to_vec()), 2_000_000);
+        let v2_payload = verify_token_with_key(&t2, &signer.key, 2_000_000).unwrap();
+        let v2: sonic_rs::Value = sonic_rs::from_slice(&v2_payload).unwrap();
         assert_eq!(v2["iat"], 2_000_000);
         assert_eq!(v2["exp"], 2_000_000 + 3600);
     }

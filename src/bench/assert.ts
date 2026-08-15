@@ -1,4 +1,21 @@
-import { decoder } from '../shared/bytes'
+import { decoder, encoder } from '../shared/bytes'
+
+/**
+ * Normalize the string-or-bytes union (the text-returning `rust.*` ops return
+ * STRINGS on the Bun path — native transfer — and bytes on the napi path) to
+ * bytes. Bench-local helper used to compare against byte-producing baselines.
+ */
+export function toBytes(v: Uint8Array | string): Uint8Array {
+  return typeof v === 'string' ? encoder.encode(v) : v
+}
+
+/**
+ * Normalize the string-or-bytes union to a string. Bench-local helper used to
+ * compare string-producing rust.* results against decoded baseline bytes.
+ */
+export function toText(v: Uint8Array | string): string {
+  return typeof v === 'string' ? v : decoder.decode(v)
+}
 
 /**
  * Recursively sort object keys. Bench-local helper used by `assertDeepEqual`
@@ -26,8 +43,8 @@ function sortKeys(value: unknown): unknown {
   return sorted
 }
 
-export function parseJsonBytes(bytes: Uint8Array): unknown {
-  return JSON.parse(decoder.decode(bytes))
+export function parseJsonBytes(bytes: Uint8Array | string): unknown {
+  return JSON.parse(typeof bytes === 'string' ? bytes : decoder.decode(bytes))
 }
 
 function typeName(value: unknown): string {

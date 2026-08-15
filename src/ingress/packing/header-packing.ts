@@ -5,11 +5,10 @@
 // scratch buffers keeps this allocation-free on the hot path while isolating
 // the buffers per call-site sequence.
 
-import { METHOD_KIND, METHOD_KIND_UNKNOWN, type HeaderPlan } from '../shared'
+import { encoder } from '../../shared/bytes'
+import { type HeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN } from '../shared'
 import { getHeaderBuf } from './scratch'
 import { forEachSelectedHeader } from './select-headers'
-
-const encoder = new TextEncoder()
 
 /**
  * Write one header pair into `buf`/`view`, growing them if needed.

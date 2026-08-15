@@ -1,7 +1,11 @@
 # AGENTS.md — castrum
 
 Guidance for AI coding agents working in this repository. Read this before
-editing code. Human-facing docs live in `README.md` and `docs/`.
+editing code. Human-facing docs live in `README.md` and `docs/`;
+`docs/FFI_BUN_GUIDE.md` is the canonical "writing Rust for Bun" reference
+(ABI types, `buffer`/`buffer_length`, pointer/cstring semantics, panic
+containment, self-test, dlopen lifetime) — read it before adding a `castrum_*`
+export or touching `src/native/ffi.ts`.
 
 ## What this project is
 
@@ -97,6 +101,11 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── server.ts           createIngressServer (Bun.serve) + buildRouteHandlers (shared) + gracefulShutdown
   ├── server-node.ts      createIngressServerNode (node:http adapter, same route handlers;
   │                       WebSocket `upgrade` + 431 on header overflow + keep-alive body drain)
+  ├── router.ts           createIngressRouter — per-route compiled ingress (each route compiles its
+  │                       OWN native IngressInner from per-route options + per-route HeaderPlan +
+  │                       optional pre-warm; same wire format as handlers.ts; the bench server has a
+  │                       router variant at bench/servers/router-server.ts). Supersedes the deleted
+  │                       rust/route.rs (dead external-project wire — do NOT resurrect it).
   ├── packing/            header-packing.ts (fast) + input-packer.ts + gather-raw-headers.ts (pre-baked) + scratch.ts (shared TLS buffers + per-header size guards)
   ├── headers/            cors.ts + hsts.ts + fast-templates.ts + baked-templates.ts (two template builders, NOT unified)
   ├── decode/             fast-result.ts + baked-result.ts (two decoders, NOT unified) + packed-sections.ts (shared section layout)
@@ -107,13 +116,15 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   │                       JS via IngressInputPacker + gatherRawHeadersPacked, driven by
   │                       handleRequestPacked, pooled output); used by the bench server
   └── index.ts            barrel: public API + async createIngress + re-exports
-src/native/               native transport layer: types.ts (NativeAddon + instance types) + loader.ts (getAddonPath/getAddon/lazyAddon) +
+src/native/               native transport layer: types.ts (NativeAddon module surface) + types/instances.ts (per-class
+                          INSTANCE types, merged single AcceptNegotiatorInstance) + loader.ts (getAddonPath/getAddon/lazyAddon) +
                           ffi.ts (Bun PRIMARY bun:ffi C-ABI transport over rust/ffi.rs; lazy bind + bind-time self-test +
                           CASTRUM_FFI_MODE gating + castrum_ingress_layout blob + growExact needed-size retry for variable-size
-                          outputs; napi is the FALLBACK) + index.ts barrel
+                          outputs; napi is the FALLBACK) + ffi/{types,constants,selftest}.ts + index.ts barrel
 src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts (resolveNative/resolvePoolNative
-                          shared first-use caches) + text.ts + batch.ts + packed.ts + scalar/ (interface + hashing/json/http/crypto/
-                          payload/factories builders) + client.ts + proven.ts + index.ts barrel
+                          shared first-use caches) + text.ts + batch/ (types.ts interface + build.ts impl + index.ts barrel) +
+                          packed.ts + scalar/ (interface + hashing/json/http/crypto/payload/factories builders) + client.ts +
+                          proven.ts + index.ts barrel
 src/shared/request-id.ts  shared zero-alloc request ID generator (both ingress paths) — aliased buffer hazard documented
 src/shared/metrics.ts     zero-dep metrics registry (counters/gauges/histograms + Prometheus render)
 src/shared/trace.ts       W3C traceparent/span-id helpers (tracing correlation)
@@ -121,6 +132,11 @@ src/shared/uuid.ts        uuidv7() — delegates to Bun.randomUUIDv7, crypto.ran
 src/shared/buffer-pool.ts  generic reusable byte-buffer pool (pooled output buffers, zero-copy borrows)
 src/shared/response.ts     pooledBodyResponse: Response that returns a pooled buffer on body consumption
 src/shared/env.ts          centralized env-var alias resolution (CASTRUM_* + legacy RUST_BENCH_*/RUST_* names)
+src/shared/packed/        packed wire-format helpers (split from the old packed.ts monolith):
+  ├── wire.ts             PURE byte encode/decode (u32/bitset/i64/byte-results/multipart, pairs, pack-scratch pool) — NO addon dlopen
+  ├── schema.ts           SchemaValidator alias + schemaValidateBatch/Count (uses wire.ts scratch)
+  ├── parsers.ts          lazy-addon ergonomic string parsers (parseQueryString/parseCookieHeader/parseFormBody)
+  └── index.ts            barrel re-export (existing `../shared/packed` imports unchanged)
 src/loader/               higher-order loader (HFC) over the curated op set (ops/cost/batch/index) — exported from index.ts
 src/integration/          framework-agnostic helpers: createPipeline, createWebSocketUpgrade, sseResponse — exported from index.ts
 src/baseline/             JS baseline implementations (benchmark reference, `native`)
@@ -138,10 +154,13 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi.rs              `#[no_mangle] extern "C"` exports (47 castrum_* incl. the
-                          castrum_gzip_isize size probe) for Bun's `bun:ffi` C-ABI PRIMARY
-                          transport (scalar hot fns + ingress layout blob; SAME cdylib serves
-                          both napi on Node/fallback and bun:ffi on Bun — see src/native/ffi.ts).
+  ├── ffi.rs              `#[no_mangle] extern "C"` exports (75 castrum_* — 67 direct + 4
+                          validator_c_abi! + 4 compress_to_out! — incl. the
+                          castrum_gzip_isize size probe; parity guarded by
+                          test/unit/features/ffi-symbol-parity.test.ts) for Bun's `bun:ffi`
+                          C-ABI PRIMARY transport (scalar hot fns + ingress layout blob;
+                          SAME cdylib serves both napi on Node/fallback and bun:ffi on Bun
+                          — see src/native/ffi.ts).
                           VARIABLE-SIZE convention: return the EXACT required byte count on a
                           too-small buffer (0 = real error) so JS allocates once and retries at
                           most once (no grow-retry re-run loop).
@@ -175,9 +194,17 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   ├── hashing.rs      FNV-1a / XXH3 / crc32
   │   └── random_token.rs random hex tokens
   ├── json/               JSON & SCHEMA
-  │   ├── json_ops.rs     zero-DOM validate/sum + DOM parse
+  │   ├── json_ops.rs     zero-DOM validate/sum + DOM parse (sonic Value → JS via napi_marshal)
+  │   ├── napi_marshal.rs sonic_rs::Value → napi JsUnknown walker (sonic_value_to_js,
+  │   │                   napi serde-json Number parity) + sonic_values_equal (jsonschema
+  │   │                   cmp::equal, insertion-order object keys) — shared by jwt_verify,
+  │   │                   json_parse and fast_schema enum/const/uniqueItems
   │   ├── json_ser.rs     zero-alloc JSON escaping + cookie/query → JSON writers
-  │   ├── json_patch_ops.rs  RFC 6902 JSON patch
+  │   ├── json_patch_ops.rs  CUSTOM sonic RFC 6902 JSON patch engine (Pointer ~0/~1
+  │   │                   unescape + PatchOp add/remove/replace/move/copy/test incl.
+  │   │                   array `-`/bounds + 1==1.0; serde_json-DOM json-patch/jsonptr
+  │   │                   deps REMOVED). Same JsonPatchError semantics + size guards +
+  │   │                   packed batch entry points as before
   │   ├── json_schema.rs  SchemaValidator napi class (fast path + jsonschema-crate fallback; 
   │   │                   also SchemaValidator.derive — one-pass validate + extract)
   │   └── fast_schema/    zero-DOM draft-07 JSON Schema fast path: mod.rs (re-exports compile/FastNode + SchemaError)
@@ -242,6 +269,19 @@ success and `error.code` / `error.message` on errors (path 2's format).
 
 ## Hard constraints & gotchas
 
+- **sonic-rs `sort_keys` determinism**: sonic's owned `Value` backs MUTABLE
+  objects with `AHashMap` — iteration order is non-deterministic. The crate
+  enables the `sort_keys` feature (`Cargo.toml`) so mutation switches the owned
+  map to `BTreeMap` → deterministic sorted serialization. This is a hard wire
+  requirement: JWT sign (iat/exp injection via `inject_and_payload_b64_sonic`)
+  and the RFC 6902 patch engine must emit byte-identical output across the
+  FFI/napi/scalar/bulk transports (pinned by `ffi.test.ts` + `loader.test.ts`).
+  Parsed (unmutated) values keep the shared Vec (insertion order) — only
+  `as_object_mut()` + `insert` switches to the map — so `sonic_values_equal`
+  and `sonic_value_to_js` (which iterate `as_ref()`) keep insertion-order
+  semantics. Do NOT remove `sort_keys` without re-pinning every byte-parity
+  test, and do NOT write new code that mutates a sonic Value and expects
+  insertion-order output.
 - **Node.js compatibility (Bun-first)**: `package.json` `exports` uses `types` /
   `bun` / `node` / `default` conditions. Bun resolves the `bun` condition → raw
   `index.ts` (zero startup cost — DO NOT point it at dist/). Node resolves `node` →
@@ -255,11 +295,38 @@ success and `error.code` / `error.message` on errors (path 2's format).
   Node users use `createIngressServerNode` (same route handlers via `buildRouteHandlers`
   in `server.ts`). `BakedServer.port` is the ACTUAL bound port (Bun exposes it even with
   `port: 0`; the Node adapter reports it via `ready`/getter).
+- **String-return contract (Bun vs Node)**: text-returning `rust.*` ops return JS
+  **strings** on the `bun:ffi` path (cstring → `CString`) and **bytes** under napi (Node /
+  `CASTRUM_FFI_MODE=napi`). The TS surface types `Uint8Array | string`. Normalize with
+  `toBytes` / `toText` (`src/shared/bytes.ts`); `encoder.encode` / `decoder.decode` accept
+  the union. The `*Into`/pooled variants always return bytes. `TextEncoder`/`TextDecoder`
+  must only appear in the Node-fallback branches of `src/shared/codec.ts` — do not reintroduce
+  them on the Bun path. See `docs/API.md` §Runtime return-type divergence.
 - **Addon loader** (`src/native/loader.ts`): resolves the `.node` from multiple roots so
   it works from BOTH the source layout (`src/native/…`) and the bundled layout
   (`dist/…`). Honor `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`. A
   SET-but-misconfigured override throws (never silently falls through to the package
   roots). Run `bun run bench:startup` after touching it.
+- **Bun FFI behavior (learned from Bun 1.3.14 — see `docs/FFI_BUN_GUIDE.md`)**:
+  - Hot `bun:ffi` call sites JIT through DFG/FTL into direct native calls (~10–20ns);
+    keep `extern "C"` signatures scalar + `(ptr,len)` — no struct-by-value (not
+    supported by `bun:ffi`), no variadics, no callbacks in hot paths.
+  - `buffer`/`buffer_length` (FFIType 20/21) is an atomic ptr+byteLength snapshot of
+    the SAME view at call time; `src/native/ffi.ts` probes it and rewrites every
+    `(ptr,usize)` pair via `abi()`/`lenOrView`. Keep the probe — never hardcode the
+    pair as the only path.
+  - Pointers are JS `number` (53-bit), not BigInt; `u64`/`i64` returns box to BigInt
+    unless bound `u64_fast`/`i64_fast`. Byte-count returns MUST use `u64_fast`
+    (`U64_FAST` in ffi.ts); opaque handles pass as `usize`/number (`Number(innerPtr())` once).
+  - `cstring` returns are cloned at call time (NULL → null) — per-thread reused
+    `CSTR_BUF` is safe; never return a pointer into JS-owned/argument memory.
+  - Never `close()` a dlopen'd library while bound symbols are live (Bun leaks by
+    design; dlclose-on-GC is unsound). `getBunFFI()` binds once and holds forever.
+  - Symbols are shared across Worker threads → thread-local caches only
+    (`HMAC_KEY_CACHE`, `CSTR_BUF`), no global mutable state on the C-ABI path.
+  - Every new `castrum_*` export: `panic_guard` (catch_unwind) on fallible cores,
+    null-check pointers + opaque handles, bind-time self-test, `u64_fast` byte counts,
+    add to the dlopen map + `ffi/types.ts` + parity test.
 - **Constants**: never hardcode binary-layout values. The single NUMERIC source is
   `rust/ingress/output.rs`; `rust/ingress/ingress_constants.rs` re-exports those
   values to JS via NAPI (`#[napi] pub const ... = crate::ingress::output::OUT_X
@@ -378,6 +445,33 @@ success and `error.code` / `error.message` on errors (path 2's format).
   default, not spoofable). The deprecated `trustProxy: true` boolean → trust
   EVERY hop (spoofable) and warns. The bench server's `INGRESS_TRUST_PROXY`
   defaults OFF; only enable behind a trusted edge.
+
+## Purity & side-effect policy
+
+The codebase is **pure by default**: byte-wire helpers, decoders, packers,
+header templates, status mapping, and route factories are side-effect-free
+functions of their inputs. Side effects are **deliberately contained** to an
+explicit impurity boundary so the hot path can pool/globalize state:
+
+- **Impure (singletons / I/O / process state)** — keep ALL of it inside these
+  modules, never spread elsewhere:
+  - `src/native/loader.ts` + `src/native/ffi.ts` + `src/native/ffi/selftest.ts` — dlopen, lazy addon, bind-time self-test
+  - `src/shared/buffer-pool.ts` + `src/shared/response.ts` — pooled output buffers / borrowed bodies
+  - `src/shared/packed/parsers.ts` — lazy `addon` binding (the ONLY non-pure member of `packed/`)
+  - `src/loader/index.ts` — dispatch core + configure rebinding
+  - `src/rust-ffi/context.ts` — `resolveNative`/`resolvePoolNative` first-use caches
+  - `src/ingress/server.ts` / `server-node.ts` — socket I/O; the rate limiter's
+    process-wide `SHARED_LIMITERS` and the FFI `HMAC_KEY_CACHE` live in Rust
+- **Pure (no addon, no module state)** — new code should land here: `wire.ts`
+  decode/encode, `bytes`/`codec`/`request-id`/`trace`/`uuid` helpers, the
+  `ingress/decode/*` + `ingress/headers/*` + `ingress/response/*` builders, and
+  route factories in `ingress/routes/*`.
+- **Rule**: a module in a PURE role must not `import` from `src/native/` (the
+  dlopen layer) or `src/shared/buffer-pool.ts`. If it needs the addon, it is
+  impure by definition and belongs in the boundary (or takes the resolved fn as
+  a parameter — dependency injection keeps it composable AND testable).
+- This is a documented contract, not yet machine-enforced; keep the `packed/`
+  split as the model (pure `wire.ts` vs lazy `parsers.ts`).
 
 ## Editing conventions
 

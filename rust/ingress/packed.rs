@@ -94,3 +94,94 @@ pub(crate) fn build_packed_input_sync(
 
     buf
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_packed_input_sync_round_trips() {
+        let headers = vec![
+            ("cookie".to_string(), "a=1".to_string()),
+            ("x-forwarded-for".to_string(), "1.2.3.4".to_string()),
+        ];
+        let frame = build_packed_input_sync(3, b"/api/users?a=1", b"127.0.0.1", b"rid-123", &headers);
+
+        // Method kind byte.
+        assert_eq!(frame[0], 3);
+
+        let mut pos = 1;
+
+        // URL section.
+        assert_eq!(read_section(&frame, &mut pos, 8192).unwrap(), b"/api/users?a=1");
+        // IP section.
+        assert_eq!(read_section(&frame, &mut pos, 128).unwrap(), b"127.0.0.1");
+        // Request-ID section.
+        assert_eq!(read_section(&frame, &mut pos, 256).unwrap(), b"rid-123");
+
+        // Headers section: u16 count, then {u16 name_len, name, u32 val_len, value}.
+        let hdrs = read_section(&frame, &mut pos, 65536).unwrap();
+        let mut hp = 0usize;
+        let count = u16::from_le_bytes([hdrs[hp], hdrs[hp + 1]]);
+        hp += 2;
+        assert_eq!(count, 2);
+
+        let mut pairs = Vec::new();
+        for _ in 0..count {
+            let name_len = u16::from_le_bytes([hdrs[hp], hdrs[hp + 1]]) as usize;
+            hp += 2;
+            let name = std::str::from_utf8(&hdrs[hp..hp + name_len]).unwrap();
+            hp += name_len;
+            let val_len = u32::from_le_bytes(hdrs[hp..hp + 4].try_into().unwrap()) as usize;
+            hp += 4;
+            let value = std::str::from_utf8(&hdrs[hp..hp + val_len]).unwrap();
+            hp += val_len;
+            pairs.push((name.to_string(), value.to_string()));
+        }
+        assert_eq!(pairs, headers);
+        assert_eq!(hp, hdrs.len(), "headers section fully consumed");
+        assert_eq!(pos, frame.len(), "whole frame fully consumed");
+    }
+
+    #[test]
+    fn build_packed_input_sync_empty_headers() {
+        let frame = build_packed_input_sync(1, b"/", b"", b"", &[]);
+        let mut pos = 1;
+        assert_eq!(read_section(&frame, &mut pos, 8192).unwrap(), b"/");
+        assert_eq!(read_section(&frame, &mut pos, 128).unwrap(), b"");
+        assert_eq!(read_section(&frame, &mut pos, 256).unwrap(), b"");
+        let hdrs = read_section(&frame, &mut pos, 65536).unwrap();
+        assert_eq!(hdrs.len(), 2, "empty headers section is just the u16 count");
+        assert_eq!(u16::from_le_bytes([hdrs[0], hdrs[1]]), 0);
+        assert_eq!(pos, frame.len());
+    }
+
+    #[test]
+    fn read_u32_at_rejects_truncated() {
+        let mut pos = 0;
+        assert!(read_u32_at(&[0, 1, 2], &mut pos).is_err());
+        assert_eq!(pos, 0, "pos must not advance on error");
+    }
+
+    #[test]
+    fn read_section_enforces_max_and_bounds() {
+        // Declared length exceeds the max.
+        let input = [8u8, 0, 0, 0, 1, 2, 3, 4];
+        let mut pos = 0;
+        assert!(read_section(&input, &mut pos, 4).is_err());
+
+        // Declared length exceeds the buffer (truncated).
+        let input2 = [100u8, 0, 0, 0, 1, 2, 3, 4];
+        let mut pos2 = 0;
+        assert!(read_section(&input2, &mut pos2, 200).is_err());
+    }
+
+    #[test]
+    fn read_section_rejects_length_overflow() {
+        // Near-u32::MAX declared length: `pos + len` must not wrap and must be
+        // rejected as truncated (not panic).
+        let input = [0xff, 0xff, 0xff, 0x7f];
+        let mut pos = 0;
+        assert!(read_section(&input, &mut pos, usize::MAX).is_err());
+    }
+}

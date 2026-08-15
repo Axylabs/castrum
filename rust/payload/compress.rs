@@ -174,7 +174,11 @@ pub fn brotli_compress_into(
 /// capacity, bounded by the `max` cap. When `out` is exactly filled, the
 /// stream is consumed once more (into a scratch) to detect overflow and report
 /// the exact `needed` size.
-fn decompress_into<R: Read>(mut dec: R, max: usize, out: &mut [u8]) -> std::result::Result<usize, StreamError> {
+fn decompress_into<R: Read>(
+    mut dec: R,
+    max: usize,
+    out: &mut [u8],
+) -> std::result::Result<usize, StreamError> {
     let mut written = 0usize;
     while written < out.len() {
         let n = dec.read(&mut out[written..])?;
@@ -391,7 +395,10 @@ mod tests {
         // ERROR when the cap is smaller than the output — not OOM the process.
         let bomb = vec![0u8; 1_000_000];
         let gz = gzip_compress_bytes(&bomb, 1).unwrap();
-        assert!(gz.len() < bomb.len() / 100, "zero-run gzip should compress hard");
+        assert!(
+            gz.len() < bomb.len() / 100,
+            "zero-run gzip should compress hard"
+        );
         assert!(gzip_decompress_bytes(&gz, 1024).is_err());
 
         let br = brotli_compress_bytes(&bomb, 0).unwrap();

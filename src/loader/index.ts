@@ -24,56 +24,60 @@
 // state), `ops.ts` (op registry), `cost.ts` (adaptive cost model), `batch.ts`
 // (LRU cache + tick coalescer). Public types are re-exported below.
 
-import {
-  LOADER_OPS,
-  fnvBatchKeysInto,
-  type LoaderBulkArgs,
-  type LoaderOpArgs,
-  type LoaderOpName,
-  type LoaderOpSpec,
-  type LoaderScalar,
-  type LoaderBulk,
-} from './ops'
-import { createCostModel, nowNs, type LoaderCostModel } from './cost'
+import { rust } from '../rust-ffi'
+import { encoder, viewForArrayBuffer } from '../shared/bytes'
+import type { SchemaValidator } from '../shared/packed'
 import {
   createLruCache,
   createTickCoalescer,
-  type LoaderCache,
   type LoadRequest,
-  type TickCoalescer,
 } from './batch'
+import { createCostModel, nowNs } from './cost'
+import {
+  fnvBatchKeysInto,
+  LOADER_OPS,
+  type LoaderOpName,
+  type LoaderOpSpec,
+  type LoaderScalar,
+} from './ops'
+import type { LoaderState, OpDispatchCtx, OpFnEntry } from './state'
+import { KEY_SEP } from './state'
 import type {
-  LoadOptions,
+  LoadableName,
+  Loader,
   LoaderOpFn,
   LoaderOpStats,
   LoaderOptions,
   LoaderSchemaFn,
   LoaderStats,
-  LoadStrategy,
+  LoadOptions,
 } from './types'
-import { KEY_SEP } from './state'
-import type { OpDispatchCtx, OpFnEntry, LoaderState } from './state'
-import { rust } from '../rust-ffi'
-import { viewForArrayBuffer } from '../shared/bytes'
-import type { SchemaValidator } from '../shared/packed'
 
 // Re-export the op registry + types for introspection and authoring.
 export {
-  LOADER_OPS,
-  LOADER_OP_NAMES,
-  type LoaderOpName,
-  type LoaderOpArgs,
-  type LoaderBulkArgs,
-  type LoaderBulk,
-  type LoaderScalar,
-  type LoaderResultKind,
-  type ScalarResult,
   type BulkResult,
+  LOADER_OP_NAMES,
+  LOADER_OPS,
+  type LoaderBulk,
+  type LoaderBulkArgs,
+  type LoaderOpArgs,
+  type LoaderOpName,
+  type LoaderResultKind,
+  type LoaderScalar,
+  type ScalarResult,
 } from './ops'
 
 // Re-export the public type surface so `import type { LoaderOptions } from
 // '../loader'` keeps working (existing call sites).
 export * from './types'
+
+// ── Load-aware `load()` strategy + adaptive-key tuning ──
+/** Consecutive single-load flushes before an op drops the coalescer. */
+const SINGLE_AFTER = 4
+/** Default-key attempts before unique inputs stop paying the fnv1a64 key. */
+const KEY_WARMUP = 8
+/** After warm-up with zero hits, re-probe the default key every N loads. */
+const KEY_PROBE_EVERY = 64
 
 function ctxFor(state: LoaderState, op: LoaderOpName): OpDispatchCtx {
   let ctx = state.ctxs.get(op)
@@ -104,6 +108,11 @@ function ctxFor(state: LoaderState, op: LoaderOpName): OpDispatchCtx {
   }
   return ctx
 }
+
+/** Normalize a loader scalar result to bytes (the string-returning rust.* ops
+ * return strings on the Bun path — the loader's BYTES contract stays bytes). */
+const asBytes = (v: unknown): Uint8Array =>
+  typeof v === 'string' ? encoder.encode(v) : (v as Uint8Array)
 
 /** Build a bulk-shaped result by looping scalar calls (the adaptive fallback). */
 function scalarLoopBulk(spec: LoaderOpSpec, items: Uint8Array[], rest: unknown[]): unknown {
@@ -151,7 +160,7 @@ function scalarLoopBulk(spec: LoaderOpSpec, items: Uint8Array[], rest: unknown[]
       const out = new Array<Uint8Array>(n)
       let i = 0
       for (const item of items) {
-        out[i] = spec.scalar(item, ...itemRest(i)) as Uint8Array
+        out[i] = asBytes(spec.scalar(item, ...itemRest(i)))
         i++
       }
       return out
@@ -170,7 +179,7 @@ function dispatchSingle(
   c.scalarCalls++
   c.itemsDispatched++
   const t = ++ctx.counter % ctx.sampleEvery === 0 ? nowNs() : 0
-  const out = rest.length === 0 ? spec.scalar(input) : spec.scalar(input, ...rest)
+  const out = asBytes(rest.length === 0 ? spec.scalar(input) : spec.scalar(input, ...rest))
   if (t !== 0) ctx.cost.recordScalar(1, nowNs() - t)
   return out
 }
@@ -734,4 +743,3 @@ export function createLoader(options: LoaderOptions = {}): Loader {
  * (higher-order function) or `loader.run("validateEmail", …)`.
  */
 export const loader = createLoader()
-

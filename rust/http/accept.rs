@@ -284,6 +284,27 @@ impl AcceptNegotiator {
     pub fn negotiate(&self, header: Uint8Array) -> Option<String> {
         negotiate_encoding(&self.supported, header.as_ref())
     }
+
+    /// Opaque handle to the precompiled supported list, for the `bun:ffi`
+    /// C-ABI fast path (`castrum_accept_negotiator_negotiate` in rust/ffi.rs).
+    /// Only valid while THIS instance is alive; the JS wrapper holds it.
+    #[napi]
+    pub fn inner_ptr(&self) -> u64 {
+        self as *const AcceptNegotiator as u64
+    }
+}
+
+/// C-ABI support: best supported encoding for `header`, or None = identity.
+///
+/// # Safety
+/// `p` must be a valid `*const AcceptNegotiator` from `inner_ptr`, alive for
+/// the call (the JS wrapper holds the napi instance).
+pub(crate) unsafe fn accept_negotiator_negotiate_core(
+    p: *const AcceptNegotiator,
+    header: &[u8],
+) -> Option<Vec<u8>> {
+    let this = &*p;
+    negotiate_encoding(&this.supported, header).map(String::into_bytes)
 }
 
 #[cfg(test)]

@@ -16,8 +16,9 @@
 
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
-import { rawCrc32, rawGzipCompress, rawHmacSha256, rawRandomToken, rawXxh3 } from '../raw-native'
+import { toBytes } from '../assert'
 import type { BenchFixtures } from '../fixtures'
+import { rawCrc32, rawGzipCompress, rawHmacSha256, rawRandomToken, rawXxh3 } from '../raw-native'
 import type { BenchTask } from '../types'
 
 // Reduced argon2id cost (4 MiB / 1 iter) — matches the existing password
@@ -90,7 +91,7 @@ export function bunBuiltinsTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'diag:password_hash',
-      run: () => rust.passwordHash(f.passwordBytes, f.passwordSalt, ARGON_OPTIONS).byteLength,
+      run: () => rust.passwordHash(f.passwordBytes, f.passwordSalt, ARGON_OPTIONS).length,
       iterations: 5,
       warmup: 1,
     },
@@ -107,7 +108,7 @@ export function bunBuiltinsTasks(f: BenchFixtures): BenchTask[] {
         if (RUST_VERIFY_PHC === null) {
           RUST_VERIFY_PHC = rust.passwordHash(f.passwordBytes, f.passwordSalt, ARGON_OPTIONS)
         }
-        return rust.passwordVerify(f.passwordBytes, RUST_VERIFY_PHC) ? 1 : 0
+        return rust.passwordVerify(f.passwordBytes, toBytes(RUST_VERIFY_PHC)) ? 1 : 0
       },
       iterations: 5,
       warmup: 1,
@@ -209,7 +210,7 @@ export function bunBuiltinsTasks(f: BenchFixtures): BenchTask[] {
 }
 
 // Module-level memoized rust argon2id PHC string for the fixture password.
-let RUST_VERIFY_PHC: Uint8Array | null = null
+let RUST_VERIFY_PHC: Uint8Array | string | null = null
 // Module-level memoized rust bcrypt PHC string for the fixture password.
 let RUST_BCRYPT_HASH: string | null = null
 

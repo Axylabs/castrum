@@ -56,6 +56,30 @@ pub fn query_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<usi
     Ok(pos)
 }
 
+/// Compute the EXACT packed output size for `input` WITHOUT writing — the
+/// "needed-size" pass for the C-ABI convention. Mirrors
+/// [`query_parse_packed_into_slice`]'s structure exactly (split on `&`, skip
+/// empty pairs, split at `=`), so the reported size is byte-exact and a
+/// malformed `%XX` still surfaces as `Err` (caller → `0`).
+#[inline]
+pub fn query_parse_packed_size(input: &[u8]) -> Result<usize> {
+    let mut size = 4usize; // count prefix
+    for pair in input.split(|&b| b == b'&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, value) = match pair.iter().position(|&b| b == b'=') {
+            Some(eq) => (&pair[..eq], &pair[eq + 1..]),
+            None => (pair, &[][..]),
+        };
+        size += 4 + crate::util::bytes::decode_form_component_len(key)
+            .map_err(|_| Error::from_reason("invalid %-encoding: malformed %XX sequence"))?;
+        size += 4 + crate::util::bytes::decode_form_component_len(value)
+            .map_err(|_| Error::from_reason("invalid %-encoding: malformed %XX sequence"))?;
+    }
+    Ok(size)
+}
+
 /// Allocating parser — conservative upper bound, no pre-scan.
 #[inline]
 pub fn query_parse_packed_vec(input: &[u8]) -> Result<Vec<u8>> {

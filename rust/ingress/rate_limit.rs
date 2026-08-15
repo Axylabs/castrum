@@ -69,8 +69,7 @@ impl KeyedRateLimiter {
         let max_per_shard = (max_entries / SHARD_COUNT).max(64);
 
         // `max_per_shard` is clamped to >= 64 above, so this cannot fail.
-        let cap = NonZeroUsize::new(max_per_shard)
-            .expect("max_per_shard is clamped to >= 64");
+        let cap = NonZeroUsize::new(max_per_shard).expect("max_per_shard is clamped to >= 64");
 
         let shards = (0..SHARD_COUNT)
             .map(|_| Shard {
@@ -287,10 +286,20 @@ impl RateLimiter {
         }
     }
 
+    /// Opaque handle to the limiter state, for the `bun:ffi` C-ABI fast path
+    /// (`castrum_rate_limiter_check*` in rust/ffi.rs). Only valid while THIS
+    /// instance is alive; the JS wrapper holds the instance.
+    #[napi]
+    pub fn inner_ptr(&self) -> u64 {
+        self as *const RateLimiter as u64
+    }
+
     /// Check a rate limit for a string key (hashed internally) at `now_ms`.
     #[napi]
     pub fn check(&self, key: String, now_ms: f64) -> RateCheck {
-        let outcome = self.inner.check_key(fast_hash_bytes(key.as_bytes()), now_ms as u64);
+        let outcome = self
+            .inner
+            .check_key(fast_hash_bytes(key.as_bytes()), now_ms as u64);
         RateCheck {
             allowed: outcome.allowed,
             remaining: outcome.remaining,
@@ -308,6 +317,22 @@ impl RateLimiter {
             reset_ms: outcome.reset_ms as i64,
         }
     }
+}
+
+/// C-ABI support: check a rate limit for a (possibly pre-hashed) key.
+/// Returns `(allowed, remaining, reset_ms)`.
+///
+/// # Safety
+/// `p` must be a valid `*const RateLimiter` from `inner_ptr`, alive for the
+/// call (the JS wrapper holds the napi instance).
+pub(crate) unsafe fn rate_limiter_check_core(
+    p: *const RateLimiter,
+    key: u64,
+    now_ms: u64,
+) -> (bool, u32, i64) {
+    let this = &*p;
+    let o = this.inner.check_key(key, now_ms);
+    (o.allowed, o.remaining, o.reset_ms as i64)
 }
 
 #[cfg(test)]

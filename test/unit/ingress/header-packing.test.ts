@@ -9,11 +9,27 @@
 
 import { describe, test, expect } from 'bun:test'
 import { packHeaders } from '../../../src/ingress/packing/header-packing'
-import {
-  gatherRawHeaders,
-  gatherRawHeadersPacked,
-} from '../../../src/ingress/packing/gather-raw-headers'
+import { gatherRawHeadersPacked } from '../../../src/ingress/packing/gather-raw-headers'
+import { forEachSelectedHeader } from '../../../src/ingress/packing/select-headers'
+import { decoder } from '../../../src/shared/bytes'
 import { METHOD_KIND, type HeaderPlan } from '../../../src/ingress/shared'
+
+/**
+ * Test-local string-array reference for the packed header path — mirrors the
+ * legacy `gatherRawHeaders` impl (same selection + size guards) so the packed
+ * path can be cross-checked against a readable reference without shipping it.
+ */
+function gatherRawHeadersRef(
+  req: Request,
+  plan: HeaderPlan,
+  methodKind: number,
+): Array<[string, string]> {
+  const headers: Array<[string, string]> = []
+  forEachSelectedHeader(req, plan, methodKind, undefined, (name, value) => {
+    headers.push([decoder.decode(name), value])
+  })
+  return headers
+}
 
 const FULL_PLAN: HeaderPlan = {
   cookie: true,
@@ -164,7 +180,7 @@ describe('gatherRawHeaders vs gatherRawHeadersPacked parity', () => {
   })
 
   test('packed gathering selects the same headers as the string-array path', () => {
-    const raw = gatherRawHeaders(req, FULL_PLAN, METHOD_KIND.GET)
+    const raw = gatherRawHeadersRef(req, FULL_PLAN, METHOD_KIND.GET)
     const packed = decodePacked(gatherRawHeadersPacked(req, FULL_PLAN, METHOD_KIND.GET))
     expect(packed).toEqual(raw)
   })
@@ -176,7 +192,7 @@ describe('gatherRawHeaders vs gatherRawHeadersPacked parity', () => {
         origin: 'https://app.example.com',
       },
     })
-    const raw = gatherRawHeaders(big, FULL_PLAN, METHOD_KIND.GET)
+    const raw = gatherRawHeadersRef(big, FULL_PLAN, METHOD_KIND.GET)
     const packed = decodePacked(gatherRawHeadersPacked(big, FULL_PLAN, METHOD_KIND.GET))
     expect(packed).toEqual(raw)
     // The 9000-byte cookie exceeds MAX_COOKIE_HEADER_BYTES → dropped in both.

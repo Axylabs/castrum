@@ -27,15 +27,38 @@ export const comparisonReports: ComparisonReport[] = [
     nativeName: 'native:accept_negotiate',
     rustName: 'rust:accept_negotiate',
   },
-  { label: 'Base64 encode', nativeName: 'native:base64_encode', rustName: 'rust:base64_encode' },
-  { label: 'Base64 decode', nativeName: 'native:base64_decode', rustName: 'rust:base64_decode' },
-  { label: 'Hex encode', nativeName: 'native:hex_encode', rustName: 'rust:hex_encode' },
   {
-    label: 'Hex encode (pooled)',
-    nativeName: 'native:hex_encode',
-    rustName: 'rust:hex_encode_into',
+    label: 'Base64 encode',
+    nativeName: 'native:base64_encode',
+    rustName: 'rust:base64_encode_into',
   },
-  { label: 'Hex decode', nativeName: 'native:hex_decode', rustName: 'rust:hex_decode' },
+  {
+    label: 'Base64 encode (allocating)',
+    nativeName: 'native:base64_encode',
+    rustName: 'rust:base64_encode',
+  },
+  {
+    label: 'Base64 decode',
+    nativeName: 'native:base64_decode',
+    rustName: 'rust:base64_decode_into',
+  },
+  {
+    label: 'Base64 decode (allocating)',
+    nativeName: 'native:base64_decode',
+    rustName: 'rust:base64_decode',
+  },
+  { label: 'Hex encode', nativeName: 'native:hex_encode', rustName: 'rust:hex_encode_into' },
+  {
+    label: 'Hex encode (allocating)',
+    nativeName: 'native:hex_encode',
+    rustName: 'rust:hex_encode',
+  },
+  { label: 'Hex decode', nativeName: 'native:hex_decode', rustName: 'rust:hex_decode_into' },
+  {
+    label: 'Hex decode (allocating)',
+    nativeName: 'native:hex_decode',
+    rustName: 'rust:hex_decode',
+  },
   { label: 'Cookie sign', nativeName: 'native:cookie_sign', rustName: 'rust:cookie_sign' },
   { label: 'Cookie verify', nativeName: 'native:cookie_verify', rustName: 'rust:cookie_verify' },
   { label: 'CSRF create', nativeName: 'native:csrf_create', rustName: 'rust:csrf_create' },
@@ -63,17 +86,57 @@ export const comparisonReports: ComparisonReport[] = [
   { label: 'CRC32', nativeName: 'native:crc32', rustName: 'rust:crc32' },
   { label: 'FNV-1a 64', nativeName: 'native:fnv1a64', rustName: 'rust:fnv1a64' },
   { label: 'MIME lookup', nativeName: 'native:mime', rustName: 'rust:mime' },
-  { label: 'URL encode', nativeName: 'native:url_encode', rustName: 'rust:url_encode' },
-  { label: 'URL decode', nativeName: 'native:url_decode', rustName: 'rust:url_decode' },
+  { label: 'URL encode', nativeName: 'native:url_encode', rustName: 'rust:url_encode_into' },
+  { label: 'URL decode', nativeName: 'native:url_decode', rustName: 'rust:url_decode_into' },
   {
-    label: 'URL encode (pooled)',
+    label: 'URL encode (allocating)',
     nativeName: 'native:url_encode',
-    rustName: 'rust:url_encode_into',
+    rustName: 'rust:url_encode',
   },
   {
-    label: 'URL decode (pooled)',
+    label: 'URL decode (allocating)',
     nativeName: 'native:url_decode',
-    rustName: 'rust:url_decode_into',
+    rustName: 'rust:url_decode',
+  },
+  {
+    label: 'URL decode (bytes)',
+    nativeName: 'native:url_decode_bytes',
+    rustName: 'rust:url_decode_bytes',
+  },
+  {
+    label: 'ETag (pooled)',
+    nativeName: 'native:etag',
+    rustName: 'rust:etag_into',
+  },
+  {
+    label: 'HMAC sign (pooled)',
+    nativeName: 'native:hmac_sha256',
+    rustName: 'rust:hmac_sha256_into',
+  },
+  {
+    label: 'Cookie sign (pooled)',
+    nativeName: 'native:cookie_sign',
+    rustName: 'rust:sign_cookie_into',
+  },
+  {
+    label: 'AEAD encrypt (pooled)',
+    nativeName: 'native:aead_encrypt',
+    rustName: 'rust:aead_encrypt_into',
+  },
+  {
+    label: 'WS frame encode (pooled)',
+    nativeName: 'native:ws_frame_encode',
+    rustName: 'rust:ws_frame_encode_into',
+  },
+  {
+    label: 'Gzip compress (pooled)',
+    nativeName: 'native:gzip_compress',
+    rustName: 'rust:gzip_compress_into',
+  },
+  {
+    label: 'Brotli compress (pooled)',
+    nativeName: 'native:brotli_compress',
+    rustName: 'rust:brotli_compress_into',
   },
 
   // ── Backend-framework features (sequential) ──
@@ -129,6 +192,11 @@ export const comparisonReports: ComparisonReport[] = [
     rustName: 'rust:ws_frame_decode',
   },
   { label: 'SSE encode', nativeName: 'native:sse_encode', rustName: 'rust:sse_encode' },
+  {
+    label: 'SSE encode (pooled)',
+    nativeName: 'native:sse_encode',
+    rustName: 'rust:sse_encode_into',
+  },
 
   // ── Complex payload benchmarks ──
   {

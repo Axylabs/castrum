@@ -1,11 +1,16 @@
-import { decoder, encoder, viewForArrayBuffer } from './bytes'
-import { getAddon, lazyAddon, type MultipartPart, type SchemaValidatorInstance } from '../native'
+// src/shared/packed/wire.ts — Pure packed wire-format encode/decode helpers.
+//
+// The zero-allocation byte layouts shared by the batch/loader/rust-ffi layers:
+//   - unpackers:  u32 arrays, bitsets, i64/u64 arrays, byte-results, multipart
+//   - packers:    `[u32 count]{[u32 len][bytes]}` batches + string pairs
+//   - decoders:   pairs, HTTP request, and the reusable pack-scratch pool
+//
+// This module is PURE (no addon dlopen): consumers that only need these
+// helpers never touch the native layer. The native-backed ergonomic parsers
+// live in ./parsers.ts.
 
-// Lazy: importing this module does not dlopen the addon until first use.
-const addon = lazyAddon(getAddon)
-
-/** Native JSON-Schema validator handle (see `createSchemaValidator`). */
-export type SchemaValidator = SchemaValidatorInstance
+import { decoder, encoder, viewForArrayBuffer } from '../bytes'
+import type { MultipartPart } from '../../native'
 
 function dataView(bytes: Uint8Array): DataView {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -496,40 +501,4 @@ export function packPairs(pairs: Array<[string, string]>): Uint8Array {
   }
 
   return out
-}
-
-/** Validate each item against `validator`; returns a packed validity bitset. */
-export function schemaValidateBatch(validator: SchemaValidator, items: Uint8Array[]): Uint8Array {
-  return withPackScratch(items, (packed) =>
-    unpackBitset(validator.validateBatchPackedBitset(packed)),
-  )
-}
-
-/** Validate each item against `validator`; returns the count of valid items. */
-export function schemaValidateBatchCount(validator: SchemaValidator, items: Uint8Array[]): number {
-  return withPackScratch(items, (packed) => validator.validateBatchPackedCount(packed))
-}
-
-// ── High-level string parsers (convenience) ──────────────────────
-// Wrap the native packed parsers + decoders for ergonomic use, so consumers
-// don't have to hand-pack buffers or decode packed pairs:
-//   parseQueryString("a=1&b=2")    // { a: "1", b: "2" }
-//   parseCookieHeader("a=1; b=2")  // { a: "1", b: "2" }
-
-/** Parse a query string (`a=1&b=2`) into an object via the native parser. */
-export function parseQueryString(query: string): Record<string, string | string[]> {
-  const packed = addon.queryParsePacked(encoder.encode(query))
-  return pairsToObject(readPairsPacked(packed))
-}
-
-/** Parse a cookie header (`a=1; b=2`) into an object via the native parser. */
-export function parseCookieHeader(header: string): Record<string, string | string[]> {
-  const packed = addon.cookieParsePacked(encoder.encode(header))
-  return pairsToObject(readPairsPacked(packed))
-}
-
-/** Parse an application/x-www-form-urlencoded body into a key/value object. */
-export function parseFormBody(body: Uint8Array): Record<string, string | string[]> {
-  const packed = addon.formParsePacked(body)
-  return pairsToObject(readPairsPacked(packed))
 }

@@ -4,9 +4,10 @@
 // and reuses it across resolves (the higher-order / compiled-once pattern).
 
 import { rust } from '../../rust-ffi'
-import { nativeUrlEncodeQuery, nativeUrlResolve } from '../url-join-baseline'
+import { toBytes } from '../../shared/bytes'
 import type { BenchFixtures } from '../fixtures'
 import type { BenchTask } from '../types'
+import { nativeUrlEncodeQuery, nativeUrlResolve } from '../url-join-baseline'
 
 export function urlJoinTasks(f: BenchFixtures): BenchTask[] {
   // Higher-order instance: base parsed once, reused.
@@ -33,7 +34,7 @@ export function urlJoinTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'rust:url_encode_query',
-      run: () => rust.urlEncodeQuery(f.urlQueryParams).byteLength,
+      run: () => toBytes(rust.urlEncodeQuery(f.urlQueryParams)).byteLength,
       iterations: 300,
       warmup: 30,
     },

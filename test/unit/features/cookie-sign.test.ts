@@ -4,10 +4,10 @@
  * cross-checked against the node:crypto baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { nativeSignCookie, nativeVerifyCookie } from '../../../src/bench/cookie-sign-baseline'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'
-import { nativeSignCookie, nativeVerifyCookie } from '../../../src/bench/cookie-sign-baseline'
 
 const SECRET = encoder.encode('super-secret-cookie-key')
 const VALUE = encoder.encode('session=abc123; theme=dark')
@@ -36,12 +36,9 @@ describe('CookieSigner (higher-order instance)', () => {
 
 describe('rust.signCookie / verifyCookie (scalar)', () => {
   test('matches baseline', () => {
-    expect(decoder.decode(rust.signCookie(VALUE, SECRET))).toBe(
-      decoder.decode(nativeSignCookie(VALUE, SECRET)),
-    )
-    expect(
-      Array.from(rust.verifyCookie(rust.signCookie(VALUE, SECRET), SECRET) ?? new Uint8Array(0)),
-    ).toEqual(Array.from(VALUE))
+    expect(rust.signCookie(VALUE, SECRET)).toBe(decoder.decode(nativeSignCookie(VALUE, SECRET)))
+    const verified = rust.verifyCookie(encoder.encode(rust.signCookie(VALUE, SECRET)), SECRET)
+    expect(Array.from(encoder.encode(verified as string))).toEqual(Array.from(VALUE))
     expect(nativeVerifyCookie(nativeSignCookie(VALUE, SECRET), SECRET)).not.toBeNull()
   })
 })

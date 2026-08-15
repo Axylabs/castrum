@@ -1,14 +1,13 @@
-
 use std::sync::Arc;
 
 use super::*;
 use crate::ingress::cors::{CorsEngine, CorsOptions};
 use crate::ingress::output::{
     ERR_CODE_BAD_REQUEST, ERR_CODE_BODY_TOO_LARGE, ERR_CODE_INVALID_JSON, ERR_CODE_NONE,
-    ERR_CODE_RATE_LIMITED, ERR_CODE_REQUEST_TOO_LARGE, ERR_CODE_SCHEMA_VALIDATION, FLAG_CORS_ALLOWED,
-    FLAG_HAS_COOKIES, FLAG_HAS_QUERY, FLAG_HTTPS, FLAG_SCHEMA_VALID, HV_CORS_SIMPLE, HV_JSON,
-    OUT_COOKIES_JSON_LEN, OUT_ERROR_CODE, OUT_FLAGS, OUT_HEADER_VARIANT, OUT_QUERY_JSON_LEN,
-    OUT_STATUS, OUT_VERDICT,
+    ERR_CODE_RATE_LIMITED, ERR_CODE_REQUEST_TOO_LARGE, ERR_CODE_SCHEMA_VALIDATION,
+    FLAG_CORS_ALLOWED, FLAG_HAS_COOKIES, FLAG_HAS_QUERY, FLAG_HTTPS, FLAG_SCHEMA_VALID,
+    HV_CORS_SIMPLE, HV_JSON, OUT_COOKIES_JSON_LEN, OUT_ERROR_CODE, OUT_FLAGS, OUT_HEADER_VARIANT,
+    OUT_QUERY_JSON_LEN, OUT_STATUS, OUT_VERDICT,
 };
 use crate::ingress::pipeline::IngressSchema;
 use crate::ingress::rate_limit::{KeyedRateLimiter, RateLimiterState};
@@ -236,8 +235,8 @@ fn clamp_output_size_bounds() {
     assert_eq!(clamp_output_size(None), 262_144); // default
     assert_eq!(clamp_output_size(Some(0)), OUT_DATA_START); // floor
     assert_eq!(clamp_output_size(Some(4096)), 4096); // passthrough
-    // u32::MAX (≈ 4 GiB) is capped to MAX_OUTPUT_BUFFER_SIZE (64 MiB = 67_108_864).
-    // (Literal avoids clippy 0.1.97's const-cast false positive.)
+                                                     // u32::MAX (≈ 4 GiB) is capped to MAX_OUTPUT_BUFFER_SIZE (64 MiB = 67_108_864).
+                                                     // (Literal avoids clippy 0.1.97's const-cast false positive.)
     assert_eq!(clamp_output_size(Some(u32::MAX)), 67_108_864);
 }
 
@@ -260,10 +259,7 @@ fn packed_input_with_headers(
         out.extend_from_slice(&(section.len() as u32).to_le_bytes());
         out.extend_from_slice(section);
     }
-    let header_pairs_len: usize = headers
-        .iter()
-        .map(|(n, v)| 2 + n.len() + 4 + v.len())
-        .sum();
+    let header_pairs_len: usize = headers.iter().map(|(n, v)| 2 + n.len() + 4 + v.len()).sum();
     out.extend_from_slice(&((2 + header_pairs_len) as u32).to_le_bytes());
     out.extend_from_slice(&(headers.len() as u16).to_le_bytes());
     for (n, v) in headers {
@@ -276,7 +272,12 @@ fn packed_input_with_headers(
 }
 
 fn flags_at(out: &[u8]) -> u32 {
-    u32::from_le_bytes([out[OUT_FLAGS], out[OUT_FLAGS + 1], out[OUT_FLAGS + 2], out[OUT_FLAGS + 3]])
+    u32::from_le_bytes([
+        out[OUT_FLAGS],
+        out[OUT_FLAGS + 1],
+        out[OUT_FLAGS + 2],
+        out[OUT_FLAGS + 3],
+    ])
 }
 
 fn status_at(out: &[u8]) -> u16 {
@@ -299,7 +300,9 @@ fn schema_valid_200_and_invalid_422() {
 
     // Well-formed but schema-invalid body → 422 (distinct from 400 malformed).
     let mut out = vec![0u8; 512];
-    inner.handle_packed(&input, br#"{"id":"x"}"#, &mut out).unwrap();
+    inner
+        .handle_packed(&input, br#"{"id":"x"}"#, &mut out)
+        .unwrap();
     assert_eq!(out[OUT_VERDICT], 1);
     assert_eq!(out[OUT_ERROR_CODE], ERR_CODE_SCHEMA_VALIDATION);
     assert_eq!(status_at(&out), 422);
@@ -307,7 +310,9 @@ fn schema_valid_200_and_invalid_422() {
     // Valid body → 200 with FLAG_SCHEMA_VALID (exercises the zero-DOM fast
     // path, since this schema uses only supported keywords).
     let mut out = vec![0u8; 512];
-    inner.handle_packed(&input, br#"{"id":1}"#, &mut out).unwrap();
+    inner
+        .handle_packed(&input, br#"{"id":1}"#, &mut out)
+        .unwrap();
     assert_eq!(out[OUT_VERDICT], 0);
     assert_eq!(status_at(&out), 200);
     assert_ne!(flags_at(&out) & FLAG_SCHEMA_VALID, 0);
@@ -412,7 +417,8 @@ fn too_many_headers_431() {
         },
         ..base_inner()
     };
-    let input = packed_input_with_headers(0, b"/api", b"127.0.0.1", b"rid", &[("a", "1"), ("b", "2")]);
+    let input =
+        packed_input_with_headers(0, b"/api", b"127.0.0.1", b"rid", &[("a", "1"), ("b", "2")]);
     let mut out = vec![0u8; 512];
     inner.handle_packed(&input, b"", &mut out).unwrap();
     assert_eq!(out[OUT_VERDICT], 1);
@@ -429,8 +435,7 @@ fn headers_section_over_bytes_431() {
         },
         ..base_inner()
     };
-    let input =
-        packed_input_with_headers(0, b"/api", b"127.0.0.1", b"rid", &[("a", "123456")]);
+    let input = packed_input_with_headers(0, b"/api", b"127.0.0.1", b"rid", &[("a", "123456")]);
     let mut out = vec![0u8; 512];
     inner.handle_packed(&input, b"", &mut out).unwrap();
     assert_eq!(out[OUT_ERROR_CODE], ERR_CODE_REQUEST_TOO_LARGE);
@@ -502,8 +507,7 @@ fn cookies_and_query_json_written() {
     assert!(query_len > 2);
 
     let cookies_json = &out[OUT_DATA_START..OUT_DATA_START + cookies_len];
-    let query_json =
-        &out[OUT_DATA_START + cookies_len..OUT_DATA_START + cookies_len + query_len];
+    let query_json = &out[OUT_DATA_START + cookies_len..OUT_DATA_START + cookies_len + query_len];
     assert_eq!(cookies_json, br#"{"sid":"abc123","theme":"dark"}"#);
     // Query keys in order; `%20` decoded to a space and JSON-escaped.
     assert_eq!(query_json, br#"{"page":"2","q":"hello world"}"#);

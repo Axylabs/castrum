@@ -96,10 +96,7 @@ pub fn password_verify(password: Uint8Array, phc: Buffer) -> bool {
 /// Packed password-verify batch (two packed lists: passwords + PHC strings,
 /// zipped) → bitset of valid. Items with malformed PHC strings yield `false`.
 #[napi]
-pub fn password_verify_batch_packed(
-    passwords: Uint8Array,
-    phcs: Uint8Array,
-) -> Result<Buffer> {
+pub fn password_verify_batch_packed(passwords: Uint8Array, phcs: Uint8Array) -> Result<Buffer> {
     use crate::util::packed::PackedIter;
     let pws = passwords.as_ref();
     let ph = phcs.as_ref();
@@ -107,10 +104,7 @@ pub fn password_verify_batch_packed(
     let mut out = Vec::with_capacity(4 + count.div_ceil(8));
     out.extend_from_slice(&(count as u32).to_le_bytes());
     out.resize(4 + count.div_ceil(8), 0);
-    for (i, (pw, phc)) in PackedIter::new(pws)?
-        .zip(PackedIter::new(ph)?)
-        .enumerate()
-    {
+    for (i, (pw, phc)) in PackedIter::new(pws)?.zip(PackedIter::new(ph)?).enumerate() {
         if verify_password(pw, phc) {
             out[4 + (i >> 3)] |= 1 << (i & 7);
         }

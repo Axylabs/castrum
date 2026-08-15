@@ -37,9 +37,12 @@ pub fn init_thread_pool(rayon_threads: Option<u32>) -> Result<()> {
         // Do not hard-cap to 8 by default.
         // If you need a cap, set CASTRUM_MAX_RAYON_THREADS
         // (legacy alias: RUST_BENCH_MAX_RAYON_THREADS).
-        let max_threads = read_env("CASTRUM_MAX_RAYON_THREADS", &["RUST_BENCH_MAX_RAYON_THREADS"])
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default_threads.max(1));
+        let max_threads = read_env(
+            "CASTRUM_MAX_RAYON_THREADS",
+            &["RUST_BENCH_MAX_RAYON_THREADS"],
+        )
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default_threads.max(1));
 
         let threads = rayon_threads
             .unwrap_or(preferred)

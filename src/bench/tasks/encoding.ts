@@ -13,6 +13,7 @@ import {
   nativeHexEncode,
 } from '../encoding-baseline'
 import type { BenchFixtures } from '../fixtures'
+import { rawHexEncode } from '../raw-native'
 import type { BenchTask } from '../types'
 
 export function encodingTasks(f: BenchFixtures): BenchTask[] {
@@ -54,7 +55,10 @@ export function encodingTasks(f: BenchFixtures): BenchTask[] {
     },
     {
       name: 'rust:hex_encode',
-      run: () => rust.hexEncode(f.encodeData).byteLength,
+      // RAW addon accessor — the public `rust.hexEncode` delegates to Bun's
+      // `Buffer.toString('hex')` under Bun (BUN_WINS), so it would measure the
+      // built-in, not the addon (see src/bench/raw-native.ts).
+      run: () => rawHexEncode(f.encodeData).length,
       iterations: 300,
       warmup: 30,
     },

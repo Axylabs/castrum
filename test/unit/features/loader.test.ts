@@ -7,10 +7,10 @@
  * the hmac batch wiring.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { createLoader, LOADER_OP_NAMES, type LoaderOpName, loader } from '../../../src/loader'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'
-import { createLoader, loader, LOADER_OP_NAMES, type LoaderOpName } from '../../../src/loader'
 
 const bytes = (s: string): Uint8Array => encoder.encode(s)
 
@@ -64,13 +64,13 @@ describe('loader: scalar parity', () => {
 
   test('single item with extra args → scalar, matching rust.<op>', () => {
     const sign = loader('signCookie')
-    expect(sign(HMAC_DATA, HMAC_KEY)).toEqual(rust.signCookie(HMAC_DATA, HMAC_KEY))
+    expect(sign(HMAC_DATA, HMAC_KEY)).toEqual(encoder.encode(rust.signCookie(HMAC_DATA, HMAC_KEY)))
 
     const hmac = loader('hmacSha256')
-    expect(hmac(HMAC_DATA, HMAC_KEY)).toEqual(rust.hmacSha256(HMAC_KEY, HMAC_DATA))
+    expect(hmac(HMAC_DATA, HMAC_KEY)).toEqual(encoder.encode(rust.hmacSha256(HMAC_KEY, HMAC_DATA)))
 
     const csrf = loader('csrfVerify')
-    const token = rust.csrfToken(HMAC_KEY)
+    const token = encoder.encode(rust.csrfToken(HMAC_KEY))
     expect(csrf(token, HMAC_KEY)).toBe(rust.csrfVerify(token, HMAC_KEY))
   })
 
@@ -321,7 +321,7 @@ describe('loader: edge shapes and error semantics', () => {
     const l = createLoader()
     const enc = l('base64Encode')
     const got = await enc.load(bytes('hello'))
-    expect(got).toEqual(rust.base64Encode(bytes('hello'))) // default urlSafe=false, padding=true
+    expect(got).toEqual(encoder.encode(rust.base64Encode(bytes('hello')))) // default urlSafe=false, padding=true
   })
 
   test('cache keys are namespaced per op (no cross-op collision)', async () => {
@@ -488,7 +488,7 @@ describe('loader: expanded byte ops — scalar + bulk parity', () => {
 
   test('etag scalar + bulk match rust (strong + weak)', () => {
     const l = createLoader({ adaptive: false })
-    expect(l('etag')(bytes('123456789'))).toEqual(rust.etag(bytes('123456789')))
+    expect(l('etag')(bytes('123456789'))).toEqual(encoder.encode(rust.etag(bytes('123456789'))))
     const weak = l('etag')([bytes('123456789')], true)
     expect(weak[0]).toEqual(bytes('W/"cbf43926"'))
     const strong = l('etag')([bytes('123456789')])
@@ -498,7 +498,7 @@ describe('loader: expanded byte ops — scalar + bulk parity', () => {
   test('url/base64url/ws/mime scalar + bulk match rust', () => {
     const l = createLoader({ adaptive: false })
     // urlEncode / urlDecode / urlDecodeBytes
-    expect(l('urlEncode')(bytes('a b&c'))).toEqual(rust.urlEncode(bytes('a b&c')))
+    expect(l('urlEncode')(bytes('a b&c'))).toEqual(encoder.encode(rust.urlEncode(bytes('a b&c'))))
     expect(l('urlEncode')([bytes('a b&c')])[0]).toEqual(bytes('a%20b%26c'))
     expect(l('urlDecode')([bytes('a%20b')])[0]).toEqual(bytes('a b'))
     const utf8 = new Uint8Array([0xc3, 0xa9])
@@ -565,7 +565,7 @@ describe('loader: backend-feature op parity (aead/ws/sse/jwtSign)', () => {
 describe('loader: boolean-validity ops (verifyCookie, jwtVerify)', () => {
   test('verifyCookie single returns valid/invalid matching the batch bitset', () => {
     const l = createLoader({ adaptive: false })
-    const signed = rust.signCookie(bytes('abc'), SECRET)
+    const signed = encoder.encode(rust.signCookie(bytes('abc'), SECRET))
     expect(l('verifyCookie')(signed, SECRET)).toBe(true)
     expect(l('verifyCookie')(bytes('abc'), SECRET)).toBe(false)
     const bits = l('verifyCookie')([signed, bytes('abc')], SECRET)
@@ -605,7 +605,7 @@ describe('loader: paired ops (jsonPatch, hmacSha256Verify, passwordVerify, urlRe
 
   test('hmacSha256Verify scalar + bulk (key shared, sigs per-item)', () => {
     const data = bytes('msg')
-    const sig = rust.hmacSha256(SECRET, data)
+    const sig = encoder.encode(rust.hmacSha256(SECRET, data))
     const l = createLoader({ adaptive: false })
     expect(l('hmacSha256Verify')(data, SECRET, sig)).toBe(true)
     const bits = l('hmacSha256Verify')([data, data], SECRET, [sig, bytes('bad')])
@@ -615,12 +615,14 @@ describe('loader: paired ops (jsonPatch, hmacSha256Verify, passwordVerify, urlRe
 
   test('passwordVerify scalar + bulk', () => {
     const salt = bytes('0123456789abcdef')
-    const phc = rust.passwordHash(bytes('hunter2'), salt, {
-      mCost: 8,
-      tCost: 1,
-      pCost: 1,
-      outLen: 16,
-    })
+    const phc = encoder.encode(
+      rust.passwordHash(bytes('hunter2'), salt, {
+        mCost: 8,
+        tCost: 1,
+        pCost: 1,
+        outLen: 16,
+      }),
+    )
     const l = createLoader({ adaptive: false })
     expect(l('passwordVerify')(bytes('hunter2'), phc)).toBe(true)
     expect(l('passwordVerify')(bytes('nope'), phc)).toBe(false)
