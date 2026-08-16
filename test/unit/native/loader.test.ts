@@ -11,7 +11,7 @@ import { describe, test, expect } from 'bun:test'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveAddonPathFrom } from '../../../src/native/loader'
+import { resolveAddonPathFrom, supportsX8664V3 } from '../../../src/native/loader'
 
 // Explicit platform/arch are passed to the pure resolver, so the test is
 // self-consistent regardless of the host machine.
@@ -86,5 +86,72 @@ describe('resolveAddonPathFrom', () => {
     expect(() =>
       resolveAddonPathFrom('/definitely/not/a/real/override', makeDir(), PLATFORM, ARCH),
     ).toThrow(/CASTRUM_NATIVE_LIBRARY_PATH/)
+  })
+})
+
+describe('supportsX8664V3', () => {
+  test('true when all v3 flags are present', () => {
+    const cpuinfo = `
+processor : 0
+flags     : fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat
+pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc
+arch_perfmon rep_good nopl xtopology cpuid tsc_known_freq pni pclmulqdq ssse3
+fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand
+hypervisor lahf_lm abm 3dnowprefetch cpuid_fault bmi1 avx2 bmi2 umip
+`
+    expect(supportsX8664V3(cpuinfo)).toBe(true)
+  })
+
+  test('false when any v3 flag is missing (partial SSE4.2 machine)', () => {
+    // avx2 present but bmi2/fma absent → must NOT prefer the v3 binary (a
+    // SIGILL on an unsupported CPU is not catchable from JS).
+    const cpuinfo = `
+flags     : fpu sse sse2 ssse3 sse4_1 sse4_2 avx avx2 f16c
+`
+    expect(supportsX8664V3(cpuinfo)).toBe(false)
+  })
+
+  test('false when cpuinfo is empty/unreadable', () => {
+    expect(supportsX8664V3('')).toBe(false)
+    // `undefined` reads the real /proc/cpuinfo (production path) — not
+    // deterministically assertable here, so only the empty-string path is
+    // pinned. The resolver's own linux/x64 gating covers the rest.
+  })
+})
+
+describe('resolveAddonPathFrom — dual-binary CPU-detect (v3 variant)', () => {
+  const V3 = 'castrum.linux-x64-v3-gnu.node'
+  const V3_CPUINFO = `flags: avx2 bmi2 fma sse4_2`
+  const BASE_CPUINFO = `flags: sse2 sse4_2`
+
+  test('prefers the v3 variant when the CPU supports it and the file exists', () => {
+    const root = makeDir()
+    writeFileSync(join(root, ARTIFACT), '')
+    writeFileSync(join(root, V3), '')
+    const p = resolveAddonPathFrom(undefined, root, PLATFORM, ARCH, V3_CPUINFO)
+    expect(p).toBe(join(root, V3))
+  })
+
+  test('falls back to the baseline variant when v3 is unsupported', () => {
+    const root = makeDir()
+    writeFileSync(join(root, ARTIFACT), '')
+    writeFileSync(join(root, V3), '')
+    const p = resolveAddonPathFrom(undefined, root, PLATFORM, ARCH, BASE_CPUINFO)
+    expect(p).toBe(join(root, ARTIFACT))
+  })
+
+  test('falls back to the baseline variant when v3 is supported but absent', () => {
+    const root = makeDir()
+    writeFileSync(join(root, ARTIFACT), '')
+    const p = resolveAddonPathFrom(undefined, root, PLATFORM, ARCH, V3_CPUINFO)
+    expect(p).toBe(join(root, ARTIFACT))
+  })
+
+  test('v3 preference never applies on non-linux/x64 platforms', () => {
+    const root = makeDir()
+    writeFileSync(join(root, 'castrum.darwin-arm64.node'), '')
+    writeFileSync(join(root, V3), '')
+    const p = resolveAddonPathFrom(undefined, root, 'darwin', 'arm64', V3_CPUINFO)
+    expect(p).toBe(join(root, 'castrum.darwin-arm64.node'))
   })
 })

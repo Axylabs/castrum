@@ -16,8 +16,9 @@ call); Node.js falls back to NAPI automatically.
   limiting, body-size guards, JSON-schema validation, and security headers for you.
 - **Zero-copy hot paths** — request data travels in packed binary buffers shared
   with Rust, so there's no serialization and no per-request allocation.
-- **Honest performance data** — the `proven` surface records which `rust.*` calls
-  beat their JS/Bun baseline and which don't, so you know what to reach for.
+- **Honest performance data** — the CPU benchmark (`bun run check`) races every
+  `rust.*` op against a pure-JS baseline and writes a machine-readable report, so
+  you always know what to reach for.
 - **Bun first, Node ready** — the same API runs on Node ≥ 20.3 via a compiled ESM
   entry.
 
@@ -112,8 +113,7 @@ Two suites ship with the repo:
 
 - **CPU benchmark** — `bun run check` races every `rust.*` op against a pure-JS
   baseline (and Bun's built-ins) and writes a machine-readable report to
-  `bench/results/cpu/`. The `proven` annotations and the `PROVEN_SURFACE` audit
-  are derived from it.
+  `bench/results/cpu/`.
 - **HTTP benchmark** — `bun run bench:http` compares raw `Bun.serve`, Elysia,
   and the castrum ingress server across ~20 load scenarios (smoke, stress,
   soak, spike, heavy JSON, slowloris, …).
@@ -122,7 +122,6 @@ Two suites ship with the repo:
 bun run check             # CPU benchmark + correctness (writes latest.json)
 bun run bench:http        # HTTP benchmark, all servers
 bun run bench:http:smoke  # fast HTTP sanity — the CI wire-format guard
-bun run check:proven:fail # CI gate: fail if a "proven" op regresses
 ```
 
 For scenario details, how to read the reports, and the benchmark-specific env
@@ -142,30 +141,21 @@ is the map:
 | `rust.batch.*` | Array-of-bytes → native results (bitsets, typed arrays, byte arrays) in one packed call. |
 | `rust.packed.*` | Raw packed-wire low-level variants + metadata. |
 | `loader` / `createLoader` | Higher-order loader: pre-bound ops, automatic scalar-vs-bulk dispatch, DataLoader-style coalescing, LRU cache. |
-| `proven` / `PROVEN_SURFACE` | The same `rust.*` surface, annotated with measured performance vs the JS/Bun baseline (`@performance` / `@deprecated`). |
 | `opImpl` / `isNativeOp` / `opDecision` | Benchmark-driven native-vs-JS selection hints for framework consumers. |
 | `createIngressHandler` + route factories | Pre-baked HTTP pipeline: CORS, rate limit, body guard, schema validation, security headers. |
-| `createIngressServer` / `createIngressServerNode` | Server builders for Bun (`Bun.serve`) and Node (`node:http`). |
+| `createIngressServer` / `createIngressServerNode` | Server builders — the runtime adapter picks `Bun.serve` on Bun and `node:http` on Node. |
 | `createIngress` / `createIngressFast` / `createIngressSync` | Lower-level ingress entry points. |
 | `createPipeline` / `createWebSocketUpgrade` / `sseResponse` | Framework-agnostic integration helpers. |
 | `createMetrics` / `createIngressMetrics` / `livenessHandler` / `readinessHandler` / trace helpers | Zero-dependency observability. |
 | `uuidv7` / `AdaptiveEstimate` / packing & parsing utilities | Shared utilities (`encoder`, `decoder`, `packBatch`, `parseQueryString`, …). |
 
 ```ts
-import { rust, loader, proven } from "castrum";
+import { rust, loader } from "castrum";
 
 rust.jsonValid(bytes);            // scalar boolean
 const isEmail = loader("validateEmail");
 isEmail([a, b, c]);               // one packed batch call
-proven.fnv1a64(bytes);            // same call as rust.fnv1a64, annotated
 ```
-
-> **The `proven` contract** — `proven` is literally the same object as `rust`
-> (`export const proven = rust`), so nothing is hidden. Each function's JSDoc
-> records its measured performance vs the JS baseline and carries `@deprecated`
-> when it loses (e.g. `rust.jsonParse` loses ~5x to `JSON.parse`). The registry
-> lives in `PROVEN_SURFACE` and is audited against the CPU benchmark by
-> `bun run check:proven:fail` (CI) so classifications can't drift.
 
 > **The selection surface** — framework consumers that want to bind each op to
 > a fixed implementation at load time use `opImpl(op)` / `isNativeOp(op)` /

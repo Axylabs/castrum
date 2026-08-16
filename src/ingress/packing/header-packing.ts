@@ -5,7 +5,7 @@
 // scratch buffers keeps this allocation-free on the hot path while isolating
 // the buffers per call-site sequence.
 
-import { encoder } from '../../shared/bytes'
+import { encodeUtf8Into } from '../../shared/codec'
 import { type HeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN } from '../shared'
 import { getHeaderBuf } from './scratch'
 import { forEachSelectedHeader } from './select-headers'
@@ -42,8 +42,9 @@ export function writeHeaderPair(
   const valueLenPos = pos
   pos += 4
 
-  const dest = buf.subarray(pos)
-  const { written } = encoder.encodeInto(value, dest)
+  // Number-returning codec write directly at `pos` (no `{read, written}`
+  // object, no intermediate `subarray` — both were per-header allocations).
+  const written = encodeUtf8Into(value, buf, pos)
 
   view.setUint32(valueLenPos, written, true)
   pos += written

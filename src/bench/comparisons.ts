@@ -423,8 +423,9 @@ export const comparisonReports: ComparisonReport[] = [
     rustName: 'rust:cookie_parse_pipeline',
   },
 
-  // ── Diagnostic: castrum vs Bun built-ins (diag: task names — never audited
-  //    by check-proven; feeds docs/bun-builtins-decision-matrix.md) ──
+  // ── Diagnostic: castrum vs Bun built-ins (diag: task names — kept out of
+  //    the shipped-op `native:`/`rust:` comparisons; feeds
+  //    docs/bun-builtins-decision-matrix.md) ──
   {
     label: 'FNV-1a 64 vs Bun.hash (wyhash)',
     nativeName: 'diag:bun_hash_wyhash',

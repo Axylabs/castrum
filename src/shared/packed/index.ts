@@ -5,6 +5,6 @@
 // string parsers (./parsers.ts). Importing this barrel does NOT dlopen the
 // addon — only calling a parser in ./parsers.ts does (lazy).
 
-export * from './wire'
-export * from './schema'
 export * from './parsers'
+export * from './schema'
+export * from './wire'

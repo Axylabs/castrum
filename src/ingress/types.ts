@@ -4,8 +4,8 @@
 // helpers in ./context.ts, so the implementation modules never need to import
 // the public barrel.
 
-import type { IngressFastOptions } from './options'
 import type { BakedIngressResult } from './decode/baked-result'
+import type { IngressFastOptions } from './options'
 
 /** Public ingress options (extends the fast-path options). */
 export interface IngressOptions extends IngressFastOptions {
@@ -155,3 +155,37 @@ export interface OptimizedIngressHandler {
    */
   zeroCopyResponse(result: BakedIngressResult, ctx: BakedContext, init: ResponseInit): Response
 }
+
+// ── Responder bridge (native decides, JS formats the 2xx) ─────────
+
+/** Terminal (rejection) response envelope style for responder routes.
+ *  `"castrum"` (default) emits the pre-baked `ok:false`/`ratelimit-*` wire;
+ *  `"ignex"` emits the ignex framework envelope (`{error,status,code}` +
+ *  `x-frame-options`/`nosniff`/`referrer-policy` security headers). Additive —
+ *  castrum's own wire formats are untouched. */
+export type TerminalStyle = 'castrum' | 'ignex'
+
+/**
+ * Decoded request context handed to a {@link NativeResponder} after the native
+ * pipeline succeeded (non-terminal). The native pipeline owns parse/validate/
+ * CORS/rate-limit + terminal rejections; the responder builds the 2xx body
+ * (async OK). Fields are captured INSIDE the sync `run()` callback, so the
+ * pooled output buffer is never aliased after it is released.
+ */
+export interface NativeRequestContext {
+  readonly requestId: string
+  readonly status: number
+  readonly rateLimited: boolean
+  readonly retryAfterMs: number
+  /** Parsed query object (last-wins per key) — `{}` when `parseQuery` is off. */
+  readonly query: Record<string, string | string[]>
+  /** Parsed cookie object (last-wins per key) — `{}` when `parseCookies` is off. */
+  readonly cookies: Record<string, string>
+  /** Request body bytes when read for native validation, else empty. */
+  readonly body: Uint8Array
+  readonly ip: string | undefined
+  readonly req: Request
+}
+
+/** A JS 2xx builder invoked after the native pipeline succeeds (async OK). */
+export type NativeResponder = (snap: NativeRequestContext) => Response | Promise<Response>

@@ -4,7 +4,7 @@
 // `lazyAddon()` trigger loading exactly once on first use. This keeps
 // `import castrum` as cheap as possible on Bun.
 
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
 import { createRequire } from 'node:module'
@@ -14,6 +14,40 @@ import type { NativeAddon } from './types'
 const require = createRequire(import.meta.url)
 
 /**
+ * x86-64-v3 feature flags (the exact set `scripts/build-v3.sh` compiles with).
+ * The v3 variant is only preferred when the host CPU exposes ALL of them —
+ * checking only `avx2` would let a partial-SSE4.2 machine dlopen a binary it
+ * cannot run (SIGILL is not catchable from JS, so we must be conservative).
+ */
+const X8664_V3_FLAGS = ['avx2', 'bmi2', 'fma', 'sse4_2']
+
+/**
+ * Detect x86-64-v3 support from `cpuinfo` text (Linux `/proc/cpuinfo` flags).
+ *
+ * Pure and unit-testable: the caller supplies the cpuinfo text (the real path
+ * reads `/proc/cpuinfo` on linux/x64). Returns false for any non-linux/x64
+ * platform and for any missing flag — a v3 binary dlopened on an unsupported
+ * CPU would SIGILL the whole Bun/Node process (not catchable from JS), so the
+ * default must be "no".
+ *
+ * @param cpuinfo the `flags:` line content, or `undefined` to read
+ *   `/proc/cpuinfo` (only meaningful on linux/x64)
+ * @returns true when all x86-64-v3 feature flags are present
+ */
+export function supportsX8664V3(cpuinfo?: string): boolean {
+  const text =
+    cpuinfo ??
+    (() => {
+      try {
+        return readFileSync('/proc/cpuinfo', 'utf8')
+      } catch {
+        return ''
+      }
+    })()
+  return X8664_V3_FLAGS.every((flag) => new RegExp(`\\b${flag}\\b`).test(text))
+}
+
+/**
  * Resolve the addon path given EXPLICIT inputs (pure — unit-testable).
  *
  * `resolveAddonPath()` is a thin wrapper that reads `process.env` and the
@@ -21,11 +55,18 @@ const require = createRequire(import.meta.url)
  * can exercise env-override / multi-root / missing-addon behavior without
  * mutating the process-global cache.
  *
+ * Dual-binary CPU-detect: on linux/x64 when the host supports x86-64-v3, the
+ * `castrum.linux-x64-v3-gnu.node` variant is preferred (SIMD in crc32fast /
+ * sonic-rs / memchr / xxh3 / simdutf8 / mimalloc) and the first-existing
+ * candidate wins — so an absent v3 file falls through to the baseline names.
+ *
  * @param envOverride an explicit `CASTRUM_NATIVE_LIBRARY_PATH`-style path, or
  *   `undefined` for none (the real call passes the env-var value)
  * @param baseDir the directory of the current module (`dist/` or `src/native`)
  * @param platform `process.platform`
  * @param arch `process.arch`
+ * @param cpuinfo optional `/proc/cpuinfo` text (tests inject it; the real call
+ *   omits it and reads the file lazily on linux/x64 only)
  * @returns the first existing candidate path (throws if none exists)
  */
 export function resolveAddonPathFrom(
@@ -33,6 +74,7 @@ export function resolveAddonPathFrom(
   baseDir: string,
   platform: string,
   arch: string,
+  cpuinfo?: string,
 ): string {
   // napi-rs artifact naming: castrum.<platform>-<arch>[-<libc>].node
   // e.g. linux-x64-gnu, linux-x64-musl, win32-x64-msvc, darwin-arm64.
@@ -43,6 +85,13 @@ export function resolveAddonPathFrom(
     (libc) => `castrum.${platform}-${arch}${libc ? `-${libc}` : ''}.node`,
   )
   names.push('castrum.node')
+
+  // On a v3-capable linux/x64 host, prefer the SIMD variant first. The v3 file
+  // only ships in glibc (gnu) packages, so on musl the candidate is simply
+  // absent and resolution falls through to the baseline musl artifact.
+  if (platform === 'linux' && arch === 'x64' && supportsX8664V3(cpuinfo)) {
+    names.unshift('castrum.linux-x64-v3-gnu.node')
+  }
 
   const candidates: string[] = []
 

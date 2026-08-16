@@ -42,6 +42,11 @@ pub(crate) mod time;
 pub(crate) mod cors;
 pub mod ingress_constants;
 pub(crate) mod ip_trust;
+// Per-route native stack (`castrum_route_*` C-ABI + napi `Route` class) —
+// the LIVE external wire consumed by `@ignex/native` (route-wire.ts v3).
+// Supersedes the deleted `rust/route.rs` (dead external-project wire); see
+// the module doc for the contract and the lenient-parse parity rules.
+pub mod native_route;
 pub(crate) mod output;
 pub(crate) mod proxy;
 pub(crate) mod rate_limit;
@@ -50,6 +55,7 @@ pub(crate) mod terminal;
 pub(crate) use self::options::{IngressOptions, Limits};
 pub(crate) use self::packed::build_packed_input_sync;
 pub(crate) use self::pipeline::IngressSchema;
+pub(crate) use self::native_route::NativeRoute;
 
 // ── Ingress state ─────────────────────────────────────────────────
 #[derive(Clone)]

@@ -19,10 +19,9 @@
 - [ ] `bun run lint:ci` clean
 - [ ] `bun run check:version` passes
 - [ ] If Rust changed: `bun run build` then `bun run check` (release) — correctness
-      checks pass and `check:proven:fail` is clean (note: wsFrameDecode etc. can
-      flake on sub-µs ops — see repo memory)
+      checks pass (note: wsFrameDecode etc. can flake on sub-µs ops — see repo memory)
 - [ ] If servers/handlers changed: `bun run bench:http:smoke` — no
       `shape_failure` / `unexpected_status`
-- [ ] New public function → added a `PROVEN_SURFACE` entry + TS/Rust tests
+- [ ] New public function → TS/Rust tests + JSDoc (see `bun run check:jsdoc`)
 - [ ] New native primitive → verified against Bun built-in (decision matrix)
 - [ ] CHANGELOG updated under `[Unreleased]`

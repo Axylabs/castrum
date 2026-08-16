@@ -2,10 +2,13 @@
 //
 // `rust.text.*` is the ergonomic string API over the byte-level native
 // functions. Pure wrappers: encode input, call native, decode output.
+//
+// Runtime dispatch is centralized in the adapter (`ctx.runtime`): the Bun
+// built-in delegations (urlEncode/urlDecode) come from `builtins.has(op)` and
+// the native call from `transport.ffi` / `transport.resolve` (bun:ffi first,
+// napi fallback) — no inline `isBun()` / `getBunFFI()`.
 
-import { getBunFFI } from '../native/ffi'
 import { decoder, encoder } from '../shared/bytes'
-import { isBun } from '../shared/runtime'
 import { type RustClientContext, resolveNative } from './context'
 
 /** String-oriented FFI namespace. */
@@ -50,6 +53,7 @@ export interface RustText {
 
 /** Build the `text` namespace for a client context. */
 export function buildText(ctx: RustClientContext): RustText {
+  const { builtins, transport } = ctx.runtime
   // String memo: the byte path already caches the native bytes; this avoids the
   // encode → native lookup → slice → decode round-trip for repeated extension
   // strings (the common case) — 0 allocations on a cache hit.
@@ -59,11 +63,12 @@ export function buildText(ctx: RustClientContext): RustText {
     mimeFromExtension(ext) {
       let mime = mimeStrCache.get(ext)
       if (mime === undefined) {
-        // FFI-first: cstring MIME return (native transfer — zero decode). napi
-        // keeps the memoized-bytes path (cachedMime → decode).
-        const ffi = getBunFFI()
-        mime = ffi
-          ? (ffi.mimeFromExtension(encoder.encode(ext)) ?? 'application/octet-stream')
+        // FFI-first: `cstring` ARG + cstring MIME return (native transfer both
+        // ways — the engine transcodes the extension in-engine, no JS encode).
+        // napi keeps the memoized-bytes path (cachedMime → decode).
+        const f = transport.ffi
+        mime = f
+          ? (f.mimeFromExtension(ext) ?? 'application/octet-stream')
           : decoder.decode(ctx.cachedMime(encoder.encode(ext)))
         mimeStrCache.set(ext, mime)
       }
@@ -73,40 +78,43 @@ export function buildText(ctx: RustClientContext): RustText {
       // Bun's native encodeURIComponent beats the rust+FFI/NAPI string crossing
       // (~4x, measured) with byte-for-byte parity (RFC 3986 unreserved set) —
       // see docs/bun-builtins-decision-matrix.md.
-      if (isBun()) return encodeURIComponent(input)
+      if (builtins.has('urlEncode')) return builtins.urlEncodeStr(input)
       return resolveNative(ctx, 'urlEncodeStr')(input) as string
     },
     urlDecode(input) {
       // decodeURIComponent matches the rust decoder on valid input and also
       // throws on malformed/invalid UTF-8 (URIError, an Error subclass).
-      if (isBun()) return decodeURIComponent(input)
+      if (builtins.has('urlDecode')) return builtins.urlDecodeStr(input)
       return resolveNative(ctx, 'urlDecodeStr')(input) as string
     },
     wsAcceptKey(key) {
-      // FFI-first: cstring accept-key return (native transfer). napi keeps the
-      // decode path.
-      const ffi = getBunFFI()
-      if (ffi) return ffi.wsAcceptKey(encoder.encode(key))
+      // FFI-first: `cstring` ARG + cstring return (native transfer both ways —
+      // the engine transcodes the key in-engine, no JS encode). napi keeps the
+      // encode/decode path.
+      const f = transport.ffi
+      if (f) return f.wsAcceptKey(key)
       return decoder.decode(resolveNative(ctx, 'wsAcceptKey')(encoder.encode(key)) as Uint8Array)
     },
     validateEmail(input) {
-      const ffi = getBunFFI()
-      if (ffi) return ffi.validateEmail(encoder.encode(input))
+      // FFI-first: `cstring` ARG (the engine transcodes the string in-engine —
+      // no JS encode). napi fallback keeps the encode path.
+      const f = transport.ffi
+      if (f) return f.validateEmail(input)
       return resolveNative(ctx, 'validateEmail')(encoder.encode(input)) as boolean
     },
     validateUuid(input) {
-      const ffi = getBunFFI()
-      if (ffi) return ffi.validateUuid(encoder.encode(input))
+      const f = transport.ffi
+      if (f) return f.validateUuid(input)
       return resolveNative(ctx, 'validateUuid')(encoder.encode(input)) as boolean
     },
     validateIpv4(input) {
-      const ffi = getBunFFI()
-      if (ffi) return ffi.validateIpv4(encoder.encode(input))
+      const f = transport.ffi
+      if (f) return f.validateIpv4(input)
       return resolveNative(ctx, 'validateIpv4')(encoder.encode(input)) as boolean
     },
     validateIpv6(input) {
-      const ffi = getBunFFI()
-      if (ffi) return ffi.validateIpv6(encoder.encode(input))
+      const f = transport.ffi
+      if (f) return f.validateIpv6(input)
       return resolveNative(ctx, 'validateIpv6')(encoder.encode(input)) as boolean
     },
   }

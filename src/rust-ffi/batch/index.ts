@@ -4,5 +4,5 @@
 // (./build.ts) so existing `import { buildBatch, type RustBatch } from
 // '../rust-ffi/batch'` call sites keep working.
 
-export type { RustBatch } from './types'
 export { buildBatch } from './build'
+export type { RustBatch } from './types'

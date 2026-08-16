@@ -29,55 +29,14 @@ The benchmark system compares the Rust implementations against pure JavaScript/B
 bun bench.ts
 ```
 
-### Performance-proven surface & auto-annotated JSDoc
-
-The CPU benchmark persists a machine-readable report to `bench/results/cpu/latest.json`
-(+ timestamped snapshots). Three commands consume it; `bun run check:docs` runs all
-three as the one-stop "informed decision" pipeline:
-
-| Command | What it does |
-|---------|--------------|
-| `bun run check` | Runs the CPU benchmark and writes `bench/results/cpu/latest.json` (report-only — **never mutates source**). |
-| `bun run check:annotate` | Rewrites the `@performance` / `@deprecated` / `@remarks` JSDoc on the public `rust.*` declarations (`src/rust-ffi/scalar/interface.ts`, `batch.ts`, `client.ts`) from the report. Idempotent — generated lines carry the `[check:annotate]` marker; hand-written JSDoc is preserved. `--dry-run` previews changes. |
-| `bun run check:proven` | Audits the `PROVEN_SURFACE` registry against the report and flags `REGRESSION`, `PARITY-DRIFT`, and `PROMOTABLE`. `--fail` exits 1 on regressions. |
-| `bun run check:docs` | `check` + `check:annotate` + `check:proven` — the full pipeline. |
-
-**Automatic annotation (opt-in):** `CASTRUM_BENCH_ANNOTATE=1 bun run check`
-auto-runs the annotator right after the benchmark, so the JSDoc always reflects
-the latest run. It is opt-in because it mutates tracked source files.
-
-**How the annotations work (data-driven):**
-
-- Each function's **score** is embedded in the `@performance` line, e.g.
-  `JSON valid: ~3.2x faster than the JS baseline (8/8 tasks won)` or
-  `CRC32: ~4.1x slower than the JS baseline (2/3 tasks failed)`. A function's
-  benchmark set is the canonical comparison plus all its `_`-suffixed variants
-  (`_large`, `_batch`, `_concurrent_*`, `_stress`, pooled `_into` overloads)
-  that no other registry entry claims.
-- Task bands (see `src/shared/bench-classify.ts`): **won** = `ratio >= 1`
-  (Rust at least as fast), **failed** = `ratio < 1 / 1.35` (clear loss), the
-  middle is a **tie** that counts toward neither.
-- `@deprecated` is **hybrid**:
-  - A clear **majority** of a function's benchmarks failing in the latest run
-    auto-deprecates it even when the static registry says `proven`/`parity` — a
-    `@remarks Auto-deprecated: N/M benchmarks failed ...` note records the drift.
-  - A single good run **never** removes an existing `@deprecated` (static
-    classifications reflect the shipped release build, not one local run). A
-    majority win on a static `not-competitive` function only adds a
-    `@remarks Promotion candidate ...` note.
-- Classifications are **build-dependent** (debug/SIMD builds distort ratios). The
-  annotator warns when the report carries no `buildFlavor`; confirm on a release
-  build (`bun run build`) or local perf build (`bun run build:perf`).
-
 ### Bun built-ins diagnostic set ("don't reinvent the wheel")
 
 `bun run check` also races castrum ops against **Bun's native built-ins**
 (`Bun.hash`, `Bun.password`, `Bun.CryptoHasher`, `Bun.gzipSync`,
 `Bun.randomUUIDv7`) as a diagnostic set:
 
-- Task names use the **`diag:`** prefix (not `native:`/`rust:`) so
-  `check-proven`'s aggregation (which matches `PROVEN_SURFACE` rustTask names
-  and their `_`-suffixed variants) never picks them up — they are informational.
+- Task names use the **`diag:`** prefix (not `native:`/`rust:`) so they stay out
+  of the shipped-op `native:`/`rust:` comparisons — they are informational.
 - Sources: `src/baseline/tasks/bun-builtins.ts` (Bun-only baselines, guarded
   with `typeof Bun` so the module still loads under Node),
   `src/bench/tasks/bun-builtins.ts`, comparisons in `src/bench/comparisons.ts`.
@@ -112,7 +71,77 @@ bun run bench:http:bun-only  # Run only raw Bun vs baseline
 
 # Run all heavy scenarios
 bun run bench:http:all-heavy
+
+# Max-throughput cross-check (autocannon — no Bun fetch cap)
+bun run bench:http:ac          # all servers, 03-stress weighted mix
+bun run bench:http:stress:ac   # 03-stress mix only
+
+# Single-path static comparison (fastest, most stable signal):
+#   node bench/autocannon-stress.mjs            # dynamic 03-stress mix
+#   AC_PATH=/api/users node bench/autocannon-stress.mjs
+#   AC_PATH=/api/users AC_METHOD=POST AC_BODY='{"id":1,"name":"x"}' \
+#     AC_CONTENT_TYPE=application/json node bench/autocannon-stress.mjs
+#   AC_RUNS=3 node bench/autocannon-stress.mjs  # median-of-N (see §Single-core)
+#     — run-major interleaving: every server is measured once per round, so
+#       the median compares servers over the same load windows on a noisy host.
+#
+# Multi-core scaling (SO_REUSEPORT — the way to exceed the single-core ceiling):
+#   AC_INSTANCES=4 AC_PIPELINING=10 node bench/autocannon-stress.mjs
+#   (ingress/router only — they read INGRESS_REUSE_PORT=1)
 ```
+
+### Bun `fetch()` concurrency cap (read this before interpreting HTTP results)
+
+Bun's `fetch()` limits the number of **simultaneous** requests to **256 by
+default** (`BUN_CONFIG_MAX_HTTP_REQUESTS`, max 65,336). When a scenario's
+`maxConcurrent` exceeds that cap, the excess requests queue **FIFO client-side**
+and the run measures the *generator*, not the server — the classic signature is
+a sub-ms `p50` with a multi-second tail and a flat RPS wall across every server.
+
+- All `bench:http:*` scripts set `BUN_CONFIG_MAX_HTTP_REQUESTS=65536` for you.
+- `bench/run-bench.ts` warns if a selected scenario exceeds the effective cap.
+- For **max-throughput** server comparisons use **autocannon**
+  (`bench/autocannon-stress.mjs`, run with `node`): it has no such cap, uses a
+  real socket pool, scales across worker threads, and reports RPS + latency
+  percentiles natively. It replicates the `03-stress` weighted flow mix
+  (50% GET /api/users?q=…&page=…, 30% POST /api/users, 20% GET /health).
+- **Two autocannon gotchas** (both fixed in the runner):
+  1. `requestGenerator` is CLI-ONLY — the library silently ignores it (every
+     request then goes to `GET /` → 404 → "0 2xx"). The runner uses the
+     library's `requests: [{ setupRequest }]` API instead.
+  2. `result.workers` is a count (`opts.workers`), not an array — the report no
+     longer treats it as a per-worker array.
+
+### Single-core ceiling & multi-core scaling (measured 2026-08-16)
+
+All four servers are **single-process `Bun.serve`** (one event loop), so they
+pin at a per-core ceiling on this machine. The host is load-noisy, so use the
+**median-of-N** runner (`AC_RUNS=N`, default 1) with **run-major interleaving** —
+every server is visited once per round, so a single slow window affects all
+servers' run-`i` equally and the median compares servers over the same load
+windows (the old server-major order biased later servers into noisier windows).
+Current medians (`AC_DURATION=8 AC_RUNS=3`, 500 connections, single instance):
+
+- `GET /api/users?q=…` (query + cookies + CORS + metadata envelope):
+  **bun 45.2k, elysia 41.7k, ingress 51.5k, router 49.4k RPS** — ingress ~**+14%**
+  vs bun, with a tighter tail (p50 9ms / p99 16ms vs bun p50 10ms / p99 28ms).
+- `POST /api/users` (JSON body, fast-path schema validation):
+  **bun 40.8k, elysia 35.1k, ingress 45.4k, router 35.1k RPS** — ingress ~**+11%**
+  vs bun. The pre-optimization ingress POST gap (≈ −24% vs bun) is closed by
+  the changes in `CHANGELOG [Unreleased]` (JS hot-path elimination + single-pass
+  body validation).
+- Per-request cost breakdown (`bun bench/ingress-cost.ts` / `ingress-cost-post.ts`,
+  min-of-5): GET `run` ~826ns (native 168ns + JS ~446ns packing + decode 60ns);
+  POST `run` ~1154ns (native ~740ns — was 808ns before the single-pass — + JS).
+  The POST body read is now **synchronous for buffered bodies**: `Bun.peek` on
+  `req.bytes()` skips the deadline race + watchdog for declared-length bodies
+  (was ~600ns of race machinery per POST).
+- **To exceed the single-core ceiling**, run multiple server processes on the
+  same port via SO_REUSEPORT: `AC_INSTANCES=4` (with `AC_PIPELINING` so the
+  client can drive enough in-flight requests) scaled ingress from ~45k to
+  ~69k RPS on this machine. Only ingress/router bind with `reusePort`
+  (`INGRESS_REUSE_PORT=1`); bun/elysia do not set it. For cleanest numbers run
+  autocannon on a separate host.
 
 ---
 
@@ -134,7 +163,9 @@ Each scenario targets a specific performance aspect:
 ### 03-stress
 - **Goal**: Ramp to maximum throughput
 - **Duration**: ~100 seconds (5 × 20s ramp phases)
-- **Concurrency**: up to 10,000
+- **Concurrency**: up to 2,000 (higher on a single machine only deepens the
+  client-side fetch queue — the generator can't drive 10k usefully; see the
+  Bun fetch-cap note above. For true max-throughput use `bench:http:ac`.)
 
 ### 04-spike
 - **Goal**: Burst resilience (baseline → spike → recovery)
@@ -258,7 +289,6 @@ Each task runs:
 | Env / flag | Effect |
 |------------|--------|
 | `CASTRUM_BENCH_BATCH_SIZE` | Batch size for sub-µs operations (default `64`). Batching amortizes the timer/measurement overhead for very fast ops. |
-| `CASTRUM_BENCH_ANNOTATE=1` | After `bun run check`, auto-rewrite the `rust.*` JSDoc annotations from the fresh report (see "Performance-proven surface & auto-annotated JSDoc"). |
 | `HTTP_NO_SHAPE=1` | The HTTP load generator (`bench/load.ts`) skips response-shape `JSON.parse` for pure-throughput runs. |
 
 ---

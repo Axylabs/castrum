@@ -9,8 +9,8 @@
 // helpers never touch the native layer. The native-backed ergonomic parsers
 // live in ./parsers.ts.
 
-import { decoder, encoder, viewForArrayBuffer } from '../bytes'
 import type { MultipartPart } from '../../native'
+import { decoder, encoder, viewForArrayBuffer } from '../bytes'
 
 function dataView(bytes: Uint8Array): DataView {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)

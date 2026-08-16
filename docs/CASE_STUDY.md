@@ -125,11 +125,10 @@ Bun's built-ins (`docs/bun-builtins-decision-matrix.md`, release addon,
 \* `gzipDecompress` deliberately stays native: the Rust path enforces a **64 MiB
 decompression-bomb cap** that `Bun.gunzipSync` lacks.
 
-**The honest takeaway:** "native is faster" is *not* automatic. The repo encodes
-the verdict per function in `PROVEN_SURFACE` and marks the losers
-`@deprecated` in their JSDoc — so `rust.jsonParse` (loses ~5× to `JSON.parse`)
-and `rust.xxh3` (loses 4× to `Bun.hash.xxHash3`) are flagged, while argon2id
-and the zero-DOM JSON path are advertised as wins. A consumer-facing selection
+**The honest takeaway:** "native is faster" is *not* automatic. The runtime
+adapter's `builtins` registry (`src/runtime/builtins.ts`) delegates the ops
+where a Bun built-in wins (e.g. `rust.xxh3` loses 4× to `Bun.hash.xxHash3`),
+while argon2id and the zero-DOM JSON path stay native. A consumer-facing selection
 surface (`opImpl` / `isNativeOp` / `opDecision`) lets frameworks bind each op to
 native or JS **once at load time** instead of per call.
 
@@ -189,8 +188,8 @@ the benchmark, not prod.
    crossing on several ops. The rule that emerged: **keep Rust where it wins or
    where Bun has no synchronous equivalent; delegate where Bun wins.** Don't
    reinvent the wheel — `docs/adr/0003-bun-builtins-delegation.md`.
-3. **"Native" is not a synonym for "fast".** The `proven` surface marks the
-   losers. Let data, not enthusiasm, decide.
+3. **"Native" is not a synonym for "fast".** The `builtins` registry delegates
+   where Bun wins. Let data, not enthusiasm, decide.
 4. **A wire format is a contract.** Two deliberately-different formats are
    pinned by tests and the load generator. If you change the shape, you change
    the benchmark.
@@ -212,7 +211,6 @@ bun install
 bun run build              # release addon (baseline CPU — what ships)
 
 bun run check              # CPU benchmark → bench/results/cpu/latest.json
-bun run check:proven       # which rust.* ops beat their JS/Bun baseline?
 bun run bench:startup      # import + first-call timing
 bun run bench:http:smoke   # HTTP wire-format guard
 bun run bench:http         # all HTTP scenarios (bun / elysia / ingress)

@@ -89,9 +89,14 @@ const EMIT_REQUEST_ID_HEADER = envFlag("INGRESS_REQUEST_ID_HEADER", false);
 
 // Zero-copy pipeline-only responses (the native output slice is served via a
 // streaming body that holds the pooled buffer until consumed — safe with the
-// bounds below). INGRESS_ZERO_COPY=0 restores copy mode; the legacy
-// INGRESS_UNSAFE_ZERO_COPY flag is honored as an alias.
-const ZERO_COPY_ENABLED = envFlag("INGRESS_ZERO_COPY", envFlag("INGRESS_UNSAFE_ZERO_COPY", true));
+// bounds below). Default is COPY mode: measured (2026-08-16, autocannon
+// median-of-N) that per-request `ReadableStream` construction costs ~29% RPS
+// on POST /api/users (33k zero-copy vs 42.6k copy) and ~parity on GET — the
+// small metadata envelope is cheaper to `slice()` + `new Response(bytes)` than
+// to wrap in stream machinery. INGRESS_ZERO_COPY=1 opts back in (large
+// response-payload deployments); the legacy INGRESS_UNSAFE_ZERO_COPY alias is
+// honored.
+const ZERO_COPY_ENABLED = envFlag("INGRESS_ZERO_COPY", envFlag("INGRESS_UNSAFE_ZERO_COPY", false));
 const COPY_BODY = !ZERO_COPY_ENABLED;
 // Bound zero-copy memory: at most this many buffers held by in-flight
 // responses, and an abandoned (unread) body releases its buffer after this
@@ -189,6 +194,13 @@ const baseOptions = {
 
 // Shared runtime: request-id emission, security headers, output buffer size
 // and the metrics/logging hook (all opt-in via env).
+// Only wire onResponse when it actually does something (metrics or request
+// logging). `createIngressHandler` derives `needRequestIdString` from the
+// presence of hooks/logger/request-id emission — an unconditionally-wired
+// no-op hook made every request pay a request-id UTF-8 decode on the hot path
+// for nothing. With observability off (the benchmark default) no hook is
+// registered and the decode is skipped.
+const WANTS_HOOKS = LOG_REQUESTS || ENABLE_METRICS;
 const runtime = {
   emitRequestIdHeader: EMIT_REQUEST_ID_HEADER,
   enableSecurityHeaders: SECURITY_HEADERS_ENABLED,
@@ -199,17 +211,21 @@ const runtime = {
   // Wire the public Prometheus metrics hooks (onRequest/onError/onResponse)
   // when INGRESS_METRICS=1; onResponse composes metrics + request logging.
   ...(ingressMetrics ? ingressMetrics.runtime : {}),
-  onResponse: (
-    req: Request,
-    result: BakedIngressResult,
-    status: number,
-    requestId: string,
-  ) => {
-    if (ingressMetrics) {
-      ingressMetrics.runtime.onResponse?.(req, result, status, requestId);
-    }
-    logRequest(req, result, status, requestId);
-  },
+  ...(WANTS_HOOKS
+    ? {
+        onResponse: (
+          req: Request,
+          result: BakedIngressResult,
+          status: number,
+          requestId: string,
+        ) => {
+          if (ingressMetrics) {
+            ingressMetrics.runtime.onResponse?.(req, result, status, requestId);
+          }
+          logRequest(req, result, status, requestId);
+        },
+      }
+    : {}),
 };
 
 const healthIngress = createIngressHandler(

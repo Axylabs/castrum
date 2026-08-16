@@ -29,11 +29,14 @@ export interface BunFFI {
   /** RFC 3986 percent-encode into `output`; returns bytes written. */
   urlEncodeInto(input: Uint8Array, output: Uint8Array): number
 
-  // ── Validators (u8 → boolean) ─────────────────────────────────────
-  validateEmail(input: Uint8Array): boolean
-  validateUuid(input: Uint8Array): boolean
-  validateIpv4(input: Uint8Array): boolean
-  validateIpv6(input: Uint8Array): boolean
+  // ── Validators (u8 → boolean) — `cstring` ARG ────────────────────
+  // The input crosses as a `cstring` ARG: the engine transcodes the JS string
+  // to a call-scoped NUL-terminated UTF-8 buffer in-engine, so the JS side does
+  // ZERO `encoder.encode` work and Rust borrows via `CStr::from_ptr`.
+  validateEmail(input: string): boolean
+  validateUuid(input: string): boolean
+  validateIpv4(input: string): boolean
+  validateIpv6(input: string): boolean
   /** Sum of `id` fields across a JSON array → bigint (throws on non-array input). */
   jsonSumIds(input: Uint8Array): bigint
 
@@ -41,7 +44,8 @@ export interface BunFFI {
   hmacSha256Verify(key: Uint8Array, data: Uint8Array, signature: Uint8Array): boolean
   csrfVerify(token: Uint8Array, secret: Uint8Array): boolean
   passwordVerify(password: Uint8Array, phc: Uint8Array): boolean
-  passwordVerifyBcrypt(password: Uint8Array, phc: Uint8Array): boolean
+  /** `phc` is a `cstring` ARG (the engine transcodes the JS PHC string in-engine). */
+  passwordVerifyBcrypt(password: Uint8Array, phc: string): boolean
 
   // ── Decoders (throw on malformed input — napi `Result` parity) ──
   /** Hex-decode into a fresh buffer (size `input.length / 2`). */
@@ -63,8 +67,8 @@ export interface BunFFI {
   ): number
 
   // ── Fixed-size output writers ─────────────────────────────────────
-  /** RFC 6455 Sec-WebSocket-Accept → string (cstring return). */
-  wsAcceptKey(key: Uint8Array): string
+  /** RFC 6455 Sec-WebSocket-Accept → string (cstring return; `key` is a `cstring` ARG). */
+  wsAcceptKey(key: string): string
   /** RFC 6455 Sec-WebSocket-Accept into `output`; returns bytes written. */
   wsAcceptKeyInto(key: Uint8Array, output: Uint8Array): number
   /** crc32 ETag → string (10 strong / 12 weak chars, cstring return). */
@@ -96,8 +100,8 @@ export interface BunFFI {
   /** Compiled `SchemaValidator` → whether a document is valid (opaque `inner` handle). */
   schemaValidatorValidate(inner: number, doc: Uint8Array): boolean
   /** `RateLimiter` string-key check → { allowed, remaining, resetMs } (opaque
-   * `inner` handle); throws on a null handle. */
-  rateLimiterCheck(inner: number, key: Uint8Array, nowMs: number): RateLimiterVerdict
+   * `inner` handle; `key` is a `cstring` ARG); throws on a null handle. */
+  rateLimiterCheck(inner: number, key: string, nowMs: number): RateLimiterVerdict
   /** `RateLimiter` pre-hashed key check → { allowed, remaining, resetMs }. */
   rateLimiterCheckKey(inner: number, key: number, nowMs: number): RateLimiterVerdict
   /** `byteLen` random bytes → `byteLen * 2` hex-char string (cstring return). */
@@ -182,12 +186,16 @@ export interface BunFFI {
   gzipCompressInto(data: Uint8Array, output: Uint8Array, level?: number): number
   /** gzip-decompress into a fresh buffer (capped by `maxDecompressed`). */
   gzipDecompress(data: Uint8Array, maxDecompressed?: number): Uint8Array
+  /** gzip-decompress into `output`; returns bytes written (throws if too small). */
+  gzipDecompressInto(data: Uint8Array, output: Uint8Array, maxDecompressed?: number): number
   /** brotli-compress into a fresh buffer (quality clamped 0..=11, default 5). */
   brotliCompress(data: Uint8Array, quality?: number): Uint8Array
   /** brotli-compress into `output`; returns bytes written (throws if too small). */
   brotliCompressInto(data: Uint8Array, output: Uint8Array, quality?: number): number
   /** brotli-decompress into a fresh buffer (capped by `maxDecompressed`). */
   brotliDecompress(data: Uint8Array, maxDecompressed?: number): Uint8Array
+  /** brotli-decompress into `output`; returns bytes written (throws if too small). */
+  brotliDecompressInto(data: Uint8Array, output: Uint8Array, maxDecompressed?: number): number
 
   // ── Packed parsers (into caller buffers) ─────────────────────────
   /** HTTP request parse → packed output into `output`; returns bytes written. */
@@ -262,8 +270,8 @@ export interface BunFFI {
    * `inner` handle from its napi `inner_ptr()`) → bytes; throws on a null
    * handle / non-UTF-8 reference / too-small output. */
   urlBuilderResolve(inner: number, reference: Uint8Array): Uint8Array
-  /** Extension → MIME type → string (unknown → `application/octet-stream`). */
-  mimeFromExtension(ext: Uint8Array): string | null
+  /** Extension → MIME type → string (unknown → `application/octet-stream`; `ext` is a `cstring` ARG). */
+  mimeFromExtension(ext: string): string | null
   /**
    * 29-byte HTTP-date (`Sun, 06 Nov 1994 08:49:37 GMT`) into `output`; returns
    * bytes written (throws on too-small / out-of-range year). FFI sibling of the
@@ -309,12 +317,52 @@ export interface BunFFI {
     output: Uint8Array,
   ): number
   /**
+   * Run the ingress pipeline from raw request components via the opaque inner
+   * handle (valid only while the instance is alive). `url`/`ip` are JS strings
+   * passed as `bun:ffi` `cstring` ARGs — the engine transcodes them to
+   * call-scoped NUL-terminated UTF-8 buffers in-engine, so the JS side skips
+   * the frame assembly + `Buffer.write` encode for the URL/IP. `rid`/`headers`
+   * are the packed byte slices; `body` is the request body (or null); `output`
+   * receives the packed decision. Same wire format as {@link ingressHandlePacked}.
+   * Returns bytes written; throws on error / too-small.
+   */
+  ingressHandleComponents(
+    inner: number,
+    methodKind: number,
+    url: string,
+    ip: string,
+    rid: Uint8Array,
+    headers: Uint8Array,
+    body: Uint8Array | null,
+    output: Uint8Array,
+  ): number
+  /**
    * Write the ingress binary-layout constants (38 × u32 LE — `rust/ffi.rs`
    * `IngressLayout`, numeric source `rust/ingress/output.rs`) into `output`;
    * returns bytes written. Lets `src/ingress/constants.ts` read the layout via
    * bun:ffi on Bun so importing the package does NOT dlopen the napi addon.
    */
   ingressLayout(out: Uint8Array): number
+
+  // ── Per-route native stack (`castrum_route_*`) ──────────────────
+  /**
+   * Compile a route descriptor (the `@ignex/native` route-wire v3 format:
+   * magic `ROUT`, version 3, limits, stage tags, draft-07 body schema) into an
+   * opaque handle. Returns the handle (`0` = invalid descriptor / compile
+   * failure / panic — throws). The handle is owned by the caller and must be
+   * released with {@link routeDestroy}.
+   */
+  routeCompile(descriptor: Uint8Array): number
+  /**
+   * Run a compiled route on one request frame, writing the packed verdict
+   * (`[flags u32][errorCode u32]` + optional query/cookie pair sections) into
+   * `output`. Returns bytes written (`0` = real error — throws; `> output.length`
+   * = the EXACT required size — the caller allocates once and retries, per the
+   * growExact convention).
+   */
+  routeRun(handle: number, frame: Uint8Array, output: Uint8Array): number
+  /** Destroy a compiled route handle (frees the native `Box<NativeRoute>`). */
+  routeDestroy(handle: number): void
 }
 
 /**
@@ -400,6 +448,22 @@ export type Raw10 = (
   h: unknown,
   i: unknown,
   j: unknown,
+) => number | bigint
+
+/** Raw 12-arg C-ABI symbol signature (`castrum_ingress_handle_components`). */
+export type Raw12 = (
+  a: unknown,
+  b: unknown,
+  c: unknown,
+  d: unknown,
+  e: unknown,
+  f: unknown,
+  g: unknown,
+  h: unknown,
+  i: unknown,
+  j: unknown,
+  k: unknown,
+  l: unknown,
 ) => number | bigint
 
 /** A raw C-ABI symbol whose return type is `cstring` — the engine clones the

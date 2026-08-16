@@ -15,6 +15,13 @@ import { buildTerminalResponse } from './response/terminal'
 import { assertSyncCallback, DEFAULT_BODY_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES } from './shared'
 import type { IngressContext, IngressHandler, IngressOptions, SyncIngressHandler } from './types'
 
+// Runtime-driven server factory: picks Bun.serve on Bun and the node:http
+// adapter on Node via the runtime adapter (src/runtime/server.ts). This
+// explicit re-export SHADOWS the Bun-only `createIngressServer` from
+// './server' (re-exported via './handlers' above) so the public API serves
+// one backend per runtime. `createIngressServerNode` remains exported for
+// consumers who want the Node backend pinned.
+export { createIngressServer } from '../runtime/index'
 export { generateRequestId } from '../shared/request-id'
 export type { TraceContext } from '../shared/trace'
 // W3C trace context helpers (parse `traceparent` for log/hook correlation).
@@ -48,7 +55,10 @@ export type {
   IngressContext,
   IngressHandler,
   IngressOptions,
+  NativeRequestContext,
+  NativeResponder,
   SyncIngressHandler,
+  TerminalStyle,
 } from './types'
 
 // ── Sync factory ─────────────────────────────────────────────────

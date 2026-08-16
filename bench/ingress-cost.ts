@@ -7,11 +7,17 @@
 // or the result decode. Run: `bun bench/ingress-cost.ts`.
 //
 // Phases:
-//   run     : full handler.run(req, ip, null, cb) — ground truth
-//   pack    : gatherRawHeadersPacked + inputPacker.packParts (JS packing)
-//   native  : bunFFI.ingressHandlePacked into a pooled buffer (FFI + Rust
-//             pipeline) on a PRE-PACKED frame — the pure native+FFI cost
-//   refresh : BakedIngressResult.refresh on a pre-written output (decode)
+//   run        : full handler.run(req, ip, null, cb) — ground truth
+//   pack       : the JS packing the REAL server path pays (generateRequestId +
+//                req.headers.get('origin') + gatherRawHeadersPacked + req.url —
+//                url/ip go to native as bun:ffi `cstring` args, so the legacy
+//                packParts frame assembly is NOT part of the primary path)
+//   packFrame  : the legacy FALLBACK frame packing (gatherRawHeadersPacked +
+//                inputPacker.packParts) — only used when the components C-ABI
+//                is unavailable (stale addon / napi fallback)
+//   native     : bunFFI.ingressHandlePacked into a pooled buffer (FFI + Rust
+//                pipeline) on a PRE-PACKED frame — the pure native+FFI cost
+//   refresh    : BakedIngressResult.refresh on a pre-written output (decode)
 
 import { getAddon } from '../src/native'
 import { getBunFFI } from '../src/native/ffi'
@@ -26,10 +32,12 @@ import { gatherRawHeadersPacked } from '../src/ingress/packing/gather-raw-header
 
 const OPTIONS: Parameters<typeof createIngressHandler>[0] = {
   trustProxy: false,
-  https: false,
+  // Match the real bench server (bench/servers/ingress-server.ts): CORS-only
+  // header plan (parseCookies/parseQuery off), pinned https, emitMetadataJson
+  // on, rate limit on.
+  https: true,
   maxBodyBytes: 262144,
-  parseCookies: true,
-  parseQuery: true,
+  emitMetadataJson: true,
   cors: {
     allowOrigin: ['https://app.example.com'],
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -86,6 +94,20 @@ const tRun = measure(
 
 const tPack = measure(
   () => {
+    // The REAL components-path JS packing (what handler.run() actually pays):
+    // request-id bytes, the origin fetch (once), gatherRawHeadersPacked, and
+    // the req.url getter (passed to native as a cstring — no JS encode).
+    const ridBytes = generateRequestId()
+    const origin = req.headers.get('origin')
+    const ph = gatherRawHeadersPacked(req, headerPlan, methodKind, origin)
+    return ridBytes.byteLength + (origin?.length ?? 0) + ph.byteLength + req.url.length
+  },
+  50_000,
+)
+
+const tPackFrame = measure(
+  () => {
+    // Legacy FALLBACK path only: JS frame assembly + Buffer.write URL/IP encode.
     const ph = gatherRawHeadersPacked(req, headerPlan, methodKind, 'https://app.example.com')
     return inputPacker.packParts(methodKind, req.url, '127.0.0.1', generateRequestId(), ph)
   },
@@ -105,8 +127,9 @@ const tRefresh = measure(
 )
 
 console.log('═══ Ingress per-request cost (ns/op, min-of-5) ═══')
-console.log(`  run     (full request)     : ${tRun.toFixed(0).padStart(7)}`)
-console.log(`  pack    (JS packing)       : ${tPack.toFixed(0).padStart(7)}`)
-console.log(`  native  (FFI + pipeline)   : ${tNative.toFixed(0).padStart(7)}`)
-console.log(`  refresh (result decode)   : ${tRefresh.toFixed(0).padStart(7)}`)
-console.log(`  JS-side est (run−native)  : ${(tRun - tNative).toFixed(0).padStart(7)}`)
+console.log(`  run       (full request)    : ${tRun.toFixed(0).padStart(7)}`)
+console.log(`  pack      (JS packing)      : ${tPack.toFixed(0).padStart(7)}`)
+console.log(`  packFrame (fallback frame)  : ${tPackFrame.toFixed(0).padStart(7)}`)
+console.log(`  native    (FFI + pipeline)  : ${tNative.toFixed(0).padStart(7)}`)
+console.log(`  refresh   (result decode)   : ${tRefresh.toFixed(0).padStart(7)}`)
+console.log(`  JS-side est (run−native)    : ${(tRun - tNative).toFixed(0).padStart(7)}`)

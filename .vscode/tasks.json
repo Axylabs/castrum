@@ -1,0 +1,223 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Typecheck (tsc --noEmit)",
+			"type": "shell",
+			"command": "bunx tsc --noEmit",
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Typecheck with marker",
+			"type": "shell",
+			"command": "bunx tsc --noEmit && echo TYPECHECK_OK",
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Autocannon ingress quick check",
+			"type": "shell",
+			"command": "SERVER=ingress AC_DURATION=8 node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon all servers 10s",
+			"type": "shell",
+			"command": "AC_DURATION=10 node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon static /health vs ingress",
+			"type": "shell",
+			"command": "SERVER=ingress AC_DURATION=6 AC_PATH=/health node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon static /health all servers",
+			"type": "shell",
+			"command": "AC_DURATION=6 AC_PATH=/health node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon static GET /api/users all servers",
+			"type": "shell",
+			"command": "AC_DURATION=6 'AC_PATH=/api/users?q=testquery&page=1' node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon static GET /api/users all servers",
+			"type": "shell",
+			"command": "env AC_DURATION=6 AC_PATH='/api/users?q=testquery&page=1' node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon static GET users-query all servers",
+			"type": "shell",
+			"command": "set -x AC_DURATION 6; set -x AC_PATH '/api/users?q=testquery&page=1'; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon static POST /api/users all servers",
+			"type": "shell",
+			"command": "set -x AC_DURATION 6; set -x AC_PATH /api/users; set -x AC_METHOD POST; set -x AC_BODY '{\"id\":1,\"name\":\"stress_test\"}'; set -x AC_CONTENT_TYPE application/json; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Ingress cost breakdown",
+			"type": "shell",
+			"command": "bun bench/ingress-cost.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon POST 15s all servers",
+			"type": "shell",
+			"command": "set -x AC_DURATION 15; set -x AC_PATH /api/users; set -x AC_METHOD POST; set -x AC_BODY '{\"id\":1,\"name\":\"stress_test\"}'; set -x AC_CONTENT_TYPE application/json; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Ingress POST cost breakdown",
+			"type": "shell",
+			"command": "bun bench/ingress-cost-post.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Ingress POST cost breakdown",
+			"type": "shell",
+			"command": "bun bench/ingress-cost-post.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Ingress POST cost breakdown",
+			"type": "shell",
+			"command": "bun bench/ingress-cost-post.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Ingress POST cost breakdown",
+			"type": "shell",
+			"command": "bun bench/ingress-cost-post.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Ingress POST cost breakdown (after body fix)",
+			"type": "shell",
+			"command": "bun bench/ingress-cost-post.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon POST 15s after body optimization",
+			"type": "shell",
+			"command": "set -x AC_DURATION 15; set -x AC_PATH /api/users; set -x AC_METHOD POST; set -x AC_BODY '{\"id\":1,\"name\":\"stress_test\"}'; set -x AC_CONTENT_TYPE application/json; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon GET users 2000 conns",
+			"type": "shell",
+			"command": "set -x AC_DURATION 8; set -x AC_CONNECTIONS 2000; set -x AC_PATH '/api/users?q=testquery&page=1'; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Ingress POST cost breakdown (req.bytes test)",
+			"type": "shell",
+			"command": "bun bench/ingress-cost-post.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon GET users 4 workers",
+			"type": "shell",
+			"command": "set -x AC_DURATION 8; set -x AC_CONNECTIONS 2000; set -x AC_WORKERS 4; set -x AC_PATH '/api/users?q=testquery&page=1'; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon ingress 4 instances",
+			"type": "shell",
+			"command": "set -x AC_DURATION 8; set -x AC_CONNECTIONS 2000; set -x AC_INSTANCES 4; set -x SERVER ingress; set -x AC_PATH '/api/users?q=testquery&page=1'; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon ingress 4 instances pipelined",
+			"type": "shell",
+			"command": "set -x AC_DURATION 8; set -x AC_CONNECTIONS 1000; set -x AC_PIPELINING 10; set -x AC_INSTANCES 4; set -x SERVER ingress; set -x AC_PATH '/api/users?q=testquery&page=1'; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Autocannon ingress 1 instance pipelined",
+			"type": "shell",
+			"command": "set -x AC_DURATION 8; set -x AC_CONNECTIONS 1000; set -x AC_PIPELINING 10; set -x AC_INSTANCES 1; set -x SERVER ingress; set -x AC_PATH '/api/users?q=testquery&page=1'; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Typecheck after ingress opt",
+			"type": "shell",
+			"command": "bunx tsc --noEmit && echo TYPECHECK_OK",
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Ingress POST cost (components vs packed)",
+			"type": "shell",
+			"command": "bun bench/ingress-cost-post.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Typecheck POST opt",
+			"type": "shell",
+			"command": "bunx tsc --noEmit && echo TYPECHECK_OK",
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Autocannon POST 15s after req.body opt",
+			"type": "shell",
+			"command": "set -x AC_DURATION 15; set -x AC_PATH /api/users; set -x AC_METHOD POST; set -x AC_BODY '{\"id\":1,\"name\":\"stress_test\"}'; set -x AC_CONTENT_TYPE application/json; node bench/autocannon-stress.mjs",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Ingress POST cost recheck",
+			"type": "shell",
+			"command": "bun bench/ingress-cost-post.ts",
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Full ingress unit tests",
+			"type": "shell",
+			"command": "bun test test/unit/ingress 2>&1 | tail -20",
+			"problemMatcher": [],
+			"group": "test"
+		}
+	]
+}

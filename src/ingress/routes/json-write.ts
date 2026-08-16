@@ -60,25 +60,10 @@ export function jsonWriteHandler(
       })
     }
 
-    const contentLengthHeader = req.headers.get('content-length')
-    const contentLength = contentLengthHeader === null ? NaN : Number(contentLengthHeader)
-
-    if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
-      return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx)
-        if (terminal) return terminal
-
-        return fallback.errorResponse(
-          req,
-          result,
-          413,
-          'body_too_large',
-          'Request body is too large',
-          ctx,
-        )
-      })
-    }
-
+    // Content-Length / body-size enforcement happens INSIDE readBodyWithLimit
+    // (guard on): the declared length is checked before reading and re-checked
+    // after, so a client lying about Content-Length still gets a 413. Not
+    // re-reading the header here saves a per-POST headers.get on the hot path.
     let bodyBytes: Uint8Array
     try {
       // Stream-read with the limit enforced WHILE reading — a body that

@@ -10,7 +10,7 @@
  * - bounded retention (maxBuffers)
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { BufferPool } from '../../../src/shared/buffer-pool'
 
 describe('BufferPool', () => {
@@ -110,6 +110,41 @@ describe('BufferPool', () => {
     expect(b.released).toBe(false)
     expect(b.buffer).toBe(a.buffer)
     b.release()
+  })
+
+  test('recycles released handle objects (no per-acquire allocation)', () => {
+    const pool = new BufferPool({ initialSize: 64 })
+    const a = pool.acquire()
+    const firstHandle = a
+    a.release()
+
+    // The next acquire reuses the same handle object, re-pointed at a new buffer.
+    const b = pool.acquire()
+    expect(b).toBe(firstHandle)
+    expect(b.released).toBe(false)
+    expect(b.buffer).toBe(a.buffer)
+    b.release()
+
+    // Double-release within a single checkout stays a no-op after recycling.
+    b.release()
+    expect(b.released).toBe(true)
+  })
+
+  test('recycled handle survives a buffer growth', () => {
+    const pool = new BufferPool({ initialSize: 64 })
+    const a = pool.acquire()
+    a.release()
+
+    // Acquire a larger buffer (triggers a fresh allocation, not a free-list hit),
+    // then release — the recycled handle must be re-pointed correctly next time.
+    const b = pool.acquire(4096)
+    expect(b.buffer.byteLength).toBeGreaterThanOrEqual(4096)
+    b.release()
+
+    const c = pool.acquire()
+    expect(c.released).toBe(false)
+    expect(c.buffer.byteLength).toBeGreaterThanOrEqual(64)
+    c.release()
   })
 })
 

@@ -1,17 +1,18 @@
 // src/ingress/server.ts — Bun.serve builder over pre-baked route handlers.
 
+import { isBun } from '../shared/runtime'
 import {
-  readHandler,
-  headHandler,
-  jsonWriteHandler,
+  deleteHandler,
   echoHandler,
   fallbackHandler,
-  deleteHandler,
+  headHandler,
+  jsonWriteHandler,
   optionsHandler,
+  readHandler,
 } from './routes'
 import type { BakedHandlerOptions } from './routes/common'
-import type { OptimizedIngressHandler } from './types'
-import { isBun } from '../shared/runtime'
+import { nativeResponderRoute } from './routes/responder'
+import type { NativeResponder, OptimizedIngressHandler, TerminalStyle } from './types'
 
 /** Server-level default for the socket request-body cap (16 MiB). */
 export const DEFAULT_MAX_REQUEST_BODY_SIZE = 16 * 1024 * 1024
@@ -45,6 +46,24 @@ export interface BakedRoute {
   cookies?: OptimizedIngressHandler
   /** Wires a DELETE read-style handler. */
   delete?: OptimizedIngressHandler
+  /**
+   * A JS responder route: the native pipeline owns parse/validate/CORS/
+   * rate-limit + terminal rejections; the responder builds the 2xx body
+   * (async OK). Wired for `methods` (default GET). Built by
+   * `nativeResponderRoute` (src/ingress/routes/responder.ts).
+   */
+  responder?: {
+    /** The route's compiled native `IngressInner`. */
+    ingress: OptimizedIngressHandler
+    /** The JS 2xx builder. */
+    handler: NativeResponder
+    /** HTTP methods to wire (default `['GET']`). */
+    methods?: ReadonlyArray<string>
+    /** Terminal envelope style (`'castrum'` default / `'ignex'`). */
+    terminalStyle?: TerminalStyle
+    /** Read the body for native validation (default false — framework owns it). */
+    readBody?: boolean
+  }
   /** Overrides `maxBodyBytes` for this route's write/echo handlers. */
   maxBodyBytes?: number
   /**
@@ -247,6 +266,19 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
 
     if (spec.delete) {
       methods.DELETE = deleteHandler(spec.delete, routeOpts)
+    }
+
+    if (spec.responder) {
+      // JS responder route: native decides + rejects; JS builds the 2xx.
+      const responderRoute = nativeResponderRoute(spec.responder.ingress, spec.responder.handler, {
+        ...routeOpts,
+        terminalStyle: spec.responder.terminalStyle,
+        readBody: spec.responder.readBody,
+      })
+      const responderMethods = spec.responder.methods ?? ['GET']
+      for (const m of responderMethods) {
+        methods[m] = responderRoute
+      }
     }
 
     // CORS preflight (OPTIONS) is served for EVERY route with a NATIVE handler

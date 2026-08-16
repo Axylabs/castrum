@@ -19,7 +19,7 @@ agent editing this repo, [`AGENTS.md`](../AGENTS.md) is the agent-facing map.
   Under Bun, `bun:ffi` is the PRIMARY transport; NAPI is the fallback
   (Node, `CASTRUM_FFI_MODE=napi`, or a failed ffi self-test).
 - **TypeScript** (`src/`) provides the ergonomic public API: the flat `rust.*`
-  FFI client, the `proven` performance surface, and the ingress layer.
+  FFI client and the ingress layer.
 - It ships benchmarks: a **CPU benchmark** (`bench.ts` → `src/bench`) and an
   **HTTP benchmark** (`bench/run-bench.ts` + `bench/servers/*`).
 
@@ -43,8 +43,6 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 | Installed-tarball e2e | `bun run verify:install` | pack → install → import from `node_modules` |
 | Typecheck | `bun run typecheck` | `bunx tsc --noEmit` (only `index.ts`, `bench.ts`, `src/`) |
 | CPU benchmark + correctness | `bun run check` | == `bun bench.ts`; writes `bench/results/cpu/` |
-| Proven-surface audit | `bun run check:proven[:fail]` | `:fail` gates CI on regressions |
-| Performance JSDoc | `bun run check:annotate` | rewrites perf JSDoc from CPU report; `--dry-run` previews |
 | HTTP bench (all servers) | `bun run bench:http` | |
 | HTTP smoke (fast sanity) | `bun run bench:http:smoke` | **the wire-format guard** (CI-gated) |
 | Startup bench | `bun run bench:startup` | import + first-call timing |
@@ -62,7 +60,7 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 ### Source (what you edit)
 
 ```
-index.ts                  Package entry (Bun). Re-exports src/rust-ffi, proven, shared helpers, src/ingress.
+index.ts                  Package entry (Bun). Re-exports src/rust-ffi, shared helpers, src/ingress.
 bench.ts                  CPU benchmark entry point → src/bench/run.ts.
 
 examples/                 Runnable sample app (basic-server.ts + README) — see also README Quick Start.
@@ -77,18 +75,30 @@ src/
                           CASTRUM_FFI_MODE gating, castrum_ingress_layout blob for constants.ts.
     ffi/                  ffi/types.ts (BunFFI interface) + constants.ts + selftest.ts (bind-time self-test).
     index.ts              Barrel.
+  runtime/                THE RUNTIME ADAPTER seam (Bun/Node) — selected once at load.
+    detect.ts             Cached runtime detection — the ONLY place `typeof Bun` is checked.
+    types.ts              RuntimeAdapter contract (codec/uuid/env/builtins/transport/server/websocket).
+    codec.ts              Runtime-native UTF-8 codec (Bun transfer vs TextEncoder/Decoder).
+    uuid.ts               uuidv7 (Bun.randomUUIDv7 vs crypto.randomUUID).
+    builtins.ts           BUN_WINS delegation registry (single source; `has(op)`).
+    transport.ts          bun:ffi-first `resolve(op)` + ffi/napi surfaces (lazy bind).
+    native.ts             FFI-facing seam (codec/uuid/env/builtins/transport) — imported by rust-ffi.
+    server.ts             createIngressServer: Bun.serve on Bun, node:http on Node.
+    websocket.ts          101 upgrade on Bun; clear Bun-only error on Node.
+    index.ts              FULL adapter `runtime` (native + server + websocket) — for the public API.
   rust-ffi/               The flat `rust.*` FFI client (TS wrappers over the addon).
     client.ts             createRust() factory + the default `rust` instance + configure().
     scalar/ / text.ts / packed.ts   namespaces (buildScalar, buildText, ...).
     batch/                Array-of-bytes batch namespace: types.ts (RustBatch interface) + build.ts (impl) + index.ts.
-    context.ts            Per-instance state (caches, rayon-pool bookkeeping).
+    context.ts            Per-instance state (caches, rayon-pool bookkeeping, runtime seam).
     options.ts            RustOptions + rayon-thread resolution + coercion helpers.
     addon.ts              The single shared lazy addon proxy.
-    proven.ts             `proven` client — the FULL rust.* surface, annotated (same object as `rust`).
     index.ts              Barrel (exports rust, createRust, types).
   shared/                 Cross-cutting helpers.
-    runtime.ts            THE ONLY place `typeof Bun` is checked (isBun/isNode).
-    bytes.ts              Shared TextEncoder/Decoder singletons + toPlainBuffer.
+    runtime.ts            Facade over src/runtime/detect.ts (isBun/isNode — cached).
+    codec.ts              Facade over src/runtime/codec.ts.
+    uuid.ts               Facade over src/runtime/uuid.ts.
+    bytes.ts              encoder/decoder (Uint8Array|string union normalization) + toPlainBuffer.
     packed/               Packed wire-format helpers (split from the old packed.ts monolith).
       wire.ts             PURE byte encode/decode (u32/bitset/i64/byte-results/multipart, pairs, pack-scratch) — no addon.
       schema.ts           SchemaValidator alias + schemaValidateBatch/Count.
@@ -98,7 +108,6 @@ src/
     buffer-pool.ts        Generic reusable byte-buffer pool (pooled ingress output).
     response.ts           pooledBodyResponse (releases the pool on body consume).
     log.ts                createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines).
-    proven.ts             PROVEN_SURFACE registry (PURE DATA — no addon imports).
   ingress/                The HTTP ingress pipeline (two paths — see §4.2).
     fast.ts               PATH 1: createIngressFast (packed-input via handleRequestPacked).
     handlers.ts           PATH 2: createIngressHandler (JS-packs the frame via IngressInputPacker
@@ -194,22 +203,22 @@ this reason. **Shared between both paths**: `generateRequestId`
 - `src/native/loader.ts` resolves the `.node` from multiple roots so it works
   from both the source layout (`src/…`) and the bundled layout (`dist/…`).
   Honors `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`.
-- Runtime detection lives **only** in `src/shared/runtime.ts`
-  (`isBun`/`isNode`). `createIngressServer` is Bun-only; Node users use
-  `createIngressServerNode` (same route handlers via `buildRouteHandlers`).
+- Runtime detection lives **only** in `src/runtime/detect.ts` (resolved once at
+  load; `src/shared/runtime.ts` is a thin facade). The public
+  `createIngressServer` (via the adapter's `server`) picks `Bun.serve` on Bun
+  and the `node:http` backend on Node; `createIngressServerNode` stays for
+  pinned Node users (same route handlers via `buildRouteHandlers`).
 - ⚠️ `src/ingress/constants.ts` is the **one module that dlopens the addon at
   import time** (its constants are needed as soon as ingress is imported).
   Everything else is lazy.
 
-### 4.4 The `proven` performance surface
-`src/shared/proven.ts` (`PROVEN_SURFACE`) is the single source of truth for the
-per-function performance classifications. It is **pure data** (no addon
-imports) so `scripts/check-proven.ts` can audit it without dlopening.
-`src/rust-ffi/proven.ts` exposes the FULL `rust.*` surface (nothing is
-filtered); each function's JSDoc carries its measured performance vs the JS
-baseline, written by `scripts/annotate-performance.ts` (`bun run check:annotate`)
-and marked `@deprecated` when slower. `bun run check:proven:fail` (CI) audits
-the registry against the CPU benchmark report on a **release** build.
+### 4.4 The runtime adapter
+`src/runtime/` is the single seam for every Bun-vs-Node and transport decision
+(detection, codec, uuid, env, the BUN_WINS built-in delegation, the bun:ffi-vs-
+napi transport, the ingress server backend, websocket) — selected ONCE at
+module load. The FFI layer imports the seam (`src/runtime/native.ts`); the
+public API imports the full `runtime` (`src/runtime/index.ts`). No
+`isBun()` / `getBunFFI()` branches in builders.
 
 ### 4.5 Pooled output buffers (path 2)
 `createIngressHandler` owns a `BufferPool` (`src/shared/buffer-pool.ts`) sized

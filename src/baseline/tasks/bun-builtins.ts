@@ -6,9 +6,8 @@
 // op?" — the raw material for docs/bun-builtins-decision-matrix.md and for
 // deciding where @flux/native should delegate to Bun instead of calling Rust.
 //
-// These are NOT wired into the proven-audit: the task names they feed use the
-// `diag:` prefix so scripts/check-proven.ts (which matches PROVEN_SURFACE
-// rustTask names and their `_`-suffixed variants) never aggregates them.
+// These are NOT shipped-op measurements: the task names they feed use the
+// `diag:` prefix so they never appear as `native:`/`rust:` comparison rows.
 //
 // Every function guards `typeof Bun` so the module still loads under Node —
 // the tasks are only driven by `bun run check` (always Bun), but a stray

@@ -110,26 +110,4 @@ export async function runBenchmark(): Promise<void> {
     comparisons: comparisonReports,
   })
   console.log(`\nCPU report written to ${reportPath}`)
-
-  // ── Optional auto-annotation ──
-  // `CASTRUM_BENCH_ANNOTATE=1` rewrites the rust.* JSDoc
-  // (@performance/@deprecated, data-driven) right after the run so the user
-  // sees an informed score + auto-deprecation without an extra step. This is
-  // opt-in because it mutates tracked source files; the default `bun run check`
-  // stays report-only (classifications should be confirmed on a release build).
-  // The annotator imports only pure-data modules (registry + classifier), never
-  // the addon, and is idempotent ([check:annotate] marker).
-  if (process.env.CASTRUM_BENCH_ANNOTATE === '1') {
-    try {
-      const { annotateFromReport } = await import('../../scripts/annotate-performance')
-      const result = annotateFromReport({ reportPath })
-      console.log(
-        `\nCASTRUM_BENCH_ANNOTATE=1: annotated ${result.changed} function(s) in ${result.files} file(s), ${result.deprecated} marked @deprecated.`,
-      )
-    } catch (err) {
-      console.error(
-        `CASTRUM_BENCH_ANNOTATE=1: JSDoc annotation skipped — ${(err as Error).message}`,
-      )
-    }
-  }
 }

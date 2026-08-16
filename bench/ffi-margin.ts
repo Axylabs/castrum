@@ -28,6 +28,7 @@ import { getAddonPath } from '../src/native/loader'
 import { getBunFFI } from '../src/native/ffi'
 import { toBytes } from '../src/bench/assert'
 import { rust } from '../src/rust-ffi'
+import { encodeUtf8 } from '../src/shared/codec'
 import {
   rawBase64Encode,
   rawCrc32,
@@ -398,6 +399,63 @@ const tHexFast = measure(
 )
 console.log(`  real-op BigInt: hex_encode usize=${tHexUsize.toFixed(1)}ns u64_fast=${tHexFast.toFixed(1)}ns Δ=${(tHexUsize - tHexFast).toFixed(1)}`)
 
+// ── cstring-ARG vs JS-encode + (ptr,len) — Phase-1 gate ───────────────────
+// This is the measurement that decides whether the string-input ops should be
+// converted from `(ptr,len)` (with a JS-side `encoder.encode` per call) to a
+// `'cstring'` ARG (the engine transcodes the JS string to a call-scoped
+// NUL-terminated buffer; JS does zero encode). Both strategies are measured
+// END-TO-END per call on representative inputs:
+//   encode-path : encodeUtf8 (Bun ArrayBufferSink) + (ptr,len) probe call
+//   cstr-path   : raw JS string → 'cstring' arg probe (no JS-side encode)
+const echoCstr = bindRaw(addonPath, 'ffi_probe_echo_cstr', ['cstring'], 'u64_fast')
+const strSamples: Record<string, string> = {
+  email_ascii: 'user@example.com',
+  uuid_ascii: '550e8400-e29b-41d4-a716-446655440000',
+  token_ascii: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEiLCJpYXQiOjE3MDAwMDAwMDB9.sig',
+  long_ascii:
+    'the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog',
+  unicode_utf16: 'héllo wörld — ünïcode ✓ ünïcode ✓ ünïcode ✓ ünïcode ✓',
+}
+console.log('\n=== cstring-ARG vs encode+(ptr,len) input strategy (ns/call) ===')
+console.log(
+  'sample'.padEnd(16),
+  'encode+ptrlen'.padStart(13),
+  'cstring-arg'.padStart(12),
+  'Δ'.padStart(9),
+  'cstr faster'.padStart(12),
+)
+const cstrRows: Record<string, { encodePath: number; cstrPath: number }> = {}
+for (const [name, s] of Object.entries(strSamples)) {
+  const tEncode = measure(() => {
+    const v = encodeUtf8(s) // full production per-call cost (encode + call)
+    void echoViewFast?.(v, v)
+  }, 200_000)
+  const tCstr = measure(() => echoCstr?.(s), 200_000)
+  cstrRows[name] = { encodePath: tEncode, cstrPath: tCstr }
+  const delta = tEncode - tCstr
+  console.log(
+    name.padEnd(16),
+    tEncode.toFixed(1).padStart(13),
+    tCstr.toFixed(1).padStart(12),
+    delta.toFixed(1).padStart(9),
+    (delta > 0 ? `${Math.round((delta / tEncode) * 100)}%` : 'LOSS').padStart(12),
+  )
+}
+const cstrSamples = Object.values(cstrRows)
+const cstrWinCount = cstrSamples.filter(r => r.cstrPath < r.encodePath).length
+const cstrSampleCount = Object.keys(strSamples).length
+const cstrMedEncode = (() => {
+  const s = cstrSamples.map(r => r.encodePath).sort((a, b) => a - b)
+  return s[Math.floor(s.length / 2)]!
+})()
+const cstrMedCstr = (() => {
+  const s = cstrSamples.map(r => r.cstrPath).sort((a, b) => a - b)
+  return s[Math.floor(s.length / 2)]!
+})()
+console.log(
+  `\n  cstring-arg wins ${cstrWinCount}/${cstrSampleCount} samples; median ${cstrMedCstr.toFixed(1)}ns vs encode-path ${cstrMedEncode.toFixed(1)}ns (${cstrMedCstr <= cstrMedEncode ? 'ADOPT' : 'REJECT'})`,
+)
+
 // 2. Native timings (pure Rust, no boundary). Derived inputs computed ONCE so
 //    the FFI ops below reference precomputed bytes (never re-run derivation).
 const derivedInputs = derived()
@@ -441,6 +499,14 @@ const report = {
     total: floorTotal,
   },
   hexEncodeBigIntDelta: tHexUsize - tHexFast,
+  cstringArg: {
+    samples: cstrRows,
+    winCount: cstrWinCount,
+    sampleCount: Object.keys(strSamples).length,
+    medianEncodePath: cstrMedEncode,
+    medianCstrPath: cstrMedCstr,
+    verdict: cstrMedCstr <= cstrMedEncode ? 'adopt' : 'reject',
+  },
   rows,
 }
 const reportPath = join(outDir, `latest-${Date.now()}.json`)

@@ -152,8 +152,8 @@ jobs:
         run: bun run build
       - name: CPU benchmark (writes bench/results/cpu/latest.json)
         run: bun run check
-      - name: Audit proven surface (fail on regression)
-        run: bun run check:proven:fail
+      - name: FFI symbol parity + transport self-test
+        run: bun test test/unit/features/ffi-symbol-parity.test.ts test/unit/features/ffi.test.ts
 
   # ── Node.js compatibility ────────────────────────────────────────
   # Builds the compiled ESM entry (dist/) and runs the Node smoke suite on the
@@ -231,6 +231,12 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build release addon
         run: bun run build
+      # Dual-binary CPU-detect: the x86-64-gnu target also ships the x86-64-v3
+      # (AVX2/BMI2/FMA/SSE4.2) SIMD variant. The loader picks it at runtime when
+      # the host CPU supports v3; the `castrum.*.node` glob below uploads both.
+      - name: Build x86-64-v3 SIMD variant (linux-x64-gnu only)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: bash scripts/build-v3.sh
       - name: Upload addon artifact
         uses: actions/upload-artifact@v4
         with:

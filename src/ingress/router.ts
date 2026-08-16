@@ -15,14 +15,18 @@
 // external-project wire) attempted: per-route native stage pruning, WITHOUT a
 // second/third wire format. The route factories (`readHandler`,
 // `jsonWriteHandler`, ...) and the dispatch machinery (`buildRouteHandlers` /
-// `buildPathMatcher`) are reused unchanged.
+// `buildPathMatcher`) are reused unchanged. The per-route native-compile idea
+// is ALSO exposed as the standalone per-route stack in
+// `rust/ingress/native_route.rs` (the `castrum_route_*`/napi `Route` surface
+// consumed by `@ignex/native`'s `createNativeRoute` — the LIVE successor to
+// the deleted dead wire).
 
-import type { OptimizedIngressHandler, BakedContext } from './types'
 import type { BakedIngressResult } from './decode/baked-result'
-import { createIngressHandler, type BakedIngressRuntime } from './handlers'
+import { type BakedIngressRuntime, createIngressHandler } from './handlers'
 import type { IngressHandlerOptions } from './options'
-import type { RouteHandler, BakedRoute, PathMatch } from './server'
-import { buildRouteHandlers, buildPathMatcher } from './server'
+import type { BakedRoute, PathMatch, RouteHandler } from './server'
+import { buildPathMatcher, buildRouteHandlers } from './server'
+import type { BakedContext, NativeResponder, OptimizedIngressHandler, TerminalStyle } from './types'
 
 /** Per-route spec for {@link createIngressRouter}. */
 export interface RouterRouteSpec {
@@ -42,6 +46,23 @@ export interface RouterRouteSpec {
   cookies?: boolean
   /** Wire a DELETE read-style handler over this route's compiled handler. */
   delete?: boolean
+  /**
+   * A JS responder route: the native pipeline decides + rejects (terminal
+   * response in {@link terminalStyle}); on success the responder builds the
+   * 2xx body (async OK) from a decoded snapshot. Wired for `methods`
+   * (default `['GET']`). When set, the standard `read`/`write`/etc. flags for
+   * this route are ignored.
+   */
+  responder?: {
+    handler: NativeResponder
+    /** HTTP methods to wire (default `['GET']`). */
+    methods?: ReadonlyArray<string>
+    /** Read the body for native validation (default false — framework owns it). */
+    readBody?: boolean
+  }
+  /** Terminal envelope style for this route's responder (default: router-level
+   *  `terminalStyle` or `'castrum'`). */
+  terminalStyle?: TerminalStyle
   /**
    * A raw request→Response handler served directly for GET, OUTSIDE the
    * ingress pipeline (health/metrics probes, /metrics). When set, `read`/
@@ -65,6 +86,8 @@ export interface CreateIngressRouterOptions {
   getIp?: (req: Request, srv: unknown) => string | undefined
   /** Shared `copyBody` default for route handlers. */
   copyBody?: boolean
+  /** Default terminal envelope style for responder routes (`'castrum'`). */
+  terminalStyle?: TerminalStyle
   /** Pre-warm every compiled route at construction (JIT the packed pipeline +
    *  the FFI ingress call before the first real request). Default: false. */
   warmOnCreate?: boolean
@@ -119,8 +142,10 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
   // Per-route compiled handlers + the BakedRoute table the shared wiring reads.
   const compiled: Record<string, OptimizedIngressHandler> = {}
   const bakedRoutes: Record<string, BakedRoute> = {}
-  const baseOpts: { getIp?: (req: Request, srv: unknown) => string | undefined; copyBody?: boolean } =
-    {}
+  const baseOpts: {
+    getIp?: (req: Request, srv: unknown) => string | undefined
+    copyBody?: boolean
+  } = {}
   if (options.getIp !== undefined) baseOpts.getIp = options.getIp
   if (options.copyBody !== undefined) baseOpts.copyBody = options.copyBody
 
@@ -133,6 +158,22 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
     // Compile a dedicated native instance for this route's options.
     const handler = createIngressHandler(spec.options ?? {}, runtime)
     compiled[path] = handler
+
+    if (spec.responder) {
+      // Responder route: native decides + rejects; JS builds the 2xx.
+      bakedRoutes[path] = {
+        responder: {
+          ingress: handler,
+          handler: spec.responder.handler,
+          methods: spec.responder.methods,
+          terminalStyle: spec.terminalStyle ?? options.terminalStyle,
+          readBody: spec.responder.readBody,
+        },
+        maxBodyBytes: spec.maxBodyBytes,
+        bodyTimeoutMs: spec.bodyTimeoutMs,
+      }
+      continue
+    }
 
     const routeSpec: BakedRoute = {
       read: spec.read ? handler : undefined,
@@ -156,7 +197,12 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
     // 500 via setInternalError), so this is safe on any handler.
     for (const handler of Object.values(compiled)) {
       const probe = new Request('http://localhost:0/prewarm', { method: 'GET' })
-      handler.run<unknown>(probe, '127.0.0.1', null, (_result: BakedIngressResult, _ctx: BakedContext) => 0)
+      handler.run<unknown>(
+        probe,
+        '127.0.0.1',
+        null,
+        (_result: BakedIngressResult, _ctx: BakedContext) => 0,
+      )
     }
   }
 

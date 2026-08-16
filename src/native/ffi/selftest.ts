@@ -76,16 +76,71 @@ export function selfTest(b: BunFFI): boolean {
     // expected: null inner handle → 0 → throw
   }
 
+  // Ingress raw-components C-ABI: with a null (0) inner handle the Rust side
+  // returns 0 immediately and the wrapper throws — exercises the 12-arg ABI
+  // (incl. the two `cstring` slots for url/ip) at bind time. Real frame→output
+  // parity is covered by ffi.test.ts against a live napi instance.
+  try {
+    b.ingressHandleComponents(
+      0,
+      0, // GET
+      '/',
+      '',
+      enc.encode('rid'),
+      new Uint8Array(2), // empty packed headers [u16 0]
+      null,
+      new Uint8Array(64),
+    )
+    return false // a null handle must throw, not return
+  } catch {
+    // expected: null inner handle → 0 → throw
+  }
+
+  // Per-route native stack (castrum_route_*): compile a parseQuery-only
+  // descriptor, run one frame, assert the packed verdict. Exercises all three
+  // symbols' ABI at bind time (handle return, run needed-size, destroy).
+  const routeDesc = new Uint8Array(33)
+  const rd = new DataView(routeDesc.buffer)
+  rd.setUint32(0, 0x524f5554, true) // ROUTE_DESC_MAGIC "ROUT"
+  rd.setUint32(4, 3, true) // ROUTE_DESC_VERSION
+  rd.setUint32(8, 2 * 1024 * 1024, true) // maxBodyBytes
+  rd.setUint32(12, 8192, true) // maxQueryBytes
+  rd.setUint32(16, 8192, true) // maxCookieBytes
+  rd.setUint32(20, 0, true) // maxPairs
+  rd.setUint32(24, 1, true) // stageCount
+  routeDesc[28] = 0 // parseQuery
+  rd.setUint32(29, 0, true) // schemaCount
+  const routeHandle = b.routeCompile(routeDesc)
+  if (routeHandle === 0) {
+    return false
+  }
+  const routeFrame = new Uint8Array(15)
+  const rf = new DataView(routeFrame.buffer)
+  rf.setUint32(0, 0, true) // flags (no body)
+  rf.setUint32(4, 3, true) // qLen
+  routeFrame.set(enc.encode('a=1'), 8)
+  rf.setUint32(11, 0, true) // cLen
+  const routeOut = new Uint8Array(64)
+  const routeW = b.routeRun(routeHandle, routeFrame, routeOut)
+  if (routeW <= 8) {
+    return false // header + a query pair section must exceed 8 bytes
+  }
+  const rv = new DataView(routeOut.buffer)
+  const rFlags = rv.getUint32(0, true)
+  if ((rFlags & 0b1) === 0 || (rFlags & 0b100) === 0) {
+    return false // OK + QUERY_VALID bits must be set
+  }
+  b.routeDestroy(routeHandle)
+
   // ── New bindings ───────────────────────────────────────────────────
-  const a = enc.encode('a@b.com')
-  const uuid = enc.encode('550e8400-e29b-41d4-a716-446655440000')
+  // Validators take `cstring` ARGs (the engine transcodes the JS string).
   if (
-    !b.validateEmail(a) ||
-    !b.validateUuid(uuid) ||
-    !b.validateIpv4(enc.encode('192.168.0.1')) ||
-    !b.validateIpv6(enc.encode('2001:db8::1')) ||
-    b.validateEmail(enc.encode('not-an-email')) ||
-    b.validateUuid(enc.encode('not-a-uuid'))
+    !b.validateEmail('a@b.com') ||
+    !b.validateUuid('550e8400-e29b-41d4-a716-446655440000') ||
+    !b.validateIpv4('192.168.0.1') ||
+    !b.validateIpv6('2001:db8::1') ||
+    b.validateEmail('not-an-email') ||
+    b.validateUuid('not-a-uuid')
   ) {
     return false
   }
@@ -127,8 +182,8 @@ export function selfTest(b: BunFFI): boolean {
     return false
   }
 
-  // WebSocket accept key (RFC 6455 sample).
-  if (b.wsAcceptKey(enc.encode('dGhlIHNhbXBsZSBub25jZQ==')) !== 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=') {
+  // WebSocket accept key (RFC 6455 sample) — `key` is a `cstring` ARG.
+  if (b.wsAcceptKey('dGhlIHNhbXBsZSBub25jZQ==') !== 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=') {
     return false
   }
 
@@ -165,7 +220,7 @@ export function selfTest(b: BunFFI): boolean {
   if (!phase6Threw) return false
   phase6Threw = false
   try {
-    b.rateLimiterCheck(0, enc.encode('k'), 0)
+    b.rateLimiterCheck(0, 'k', 0)
   } catch {
     phase6Threw = true
   }
@@ -204,9 +259,9 @@ export function selfTest(b: BunFFI): boolean {
     return false
   }
 
-  // bcrypt round-trip at minimum cost (fast).
+  // bcrypt round-trip at minimum cost (fast) — `phc` is a `cstring` ARG.
   const bcryptPhc = b.passwordHashBcrypt(pw, 4)
-  if (bcryptPhc.length === 0 || !b.passwordVerifyBcrypt(pw, enc.encode(bcryptPhc))) {
+  if (bcryptPhc.length === 0 || !b.passwordVerifyBcrypt(pw, bcryptPhc)) {
     return false
   }
 
@@ -360,7 +415,7 @@ export function selfTest(b: BunFFI): boolean {
   // cstring path byte-for-byte.
   const waOut = new Uint8Array(28)
   const waW = b.wsAcceptKeyInto(enc.encode('dGhlIHNhbXBsZSBub25jZQ=='), waOut)
-  const waExpected = b.wsAcceptKey(enc.encode('dGhlIHNhbXBsZSBub25jZQ=='))
+  const waExpected = b.wsAcceptKey('dGhlIHNhbXBsZSBub25jZQ==')
   if (waW !== 28 || dec.decode(waOut) !== waExpected) {
     return false
   }
@@ -561,10 +616,10 @@ export function selfTest(b: BunFFI): boolean {
     return false
   }
   // mimeFromExtension: known + unknown fallback.
-  if (b.mimeFromExtension(enc.encode('.js')) !== 'text/javascript') {
+  if (b.mimeFromExtension('.js') !== 'text/javascript') {
     return false
   }
-  if (b.mimeFromExtension(enc.encode('nope')) !== 'application/octet-stream') {
+  if (b.mimeFromExtension('nope') !== 'application/octet-stream') {
     return false
   }
 
@@ -651,6 +706,18 @@ export function selfTest(b: BunFFI): boolean {
   const brInto = new Uint8Array(64)
   const brW = b.brotliCompressInto(SELFTEST_HEX, brInto)
   if (brW === 0 || dec.decode(b.brotliDecompress(brInto.subarray(0, brW))) !== 'hello') {
+    return false
+  }
+  // gzipDecompressInto → decompress into a CALLER buffer round-trip.
+  const gzDst = new Uint8Array(16)
+  const gzDW = b.gzipDecompressInto(gzInto.subarray(0, gzW), gzDst)
+  if (gzDW === 0 || dec.decode(gzDst.subarray(0, gzDW)) !== 'hello') {
+    return false
+  }
+  // brotliDecompressInto → decompress into a CALLER buffer round-trip.
+  const brDst = new Uint8Array(16)
+  const brDW = b.brotliDecompressInto(brInto.subarray(0, brW), brDst)
+  if (brDW === 0 || dec.decode(brDst.subarray(0, brDW)) !== 'hello') {
     return false
   }
   // httpDate string form (RFC 7231 vector).

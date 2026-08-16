@@ -89,25 +89,7 @@ loader.schema(validator)(docs);                   // schema bitset (+ .count())
 See the README "Higher-order data loader" section for the full op table and
 `createLoader` options.
 
-## 3. The `proven` performance surface
-
-Not every `rust.*` function beats the JS baseline on every CPU. `proven`
-exposes the **full** `rust.*` surface, and each function's JSDoc records its
-measured performance vs the JS baseline — functions that are slower carry
-`@deprecated`:
-
-```ts
-import { proven, PROVEN_SURFACE } from "castrum";
-
-proven.fnv1a64(bytes);   // JSDoc: ~11x faster than the JS baseline
-```
-
-`PROVEN_SURFACE` is the registry (pure data); `scripts/check-proven.ts`
-audits it against the CPU benchmark so it can't drift, and
-`scripts/annotate-performance.ts` (`bun run check:annotate`) refreshes the
-per-function JSDoc from the latest report.
-
-## 4. Stand up an HTTP server (the ingress pipeline)
+## 3. Stand up an HTTP server (the ingress pipeline)
 
 The quickest path is the **pre-baked** route handlers + the server builder:
 
@@ -150,10 +132,10 @@ The wire format is `{"ok":true,...,"requestId":...}` on success and
 > absolute lowest overhead and are comfortable calling `run()` yourself with a
 > synchronous callback.
 
-## 5. Run the benchmarks
+## 4. Run the benchmarks
 
 ```bash
-# CPU benchmark (correctness checks + comparisons) — also gates `proven`
+# CPU benchmark (correctness checks + comparisons)
 bun run check
 
 # HTTP benchmark across all servers (bun / elysia / ingress)
@@ -165,7 +147,7 @@ bun run bench:http:smoke
 
 Results land in `bench/results/` (gitignored).
 
-## 6. Run the tests
+## 5. Run the tests
 
 ```bash
 # Everything at once (TS unit + Rust unit + typecheck + lint)
@@ -178,17 +160,14 @@ bun run lint:ci   # Biome lint gate (what CI enforces)
 bun run test:node # Node.js integration tests (node --test) — run `bun run build:js` first
 ```
 
-## 7. Make your first change
+## 6. Make your first change
 
 1. Find where the code lives with [`REPO_MAP.md`](./REPO_MAP.md).
 2. Edit the TypeScript (`src/`) and/or Rust (`rust/`).
 3. If you changed Rust, rebuild the addon: `bun run build:debug`.
 4. Run `bun test`, `bun run typecheck`, and `cargo test`.
 5. If you touched any server or `handlers.ts`, run `bun run bench:http:smoke`.
-6. If you changed a public function, update the `PROVEN_SURFACE` registry
-   (`src/shared/proven.ts`) and run `bun run check:proven:fail` on a release
-   build (`bun run build`).
-7. Format + lint: `bun run format` and `bun run lint`.
+6. Format + lint: `bun run format` and `bun run lint`.
 
 ## Common gotchas
 

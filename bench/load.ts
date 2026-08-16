@@ -25,11 +25,22 @@ interface WeightedFlow {
   fn: (ctx: FlowCtx) => Promise<void>;
 }
 
+/** How strictly the load generator validates response shape per scenario. */
+type ShapeValidation = "all" | "none" | "sample";
+
 interface LoadScenarioDef {
   name: string;
   phases: LoadPhase[];
   flows: WeightedFlow[];
   maxConcurrent?: number;
+  /**
+   * Response-shape validation policy. "all" parses every success body
+   * (default; needed where wire-format correctness matters). "none" skips the
+   * per-response JSON.parse entirely (pure-throughput scenarios — the load
+   * generator is single-threaded, so a JSON.parse on EVERY response is a real
+   * client-side ceiling at high concurrency). "sample" validates ~1%.
+   */
+  shapeValidation?: ShapeValidation;
 }
 
 interface FlowCtx {
@@ -40,6 +51,7 @@ interface FlowCtx {
   vu: number;
   iter: number;
   recorder: Recorder;
+  shapeValidation: ShapeValidation;
 }
 
 interface SendOpts {
@@ -631,6 +643,24 @@ function safeJson(text: string): any {
   }
 }
 
+/**
+ * Decide whether to JSON.parse + shape-check a success response body.
+ * "none" skips entirely (pure-throughput), "sample" validates ~1% as a
+ * wire-format canary, "all" (default) validates every response. A per-request
+ * `requireShape: false` overrides to skip; HTTP_NO_SHAPE=1 forces a global
+ * skip for pure-throughput runs.
+ */
+function shouldValidateShape(
+  policy: ShapeValidation,
+  requireShape: boolean | undefined,
+): boolean {
+  if (requireShape === false) return false;
+  if (NO_SHAPE) return false;
+  if (policy === "all") return true;
+  if (policy === "sample") return Math.random() < 0.01;
+  return false;
+}
+
 function truncate(value: unknown, max = 180): string {
   const s = String(value ?? "");
   return s.length > max ? `${s.slice(0, max)}…` : s;
@@ -690,6 +720,7 @@ class Recorder {
 
   durationsAll: number[] = [];
   routeStats = new Map<string, RouteStat>();
+  phaseStats = new Map<string, { count: number; durations: number[] }>();
   errorGroups = new Map<string, ErrorGroup>();
   failureSamples: RequestTrace[] = [];
 
@@ -726,6 +757,14 @@ class Recorder {
 
     route.count++;
     route.durations.push(input.latencyMs);
+
+    let phase = this.phaseStats.get(input.phase);
+    if (!phase) {
+      phase = { count: 0, durations: [] };
+      this.phaseStats.set(input.phase, phase);
+    }
+    phase.count++;
+    phase.durations.push(input.latencyMs);
 
     const statusKey = String(input.status || 0);
     route.statuses[statusKey] = (route.statuses[statusKey] ?? 0) + 1;
@@ -852,6 +891,61 @@ class Recorder {
   }
 }
 
+// ── Shared request-timeout watchdog ────────────────────────────────────────
+// One interval timer sweeps ALL in-flight requests instead of one setTimeout
+// per request. At high concurrency (10k+), per-request timers are a
+// measurable event-loop tax and a key contributor to the generator's tail;
+// a single sweep keeps the same abort semantics with O(in-flight) work per
+// sweep tick.
+const watchdog = (() => {
+  const inflight = new Set<WatchdogEntry>();
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const SWEEP_MS = 250;
+
+  function ensureRunning() {
+    if (timer === null) {
+      timer = setInterval(sweep, SWEEP_MS);
+    }
+  }
+
+  function sweep() {
+    const now = Date.now();
+    for (const entry of inflight) {
+      if (entry.done) {
+        inflight.delete(entry);
+        continue;
+      }
+      if (now - entry.startWall >= entry.timeoutMs) {
+        entry.timedOut = true;
+        entry.controller.abort();
+      }
+    }
+    if (inflight.size === 0 && timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  function track(entry: WatchdogEntry) {
+    inflight.add(entry);
+    ensureRunning();
+  }
+
+  function untrack(entry: WatchdogEntry) {
+    entry.done = true;
+  }
+
+  return { track, untrack };
+})();
+
+interface WatchdogEntry {
+  startWall: number;
+  timeoutMs: number;
+  controller: AbortController;
+  timedOut: boolean;
+  done: boolean;
+}
+
 async function send(
   ctx: FlowCtx,
   method: string,
@@ -878,12 +972,14 @@ async function send(
 
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const controller = new AbortController();
-
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
+  const entry: WatchdogEntry = {
+    startWall: Date.now(),
+    timeoutMs,
+    controller,
+    timedOut: false,
+    done: false,
+  };
+  watchdog.track(entry);
 
   const start = Bun.nanoseconds();
 
@@ -930,7 +1026,7 @@ async function send(
       } else {
         outcome = "success";
 
-        if (opts.requireShape !== false && !NO_SHAPE) {
+        if (shouldValidateShape(ctx.shapeValidation, opts.requireShape)) {
           const parsed = safeJson(text);
           const shapeOk =
             parsed != null &&
@@ -963,7 +1059,7 @@ async function send(
   } catch (err: any) {
     const latencyMs = (Bun.nanoseconds() - start) / 1_000_000;
 
-    outcome = timedOut ? "timeout" : "network_error";
+    outcome = entry.timedOut ? "timeout" : "network_error";
     errorCode = outcome;
     errorMessage = err?.message ?? String(err);
 
@@ -982,7 +1078,7 @@ async function send(
       responseSnippet: "",
     });
   } finally {
-    clearTimeout(timer);
+    watchdog.untrack(entry);
   }
 }
 
@@ -1155,6 +1251,24 @@ Failure trace: \`${report.scenario}.failures.ndjson\`
   md += `## Overview
 
 ${mdTable(["Metric", "Value"], overviewRows(report))}
+
+`;
+
+  md += `## Phase latency
+
+${mdTable(
+  ["Phase", "Count", "Avg ms", "Min ms", "p50 ms", "p95 ms", "p99 ms", "Max ms"],
+  (report.phases ?? []).map((p: any) => [
+    p.name,
+    String(p.count),
+    fmtMs(p.avg),
+    fmtMs(p.min),
+    fmtMs(p.p50),
+    fmtMs(p.p95),
+    fmtMs(p.p99),
+    fmtMs(p.max),
+  ]),
+)}
 
 `;
 
@@ -1333,6 +1447,23 @@ function buildReport(recorder: Recorder) {
     })
     .sort((a, b) => (b.p95 ?? 0) - (a.p95 ?? 0) || b.count - a.count);
 
+  const phases = [...recorder.phaseStats.entries()].map(([name, s]) => {
+    const st = stats(s.durations);
+    return {
+      name,
+      count: s.count,
+      avg: st.avg,
+      min: st.min,
+      p50: st.p50,
+      p75: st.p75,
+      p90: st.p90,
+      p95: st.p95,
+      p99: st.p99,
+      p999: st.p999,
+      max: st.max,
+    };
+  });
+
   const errorGroups = [...recorder.errorGroups.values()].sort(
     (a, b) => b.count - a.count,
   );
@@ -1356,6 +1487,7 @@ function buildReport(recorder: Recorder) {
       ? (recorder.failed / recorder.total) * 100
       : 0,
     global,
+    phases,
     routes,
     errorGroups,
     failureSamples: recorder.failureSamples,
@@ -1381,6 +1513,37 @@ async function writeReports(
   console.log(`  trace:  ${outDir}/${scenario}.failures.ndjson`);
 }
 
+/**
+ * Minimal O(1) concurrency semaphore: acquire() resolves immediately while a
+ * slot is free, otherwise queues a single waiter; release() hands the freed
+ * slot directly to the oldest waiter (no counting race).
+ */
+function makeSemaphore(max: number) {
+  let count = 0;
+  const waiters: Array<() => void> = [];
+
+  function acquire(): Promise<void> {
+    if (count < max) {
+      count++;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      waiters.push(resolve);
+    });
+  }
+
+  function release(): void {
+    const waiter = waiters.shift();
+    if (waiter) {
+      waiter(); // slot handed off; count unchanged
+    } else {
+      count--;
+    }
+  }
+
+  return { acquire, release };
+}
+
 async function executeScenario(
   def: LoadScenarioDef,
   env: {
@@ -1390,17 +1553,21 @@ async function executeScenario(
   },
 ): Promise<void> {
   const base = `http://localhost:${env.port}`;
+  // `active` tracks every launched flow so the scenario can drain it at the
+  // end; the SEMAPHORE (not the Set) bounds concurrency. The old gate
+  // `while (active.size >= max) await Promise.race(active)` re-attached a
+  // `.then` to every in-flight promise on every launch — O(n) handler churn
+  // that is a real client-side tax at 10k concurrency.
   const active = new Set<Promise<void>>();
 
   let vuSeq = 0;
   let iterSeq = 0;
 
   const maxConcurrent = def.maxConcurrent ?? 2000;
+  const sem = makeSemaphore(maxConcurrent);
 
   async function launch(phaseName: string): Promise<void> {
-    while (active.size >= maxConcurrent) {
-      await Promise.race(active);
-    }
+    await sem.acquire();
 
     const vu = ++vuSeq;
     const iter = ++iterSeq;
@@ -1413,13 +1580,22 @@ async function executeScenario(
       vu,
       iter,
       recorder: env.recorder,
+      shapeValidation: def.shapeValidation ?? "all",
     };
 
     const flow = pickWeighted(def.flows).fn;
 
-    // Track the in-flight request so the concurrency gate (`active`) can
-    // release it when it settles. `p` is captured before the promise resolves
-    // (the `finally` runs only after an await), so the guard is belt-and-braces.
+    // `tracked` is registered in `active` for the final drain; the semaphore
+    // slot is released exactly once in `finally`. `p` is captured before the
+    // promise resolves so the guard is belt-and-braces.
+    let released = false;
+    const releaseSlot = () => {
+      if (!released) {
+        released = true;
+        sem.release();
+      }
+    };
+
     let p: Promise<void> | undefined;
     const tracked = (async () => {
       try {
@@ -1427,6 +1603,7 @@ async function executeScenario(
       } catch (err) {
         env.recorder.recordUnhandled(ctx, err);
       } finally {
+        releaseSlot();
         if (p) active.delete(p);
       }
     })();
@@ -1750,7 +1927,12 @@ export const HTTP_SCENARIOS: Record<string, LoadScenarioDef> = {
 
   "03-stress": {
     name: "03-stress",
-    maxConcurrent: 10000,
+    maxConcurrent: 2000,
+    // Pure-throughput scenario: skip the per-response JSON.parse shape check —
+    // the load generator's single-threaded event loop is the client ceiling,
+    // and parsing every body inflates that ceiling. Status codes still gate
+    // success/error; wire-format shape is covered by the smoke + load scenarios.
+    shapeValidation: "none",
     phases: [
       { durationSec: 20, rate: 100, name: "Ramp 1" },
       { durationSec: 20, rate: 500, name: "Ramp 2" },

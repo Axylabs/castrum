@@ -151,7 +151,7 @@ src/
 │   ├── fast.ts            ── Thin: createIngressFast (packed input) + re-exports
 │   ├── handlers.ts        ── Thin: createIngressHandler (packs frame in JS → handleRequestPacked) + response builders
 │   ├── server.ts          ── createIngressServer (Bun.serve builder) + buildRouteHandlers + gracefulShutdown
-│   ├── server-node.ts     ── createIngressServerNode (node:http adapter, same route handlers)
+│   ├── server-node.ts     ── createIngressServerNode (node:http adapter, same route handlers; the runtime adapter picks the backend)
 │   ├── constants.ts       ── Layout constants (from Rust NAPI)
 │   ├── shared.ts          ── JS constants shared by both paths
 │   ├── status.ts          ── Status normalization helpers (both paths)
@@ -167,16 +167,15 @@ src/
 │   └── routes/            ── read/head/json-write/echo/fallback factories
 │
 ├── shared/
-│   ├── runtime.ts         ── isBun/isNode runtime detection (single seam)
+│   ├── runtime.ts         ── facade over src/runtime/detect.ts (isBun/isNode — cached)
+│   ├── codec.ts           ── facade over src/runtime/codec.ts (Bun-native UTF-8 codec)
+│   ├── uuid.ts            ── facade over src/runtime/uuid.ts
 │   ├── log.ts             ── createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines)
 │   ├── request-id.ts      ── zero-alloc request ID generator
 │   ├── buffer-pool.ts     ── reusable output-buffer pool
 │   ├── response.ts        ── pooledBodyResponse (zero-copy response)
 │   ├── bytes.ts           ── codec-backed encoder/decoder + toBytes/toText normalizers
-│   ├── codec.ts           ── Bun-native UTF-8 codec (ArrayBufferSink / CString /
-│   │                        Buffer-view write; TextEncoder/Decoder ONLY as Node fallback)
-│   ├── packed.ts          ── packed-wire unpackers + packers
-│   └── proven.ts          ── PROVEN_SURFACE registry (single source for `proven`)
+│   └── packed.ts          ── packed-wire unpackers + packers
 │
 ├── native/                ── Native transport: bun:ffi (primary on Bun) + NAPI fallback
 │   ├── types.ts           ── NativeAddon interface + instance types
@@ -184,6 +183,18 @@ src/
 │   ├── ffi.ts             ── bun:ffi C-ABI bindings (Bun-only; bind-time self-test +
 │   │                        CASTRUM_FFI_MODE gating; castrum_ingress_layout blob)
 │   └── index.ts           ── Barrel
+│
+├── runtime/               ── RUNTIME ADAPTER seam (Bun/Node), selected once at load
+│   ├── detect.ts          ── cached runtime detection (the ONLY place `typeof Bun` is checked)
+│   ├── types.ts           ── RuntimeAdapter contract (codec/uuid/env/builtins/transport/server/websocket)
+│   ├── codec.ts           ── runtime-native UTF-8 codec (Bun transfer vs TextEncoder/Decoder)
+│   ├── uuid.ts            ── uuidv7 (Bun.randomUUIDv7 vs crypto.randomUUID)
+│   ├── builtins.ts        ── BUN_WINS delegation registry (single source, `has(op)`)
+│   ├── transport.ts       ── bun:ffi-first `resolve(op)` + ffi/napi surfaces (lazy bind)
+│   ├── native.ts          ── FFI-facing seam (codec/uuid/env/builtins/transport) — imported by rust-ffi
+│   ├── server.ts          ── createIngressServer: Bun.serve on Bun, node:http on Node
+│   ├── websocket.ts       ── 101 upgrade on Bun; clear Bun-only error on Node
+│   └── index.ts           ── FULL adapter `runtime` (native + server + websocket) — for the public API
 │
 ├── rust-ffi/              ── Rust FFI bindings
 │   ├── options.ts         ── RustOptions + input-normalization helpers

@@ -3,13 +3,12 @@
 // Composes the per-namespace builders (scalar / text / batch / packed) over a
 // shared per-instance context (./context.ts) and exposes `configure`.
 
-import { createContext } from './context'
-import { buildText, type RustText } from './text'
 import { buildBatch, type RustBatch } from './batch'
+import { createContext } from './context'
+import type { RustOptions } from './options'
 import { buildPacked, type RustPacked } from './packed'
 import { buildScalar, type RustScalar } from './scalar'
-import { getBunFFI } from '../native/ffi'
-import type { RustOptions } from './options'
+import { buildText, type RustText } from './text'
 
 /** The full Rust FFI client (scalar methods + namespaces + configuration). */
 export interface RustClient extends RustScalar {
@@ -56,10 +55,10 @@ export function createRust(options: RustOptions = {}): RustClient {
 
     // ── Transport introspection (FFI-primary on Bun; napi is the fallback) ──
     transport() {
-      return getBunFFI() !== null ? 'ffi' : 'napi'
+      return ctx.runtime.transport.name
     },
     ffiActive() {
-      return getBunFFI() !== null
+      return ctx.runtime.transport.ffiActive()
     },
 
     // ── Configuration ──

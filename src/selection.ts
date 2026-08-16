@@ -8,9 +8,18 @@
 //
 // Consumers bind each operation to a fixed implementation at startup by
 // reading `opImpl(op)` here — they do NOT swap native↔js per call.
+//
+// The baked default comes from the PROVEN SELECTION registry
+// (`src/shared/proven.ts`, `PROVEN_SELECTION`): for each op the
+// benchmark-proven winner is 'native' | 'js' | 'bun' (Bun built-in
+// delegation). Bun built-in delegation is runtime-aware via the adapter's
+// `builtins` registry (`runtimeNative.builtins.has(op)` — empty under Node).
+// `test/unit/shared/proven.test.ts` verifies this baked registry matches the
+// live wiring, so it can't drift.
 
 import { getAddon, lazyAddon } from './native'
-import { isBun } from './shared/runtime'
+import { provenImpl } from './shared/proven'
+import { runtimeNative } from './runtime/native'
 
 /** Recommended implementation for an operation. */
 export type OpImpl = 'native' | 'js'
@@ -23,34 +32,6 @@ export interface OpDecision {
   readonly note?: string
 }
 
-/**
- * Ops where Bun's NATIVE built-in beats the Rust addon (measured in
- * `docs/bun-builtins-decision-matrix.md`: `Bun.gzipSync` ~2.0x, `Bun.hash.crc32`
- * 2.8–8.4x, `Bun.CryptoHasher` ~1.2x, `Bun.hash.xxHash3` ~4.2x, and
- * `crypto.getRandomValues` for token-sized random). Under Bun the fastest
- * choice for these is the pure-JS path that DELEGATES to the Bun built-in
- * (`"js"`), not the Rust addon — so we never ship something slower than what
- * Bun natively provides. Under Node the base benchmark decision stands (Rust
- * wins for gzip/random/hmac there).
- *
- * NOTE: `gzipDecompress` is deliberately NOT in this set — the rust surface
- * keeps the native path (with its 64 MiB decompression-bomb cap) even under
- * Bun, because `Bun.gunzipSync` has no output-size bound.
- */
-const BUN_WINS = new Set([
-  'gzipCompress',
-  'crc32',
-  'randomToken',
-  'hmacSha256',
-  'xxh3',
-  'urlEncode',
-  'urlDecode',
-  'base64Encode',
-  'base64UrlEncode',
-  'hexEncode',
-  'httpDate',
-])
-
 // Lazy: importing this module does NOT dlopen the addon; `opImpl` reads the
 // baked decision from Rust on first call.
 const addon = lazyAddon(getAddon)
@@ -61,11 +42,23 @@ const addon = lazyAddon(getAddon)
  * Returns `"native"` when the Rust addon is the recommended implementation,
  * `"js"` when a pure-JS (or Bun built-in) implementation wins, or `null` for
  * unknown ops (or when the addon is unavailable — with no addon there is no
- * "native" choice). Under Bun, ops in {@link BUN_WINS} resolve to `"js"` so the
- * consumer's JS path delegates to the faster Bun built-in.
+ * "native" choice). Under Bun, ops in the adapter's builtins registry resolve
+ * to `"js"` so the consumer's JS path delegates to the faster Bun built-in.
+ *
+ * The default is the BAKED proven selection (`src/shared/proven.ts`):
+ * `native` / `js` directly, `bun` resolves to `"js"` via the builtins check
+ * above. Unknown ops (and `bun` entries on a non-Bun runtime, where no
+ * built-in exists) fall back to the addon's embedded decision
+ * (`rust/selection.rs` ← `src/selection.json`).
  */
 export const opImpl = (op: string): OpImpl | null => {
-  if (isBun() && BUN_WINS.has(op)) return 'js'
+  // Bun built-in delegation (runtime-aware — the registry is empty under Node).
+  if (runtimeNative.builtins.has(op)) return 'js'
+  // Baked proven winners are the default selection.
+  const proven = provenImpl(op)
+  if (proven === 'native') return 'native'
+  if (proven === 'js') return 'js'
+  // 'bun' on a non-Bun runtime (no built-in) or unknown ops → addon decision.
   return addon.opImpl(op)
 }
 

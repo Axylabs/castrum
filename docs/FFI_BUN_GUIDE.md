@@ -57,7 +57,7 @@ string names). Canonical names used by castrum's `dlopen` map:
 | `i64`           | `"i64"`           | args passed as `BigInt(...)`; returns as BigInt |
 | `f64`           | `"f64"`           | e.g. `castrum_http_date_into(secs: f64, …)` |
 | `*const u8`     | `"ptr"`           | TypedArray/DataView auto-converted to its pointer; a plain `number` is passed through |
-| `*const u8` (NUL-terminated string) | `"cstring"` | args: JS string transcoded to a call-scoped NUL-terminated UTF-8 buffer; returns: cloned JS string |
+| `*const u8` (NUL-terminated string) | `"cstring"` | args: JS string transcoded to a call-scoped NUL-terminated UTF-8 buffer (zero JS-side encode — the engine does it); returns: cloned JS string. **ARGS are the fast string-input path** (see §3 shape 4) |
 | `*const u8` + length as a pair | `"buffer"` + `"buffer_length"` | see §4 |
 | `void`          | `"void"`          | — |
 | —               | `"u64_fast"` / `"i64_fast"` | unboxed `number` when the value fits in a double (< 2^53); no BigInt boxing |
@@ -75,7 +75,7 @@ changes.
 
 ## 3. Canonical C-ABI signature shapes (use these)
 
-Everything castrum exports follows one of three shapes. New exports should pick
+Everything castrum exports follows one of four shapes. New exports should pick
 the matching shape and nothing else:
 
 1. **`(ptr, len) -> scalar`** — pure read of input, no output buffer:
@@ -89,6 +89,21 @@ the matching shape and nothing else:
 3. **`(…) -> *const c_char`** — cstring return (per-thread reused `CSTR_BUF`,
    §7). Only for genuinely string-shaped results; prefer packed buffers for
    structured data.
+4. **`cstring` ARG for string inputs** — `f(s: *const c_char) -> …`. When the
+   input is TEXT (never NUL) and the JS caller has it as a JS `string`, pass it
+   as a `cstring` ARG instead of a `(ptr,len)` pair: the engine transcodes the
+   string to a call-scoped NUL-terminated UTF-8 buffer in-engine (zero JS-side
+   `encoder.encode`), and the callee borrows via `CStr::from_ptr(s).to_bytes()`
+   (no copy). **Benchmark-gated** (`bench:margin` `cstringArg` scenario):
+   ~40–52 ns/call vs ~209–233 ns for `encodeUtf8` + `(ptr,len)` — a ~76–82% win,
+   including non-ASCII inputs. It is a LOSS for BYTE inputs (decode + re-encode)
+   — keep `(ptr,len)` there. **Verified `bun:ffi` facts**: JS `null` → NULL
+   pointer, and JS `''` (empty string) → NULL too — a present-but-empty value is
+   indistinguishable from absent through a `cstring` arg (so SSE's `Option`
+   event/id semantics stay on `(ptr,len)`). Adopted by: the validators
+   (`castrum_validate_*`), `castrum_ws_accept_key`, `castrum_mime_from_extension`,
+   `castrum_password_verify_bcrypt` (phc), `castrum_rate_limiter_check` (key),
+   and `castrum_ingress_handle_components` (url/ip).
 
 Opaque instance handles are passed as a **bare `usize`** (`inner: usize`), and
 must be null-checked at the top of the function (return the `0` sentinel) —
@@ -306,7 +321,6 @@ that transfer directly to castrum's cdylib:
 
 ```bash
 nm -D --defined-only <addon> | grep -c castrum_   # = 75
-bun run check:proven:fail                          # RELEASE build only
 bun run bench:http:smoke                           # after touching decoders/handlers
 bun test test/unit/features/ffi.test.ts            # FFI↔napi parity + self-test
 bun test test/unit/features/ffi-symbol-parity.test.ts

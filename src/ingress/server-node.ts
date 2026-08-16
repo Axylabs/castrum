@@ -15,21 +15,20 @@
 
 import {
   createServer,
-  type IncomingMessage,
   type Server as HttpServer,
+  type IncomingMessage,
   type ServerResponse,
 } from 'node:http'
-import { Readable, type Duplex } from 'node:stream'
-
+import { type Duplex, Readable } from 'node:stream'
+import { fallbackHandler } from './routes'
 import {
+  type BakedServer,
   buildPathMatcher,
   buildRouteHandlers,
-  type BakedServer,
   type CreateIngressServerOptions,
-  type ServerHandle,
   type RouteHandler,
+  type ServerHandle,
 } from './server'
-import { fallbackHandler } from './routes'
 
 export type { RouteHandler } from './server'
 
@@ -41,6 +40,7 @@ export type { RouteHandler } from './server'
  * body-read loop after headers arrive.
  */
 const DEFAULT_SOCKET_TIMEOUT_MS = 30_000
+
 import type { BakedHandlerOptions } from './routes/common'
 
 /** A Node.js ingress server: {@link BakedServer} plus an async ready signal. */

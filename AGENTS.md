@@ -23,6 +23,8 @@ HTTP **ingress pipeline** for Bun servers.
 | Install deps | `bun install` |
 | Build Rust addon (release) | `bun run build` (== `napi build --release --platform`) |
 | Build Rust addon (LOCAL max perf) | `bun run build:perf` (x86-64-v3 + AVX2/BMI2/FMA — never for publish) |
+| Build x86-64-v3 SIMD variant (dual-binary) | `bun run build:v3` (`scripts/build-v3.sh` → `castrum.linux-x64-v3-gnu.node`) — SHIPPED alongside baseline; loader CPU-detects |
+| Build baseline + v3 (one shot) | `bun run build:all` |
 | Build Rust addon (debug) | `bun run build:debug` |
 | Build compiled JS entry (Node) | `bun run build:js` (bundle + types → `dist/`) |
 | Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
@@ -30,8 +32,8 @@ HTTP **ingress pipeline** for Bun servers.
 | Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
 | TS unit tests | `bun test` (~540 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
-| Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts), NEVER audited by check:proven; decision matrix in docs/bun-builtins-decision-matrix.md |
-| Proven-surface audit | `bun run check:proven` (report) / `bun run check:proven:fail` (CI gate) |
+| Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts) feed docs/bun-builtins-decision-matrix.md (NOT a shipped-op measurement) |
+| Proven selection | baked registry `src/shared/proven.ts` (`PROVEN_SELECTION`: native/js/bun winners) + `proven` surface (`src/rust-ffi/proven.ts`); `test/unit/shared/proven.test.ts` verifies each winner is wired (opImpl/builtins/selection.json) — NO live bench gate |
 | Startup / first-call benchmark | `bun run bench:startup` |
 | FFI transport benches | `bun run bench:ffi` / `bench:ffi:load` / `bench:ffi:public` / `bench:ffi:workers` |
 | Native batch parity check | `bun run verify:native:batch` |
@@ -104,8 +106,11 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── router.ts           createIngressRouter — per-route compiled ingress (each route compiles its
   │                       OWN native IngressInner from per-route options + per-route HeaderPlan +
   │                       optional pre-warm; same wire format as handlers.ts; the bench server has a
-  │                       router variant at bench/servers/router-server.ts). Supersedes the deleted
-  │                       rust/route.rs (dead external-project wire — do NOT resurrect it).
+  │                       router variant at bench/servers/router-server.ts). Its per-route native
+  │                       compile-time-routing idea is the same one the (now LIVE) native route
+  │                       stack (rust/ingress/native_route.rs) exposes to `@ignex/native`.
+  │                       NOTE: the old `rust/route.rs` was dead external-project wire — superseded
+  │                       by `native_route.rs`, which implements ignex's route-wire v3 contract.
   ├── packing/            header-packing.ts (fast) + input-packer.ts + gather-raw-headers.ts (pre-baked) + scratch.ts (shared TLS buffers + per-header size guards)
   ├── headers/            cors.ts + hsts.ts + fast-templates.ts + baked-templates.ts (two template builders, NOT unified)
   ├── decode/             fast-result.ts + baked-result.ts (two decoders, NOT unified) + packed-sections.ts (shared section layout)
@@ -154,11 +159,13 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi.rs              `#[no_mangle] extern "C"` exports (75 castrum_* — 67 direct + 4
+  ├── ffi.rs              `#[no_mangle] extern "C"` exports (78 castrum_* — 70 direct + 4
                           validator_c_abi! + 4 compress_to_out! — incl. the
-                          castrum_gzip_isize size probe; parity guarded by
+                          castrum_gzip_isize size probe and the per-route stack
+                          castrum_route_compile/run/destroy; parity guarded by
                           test/unit/features/ffi-symbol-parity.test.ts) for Bun's `bun:ffi`
-                          C-ABI PRIMARY transport (scalar hot fns + ingress layout blob;
+                          C-ABI PRIMARY transport (scalar hot fns + ingress layout blob +
+                          per-route native stack;
                           SAME cdylib serves both napi on Node/fallback and bun:ffi on Bun
                           — see src/native/ffi.ts).
                           VARIABLE-SIZE convention: return the EXACT required byte count on a
@@ -218,6 +225,14 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   ├── mod.rs          thin napi boundary: Ingress class + entry points
   │   ├── pipeline.rs     core 8-stage pipeline (IngressInner::handle_packed,
   │   │                   write_body_sections, BodySections, IngressSchema)
+  │   ├── native_route.rs per-route native stack (`castrum_route_*` C-ABI + napi `Route` class) —
+  │   │                   the LIVE external wire consumed by `@ignex/native` (route-wire v3:
+  │   │                   magic ROUT/version 3, stage tags parseQuery=0…requireJsonBody=5,
+  │   │                   result `[flags u32][errorCode u32]` + optional pair sections).
+  │   │                   Lenient parse (byte-parity with ignex queryPairs/cookiePairs), body
+  │   │                   schema via IngressSchema (fast_schema + jsonschema). Supersedes the
+  │   │                   deleted dead `rust/route.rs`. Tests: native_route.rs + ffi.rs C-ABI +
+  │   │                   test/unit/ingress/native-route.test.ts.
   │   ├── tests.rs        ingress unit tests
   │   ├── options.rs / time.rs / packed.rs   option structs, clock, packed readers/builder
   │   ├── cors.rs / proxy.rs / ip_trust.rs / rate_limit.rs / terminal.rs
@@ -307,6 +322,20 @@ success and `error.code` / `error.message` on errors (path 2's format).
   (`dist/…`). Honor `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`. A
   SET-but-misconfigured override throws (never silently falls through to the package
   roots). Run `bun run bench:startup` after touching it.
+- **Dual-binary CPU-detect**: on linux/x64, `resolveAddonPathFrom` prefers the
+  `castrum.linux-x64-v3-gnu.node` SIMD variant when the host CPU exposes ALL of
+  AVX2+BMI2+FMA+SSE4.2 (`supportsX8664V3`, read from `/proc/cpuinfo`) and the
+  file is present; otherwise it falls through to the baseline names. Detection
+  is intentionally conservative — a v3 binary dlopened on a non-v3 CPU SIGILLs
+  the process (not catchable from JS). The v3 artifact is built by
+  `bun run build:v3` (`scripts/build-v3.sh`, separate `CARGO_TARGET_DIR` so it
+  never clobbers baseline `target/release`) and ships in the SAME package
+  (files glob `*.node`); CI builds it only on the `x86_64-unknown-linux-gnu`
+  job. ignus mirrors the v3-first rule in its own loader. The v3 variant is
+  OPTIONAL — an absent v3 file silently resolves to baseline, so `build:v3` is
+  never a hard publish requirement. When you touch the loader, run
+  `bun run bench:startup` + the loader unit tests
+  (`test/unit/native/loader.test.ts`).
 - **Bun FFI behavior (learned from Bun 1.3.14 — see `docs/FFI_BUN_GUIDE.md`)**:
   - Hot `bun:ffi` call sites JIT through DFG/FTL into direct native calls (~10–20ns);
     keep `extern "C"` signatures scalar + `(ptr,len)` — no struct-by-value (not
@@ -327,6 +356,23 @@ success and `error.code` / `error.message` on errors (path 2's format).
   - Every new `castrum_*` export: `panic_guard` (catch_unwind) on fallible cores,
     null-check pointers + opaque handles, bind-time self-test, `u64_fast` byte counts,
     add to the dlopen map + `ffi/types.ts` + parity test.
+- **Per-route native stack (`rust/ingress/native_route.rs`)**: the LIVE external wire
+  consumed by `@ignex/native`'s `createNativeRoute` (route-wire v3 — magic `ROUT`
+  0x524f5554, version 3). It is NOT a resurrection of the deleted dead `rust/route.rs`;
+  it implements the now-live ignex contract (pinned by ignex `route-wire.test.ts` +
+  `scripts/verify-native-route.ts` + `packages/native/test/route.test.ts`). Rules:
+  (1) descriptor/stage/part tags + result layout must match route-wire.ts EXACTLY —
+  bump `ROUTE_DESC_VERSION` on any wire change (a mismatched compiler/addon must be a
+  hard reject, never a silent misparse); (2) parse is LENIENT (byte-parity with ignex's
+  JS `queryPairs`/`cookiePairs` — malformed `%ZZ`/invalid-UTF-8 `%FF` pass through raw,
+  `+` → space, `%2B` → `+`, cookies trim + DQUOTE-unwrap the VALUE but not the name, no
+  cookie URL-decoding) — do NOT reuse the strict scalar `query_parser`; (3) the stack
+  validates the BODY only (via `IngressSchema`); a non-body schema in the descriptor is
+  an unsupported feature → fail compile so the caller falls back to JS; (4) `route_run`
+  uses the needed-size convention (0 = real error, `> out_cap` = exact required size);
+  (5) `requireJsonBody` → 400 / `validateBody` schema fail → 422, first-failure-wins in
+  stage order. Owned `Box<NativeRoute>` handle (`castrum_route_compile/run/destroy`),
+  immutable `&self` run (safe across workers). `Route` (napi) is the Node/fallback path.
 - **Constants**: never hardcode binary-layout values. The single NUMERIC source is
   `rust/ingress/output.rs`; `rust/ingress/ingress_constants.rs` re-exports those
   values to JS via NAPI (`#[napi] pub const ... = crate::ingress::output::OUT_X
@@ -491,16 +537,20 @@ explicit impurity boundary so the hot path can pool/globalize state:
   sub-µs ops; default 64), `HTTP_NO_SHAPE=1` (load generator skips response-shape
   `JSON.parse` for pure-throughput runs). `bun run check` persists a
   machine-readable CPU report to `bench/results/cpu/` (gitignored).
-- **Performance-annotated surface**: `src/shared/proven.ts` (`PROVEN_SURFACE`) is the
-  single source of truth for the benchmark classifications. `proven`
-  (`src/rust-ffi/proven.ts`) exports the FULL `rust.*` surface (`export const proven =
-  rust`) — the `@performance`/`@deprecated` JSDoc annotations (generated by
-  `bun run check:annotate`) are what communicate performance now, NOT a curated
-  subset. The registry is PURE DATA (no addon imports) so `scripts/check-proven.ts`
-  can audit it without dlopening. When you add/change a public function, update the
-  registry and run `bun run check:proven:fail` on a RELEASE build (debug builds
-  inflate rust timings). Classifications must reflect the shipped baseline-CPU
-  release build, not the local SIMD `build:perf`.
+- **Proven selection (baked)**: `src/shared/proven.ts` (`PROVEN_SELECTION`) is
+  PURE DATA (no addon imports) — the single source of truth for which
+  implementation is the benchmark-proven winner per op (`native` / `js` / `bun`
+  built-in delegation), derived from `src/selection.json` + the Bun built-in
+  decision matrix. `proven` (`src/rust-ffi/proven.ts`) exports the FULL `rust.*`
+  surface (`export const proven = rust`). There is NO live benchmark audit or
+  `@deprecated` JSDoc machinery (the old `check:proven` / `check:annotate`
+  friction — removed). Instead `test/unit/shared/proven.test.ts` verifies each
+  baked winner is actually wired: `opImpl(op)` agrees, `builtins.has(op)` matches
+  for `bun` entries, and native/js entries match the addon's embedded
+  `selection.json`. When you add/change a public function, add/update its
+  `PROVEN_SELECTION` entry (+ its `selection.json` entry) and the test pins the
+  wiring. Classifications must reflect the shipped baseline-CPU release build,
+  not the local SIMD `build:perf`.
 - **Bun delegation (`BUN_WINS`, src/selection.ts)**: the public `rust.*` scalar
   surface is OPTIMAL-BY-DEFAULT under Bun — `urlEncode`/`urlDecode`
   (`encodeURIComponent`/`decodeURIComponent`), `base64Encode` (Buffer), `httpDate`
@@ -509,10 +559,11 @@ explicit impurity boundary so the hot path can pool/globalize state:
   hex) and `gzipCompress` (`Bun.gzipSync`) all delegate to Bun built-ins when
   `isBun()`. **`gzipDecompress` is deliberately NOT delegated** (stays native —
   `Bun.gunzipSync` has no decompression-bomb cap; the native 64 MiB cap is kept).
-  Keep `src/selection.ts` `BUN_WINS` in sync with the actual surface. The CPU
+  Keep `src/runtime/builtins.ts` `BUILTIN_OPS` in sync with the actual surface
+  (mirrored in `PROVEN_SELECTION`'s `bun` entries). The CPU
   bench measures the RAW addon for delegated ops via `src/bench/raw-native.ts`
-  (FFI-first/napi) so the report + PROVEN_SURFACE reflect the addon, not the
-  delegated built-in. Parity is pinned by `test/unit/features/delegation.test.ts`.
+  (FFI-first/napi) so the report reflects the addon, not the delegated built-in.
+  Parity is pinned by `test/unit/features/delegation.test.ts`.
 
 ## Testing
 

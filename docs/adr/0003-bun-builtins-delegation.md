@@ -31,10 +31,11 @@ built, kept, or delegated. Results live in
 
 - New `rust.*` primitives ship with a Bun-built-in baseline + decision-matrix
   entry (`xxh3`, `passwordHashBcrypt`/`verifyBcrypt`, `pbkdf2Sha256`).
-- `PROVEN_SURFACE` classifications reflect the Bun/JS baseline honestly
-  (e.g. `xxh3` is `not-competitive` vs `Bun.hash.xxHash3`).
-- Diagnostic benchmark tasks use `diag:` names so they never perturb the
-  `check:proven` audit.
+- The Bun/JS baselines are recorded honestly in the decision matrix
+  (e.g. `xxh3` is measured `Bun.hash.xxHash3` ~4x faster — the public
+  `rust.xxh3` delegates to it under Bun via the runtime adapter's `builtins`).
+- Diagnostic benchmark tasks use `diag:` names so they are never mistaken for
+  shipped-op `native:`/`rust:` comparisons.
 
 ## See also
 

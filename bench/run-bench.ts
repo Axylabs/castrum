@@ -1,6 +1,6 @@
 // bench/run-bench.ts — updated to show scenario groups
 import { PORTS, type ServerKind } from "./servers/shared";
-import { HTTP_SCENARIO_NAMES, runHttpScenario } from "./load";
+import { HTTP_SCENARIO_NAMES, HTTP_SCENARIOS, runHttpScenario } from "./load";
 import { getBunFFI } from "../src/native/ffi";
 import { isBun } from "../src/shared/runtime";
 
@@ -107,6 +107,27 @@ async function main() {
   const servers = filterServer
     ? SERVERS.filter((s) => s === filterServer)
     : [...SERVERS];
+
+  // ── Bun fetch-concurrency guard ──────────────────────────────────────────
+  // Bun's fetch() caps at 256 simultaneous requests by default
+  // (BUN_CONFIG_MAX_HTTP_REQUESTS). Any selected scenario whose maxConcurrent
+  // exceeds that cap will FIFO-queue client-side and the run will measure the
+  // GENERATOR (~930 RPS wall + ~15 s tail), not the server. The bench:http:*
+  // scripts set BUN_CONFIG_MAX_HTTP_REQUESTS=65536; warn when a manual run
+  // doesn't.
+  const fetchCap = Number(process.env.BUN_CONFIG_MAX_HTTP_REQUESTS ?? 256);
+  const overCap = scenarios.filter(
+    (s) => (HTTP_SCENARIOS[s]?.maxConcurrent ?? 2000) > fetchCap,
+  );
+  if (overCap.length > 0) {
+    const msg =
+      `scenario(s) ${overCap.join(", ")} have maxConcurrent above the Bun fetch cap ` +
+      `(${fetchCap} default 256) — requests will FIFO-queue client-side and this run ` +
+      `will measure the generator, not the server. Re-run with ` +
+      `BUN_CONFIG_MAX_HTTP_REQUESTS=65536 (the bench:http:* scripts do this). ` +
+      `For max-throughput server comparisons use \`bun run bench:http:ac\` (autocannon).`;
+    console.warn(`\u26a0\ufe0f  ${msg}`);
+  }
 
   console.log("╔══════════════════════════════════════════════════════════╗");
   console.log("║  Bun vs Elysia vs Ingress — Heavy JSON Load Benchmark  ║");

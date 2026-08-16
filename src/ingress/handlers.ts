@@ -89,6 +89,7 @@ export {
   fallbackHandler,
   headHandler,
   jsonWriteHandler,
+  nativeResponderRoute,
   optionsHandler,
   readHandler,
 } from './routes'
@@ -275,6 +276,21 @@ export function createIngressHandler(
   const rateLimit = options.rateLimit as { limit?: number } | undefined
   const limit = rateLimit?.limit
   const rateEnabled = typeof limit === 'number' && limit !== RATE_LIMIT_U32_MAX && limit > 0
+
+  // Minimal-processing flags: skip per-request JS UTF-8 encoding of the URL/IP
+  // when the native pipeline (rust/ingress/pipeline.rs) provably cannot read
+  // them — mirror its consumption exactly, and KEEP IN SYNC:
+  //   - URL is consumed iff parseQuery (extract_query), emitMetadataJson
+  //     (extract_path into the envelope) or https is unpinned (detect_https
+  //     scans the scheme prefix). Otherwise an empty URL section is safe.
+  //   - IP is consumed iff rate limiting is active (resolve_client_ip /
+  //     rate_key) or a proxy-trust mode is configured (socket_is_trusted
+  //     parses it). Otherwise the IP is dropped from the frame (logs/hooks
+  //     still see the real `ip` — this only skips the frame encode).
+  const trustEnabled = options.trustProxy === true || options.trustedProxies?.enabled === true
+  const urlNeeded =
+    options.parseQuery === true || options.emitMetadataJson === true || options.https === undefined
+  const ipNeeded = rateEnabled || trustEnabled
 
   // Shared with the fast path — proxy extraction is driven by trust config
   // (trustProxy / trustedProxies), not by whether rate limiting is enabled.
@@ -642,10 +658,12 @@ export function createIngressHandler(
       // above, so pass it in to avoid a second `req.headers.get('origin')`
       // native→JS string conversion on the hot path.
       const packedHeaders = gatherRawHeadersPacked(req, headerPlan, methodKind, ctx.origin)
-      // url/ip are encoded directly into the packer buffer (no intermediate
-      // `encoder.encode` Uint8Array + copy); requestId/headers are byte slices
-      // copied verbatim (no decode→re-encode of the pre-encoded request id).
-      const input = inputPacker.packParts(methodKind, req.url, ip, ridBytes, packedHeaders)
+      // Minimal processing: when the native pipeline cannot read the URL/IP
+      // (see `urlNeeded`/`ipNeeded`), pass an empty URL / omit the IP so we
+      // skip the per-request JS UTF-8 encode entirely (the frame still carries
+      // a valid 0-length section the native bounds-checks).
+      const packUrl = urlNeeded ? req.url : ''
+      const packIp = ipNeeded ? ip : undefined
 
       try {
         // Acquire inside the try: pool exhaustion (maxInFlight) becomes a 500
@@ -653,14 +671,60 @@ export function createIngressHandler(
         handle = outputPool.acquire(outputBufferSize)
         currentHandle = handle
 
-        // Write into the pooled buffer — no per-request allocation. Under Bun
-        // with a live ffi handle this runs the pipeline through `bun:ffi`
-        // (identical packed wire format); otherwise the napi call. If the ffi
-        // call throws (native reported 0 = error, or a panic `panic_guard`
-        // contained), re-dispatch through napi once and, after repeated
-        // failures, permanently disable ffi for this handler.
+        // Write into the pooled buffer — no per-request allocation. Bun
+        // PRIMARY: the raw-components C-ABI (`castrum_ingress_handle_components`)
+        // passes `url`/`ip` as `bun:ffi` `cstring` args — the engine transcodes
+        // the JS strings to call-scoped UTF-8 in-engine, so we skip the JS
+        // frame assembly + `Buffer.write` encode for the URL/IP (same wire
+        // format: both paths run the shared `handle_components` core). Falls
+        // back to the packed frame (FFI or napi) on any failure / stale addon.
+        // If an ffi call throws (native reported 0 = error, or a panic
+        // `panic_guard` contained), re-dispatch through napi once and, after
+        // repeated failures, permanently disable ffi for this handler.
         let written: number
-        if (bunFFI !== null && ingressPtr !== 0 && !ffiDisabled) {
+        if (
+          bunFFI !== null &&
+          ingressPtr !== 0 &&
+          !ffiDisabled &&
+          typeof bunFFI.ingressHandleComponents === 'function'
+        ) {
+          try {
+            written = bunFFI.ingressHandleComponents(
+              ingressPtr,
+              methodKind,
+              packUrl,
+              packIp ?? '',
+              ridBytes,
+              packedHeaders,
+              body,
+              handle.buffer,
+            )
+            ffiFailures = 0
+          } catch {
+            ffiFailures++
+            if (ffiFailures >= MAX_FFI_FAILURES) {
+              ffiDisabled = true
+            }
+            // napi re-run: crash-safe (napi-rs catch_unwind) and semantically
+            // identical — a transient ffi panic still serves the request. The
+            // packed frame respects the same url/ip minimal-processing.
+            const input = inputPacker.packParts(
+              methodKind,
+              packUrl,
+              packIp,
+              ridBytes,
+              packedHeaders,
+            )
+            written = handler.handleRequestPacked(input, body, handle.buffer)
+          }
+        } else if (bunFFI !== null && ingressPtr !== 0 && !ffiDisabled) {
+          const input = inputPacker.packParts(
+            methodKind,
+            packUrl,
+            packIp,
+            ridBytes,
+            packedHeaders,
+          )
           try {
             written = bunFFI.ingressHandlePacked(ingressPtr, input, body, handle.buffer)
             ffiFailures = 0
@@ -674,6 +738,13 @@ export function createIngressHandler(
             written = handler.handleRequestPacked(input, body, handle.buffer)
           }
         } else {
+          const input = inputPacker.packParts(
+            methodKind,
+            packUrl,
+            packIp,
+            ridBytes,
+            packedHeaders,
+          )
           written = handler.handleRequestPacked(input, body, handle.buffer)
         }
 

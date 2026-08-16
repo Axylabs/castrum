@@ -1,9 +1,8 @@
 // index.ts — castrum package entry (barrel).
 //
 // Re-exports the full public API: the flat `rust.*` FFI surface
-// (src/rust-ffi), the runtime selection hints (src/selection), the
-// performance-proven registry (src/shared/proven), and the higher-order
-// loader (src/loader). See AGENTS.md for the layout map.
+// (src/rust-ffi), the runtime selection hints (src/selection), and the
+// higher-order loader (src/loader). See AGENTS.md for the layout map.
 //
 // EAGER-DLOPEN CONTRACT: this barrel unconditionally re-exports `src/ingress`
 // → `src/ingress/constants.ts`, which is the ONE module that touches native at
@@ -21,19 +20,6 @@ export * from './src/rust-ffi'
 // `bun run check:selection`). See src/selection.ts.
 export { opImpl, isNativeOp, opDecision } from './src/selection'
 export type { OpImpl, OpDecision } from './src/selection'
-
-// Performance-proven surface: only `rust.*` functions that beat their JS
-// baseline in benchmarks. See src/shared/proven.ts for the registry.
-export {
-  proven,
-  PROVEN_SURFACE,
-  provenStatus,
-  isProven,
-  provenSurface,
-  provenSummary,
-} from './src/rust-ffi/proven'
-export type { ProvenClient, ProvenKey } from './src/rust-ffi/proven'
-export type { PerformanceStatus, ProvenEntry } from './src/shared/proven'
 
 export { encoder, decoder } from './src/shared/bytes'
 // Bounded EWMA adaptive-estimate utility (drives BufferPool adaptive sizing

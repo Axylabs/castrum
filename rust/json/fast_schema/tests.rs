@@ -846,6 +846,72 @@ fn invalid_utf8_and_malformed_bytes_return_false() {
     ));
 }
 
+#[test]
+fn rfc8259_strictness_matches_sonic_gate() {
+    // The fast path now serves as the RFC-8259 well-formedness gate for
+    // fast-path schemas in the ingress pipeline (pipeline.rs stage 6): a pass
+    // means BOTH well-formed JSON AND schema-conforming, so the separate sonic
+    // `json_valid_bytes` pass is skipped on the happy path. The safety
+    // property this pins: the fast path must NEVER accept a body the strict
+    // sonic gate rejects (`!sonic ⇒ !fast`). The one gap the walk closes is
+    // raw control bytes (< 0x20) in strings; sonic is lenient on exactly what
+    // the walk is lenient on (bad `\uXXXX` hex, lone surrogates, invalid
+    // UTF-8, numeric overflow) — so this corpus must not diverge.
+    let fast = compile(&bench_schema()).unwrap();
+
+    let corpus: &[&[u8]] = &[
+        // Raw control bytes in string VALUES (sonic rejects → fast must too).
+        b"{\"id\":1,\"name\":\"a\x01b\"}",
+        b"{\"id\":1,\"name\":\"a\x00\"}",
+        b"{\"id\":1,\"name\":\"\x1f\"}",
+        b"{\"id\":1,\"name\":\"a\tb\"}", // raw tab inside a string
+        // Raw control bytes in KEYS (both route through raw_string).
+        b"{\"id\x09\":1}",
+        b"{\"\x00\":1}",
+        // Other malformed-JSON classes sonic rejects.
+        b"{\"id\":1,}",
+        b"[1,]",
+        b"{\"id\":1",
+        b"{\"id\":}",
+        b"-01",
+        b"1.",
+        b"01",
+        b"",
+        b"{\"id\":1} {\"id\":2}",
+        b"{\"id\":1}\x00",
+        // Sonic-lenient inputs the walk must ALSO accept (parity, not strict).
+        b"{\"id\":1,\"name\":\"\\uZZZZ\"}", // bad \u hex
+        b"{\"id\":1,\"name\":\"\\uD800\"}", // lone surrogate
+        b"{\"id\":1,\"name\":\"a\xFFb\"}",  // invalid UTF-8 in a string
+        b"1e999",                           // numeric overflow
+        // Valid AND schema-conforming positive control (bench_schema requires
+        // id/name/active/score/tags/nested — the other two- and three-field
+        // docs above are well-formed but non-conforming, which the pipeline
+        // splits as 422 via the sonic re-check).
+        b"{\"id\":1,\"name\":\"user_1\",\"active\":true,\"score\":1.25,\"tags\":[\"alpha\",\"beta\"],\"nested\":{\"version\":1,\"createdAt\":\"2026-01-01T00:00:00Z\"}}",
+        b"\t\r\n {}", // whitespace control OUTSIDE strings is valid
+    ];
+
+    for &doc in corpus {
+        let sonic = crate::json::json_ops::json_valid_bytes(doc);
+        let got = fast.is_valid_bytes(doc);
+        if !sonic {
+            assert!(
+                !got,
+                "fast path accepted a body the sonic gate rejects: {:?}",
+                String::from_utf8_lossy(doc)
+            );
+        }
+    }
+    // Positive control: well-formed + conforming must pass the fast path.
+    assert!(fast.is_valid_bytes(
+        b"{\"id\":1,\"name\":\"user_1\",\"active\":true,\"score\":1.25,\"tags\":[\"alpha\",\"beta\"],\"nested\":{\"version\":1,\"createdAt\":\"2026-01-01T00:00:00Z\"}}"
+    ));
+    // Well-formed but non-conforming (missing required field) may reject —
+    // the pipeline splits that as 422 via the sonic re-check.
+    assert!(!fast.is_valid_bytes(b"{\"id\":1}"));
+}
+
 // ── format: "email" (zero-DOM fast path) ─────────────────────────
 
 #[test]

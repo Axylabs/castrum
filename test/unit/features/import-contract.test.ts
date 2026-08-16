@@ -25,7 +25,6 @@ describe('package entry eager-load contract', () => {
     for (const key of [
       'rust',
       'loader',
-      'proven',
       'createIngress',
       'createIngressFast',
       'createIngressHandler',

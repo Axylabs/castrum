@@ -7,8 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cstring` ARG fast path for string inputs (bun:ffi)**: the hot string-input
+  C-ABI symbols now take `*const c_char` (`cstring` ARG) instead of `(ptr,len)`
+  — the engine transcodes the JS string to a call-scoped NUL-terminated UTF-8
+  buffer in-engine, so the JS side does ZERO `encoder.encode` work and Rust
+  borrows via `CStr::from_ptr` (no copy). Converted: the validators
+  (`castrum_validate_email/uuid/ipv4/ipv6`), `castrum_ws_accept_key`,
+  `castrum_mime_from_extension`, `castrum_password_verify_bcrypt` (PHC arg),
+  `castrum_rate_limiter_check` (key arg). Binary params (secrets, keys,
+  passwords, cookie sigs) and the pooled `*_into` siblings stay `(ptr,len)`.
+  **Benchmark-gated** (`bench/ffi-margin.ts` `cstringArg` scenario, new
+  `ffi_probe_echo_cstr` probe): ~40–52 ns/call vs ~209–233 ns for
+  `encodeUtf8` + `(ptr,len)` — a ~76–82% win including non-ASCII; verdict
+  `adopt` persisted in the margin report. The flat byte-oriented `rust.*`
+  surface (loader/bench) decodes bytes once before the call; `rust.text.*`
+  passes the string directly. Verified `bun:ffi` facts: JS `null` → NULL and
+  JS `''` → NULL too, so SSE's present-but-empty `Option` event/id semantics
+  stay on `(ptr,len)` (documented in `docs/FFI_BUN_GUIDE.md` §3 shape 4).
+- **FFI-backed instance wrappers kill the cstring→re-encode round-trip**:
+  `createHmacSigner().sign`, `createBase64Codec().encode`,
+  `createCookieSigner().sign/.verify`, and `createCsrfProtector().create` now
+  drive the pooled `*Into` C-ABI variants into a sized output buffer instead of
+  cloning a cstring return and re-encoding it to bytes (`ffiArgon2Hasher.hash`
+  stays — argon2 dominates and no `passwordHashInto` exists yet).
+
+### Added
+
+- **Dual-binary CPU-detect (x86-64-v3 SIMD variant)**: the linux-x64-gnu
+  package now ships a second artifact, `castrum.linux-x64-v3-gnu.node`, built
+  with `-C target-cpu=x86-64-v3 -C target-feature=+avx2,+bmi2,+fma,+sse4.2`
+  (`scripts/build-v3.sh`, package script `build:v3`; `build:all` builds both).
+  `src/native/loader.ts` picks the v3 variant at runtime when the host CPU
+  exposes AVX2+BMI2+FMA+SSE4.2 (read from `/proc/cpuinfo`), falling back to the
+  baseline artifact otherwise — a v3 binary dlopened on an unsupported CPU
+  would SIGILL (not catchable from JS), so the detection is conservative and
+  requires ALL four flags. This unlocks SIMD in crc32fast, sonic-rs, memchr,
+  xxh3, simdutf8, and mimalloc for data-heavy ops (measured: xxh3 64KiB ~2x,
+  crc32 64KiB ~7%, jsonValid 5k-rows ~8% faster than baseline on an AVX2
+  host). ignus's loader (`packages/native/src/loader.ts`) applies the same
+  v3-first rule, and the CI `x86_64-unknown-linux-gnu` build job produces +
+  uploads the v3 artifact. The baseline artifact is unchanged and still ships
+  for every napi target; the v3 variant is optional (loader falls back when
+  absent).
+
+### Added
+
+- **Per-route native stack (`rust/ingress/native_route.rs`) — the LIVE
+  external wire consumed by `@ignex/native`'s `createNativeRoute`** (route-wire
+  v3: magic `ROUT` 0x524f5554, version 3, stage tags
+  parseQuery=0…requireJsonBody=5, result `[flags u32][errorCode u32]` +
+  optional query/cookie pair sections). Replaces the dead per-route wire that
+  0.9.0 removed: a route descriptor compiles once into a pre-baked `NativeRoute`
+  (parse flags + size limits + draft-07 body schema via `IngressSchema`), then
+  each request runs ONE native call (lenient query/cookie parse byte-parity with
+  ignex's `queryPairs`/`cookiePairs`; `requireJsonBody` → 400, `validateBody`
+  schema fail → 422, first-failure-wins). Exposed as the `castrum_route_compile/
+  run/destroy` C-ABI exports (rust/ffi.rs, needed-size convention, panic-guarded,
+  immutable `&self`) + the napi `Route` class (Node/fallback path) + the
+  `BunFFI.routeCompile/routeRun/routeDestroy` bindings + bind-time self-test.
+  Parity pinned by `test/unit/ingress/native-route.test.ts` and ignex's
+  `verify-native-route.ts`.
+
 ### Changed
 
+- **Re-added the `proven` selection surface (baked, no friction)**: new pure-data
+  registry `src/shared/proven.ts` (`PROVEN_SELECTION`) states the
+  benchmark-proven winner per op (`native` / `js` / `bun` built-in delegation),
+  derived from `src/selection.json` + the Bun built-in decision matrix.
+  `src/rust-ffi/proven.ts` re-exports `proven = rust` (the full surface) and the
+  registry helpers. `opImpl` (`src/selection.ts`) now reads the baked registry as
+  the default selection. The old live `check:proven` / `check:annotate` gates are
+  NOT re-added — instead `test/unit/shared/proven.test.ts` verifies each winner
+  is actually wired (`opImpl` agreement, `builtins.has` match, addon
+  `selection.json` parity), replacing the flaky benchmark audit with a
+  deterministic test.
 - **Sonic-rs DOM swap + zero-DOM hot-path pass (COMPLETE)**: replaced the
   `serde_json::Value` DOM on every crate boundary that allowed it, cutting
   per-request heap `String` allocation and DOM construction on the hot paths.
@@ -367,6 +441,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Ingress HTTP hot path — JS-side per-request cost elimination** (beats the
+  raw-Bun benchmark server on both paths; measured 2026-08-16 on this host with
+  the median-of-N autocannon runner, 500 connections):
+  - **No-op observability hooks no longer cost a request-ID decode**: the bench
+    server wires `onResponse` only when metrics/request-logging are actually
+    enabled (`bench/servers/ingress-server.ts`). `createIngressHandler` already
+    skipped the per-request `requestIdStr` UTF-8 decode when no hook/logger/
+    request-id-header needs it (`needRequestIdString`); an unconditionally-wired
+    no-op hook had been keeping the decode hot.
+  - **Copy-mode responses are the default** (was zero-copy): the per-request
+    `ReadableStream` wrapper (`pooledBodyResponse`) costs ~29% RPS on
+    `POST /api/users` (33k → 42.6k in an A/B) and ~parity on GET for the small
+    metadata envelope — a `slice()` + `new Response(bytes)` is cheaper than
+    stream machinery. `INGRESS_ZERO_COPY=1` still opts in for large-payload
+    deployments; `src/shared/response.ts` `pooledBodyResponse` is unchanged.
+  - **Buffered POST bodies read synchronously via `Bun.peek`**:
+    `readBodyWithLimit` now peeks `req.bytes()` — a declared-Content-Length
+    body Bun buffered during HTTP parsing resolves immediately, so the write
+    route skips the deadline race + shared watchdog + microtask entirely
+    (was ~600ns of race machinery per POST). Node falls back to the async path.
+  - **Fast-path-schema POSTs are single-pass** (`rust/ingress/pipeline.rs`
+    stage 6): the zero-DOM `fast_schema` walk is now RFC-8259-strict (rejects
+    raw control bytes in strings — the one gap the sonic gate closed that the
+    walk didn't; it already matched sonic's other accept/reject behavior) so a
+    pass proves BOTH well-formedness AND schema conformance. The separate
+    `json_valid_bytes` sonic pass is skipped on the happy path; on a walk
+    failure the sonic gate still splits 400 (malformed) vs 422 (schema reject),
+    preserving `bodyValidJson`/`schemaValid` semantics (pinned by
+    `rfc8259_strictness_matches_sonic_gate` + the ingress property tests).
+  - Measured per-request (min-of-5): GET `run` 1016 → ~826ns, POST `run` 1338
+    → ~1154ns, POST native 808 → ~740ns. Autocannon medians (run-major
+    interleaved, `AC_RUNS=3`): GET `/api/users?q=…` ingress 51.5k vs bun 45.2k
+    (~+14%, p99 16 vs 28ms); POST `/api/users` ingress 45.4k vs bun 40.8k
+    (~+11%) — the previous ~−24% POST gap is closed.
+- **Autocannon harness: median-of-N + run-major interleaving**
+  (`bench/autocannon-stress.mjs`): new `AC_RUNS=N` repeats each server and
+  reports median RPS/latency + the RPS spread (`<scenario>.median.{md,json}`);
+  runs are interleaved round-major (every server measured once per round) so a
+  noisy host window affects all servers' run-`i` equally — the old server-major
+  order biased ingress/router into later, noisier windows.
+- **`rust.jsonParse` stays native (audited, NOT delegated)**: JSON.parse is
+  ~2× faster, but delegating would break the pinned lone-surrogate contract —
+  the native path throws on `"\ude80"` (json-packed-roundtrip.test.ts) while
+  JSON.parse accepts it — creating a Bun-vs-Node divergence. Documented in
+  `src/rust-ffi/scalar/json.ts`; the guidance "use JSON.parse directly for your
+  own parsing" remains in the decision matrix.
 - **New FFI C-ABI exports kill the napi crossing on SSE + HTTP-date** (Bun
   `bun:ffi` primary transport; napi remains the fallback):
   - `castrum_sse_encode_into` (+ `castrum_http_date_into`): the C-ABI siblings
@@ -539,6 +659,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   header array (per-handler, read-only contract), removing a per-request array
   alloc + copy when an `Origin` header is present (the common browser/bench
   case).
+- **FFI wrapper scratch pooling + hot-path dispatch hoist**: the string-returning
+  encode wrappers in `src/native/ffi.ts` (`hexEncode`, `urlEncode`,
+  `base64Encode`, `hmacSha256`, `httpDate`, `parseHttpDate`, rate-limiter
+  verdicts) now write into reusable growable scratch buffers + cached DataViews
+  (the same pooled pattern as the `jsonSumIds` 9-byte scratch) instead of a
+  fresh `Uint8Array` (+ `DataView`) per call — removes the measured 100–1100 ns
+  per-call alloc on the `bun:ffi` transport (also lifts the raw-addon CPU-bench
+  rows for those ops). Scalar builders (`http`/`payload`/`crypto`/`hashing`)
+  hoist the immutable per-runtime builtin-delegation decision into a bind-time
+  map and memoize the `bun:ffi` resolver via `memoizeFfi` (lazy — no eager
+  dlopen at import), trimming per-op dispatch. `BufferPool`
+  (`src/shared/buffer-pool.ts`) now recycles released handle objects through a
+  bounded free-list, removing the per-request `PooledBufferHandle` allocation
+  from the ingress `run()` path.
 
 ### Documentation
 
@@ -586,6 +720,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Additive; lazy (shares the one-time bind). Pinned by a new regression test in
   `test/unit/features/ffi.test.ts` that fails if a future Bun (or probe bug)
   silently drops the fast path.
+- **`rust.gzipDecompressInto` / `rust.brotliDecompressInto`** (pooled decompress
+  siblings): decompress into a caller-owned output buffer (the C-ABI streams
+  directly via the `_into` cores), keeping the 64 MiB decompression-bomb cap
+  and the needed-size convention (`0` = real error, `w > output.length` =
+  exact required size). Wired through `BunFFI`/`RustScalar` + bind-time
+  self-test round-trips + parity tests (`test/unit/features/ffi.test.ts`).
+  Callers can reuse a large output buffer across calls and skip the per-call
+  `growExact` alloc + retry.
 
 ## [0.9.0] — 2026-08-11
 

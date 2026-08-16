@@ -86,13 +86,14 @@ impl IngressSchema {
     ///
     /// The fast path is used only when every keyword in the schema is in the
     /// supported subset (otherwise `compile` leaves `fast` as `None` and the
-    /// DOM validator is authoritative). The ingress pipeline checks this so it
-    /// can skip the separate `json_valid_bytes` gate ONLY when the validator is
-    /// the DOM parser — a successful DOM parse already proves the body is
-    /// well-formed JSON. The fast path is deliberately NOT relied on for that:
-    /// its string scanning is structural but does not reject every RFC-8259
-    /// violation (e.g. invalid `\uXXXX` escapes), so it must stay behind the
-    /// strict `json_valid_bytes` gate.
+    /// DOM validator is authoritative). The ingress pipeline treats a fast-path
+    /// pass as BOTH schema validation AND the RFC-8259 well-formedness gate:
+    /// the structural walk rejects raw control bytes in strings (the one
+    /// violation the sonic gate closes that the walk didn't) and already
+    /// rejects every other malformed-JSON class, while matching sonic's
+    /// leniency (bad `\uXXXX` hex, lone surrogates, invalid UTF-8, `1e999`).
+    /// On a walk failure the sonic gate still splits 400 (malformed) vs 422
+    /// (schema reject). See rust/json/fast_schema/cursor.rs `raw_string`.
     #[inline]
     pub(crate) fn uses_fast_path(&self) -> bool {
         self.fast.is_some()
@@ -121,7 +122,6 @@ impl IngressInner {
         // ── 1. Parse the packed input frame ─────────────────────────
         let mut pos = 1usize;
         let mk = MethodKind::from_u8(input[0]);
-        let is_options = mk == MethodKind::Options;
 
         let url_bytes = match read_section(input, &mut pos, self.limits.max_url_bytes) {
             Ok(v) => v,
@@ -163,6 +163,41 @@ impl IngressInner {
                 ))
             }
         };
+        // The per-request core (trust/IP/https, CORS, rate, body guard,
+        // schema, section serialization, output header) is shared with the
+        // C-ABI `castrum_ingress_handle_components` path (which skips JS-side
+        // frame assembly for URL/IP by passing them as `bun:ffi` cstrings).
+        self.handle_components(mk, url_bytes, ip_bytes, rid_bytes, headers_packed, body_bytes, out)
+    }
+
+    /// Process one request from raw components.
+    ///
+    /// Shared by the packed-frame path (`handle_packed`) and the C-ABI
+    /// `castrum_ingress_handle_components` (which receives URL/IP as
+    /// NUL-terminated `bun:ffi` cstrings and the rid/headers/body as byte
+    /// slices, skipping the JS-side frame assembly). Runs stages 2-8 over the
+    /// parsed request components; parses the packed header block here (the
+    /// `is_options` flag and `max_headers` bound live on this instance).
+    ///
+    /// - `mk`: HTTP method kind
+    /// - `url_bytes` / `ip_bytes` / `rid_bytes`: raw request components
+    /// - `headers_packed`: packed header block (`[u16 count] {pairs}`)
+    /// - `body_bytes`: the request body (empty when there is none)
+    /// - `out`: receives the packed decision header followed by JSON payloads
+    pub(crate) fn handle_components(
+        &self,
+        mk: MethodKind,
+        url_bytes: &[u8],
+        ip_bytes: &[u8],
+        rid_bytes: &[u8],
+        headers_packed: &[u8],
+        body_bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize> {
+        if out.len() < OUT_DATA_START {
+            return Err(Error::new(Status::InvalidArg, "output buffer too small"));
+        }
+        let is_options = mk == MethodKind::Options;
         let headers = match HeaderRefs::parse(headers_packed, is_options, self.limits.max_headers) {
             Ok(v) => v,
             Err(_) => {
@@ -291,10 +326,14 @@ impl IngressInner {
             //   pass instead of two). On a failure `json_valid_bytes` still
             //   distinguishes a malformed body (400) from a well-formed body
             //   that fails the schema (422), exactly as before.
-            // * Fast path (zero-DOM): the fast validator's structural string
-            //   scanning does NOT reject every RFC-8259 violation (bad
-            //   `\uXXXX` escapes, raw control bytes), so it MUST stay behind
-            //   the strict `json_valid_bytes` gate to keep 400 semantics.
+            // * Fast path (zero-DOM): the structural walk is now RFC-8259-strict
+            //   (raw control bytes in strings are rejected — the one gap sonic
+            //   closes that the walk didn't; it already rejects the other
+            //   malformed-JSON classes and is lenient on exactly the same
+            //   inputs sonic is), so a pass proves well-formedness too. The
+            //   happy path is ONE body pass; on a failure `json_valid_bytes`
+            //   still splits 400 (malformed) vs 422 (schema reject).
+            // * No schema (`require_json_body`): strict gate only.
             match self.schema.as_ref() {
                 Some(schema) if !schema.uses_fast_path() => {
                     if schema.validate(body_bytes) {
@@ -306,22 +345,29 @@ impl IngressInner {
                         return Ok(terminal_schema_validation(flags, success_hv, rate, out));
                     }
                 }
-                _ => {
-                    // Strict gate (fast-path schema, or no schema): validate
-                    // JSON validity first, then the schema when present.
+                Some(schema) => {
+                    if schema.validate(body_bytes) {
+                        flags |= FLAG_BODY_VALID_JSON;
+                        flags |= FLAG_SCHEMA_VALID;
+                    } else if !crate::json::json_ops::json_valid_bytes(body_bytes) {
+                        return Ok(terminal_invalid_json(flags, success_hv, rate, out));
+                    } else {
+                        // Body is well-formed JSON (confirmed by the sonic
+                        // re-check) but fails the schema → 422. bodyValidJson
+                        // stays true (matches the pre-single-pass behavior,
+                        // where the gate flag was set before the schema check).
+                        flags |= FLAG_BODY_VALID_JSON;
+                        return Ok(terminal_schema_validation(flags, success_hv, rate, out));
+                    }
+                }
+                None => {
                     if !crate::json::json_ops::json_valid_bytes(body_bytes) {
                         return Ok(terminal_invalid_json(flags, success_hv, rate, out));
                     }
                     flags |= FLAG_BODY_VALID_JSON;
-                    if let Some(schema) = self.schema.as_ref() {
-                        if !schema.validate(body_bytes) {
-                            return Ok(terminal_schema_validation(flags, success_hv, rate, out));
-                        }
-                    }
-                    // With no schema configured, validation trivially passes.
-                    // Setting the flag here keeps `schemaValid` meaning "schema
-                    // passed" for consumers that gate on it (e.g. handlers.ts
-                    // jsonWriteHandler) regardless of schema configuration.
+                    // No schema → validation trivially passes. Setting the flag
+                    // keeps `schemaValid` meaning "schema passed" for consumers
+                    // that gate on it (e.g. handlers.ts jsonWriteHandler).
                     flags |= FLAG_SCHEMA_VALID;
                 }
             }

@@ -4,9 +4,9 @@
 // The CPU bench's `rust:` column must measure the ACTUAL addon — the same
 // path the wrapper takes on Node / before Bun delegation — NOT the delegated
 // Bun built-in. Otherwise the CPU report would silently start reflecting Bun
-// built-ins and the PROVEN_SURFACE audit (which classifies the addon vs the
-// node baseline) would drift. Each accessor replicates the pre-delegation
-// FFI-first / napi-fallback path of the scalar builder it mirrors.
+// built-ins instead of the addon. Each accessor replicates the
+// pre-delegation FFI-first / napi-fallback path of the scalar builder it
+// mirrors.
 //
 // Bench-only: this module is never shipped (src/bench is not part of the
 // public entry).

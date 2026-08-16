@@ -457,6 +457,49 @@ describe('bun:ffi fast path', () => {
     expect(Array.from(outF2.subarray(0, wF2))).toEqual(Array.from(outN2.subarray(0, wN2)))
   })
 
+  test('ingressHandleComponents (cstring url/ip) matches the packed ffi path byte-for-byte', () => {
+    if (!isBun() || getBunFFI() === null) return
+    const addon = getAddon()
+    const ffi = getBunFFI()
+    if (ffi === null || typeof ffi.ingressHandleComponents !== 'function') {
+      return // addon predates the components entry — covered by the napi suite
+    }
+    const handler = new addon.Ingress({
+      parseQuery: true,
+      parseCookies: true,
+      emitMetadataJson: true,
+      https: true,
+    })
+    if (typeof handler.ingressInnerPtr !== 'function') return
+    const ptr = Number(handler.ingressInnerPtr())
+    expect(ptr).not.toBe(0)
+
+    const url = 'http://localhost:9122/api/users?x=1&y=2'
+    const ip = '127.0.0.1'
+    const rid = encoder.encode('rid-12345')
+    const headers = new Uint8Array(2) // empty packed block [u16 0]
+    const body = encoder.encode('{"a":1}')
+
+    // Packed path: the same components assembled into a frame.
+    const packer = new IngressInputPacker()
+    const frame = packer.pack(0, encoder.encode(url), encoder.encode(ip), rid, headers)
+
+    const outF = new Uint8Array(4096)
+    const wF = ffi.ingressHandlePacked(ptr, frame, body, outF)
+    const outC = new Uint8Array(4096)
+    const wC = ffi.ingressHandleComponents(ptr, 0, url, ip, rid, headers, body, outC)
+    expect(wC).toBe(wF)
+    expect(Array.from(outC.subarray(0, wC))).toEqual(Array.from(outF.subarray(0, wF)))
+
+    // Null body.
+    const outF2 = new Uint8Array(4096)
+    const wF2 = ffi.ingressHandlePacked(ptr, frame, null, outF2)
+    const outC2 = new Uint8Array(4096)
+    const wC2 = ffi.ingressHandleComponents(ptr, 0, url, ip, rid, headers, null, outC2)
+    expect(wC2).toBe(wF2)
+    expect(Array.from(outC2.subarray(0, wC2))).toEqual(Array.from(outF2.subarray(0, wF2)))
+  })
+
   // ── Reusable-output *Into variants (pooled buffers, no per-call alloc) ──
 
   test('*Into variants match their allocating siblings and throw on too-small', () => {
@@ -504,6 +547,26 @@ describe('bun:ffi fast path', () => {
       Array.from(rust.brotliCompress(encoder.encode('hello'))),
     )
 
+    // gzipDecompressInto / brotliDecompressInto (pooled decompress siblings):
+    // must match the allocating sibling byte-for-byte and honor the cap.
+    const gzd = new Uint8Array(1024)
+    const gzdw = rust.gzipDecompressInto(gz.subarray(0, gzw), gzd)
+    expect(gzdw).toBe(5) // 'hello'
+    expect(Array.from(gzd.subarray(0, gzdw))).toEqual(Array.from(encoder.encode('hello')))
+    expect(Array.from(gzd.subarray(0, gzdw))).toEqual(
+      Array.from(rust.gzipDecompress(gz.subarray(0, gzw))),
+    )
+    const brd = new Uint8Array(1024)
+    const brdw = rust.brotliDecompressInto(br.subarray(0, brw), brd)
+    expect(brdw).toBe(5)
+    expect(Array.from(brd.subarray(0, brdw))).toEqual(Array.from(encoder.encode('hello')))
+    expect(Array.from(brd.subarray(0, brdw))).toEqual(
+      Array.from(rust.brotliDecompress(br.subarray(0, brw))),
+    )
+    // Decompression-bomb cap is preserved on the pooled path.
+    expect(() => rust.gzipDecompressInto(gz.subarray(0, gzw), new Uint8Array(1024), 1)).toThrow()
+    expect(() => rust.brotliDecompressInto(br.subarray(0, brw), new Uint8Array(1024), 1)).toThrow()
+
     // Too-small buffers throw (parity with the existing *Into contract).
     expect(() => rust.hmacSha256Into(key, data, new Uint8Array(8))).toThrow()
     expect(() => rust.signCookieInto(value, secret, new Uint8Array(8))).toThrow()
@@ -515,6 +578,8 @@ describe('bun:ffi fast path', () => {
     ).toThrow()
     expect(() => rust.gzipCompressInto(encoder.encode('hello'), new Uint8Array(2))).toThrow()
     expect(() => rust.brotliCompressInto(encoder.encode('hello'), new Uint8Array(2))).toThrow()
+    expect(() => rust.gzipDecompressInto(gz.subarray(0, gzw), new Uint8Array(2))).toThrow()
+    expect(() => rust.brotliDecompressInto(br.subarray(0, brw), new Uint8Array(2))).toThrow()
   })
 
   // ── FFI-backed create* instances (stateless C-ABI ops under Bun) ──

@@ -3,9 +3,9 @@
 // `rust.packed.*` is the zero-copy API: callers pass already-packed buffers and
 // receive the raw packed output, plus the batch metadata/count helpers.
 
-import { asNumber } from './options'
-import { resolvePoolNative, type RustClientContext } from './context'
 import type { PasswordHashOptions } from '../native'
+import { type RustClientContext, resolvePoolNative } from './context'
+import { asNumber } from './options'
 
 /** Raw packed-wire FFI namespace. */
 export interface RustPacked {

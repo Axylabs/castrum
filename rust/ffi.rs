@@ -154,12 +154,15 @@ pub unsafe extern "C" fn castrum_xxh3(data: *const u8, len: usize) -> u64 {
 // Used ONLY by bench/ffi-margin.ts to isolate the fixed per-call FFI cost into
 // its components: the bare trampoline (noop), scalar-arg/return conversion
 // (echo_usize, which can be bound with either `usize` or `u64_fast` to measure
-// BigInt boxing in isolation), and TypedArray-view→pointer resolution
-// (echo_view). They are trivial, non-fallible, allocate nothing, and are NOT
-// part of the shipped `src/native/ffi.ts` dlopen map, so the bind-time
-// self-test does not cover them. The `ffi_probe_*` prefix (NOT `castrum_*`)
-// keeps them out of the shipped-symbol namespace so the source-level symbol-
-// parity guard (test/unit/features/ffi-symbol-parity.test.ts) stays meaningful.
+// BigInt boxing in isolation), TypedArray-view→pointer resolution
+// (echo_view), and `cstring`-ARG transcoding (echo_cstr — the engine encodes
+// the JS string to a call-scoped NUL-terminated buffer; the callee borrows it
+// via `CStr::from_ptr`, never dereferencing beyond NUL). They are trivial,
+// non-fallible, allocate nothing, and are NOT part of the shipped
+// `src/native/ffi.ts` dlopen map, so the bind-time self-test does not cover
+// them. The `ffi_probe_*` prefix (NOT `castrum_*`) keeps them out of the
+// shipped-symbol namespace so the source-level symbol-parity guard
+// (test/unit/features/ffi-symbol-parity.test.ts) stays meaningful.
 
 /// Bare C-ABI trampoline floor: does nothing, returns nothing.
 #[no_mangle]
@@ -185,6 +188,24 @@ pub unsafe extern "C" fn ffi_probe_echo_view(data: *const u8, len: usize) -> usi
     }
     let _ = slice::from_raw_parts(data, len);
     len
+}
+
+/// `cstring`-ARG pass-through: returns the byte length of the NUL-terminated
+/// C string the engine produced by transcoding a JS string arg. Measures the
+/// engine-side JS-string→UTF-8 transcode + call-scoped buffer + callee
+/// `CStr::from_ptr` borrow — the cost a `'cstring'` input arg adds compared
+/// with a JS-side `encoder.encode` + `(ptr,len)` pair. The pointer is only
+/// used to form a slice whose length we return — never dereferenced beyond
+/// NUL.
+///
+/// # Safety
+/// `data` must be a valid NUL-terminated C string for reads up to its terminator.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_probe_echo_cstr(data: *const std::os::raw::c_char) -> usize {
+    if data.is_null() {
+        return 0;
+    }
+    std::ffi::CStr::from_ptr(data).to_bytes().len()
 }
 
 /// JSON-validity check over `data[0..len]`. Returns 1 if the bytes are
@@ -304,18 +325,24 @@ pub unsafe extern "C" fn castrum_url_decode(
 // ── Validators (value-returning) ─────────────────────────────────
 
 /// Email / UUID / IPv4 / IPv6 validators → 1/0.
+///
+/// The input is a `bun:ffi` `cstring` ARG: the engine transcodes the JS string
+/// to a call-scoped NUL-terminated UTF-8 buffer in-engine, so the JS side does
+/// zero `encoder.encode` work and the callee borrows via `CStr::from_ptr` (no
+/// copy). Only text inputs (never NUL-containing) are valid — see the
+/// `cstring`-arg rule in docs/FFI_BUN_GUIDE.md.
 macro_rules! validator_c_abi {
     ($name:ident, $core:path) => {
         #[doc = concat!("Validate input as a ", stringify!($name), " → 1/0.")]
         ///
         /// # Safety
-        /// `data` must be valid for reads of `len` bytes.
+        /// `data` must be a valid NUL-terminated C string.
         #[no_mangle]
-        pub unsafe extern "C" fn $name(data: *const u8, len: usize) -> u8 {
+        pub unsafe extern "C" fn $name(data: *const std::os::raw::c_char) -> u8 {
             if data.is_null() {
                 return 0;
             }
-            u8::from($core(slice::from_raw_parts(data, len)))
+            u8::from($core(std::ffi::CStr::from_ptr(data).to_bytes()))
         }
     };
 }
@@ -439,19 +466,23 @@ pub unsafe extern "C" fn castrum_password_verify(
 
 /// bcrypt password verify → 1/0 (PHC `$2b$` string).
 ///
+/// `hash` is a `bun:ffi` `cstring` ARG (the engine transcodes the JS PHC string
+/// in-engine; the callee borrows via `CStr::from_ptr`). The password stays a
+/// `(ptr,len)` byte slice — it may contain arbitrary bytes (including NUL).
+///
 /// # Safety
-/// `password`/`hash` must be valid for reads of their lengths.
+/// `password` must be valid for reads of `plen` bytes; `hash` must be a valid
+/// NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_password_verify_bcrypt(
     password: *const u8,
     plen: usize,
-    hash: *const u8,
-    hlen: usize,
+    hash: *const std::os::raw::c_char,
 ) -> u8 {
     if password.is_null() || hash.is_null() {
         return 0;
     }
-    let Ok(h) = std::str::from_utf8(slice::from_raw_parts(hash, hlen)) else {
+    let Ok(h) = std::ffi::CStr::from_ptr(hash).to_str() else {
         return 0;
     };
     u8::from(bcrypt::verify(slice::from_raw_parts(password, plen), h).unwrap_or(false))
@@ -462,18 +493,22 @@ pub unsafe extern "C" fn castrum_password_verify_bcrypt(
 /// RFC 6455 Sec-WebSocket-Accept (28 bytes) returned as a null-terminated C
 /// string into the per-thread reused buffer (`cstring` return).
 ///
+/// `key` is a `bun:ffi` `cstring` ARG — the engine transcodes the JS base64 key
+/// in-engine (JS does zero encode; the callee borrows via `CStr::from_ptr`).
+/// The pooled `castrum_ws_accept_key_into` keeps the `(ptr,len)` byte form.
+///
 /// # Safety
-/// `key` must be valid for reads of `klen` bytes.
+/// `key` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_ws_accept_key(
-    key: *const u8,
-    klen: usize,
+    key: *const std::os::raw::c_char,
 ) -> *const std::os::raw::c_char {
     if key.is_null() {
         return std::ptr::null();
     }
     cstring_return(28, |out| {
-        crate::payload::websocket::ws_accept_key_into(slice::from_raw_parts(key, klen), out).ok()
+        crate::payload::websocket::ws_accept_key_into(std::ffi::CStr::from_ptr(key).to_bytes(), out)
+            .ok()
     })
 }
 
@@ -821,14 +856,19 @@ pub unsafe extern "C" fn castrum_schema_validator_validate(
 /// remaining LE][i64 reset_ms LE]` (13 bytes); needed-size convention; 0 =
 /// null handle (real error).
 ///
+/// `key` is a `bun:ffi` `cstring` ARG — the engine transcodes the JS rate-limit
+/// key in-engine (JS does zero encode; the callee borrows via `CStr::from_ptr`).
+/// Intended keys are IPs / route identifiers (text, no NUL); a key containing a
+/// NUL would be truncated before hashing.
+///
 /// # Safety
 /// `inner` must be a valid `RateLimiter` pointer from `inner_ptr()`, alive for
-/// the call; `out` for writes up to `out_cap`.
+/// the call; `key` must be a valid NUL-terminated C string; `out` for writes up
+/// to `out_cap`.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_rate_limiter_check(
     inner: usize,
-    key: *const u8,
-    key_len: usize,
+    key: *const std::os::raw::c_char,
     now_ms: i64,
     out: *mut u8,
     out_cap: usize,
@@ -836,7 +876,7 @@ pub unsafe extern "C" fn castrum_rate_limiter_check(
     if inner == 0 || key.is_null() || out.is_null() {
         return 0;
     }
-    let k = slice::from_raw_parts(key, key_len);
+    let k = std::ffi::CStr::from_ptr(key).to_bytes();
     let hashed = crate::crypto::hashing::fast_hash_bytes(k);
     let (allowed, remaining, reset_ms) = panic_guard(
         || unsafe {
@@ -2134,25 +2174,27 @@ pub unsafe extern "C" fn castrum_json_parse_packed(
         return 0;
     }
     let input = slice::from_raw_parts(data, len);
-    let Some(packed) = panic_guard(
-        || {
-            let emitter = sonic_rs::from_slice::<JsonPackedEmitter>(input).ok()?;
-            let mut packed = Vec::with_capacity(4 + emitter.table.len() + 4 + emitter.tree.len());
-            packed.extend_from_slice(&(emitter.strings.len() as u32).to_le_bytes());
-            packed.extend_from_slice(&emitter.table);
-            packed.extend_from_slice(&(emitter.tree.len() as u32).to_le_bytes());
-            packed.extend_from_slice(&emitter.tree);
-            Some(packed)
-        },
-        None,
-    ) else {
+    let Some(emitter) = panic_guard(|| sonic_rs::from_slice::<JsonPackedEmitter>(input).ok(), None)
+    else {
         return 0;
     };
-    if packed.len() > out_cap {
-        return packed.len();
+    // Write the packed [u32 stringsLen][table][u32 treeLen][tree] directly
+    // into the caller's buffer — no intermediate Vec + second copy.
+    let needed = 4 + emitter.table.len() + 4 + emitter.tree.len();
+    if needed > out_cap {
+        return needed;
     }
-    slice::from_raw_parts_mut(out, packed.len()).copy_from_slice(&packed);
-    packed.len()
+    let out = slice::from_raw_parts_mut(out, needed);
+    let mut wp = 0usize;
+    out[wp..wp + 4].copy_from_slice(&(emitter.strings.len() as u32).to_le_bytes());
+    wp += 4;
+    out[wp..wp + emitter.table.len()].copy_from_slice(&emitter.table);
+    wp += emitter.table.len();
+    out[wp..wp + 4].copy_from_slice(&(emitter.tree.len() as u32).to_le_bytes());
+    wp += 4;
+    out[wp..wp + emitter.tree.len()].copy_from_slice(&emitter.tree);
+    wp += emitter.tree.len();
+    wp
 }
 
 /// Parse a `Content-Type` header into a packed verdict:
@@ -2174,50 +2216,86 @@ pub unsafe extern "C" fn castrum_parse_media_type(
         return 0;
     }
     let input = slice::from_raw_parts(data, len);
-    let Some(packed) = panic_guard(
-        || {
-            let parsed = crate::http::media_type::parse_media_type_core(input).ok()?;
-            let media_type = format!("{}/{}", parsed.ty, parsed.subtype);
-            let charset = parsed
-                .params
-                .iter()
-                .find(|(k, _)| k == "charset")
-                .map(|(_, val)| val.clone());
-            let boundary = parsed
-                .params
-                .iter()
-                .find(|(k, _)| k == "boundary")
-                .map(|(_, val)| val.clone());
-            let mut v = Vec::with_capacity(12 + media_type.len() + parsed.params.len() * 16);
-            v.extend_from_slice(&(media_type.len() as u32).to_le_bytes());
-            v.extend_from_slice(media_type.as_bytes());
-            let write_opt = |v: &mut Vec<u8>, s: &Option<String>| match s {
-                Some(s) => {
-                    v.extend_from_slice(&(s.len() as u32).to_le_bytes());
-                    v.extend_from_slice(s.as_bytes());
-                }
-                None => v.extend_from_slice(&u32::MAX.to_le_bytes()),
-            };
-            write_opt(&mut v, &charset);
-            write_opt(&mut v, &boundary);
-            v.extend_from_slice(&(parsed.params.len() as u32).to_le_bytes());
-            for (k, val) in &parsed.params {
-                v.extend_from_slice(&(k.len() as u32).to_le_bytes());
-                v.extend_from_slice(k.as_bytes());
-                v.extend_from_slice(&(val.len() as u32).to_le_bytes());
-                v.extend_from_slice(val.as_bytes());
-            }
-            Some(v)
-        },
+    let Some(parsed) = panic_guard(
+        || crate::http::media_type::parse_media_type_core(input).ok(),
         None,
     ) else {
         return 0;
     };
-    if packed.len() > out_cap {
-        return packed.len();
+    // Borrowed charset/boundary lookups (no String clones) + direct write into
+    // the caller's buffer — no `format!`, no intermediate Vec, no final copy.
+    let charset = parsed
+        .params
+        .iter()
+        .find(|(k, _)| k == "charset")
+        .map(|(_, v)| v.as_bytes());
+    let boundary = parsed
+        .params
+        .iter()
+        .find(|(k, _)| k == "boundary")
+        .map(|(_, v)| v.as_bytes());
+    let mt_len = parsed.ty.len() + 1 + parsed.subtype.len();
+    let mut needed = 4 + mt_len;
+    needed += charset.map_or(4, |v| 4 + v.len());
+    needed += boundary.map_or(4, |v| 4 + v.len());
+    needed += 4; // paramCount
+    for (k, v) in &parsed.params {
+        needed += 4 + k.len() + 4 + v.len();
     }
-    slice::from_raw_parts_mut(out, packed.len()).copy_from_slice(&packed);
-    packed.len()
+    if needed > out_cap {
+        return needed;
+    }
+    let out = slice::from_raw_parts_mut(out, needed);
+    let mut wp = 0usize;
+    out[wp..wp + 4].copy_from_slice(&(mt_len as u32).to_le_bytes());
+    wp += 4;
+    out[wp..wp + parsed.ty.len()].copy_from_slice(parsed.ty.as_bytes());
+    wp += parsed.ty.len();
+    out[wp] = b'/';
+    wp += 1;
+    out[wp..wp + parsed.subtype.len()].copy_from_slice(parsed.subtype.as_bytes());
+    wp += parsed.subtype.len();
+    // charset option slot ([u32 len][charset] or u32::MAX when absent)
+    match charset {
+        Some(v) => {
+            out[wp..wp + 4].copy_from_slice(&(v.len() as u32).to_le_bytes());
+            wp += 4;
+            out[wp..wp + v.len()].copy_from_slice(v);
+            wp += v.len();
+        }
+        None => {
+            out[wp..wp + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            wp += 4;
+        }
+    }
+    // boundary option slot
+    match boundary {
+        Some(v) => {
+            out[wp..wp + 4].copy_from_slice(&(v.len() as u32).to_le_bytes());
+            wp += 4;
+            out[wp..wp + v.len()].copy_from_slice(v);
+            wp += v.len();
+        }
+        None => {
+            out[wp..wp + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            wp += 4;
+        }
+    }
+    // params
+    out[wp..wp + 4].copy_from_slice(&(parsed.params.len() as u32).to_le_bytes());
+    wp += 4;
+    for (k, v) in &parsed.params {
+        out[wp..wp + 4].copy_from_slice(&(k.len() as u32).to_le_bytes());
+        wp += 4;
+        out[wp..wp + k.len()].copy_from_slice(k.as_bytes());
+        wp += k.len();
+        out[wp..wp + 4].copy_from_slice(&(v.len() as u32).to_le_bytes());
+        wp += 4;
+        out[wp..wp + v.len()].copy_from_slice(v.as_bytes());
+        wp += v.len();
+    }
+    debug_assert_eq!(wp, needed);
+    needed
 }
 
 /// Parse an IMF-fixdate back to unix seconds → packed `[u8 ok][i64 secs LE]`
@@ -2277,28 +2355,34 @@ pub unsafe extern "C" fn castrum_parse_accept_encoding(
         return 0;
     }
     let input = slice::from_raw_parts(data, len);
-    let Some(packed) = panic_guard(
-        || {
-            let prefs = crate::http::accept::parse_accept_encoding_core(input);
-            let mut v = Vec::with_capacity(4 + prefs.len() * 16);
-            v.extend_from_slice(&(prefs.len() as u32).to_le_bytes());
-            for p in &prefs {
-                v.extend_from_slice(&(p.encoding.len() as u32).to_le_bytes());
-                v.extend_from_slice(p.encoding.as_bytes());
-                v.extend_from_slice(&p.q.to_le_bytes());
-                v.extend_from_slice(&p.order.to_le_bytes());
-            }
-            Some(v)
-        },
-        None,
-    ) else {
+    let Some(prefs) = panic_guard(|| Some(crate::http::accept::parse_accept_encoding_core(input)), None)
+    else {
         return 0;
     };
-    if packed.len() > out_cap {
-        return packed.len();
+    // Write the packed [u32 count]{[u32 encLen][enc][f32 q][u32 order]} verdict
+    // directly into the caller's buffer — no intermediate Vec + copy.
+    let mut needed = 4usize;
+    for p in &prefs {
+        needed += 4 + p.encoding.len() + 4 + 4;
     }
-    slice::from_raw_parts_mut(out, packed.len()).copy_from_slice(&packed);
-    packed.len()
+    if needed > out_cap {
+        return needed;
+    }
+    let out = slice::from_raw_parts_mut(out, needed);
+    let mut wp = 4usize;
+    out[0..4].copy_from_slice(&(prefs.len() as u32).to_le_bytes());
+    for p in &prefs {
+        out[wp..wp + 4].copy_from_slice(&(p.encoding.len() as u32).to_le_bytes());
+        wp += 4;
+        out[wp..wp + p.encoding.len()].copy_from_slice(p.encoding.as_bytes());
+        wp += p.encoding.len();
+        out[wp..wp + 4].copy_from_slice(&p.q.to_le_bytes());
+        wp += 4;
+        out[wp..wp + 4].copy_from_slice(&p.order.to_le_bytes());
+        wp += 4;
+    }
+    debug_assert_eq!(wp, needed);
+    wp
 }
 
 /// Percent-encode a query string from a packed `[u32 count]{[u32 keyLen][key]
@@ -2471,17 +2555,19 @@ pub unsafe extern "C" fn castrum_url_builder_resolve(
 /// Never fails (the core's fallback is infallible) — `null` only on a null
 /// pointer or a panic (programmer error).
 ///
+/// `ext` is a `bun:ffi` `cstring` ARG — the engine transcodes the JS extension
+/// in-engine (JS does zero encode; the callee borrows via `CStr::from_ptr`).
+///
 /// # Safety
-/// `ext` must be valid for reads of `len` bytes.
+/// `ext` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_mime_from_extension(
-    ext: *const u8,
-    len: usize,
+    ext: *const std::os::raw::c_char,
 ) -> *const std::os::raw::c_char {
     if ext.is_null() {
         return std::ptr::null();
     }
-    let input = slice::from_raw_parts(ext, len);
+    let input = std::ffi::CStr::from_ptr(ext).to_bytes();
     let mime = panic_guard(
         || crate::http::mime_lookup::mime_from_extension_bytes(input),
         b"application/octet-stream".to_vec(),
@@ -2789,6 +2875,108 @@ pub unsafe extern "C" fn castrum_ingress_handle_packed(
     )
 }
 
+/// Run the ingress pipeline from raw request components — the `bun:ffi`
+/// cstring sibling of `castrum_ingress_handle_packed`.
+///
+/// `url` / `ip` are NUL-terminated UTF-8 cstrings (`bun:ffi` `cstring` ARGs —
+/// the engine transcodes the JS strings to call-scoped buffers in-engine), so
+/// the JS side skips the frame assembly + `Buffer.write` UTF-8 encode for the
+/// URL/IP. `rid` / `headers` / `body` are `(ptr,len)` byte slices (headers =
+/// the packed `[u16 count] {pairs}` block); `out` receives the packed decision.
+/// Same wire format + semantics as the packed entry — the shared core is
+/// `IngressInner::handle_components`.
+///
+/// Returns bytes written into `out` (0 = error / too-small buffer).
+///
+/// # Safety
+/// `inner` must be the live `IngressInner` pointer from a live `Ingress`
+/// instance; `url`/`ip` must be valid NUL-terminated buffers (the engine
+/// guarantees this for `cstring` args); `rid`/`headers`/`body` valid for their
+/// declared lengths (null/0 = no body); `out` valid for `out_cap` writes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_ingress_handle_components(
+    inner: usize,
+    method_kind: u8,
+    url: *const std::os::raw::c_char,
+    ip: *const std::os::raw::c_char,
+    rid: *const u8,
+    rid_len: usize,
+    headers: *const u8,
+    headers_len: usize,
+    body: *const u8,
+    body_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    let inner = inner as *const crate::ingress::IngressInner;
+    if inner.is_null()
+        || url.is_null()
+        || ip.is_null()
+        || rid.is_null()
+        || headers.is_null()
+        || out.is_null()
+    {
+        return 0;
+    }
+    if out_cap < crate::ingress::output::OUT_DATA_START {
+        return 0;
+    }
+    let url_bytes = std::ffi::CStr::from_ptr(url).to_bytes();
+    let ip_bytes = std::ffi::CStr::from_ptr(ip).to_bytes();
+    let rid_slice = slice::from_raw_parts(rid, rid_len);
+    let headers_slice = slice::from_raw_parts(headers, headers_len);
+    let body_slice: &[u8] = if body.is_null() || body_len == 0 {
+        &[]
+    } else {
+        slice::from_raw_parts(body, body_len)
+    };
+    let out_slice = slice::from_raw_parts_mut(out, out_cap);
+    // Aliasing insurance (mirrors the packed entry): if any input aliases the
+    // output, copy it first so the shared `&[u8]` and the `&mut [u8]` output
+    // borrow never alias (aliased &/&mut is instant UB). The `url`/`ip`
+    // cstrings are engine-scoped buffers and can never alias `out`.
+    let owned_rid;
+    let rid_ref: &[u8] = if crate::util::slices_overlap(rid_slice, out_slice) {
+        owned_rid = rid_slice.to_vec();
+        &owned_rid
+    } else {
+        rid_slice
+    };
+    let owned_headers;
+    let headers_ref: &[u8] = if crate::util::slices_overlap(headers_slice, out_slice) {
+        owned_headers = headers_slice.to_vec();
+        &owned_headers
+    } else {
+        headers_slice
+    };
+    let owned_body;
+    let body_ref: &[u8] = if crate::util::slices_overlap(body_slice, out_slice) {
+        owned_body = body_slice.to_vec();
+        &owned_body
+    } else {
+        body_slice
+    };
+    let mk = crate::http::method::MethodKind::from_u8(method_kind);
+    // A panic must not unwind through the C ABI — catch it and report 0 (the
+    // JS wrapper turns it into a 500), matching the packed entry.
+    panic_guard(
+        || {
+            (&*inner)
+                .handle_components(
+                    mk,
+                    url_bytes,
+                    ip_bytes,
+                    rid_ref,
+                    headers_ref,
+                    body_ref,
+                    out_slice,
+                )
+                .unwrap_or(0)
+        },
+        0,
+    )
+}
+
 // ── Ingress binary-layout constants (C ABI) ──────────────────────
 // The napi projection (`ingress_constants.rs`) exposes these to JS by name;
 // this C-ABI variant lets Bun read the SAME values via `bun:ffi` WITHOUT
@@ -2913,6 +3101,87 @@ pub unsafe extern "C" fn castrum_ingress_layout(out: *mut u8, out_cap: usize) ->
     n
 }
 
+// ── Per-route native stack (castrum_route_*) ────────────────────
+// The live external wire consumed by `@ignex/native` (`createNativeRoute` →
+// `route-wire.ts` v3): a route descriptor compiles ONCE into a pre-baked
+// `NativeRoute` (rust/ingress/native_route.rs), then each request packs a tiny
+// frame and gets a packed verdict in one call. The handle is an owned
+// `Box<NativeRoute>` (opaque u64); `route_run` follows the needed-size
+// convention (`0` = real error, `> out_cap` = exact required size) so the JS
+// wrapper allocates once and retries at most once. All three are `panic_guard`ed
+// — a panic must never unwind through the C ABI.
+
+/// Compile a route descriptor into an opaque handle (`0` = failure / null
+/// input / panic). The handle is an owned `Box<NativeRoute>`; release it with
+/// {@link castrum_route_destroy}.
+///
+/// # Safety
+/// `desc` must be valid for reads of `desc_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_route_compile(desc: *const u8, desc_len: usize) -> u64 {
+    if desc.is_null() {
+        return 0;
+    }
+    let bytes = slice::from_raw_parts(desc, desc_len);
+    panic_guard(
+        || match crate::ingress::NativeRoute::compile(bytes) {
+            Ok(route) => Box::into_raw(Box::new(route)) as u64,
+            Err(_) => 0,
+        },
+        0,
+    )
+}
+
+/// Run a compiled route on one request frame, writing the packed verdict into
+/// `out`. Returns bytes written (`0` = real error / malformed frame / panic;
+/// `> out_cap` = the EXACT required size — allocate once and retry).
+///
+/// # Safety
+/// `handle` must be a live handle from {@link castrum_route_compile} (not yet
+/// destroyed); `frame` valid for `frame_len` reads; `out` valid for `out_cap`
+/// writes. The route is immutable (`&self`, no interior mutability), so
+/// concurrent calls from multiple worker threads are safe.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_route_run(
+    handle: u64,
+    frame: *const u8,
+    frame_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if handle == 0 || frame.is_null() || out.is_null() {
+        return 0;
+    }
+    let route: &crate::ingress::NativeRoute = &*(handle as *const crate::ingress::NativeRoute);
+    let frame_slice = slice::from_raw_parts(frame, frame_len);
+    let out_slice = slice::from_raw_parts_mut(out, out_cap);
+    // Aliasing insurance (mirrors castrum_ingress_handle_packed): a pooled
+    // frame that overlaps `out` must be copied before the shared &/&mut borrow
+    // pair (aliased &/&mut is instant UB). The JS wrapper uses distinct pooled
+    // buffers, so this is a rare defensive copy.
+    let owned_frame;
+    let frame_ref: &[u8] = if crate::util::slices_overlap(frame_slice, out_slice) {
+        owned_frame = frame_slice.to_vec();
+        &owned_frame
+    } else {
+        frame_slice
+    };
+    panic_guard(|| route.run(frame_ref, out_slice).unwrap_or(0), 0)
+}
+
+/// Destroy a compiled route handle (frees the `Box<NativeRoute>`). A null
+/// handle is a no-op; double-destroy is UB and must not be called.
+///
+/// # Safety
+/// `handle` must come from {@link castrum_route_compile} and be destroyed at
+/// most once.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_route_destroy(handle: u64) {
+    if handle != 0 {
+        drop(Box::from_raw(handle as *mut crate::ingress::NativeRoute));
+    }
+}
+
 /// Read the bytes of a `cstring`-returning FFI symbol's result. The engine
 /// cloned the string at the call, so the per-thread buffer reuse is safe here.
 /// Test-only: the sole production consumer was the removed task-group dispatch
@@ -2936,6 +3205,97 @@ mod tests {
         let bytes = b"123456789";
         let out = unsafe { castrum_crc32(bytes.as_ptr(), bytes.len()) };
         assert_eq!(out, crate::crypto::hashing::crc32_bytes(b"123456789"));
+    }
+
+    // ── Per-route stack C-ABI (castrum_route_*) ────────────────────
+
+    /// Minimal route descriptor wire (magic + version 3 + parseQuery +
+    /// parseCookies stages).
+    fn route_desc_parse_both() -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&crate::ingress::native_route::ROUTE_DESC_MAGIC.to_le_bytes());
+        d.extend_from_slice(&crate::ingress::native_route::ROUTE_DESC_VERSION.to_le_bytes());
+        d.extend_from_slice(&(2 * 1024 * 1024u32).to_le_bytes());
+        d.extend_from_slice(&8192u32.to_le_bytes());
+        d.extend_from_slice(&8192u32.to_le_bytes());
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d.extend_from_slice(&2u32.to_le_bytes()); // stageCount
+        d.push(crate::ingress::native_route::STAGE_PARSE_QUERY);
+        d.push(crate::ingress::native_route::STAGE_PARSE_COOKIES);
+        d.extend_from_slice(&0u32.to_le_bytes()); // schemaCount
+        d
+    }
+
+    /// Request frame: `[flags u32][qLen][query][cLen][cookie]`.
+    fn route_frame(query: &[u8], cookie: &[u8]) -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(&0u32.to_le_bytes());
+        f.extend_from_slice(&(query.len() as u32).to_le_bytes());
+        f.extend_from_slice(query);
+        f.extend_from_slice(&(cookie.len() as u32).to_le_bytes());
+        f.extend_from_slice(cookie);
+        f
+    }
+
+    #[test]
+    fn route_compile_run_destroy_c_abi() {
+        let desc = route_desc_parse_both();
+        let handle =
+            unsafe { castrum_route_compile(desc.as_ptr(), desc.len()) };
+        assert_ne!(handle, 0, "route compile must produce a live handle");
+
+        let f = route_frame(b"a=1&b=hello%20world", b"s=v");
+        let mut out = vec![0u8; 256];
+        let w = unsafe {
+            castrum_route_run(
+                handle,
+                f.as_ptr(),
+                f.len(),
+                out.as_mut_ptr(),
+                out.len(),
+            )
+        };
+        // 8 header + query section [count 4 + (a=1: 4+1+4+1=10) + (b=hello world:
+        // 4+1+4+11=20) = 34] + cookie section [count 4 + (s=v: 4+1+4+1=10) = 14].
+        assert_eq!(w, 8 + 34 + 14, "exact result size (query+cookie sections)");
+
+        let flags = u32::from_le_bytes(out[0..4].try_into().unwrap());
+        assert_ne!(flags & crate::ingress::native_route::ROUTE_RESULT_FLAG_OK, 0);
+        assert_ne!(
+            flags & crate::ingress::native_route::ROUTE_RESULT_FLAG_QUERY_VALID,
+            0
+        );
+
+        unsafe { castrum_route_destroy(handle) };
+    }
+
+    #[test]
+    fn route_compile_rejects_bad_magic() {
+        let mut desc = route_desc_parse_both();
+        desc[0] = 0;
+        let handle = unsafe { castrum_route_compile(desc.as_ptr(), desc.len()) };
+        assert_eq!(handle, 0, "bad magic must fail compilation");
+    }
+
+    #[test]
+    fn route_run_needed_size_convention() {
+        let desc = route_desc_parse_both();
+        let handle = unsafe { castrum_route_compile(desc.as_ptr(), desc.len()) };
+        assert_ne!(handle, 0);
+        let f = route_frame(b"a=1&bb=22&ccc=333", b"");
+        // A too-small buffer reports the EXACT required size without writing.
+        let mut small = [0u8; 8];
+        let needed = unsafe {
+            castrum_route_run(handle, f.as_ptr(), f.len(), small.as_mut_ptr(), small.len())
+        };
+        assert!(needed > 8);
+        let mut big = vec![0u8; needed];
+        let w = unsafe {
+            castrum_route_run(handle, f.as_ptr(), f.len(), big.as_mut_ptr(), big.len())
+        };
+        assert_eq!(w, needed);
+        assert_eq!(&small[..], &[0u8; 8], "nothing written to the too-small buffer");
+        unsafe { castrum_route_destroy(handle) };
     }
 
     /// The C-ABI ingress layout blob must never drift from the single numeric
@@ -3129,37 +3489,17 @@ mod tests {
     #[test]
     fn validators_c_abi() {
         // Values mirror the core `#[cfg(test)]` vectors in rust/util/validation.rs.
-        let email = b"a@b.com";
+        assert_eq!(unsafe { castrum_validate_email(c"a@b.com".as_ptr()) }, 1);
+        assert_eq!(unsafe { castrum_validate_email(c"not-an-email".as_ptr()) }, 0);
         assert_eq!(
-            unsafe { castrum_validate_email(email.as_ptr(), email.len()) },
+            unsafe { castrum_validate_uuid(c"550e8400-e29b-41d4-a716-446655440000".as_ptr()) },
             1
         );
-        assert_eq!(
-            unsafe { castrum_validate_email(b"not-an-email".as_ptr(), 12) },
-            0
-        );
-        let uuid = b"550e8400-e29b-41d4-a716-446655440000";
-        assert_eq!(
-            unsafe { castrum_validate_uuid(uuid.as_ptr(), uuid.len()) },
-            1
-        );
-        assert_eq!(
-            unsafe { castrum_validate_uuid(b"not-a-uuid".as_ptr(), 10) },
-            0
-        );
-        let v4 = b"192.168.0.1";
-        assert_eq!(unsafe { castrum_validate_ipv4(v4.as_ptr(), v4.len()) }, 1);
-        assert_eq!(
-            unsafe { castrum_validate_ipv4(b"999.1.1.1".as_ptr(), 9) },
-            0
-        );
-        let v6 = b"2001:db8::1";
-        assert_eq!(unsafe { castrum_validate_ipv6(v6.as_ptr(), v6.len()) }, 1);
-        let bad_v6 = b"2001:::1";
-        assert_eq!(
-            unsafe { castrum_validate_ipv6(bad_v6.as_ptr(), bad_v6.len()) },
-            0
-        );
+        assert_eq!(unsafe { castrum_validate_uuid(c"not-a-uuid".as_ptr()) }, 0);
+        assert_eq!(unsafe { castrum_validate_ipv4(c"192.168.0.1".as_ptr()) }, 1);
+        assert_eq!(unsafe { castrum_validate_ipv4(c"999.1.1.1".as_ptr()) }, 0);
+        assert_eq!(unsafe { castrum_validate_ipv6(c"2001:db8::1".as_ptr()) }, 1);
+        assert_eq!(unsafe { castrum_validate_ipv6(c"2001:::1".as_ptr()) }, 0);
     }
 
     #[test]
@@ -3626,45 +3966,41 @@ mod tests {
         let r = crate::ingress::rate_limit::RateLimiter::new(2, 60_000, Some(1024));
         let inner = r.inner_ptr() as usize;
         let now = 1_700_000_000_000i64;
-        let key = b"user-42";
+        let key = c"user-42";
         let mut out = [0u8; 13];
         let w = unsafe {
-            castrum_rate_limiter_check(inner, key.as_ptr(), key.len(), now, out.as_mut_ptr(), out.len())
+            castrum_rate_limiter_check(inner, key.as_ptr(), now, out.as_mut_ptr(), out.len())
         };
         assert_eq!(w, 13);
         assert_eq!(out[0], 1); // allowed (1/2)
-        unsafe { castrum_rate_limiter_check(inner, key.as_ptr(), key.len(), now, out.as_mut_ptr(), out.len()) };
+        unsafe { castrum_rate_limiter_check(inner, key.as_ptr(), now, out.as_mut_ptr(), out.len()) };
         let w = unsafe {
-            castrum_rate_limiter_check(inner, key.as_ptr(), key.len(), now, out.as_mut_ptr(), out.len())
+            castrum_rate_limiter_check(inner, key.as_ptr(), now, out.as_mut_ptr(), out.len())
         };
         assert_eq!(w, 13);
         assert_eq!(out[0], 0); // blocked (3/2)
         // Pre-hashed check_key shares the SAME budget.
-        let hashed = crate::crypto::hashing::fast_hash_bytes(key);
+        let hashed = crate::crypto::hashing::fast_hash_bytes(key.to_bytes());
         let w = unsafe {
             castrum_rate_limiter_check_key(inner, hashed as i64, now, out.as_mut_ptr(), out.len())
         };
         assert_eq!(w, 13);
         assert_eq!(out[0], 0);
         // Null handle → 0; too-small → exact needed size.
-        let w = unsafe {
-            castrum_rate_limiter_check(0, key.as_ptr(), key.len(), now, out.as_mut_ptr(), out.len())
-        };
+        let w = unsafe { castrum_rate_limiter_check(0, key.as_ptr(), now, out.as_mut_ptr(), out.len()) };
         assert_eq!(w, 0);
-        let w = unsafe {
-            castrum_rate_limiter_check(inner, key.as_ptr(), key.len(), now, out.as_mut_ptr(), 1)
-        };
+        let w = unsafe { castrum_rate_limiter_check(inner, key.as_ptr(), now, out.as_mut_ptr(), 1) };
         assert_eq!(w, 13);
     }
 
     #[test]
     fn mime_from_extension_c_abi() {
-        let s = unsafe { castrum_mime_from_extension(b".js".as_ptr(), 3) };
+        let s = unsafe { castrum_mime_from_extension(c".js".as_ptr()) };
         assert!(!s.is_null());
         assert_eq!(unsafe { cstr_bytes(s) }.unwrap(), b"text/javascript");
 
         // Unknown extension → application/octet-stream (never null).
-        let s = unsafe { castrum_mime_from_extension(b"nope".as_ptr(), 4) };
+        let s = unsafe { castrum_mime_from_extension(c"nope".as_ptr()) };
         assert!(!s.is_null());
         assert_eq!(unsafe { cstr_bytes(s) }.unwrap(), b"application/octet-stream");
     }
@@ -3710,8 +4046,8 @@ mod tests {
     #[test]
     fn ws_accept_key_c_abi_rfc6455() {
         // RFC 6455 Sec-WebSocket-Accept test vector.
-        let key = b"dGhlIHNhbXBsZSBub25jZQ==";
-        let accept = unsafe { castrum_ws_accept_key(key.as_ptr(), key.len()) };
+        let key = c"dGhlIHNhbXBsZSBub25jZQ==";
+        let accept = unsafe { castrum_ws_accept_key(key.as_ptr()) };
         assert!(!accept.is_null());
         let bytes = unsafe { cstr_bytes(accept) }.unwrap();
         assert_eq!(bytes, b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
@@ -3768,14 +4104,17 @@ mod tests {
 
     #[test]
     fn cstring_into_variants_match_cstring() {
-        // ws_accept_key: into == cstring bytes.
+        // ws_accept_key: into == cstring bytes. The `_into` sibling keeps the
+        // `(ptr,len)` byte form; the cstring variant takes a NUL-terminated arg.
         let key = b"dGhlIHNhbXBsZSBub25jZQ==";
+        let key_c = c"dGhlIHNhbXBsZSBub25jZQ==";
         let mut out = [0u8; 28];
         let w = unsafe {
             castrum_ws_accept_key_into(key.as_ptr(), key.len(), out.as_mut_ptr(), out.len())
         };
         assert_eq!(w, 28);
-        let cstr_result = unsafe { cstr_bytes(castrum_ws_accept_key(key.as_ptr(), key.len())) }.unwrap();
+        let cstr_result =
+            unsafe { cstr_bytes(castrum_ws_accept_key(key_c.as_ptr())) }.unwrap();
         assert_eq!(&out[..], &cstr_result[..]);
         // Too-small → 28.
         let mut small = [0u8; 8];
@@ -4033,7 +4372,10 @@ mod tests {
         };
         assert!(w > 0);
         assert_eq!(&phc[..4], b"$2b$");
-        let ok = unsafe { castrum_password_verify_bcrypt(pw.as_ptr(), pw.len(), phc.as_ptr(), w) };
+        // The hash crosses as a NUL-terminated C string (like the engine's
+        // `cstring` arg transcode) — CString::new makes that explicit.
+        let phc_c = std::ffi::CString::new(&phc[..w]).unwrap();
+        let ok = unsafe { castrum_password_verify_bcrypt(pw.as_ptr(), pw.len(), phc_c.as_ptr()) };
         assert_eq!(ok, 1);
     }
 
@@ -4673,6 +5015,73 @@ mod tests {
                 0,
                 input.as_ptr(),
                 input.len(),
+                std::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                out.len(),
+            )
+        };
+        assert_eq!(bad, 0);
+    }
+
+    #[test]
+    fn ingress_handle_components_c_abi() {
+        use crate::ingress::cors::CorsEngine;
+        use crate::ingress::options::Limits;
+        use crate::ingress::rate_limit::RateLimiterState;
+
+        let inner = crate::ingress::IngressInner {
+            https_fixed: None,
+            max_body_bytes: 1_048_576,
+            proxy_trust: crate::ingress::ip_trust::ProxyTrustMode::None,
+            parse_cookies: false,
+            parse_query: false,
+            require_json_body: false,
+            guard_enabled: true,
+            emit_metadata_json: false,
+            cors_enabled: false,
+            cors: CorsEngine::disabled(),
+            rate: RateLimiterState::Disabled,
+            schema: None,
+            limits: Limits::default(),
+        };
+        let ptr = &inner as *const crate::ingress::IngressInner as usize;
+        // Empty packed header block: [u16 count = 0].
+        let empty_headers = [0u8, 0];
+        let rid = b"rid-1";
+        let mut out = [0u8; 512];
+        let w = unsafe {
+            castrum_ingress_handle_components(
+                ptr,
+                0, // GET
+                c"/api/users".as_ptr(),
+                c"127.0.0.1".as_ptr(),
+                rid.as_ptr(),
+                rid.len(),
+                empty_headers.as_ptr(),
+                empty_headers.len(),
+                std::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                out.len(),
+            )
+        };
+        assert!(w > 0);
+        // OUT_VERDICT == 0 (ok) at the first output byte — same as the packed
+        // path for the same request components.
+        assert_eq!(out[0], 0);
+
+        // Null inner pointer → 0.
+        let bad = unsafe {
+            castrum_ingress_handle_components(
+                0,
+                0,
+                c"/api/users".as_ptr(),
+                c"127.0.0.1".as_ptr(),
+                rid.as_ptr(),
+                rid.len(),
+                empty_headers.as_ptr(),
+                empty_headers.len(),
                 std::ptr::null(),
                 0,
                 out.as_mut_ptr(),

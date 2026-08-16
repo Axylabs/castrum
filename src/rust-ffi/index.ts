@@ -26,29 +26,40 @@
 //   rust.packed.jsonValidBatchPacked(p);  // raw packed in/out
 //   rust.configure({ rayonThreads: 8 });  // override defaults
 
-export { createRust, rust } from './client'
-export type { RustClient } from './client'
-export type { RustOptions } from './options'
-export type { RustText } from './text'
-export type { RustBatch } from './batch'
-export type { RustPacked } from './packed'
-export type { SchemaValidator } from '../shared/packed'
 export type {
-  HmacSignerInstance,
-  SchemaValidatorInstance,
-  SchemaError,
-  TemplateRendererInstance,
-  FormParserInstance,
-  MediaTypeParserInstance,
-  MediaTypeResult,
-  ConditionalRequestInstance,
-  EncodingPrefResult,
   AcceptNegotiatorInstance,
   Base64CodecInstance,
+  ConditionalRequestInstance,
   CookieSignerInstance,
   CsrfProtectorInstance,
-  UrlBuilderInstance,
+  EncodingPrefResult,
+  FormParserInstance,
+  HmacSignerInstance,
+  MediaTypeParserInstance,
+  MediaTypeResult,
   MultipartPart,
   PasswordHashOptions,
+  SchemaError,
+  SchemaValidatorInstance,
+  TemplateRendererInstance,
+  UrlBuilderInstance,
   WsFrame,
 } from '../native'
+export type { SchemaValidator } from '../shared/packed'
+export type { RustBatch } from './batch'
+export type { RustClient } from './client'
+export { createRust, rust } from './client'
+export { proven } from './proven'
+export {
+  PROVEN_SELECTION,
+  isProven,
+  provenEntry,
+  provenImpl,
+  provenStatus,
+  provenSummary,
+  provenSurface,
+} from '../shared/proven'
+export type { ProvenEntry, ProvenImpl, ProvenStatus } from '../shared/proven'
+export type { RustOptions } from './options'
+export type { RustPacked } from './packed'
+export type { RustText } from './text'

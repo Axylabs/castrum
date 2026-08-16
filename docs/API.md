@@ -35,7 +35,7 @@ runtimes, and binary ops (`gzip*`, `brotli*`, `aead*`, `pbkdf2Sha256`,
 |--------|-------------|
 | `rust` | The default, shared native client — every Rust utility, flat and complete. |
 | `createRust(options?)` | Build an isolated client (own caches / rayon settings). |
-| `proven`, `PROVEN_SURFACE`, `provenStatus`, `isProven`, `provenSurface`, `provenSummary` | The performance-annotated surface + its pure-data registry. |
+| `proven`, `PROVEN_SELECTION`, `provenImpl`, `provenStatus`, `isProven`, `provenSurface`, `provenSummary` | The full `rust.*` surface + the baked (pure-data) proven-selection registry of benchmark winners (`native` / `js` / `bun`). |
 | `opImpl`, `isNativeOp`, `opDecision` | Native-vs-JS selection hints (benchmark-driven). |
 | `loader`, `createLoader` | Higher-order loader over the batch surface. |
 | `encoder`, `decoder` | Codec-backed UTF-8 helpers (Bun: `Bun.ArrayBufferSink` / `CString`; Node: `TextEncoder`/`TextDecoder`). `encode`/`decode` accept the `Uint8Array | string` union and normalize. |
@@ -224,36 +224,36 @@ schema.count(docs);       // number of valid docs
 
 ---
 
-## The `proven` performance surface
+## The `proven` selection surface
 
 `proven` is literally the same object as `rust` (`export const proven = rust`) —
-nothing is filtered. Each exported function's JSDoc carries its measured
-performance vs the JS baseline (`@performance`) and is marked `@deprecated` when
-it loses (e.g. `rust.jsonParse` loses ~5x to `JSON.parse`, and the native schema
-validator is slower than `ajv` for small documents). The editor steers you to the
-JS/Bun baseline for the `@deprecated` ones.
+nothing is filtered. Alongside it, the pure-data registry `PROVEN_SELECTION`
+(`src/shared/proven.ts`) states which implementation is the benchmark-proven
+winner for every op: `native` (the addon), `js` (pure TS), or `bun` (a Bun
+built-in that is delegated under Bun). The winners are **baked** from
+measurements (`src/selection.json` + `docs/bun-builtins-decision-matrix.md`),
+and `test/unit/shared/proven.test.ts` verifies each winner is actually wired
+(`opImpl` agrees, `builtins.has` matches, native/js entries match the addon's
+embedded `selection.json`) — so the registry cannot silently drift. There is no
+live benchmark gate (the old `check:proven` / `check:annotate` friction is gone).
 
-- The single source of truth for the classifications is `PROVEN_SURFACE`
-  (`src/shared/proven.ts`), **pure data** — audited by `scripts/check-proven.ts`
-  so it can't drift. Statuses: `proven` / `parity` / `not-competitive` /
-  `unmeasured`.
+- Statuses: `proven` (decisive win) / `parity` (borderline) / `unmeasured` (no
+  direct ratio — pinned by policy). `provenImpl(op)` returns the baked winner.
 - The full surface is unchanged — `rust.jsonParse`, `rust.createSchemaValidator`,
   etc. remain available for completeness; they just aren't advertised as wins.
 - Classifications are based on the **release build on the shipped baseline CPU**
   (published artifacts are baseline — not the local SIMD `build:perf`).
 
 ```ts
-import { proven, PROVEN_SURFACE } from "castrum";
+import { proven, PROVEN_SELECTION, provenImpl } from "castrum";
 
-proven.jsonValid(bytes);   // ✓ proven — Rust wins vs the JS baseline
-proven.fnv1a64(bytes);     // ✓ proven — Rust wins ~9-16x
-proven.jsonParse(bytes);   // ✗ @deprecated — loses ~5x to JSON.parse
+proven.fnv1a64(bytes);        // native — Rust wins ~12x vs the JS baseline
+provenImpl("crc32");          // "bun" — Bun.hash.crc32 wins under Bun
+provenImpl("validateEmail");  // "js" — pure-TS wins
 ```
 
 ```bash
-bun run check                # writes bench/results/cpu/latest.json (release build)
-bun run check:proven         # report-only: proves vs loses per function
-bun run check:proven:fail    # CI gate: exits 1 if a "proven" function regresses
+bun test test/unit/shared/proven.test.ts   # proves every baked winner is wired
 ```
 
 ---

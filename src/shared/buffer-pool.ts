@@ -11,7 +11,7 @@
 // hold the buffer past the call). Memory is bounded by `maxBuffers` retained
 // buffers; under heavy concurrency, extra temporary buffers are allocated and
 // discarded on release.
-/** Options for configuring a reusable byte-buffer pool. */export interface BufferPoolOptions {
+/** Options for configuring a reusable byte-buffer pool. */ export interface BufferPoolOptions {
   /**
    * Initial buffer size in bytes. Default: 131072.
    */
@@ -59,6 +59,43 @@ export interface PooledBuffer {
   release(): void
 }
 
+/**
+ * Concrete `PooledBuffer` handle.
+ *
+ * Implemented as a class (not a per-acquire object literal with a getter +
+ * closure) so that `acquire()` allocates a single small object instead of an
+ * object + getter + closure per request. The hot ingress `run()` path
+ * acquires/releases once per request, so this removes one object allocation
+ * and one closure allocation from the per-request cost. `release()` lives on
+ * the prototype; `pool`/`buffer` are the only per-instance fields.
+ *
+ * Handles are RECYCLED by the pool (see `BufferPool.freeHandles`): a released
+ * handle object is re-pointed at a fresh buffer on the next `acquire()` so the
+ * steady state allocates zero handle objects. `buffer` and `released` are the
+ * only fields that change across a recycle. Recycling is safe because it only
+ * happens after `release()` and every internal + documented usage releases
+ * each checkout exactly once; the `released` guard still makes a double
+ * release within a single checkout a no-op.
+ */
+class PooledBufferHandle implements PooledBuffer {
+  readonly pool: BufferPool
+  buffer: Uint8Array
+  released = false
+
+  constructor(pool: BufferPool, buffer: Uint8Array) {
+    this.pool = pool
+    this.buffer = buffer
+  }
+
+  release(): void {
+    if (this.released) {
+      return
+    }
+    this.released = true
+    this.pool.returnHandle(this)
+  }
+}
+
 import { AdaptiveEstimate } from './adaptive'
 
 /**
@@ -79,9 +116,13 @@ import { AdaptiveEstimate } from './adaptive'
  */
 export class BufferPool {
   private readonly free: Uint8Array[] = []
+  /** Released handle objects available for recycling (bounded — see `maxHandles`). */
+  private readonly freeHandles: PooledBufferHandle[] = []
   private readonly initialSize: number
   private readonly maxBuffers: number
   private readonly maxInFlight: number
+  /** Upper bound on recycled handle objects retained (peak concurrency). */
+  private readonly maxHandles: number
   private readonly estimate: AdaptiveEstimate | null
   private created = 0
   private inFlight = 0
@@ -90,6 +131,7 @@ export class BufferPool {
     this.initialSize = Math.max(1, Math.floor(options.initialSize ?? 131_072))
     this.maxBuffers = Math.max(1, Math.floor(options.maxBuffers ?? 16))
     this.maxInFlight = Math.max(0, Math.floor(options.maxInFlight ?? 0))
+    this.maxHandles = this.maxBuffers + Math.max(1, this.maxInFlight)
     this.estimate =
       options.adaptive === true
         ? new AdaptiveEstimate({ alpha: 0.25, min: this.initialSize })
@@ -126,21 +168,34 @@ export class BufferPool {
     }
     const buffer = this.take(Math.max(0, Math.floor(minSize)))
     this.inFlight++
-    let released = false
+    // Recycle a released handle object in the steady state instead of
+    // allocating a fresh one per acquire (removes one per-request object from
+    // the hot ingress `run()` path). Safe: handles enter `freeHandles` only
+    // after `release()`, and each checkout is released exactly once by every
+    // internal + documented usage. `buffer`/`released` are the only fields
+    // that change across a recycle.
+    const handle = this.freeHandles.pop()
+    if (handle !== undefined) {
+      handle.buffer = buffer
+      handle.released = false
+      return handle
+    }
+    return new PooledBufferHandle(this, buffer)
+  }
 
-    return {
-      buffer,
-      get released(): boolean {
-        return released
-      },
-      release: () => {
-        if (released) {
-          return
-        }
-        released = true
-        this.inFlight--
-        this.releaseBuffer(buffer)
-      },
+  /**
+   * Return a borrowed handle's buffer to the pool (called by
+   * `PooledBufferHandle.release`). Internal to the pool — do not call from
+   * outside.
+   */
+  returnHandle(handle: PooledBufferHandle): void {
+    this.inFlight--
+    this.releaseBuffer(handle.buffer)
+    // Recycle the handle object for a later acquire, bounding retention so
+    // memory stays proportional to concurrency (peak in-flight), not the
+    // cumulative number of acquisitions.
+    if (this.freeHandles.length < this.maxHandles) {
+      this.freeHandles.push(handle)
     }
   }
 

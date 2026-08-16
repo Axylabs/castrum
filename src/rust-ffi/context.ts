@@ -6,11 +6,13 @@
 // (initialized flag / pending thread count) stays encapsulated behind accessor
 // functions so it cannot be corrupted externally.
 
-import { addon } from './addon'
-import { resolveRayonThreads } from './options'
-import { normalizeExt } from './options'
-import type { RustOptions } from './options'
 import type { HmacSignerInstance } from '../native'
+import type { BunFFI } from '../native/ffi'
+import { runtimeNative } from '../runtime/native'
+import type { NativeRuntimeAdapter, TransportAdapter } from '../runtime/types'
+import { addon } from './addon'
+import type { RustOptions } from './options'
+import { normalizeExt, resolveRayonThreads } from './options'
 
 // Module-level cache of resolved native fns. The native addon is a process
 // singleton, so the resolved function is identical across all client contexts;
@@ -20,9 +22,11 @@ import type { HmacSignerInstance } from '../native'
 const nativeFnCache = new Map<string, unknown>()
 
 /**
- * Resolve a native addon function on first use and cache it for all subsequent
- * calls. Preserves the lazy-load contract (the addon is only loaded on the
- * first real native call) while removing per-call Proxy overhead.
+ * Resolve a native op on first use and cache it for all subsequent calls —
+ * FFI-FIRST via the runtime adapter's transport (`bun:ffi` on Bun, napi
+ * fallback otherwise), so builders no longer repeat `getBunFFI()` inline.
+ * Preserves the lazy-load contract (the addon is only loaded on the first
+ * real native call) while removing per-call Proxy overhead.
  */
 export function resolveNative(
   ctx: RustClientContext,
@@ -30,7 +34,8 @@ export function resolveNative(
 ): (...args: unknown[]) => unknown {
   let f = nativeFnCache.get(name)
   if (f === undefined) {
-    f = (ctx.addon as unknown as Record<string, unknown>)[name]
+    const fn = ctx.runtime.transport.resolve(name)
+    f = fn ?? (ctx.addon as unknown as Record<string, unknown>)[name]
     nativeFnCache.set(name, f)
   }
   return f as (...args: unknown[]) => unknown
@@ -42,7 +47,8 @@ export function resolveNative(
  * `resolveNative` (plain scalars) must NOT init the pool so
  * `rust.configure({ rayonThreads })` can still take effect at startup.
  * Shares the SAME `nativeFnCache` as `resolveNative` (the batch fn names are
- * disjoint from the scalar names, so the shared cache is safe).
+ * disjoint from the scalar names, so the shared cache is safe). FFI-first via
+ * the runtime adapter's transport, like `resolveNative`.
  */
 export function resolvePoolNative(
   ctx: RustClientContext,
@@ -51,16 +57,38 @@ export function resolvePoolNative(
   let f = nativeFnCache.get(name)
   if (f === undefined) {
     ctx.ensurePool()
-    f = (ctx.addon as unknown as Record<string, unknown>)[name]
+    const fn = ctx.runtime.transport.resolve(name)
+    f = fn ?? (ctx.addon as unknown as Record<string, unknown>)[name]
     nativeFnCache.set(name, f)
   }
   return f as (...args: unknown[]) => unknown
 }
 
+/**
+ * Lazy memoized `bun:ffi` resolver for the scalar builders.
+ *
+ * Returns a closure that resolves `transport.ffi` ONCE — on the first call —
+ * and reads the local from then on. This keeps the FFI bind DEFERRED
+ * (importing `rust` does not eagerly dlopen; the builder factories run at
+ * module load) while removing the per-call `() => transport.ffi` getter hop
+ * from the hot path. The transport's own cache already makes the steady-state
+ * resolve a single `undefined`-check; this collapses the getter + inner
+ * closure into one local read.
+ */
+export function memoizeFfi(transport: TransportAdapter): () => BunFFI | null {
+  let resolved: BunFFI | null | undefined
+  return () => {
+    if (resolved === undefined) resolved = transport.ffi
+    return resolved
+  }
+}
+
 /** Shared per-instance state passed to the namespace/scalar builders. */
 export interface RustClientContext {
-  /** The shared lazy addon proxy. */
+  /** The shared lazy addon proxy (napi surface). */
   addon: typeof addon
+  /** The runtime adapter seam (Bun/Node — builtins + ffi/napi transport). */
+  runtime: NativeRuntimeAdapter
   /** Per-instance toggles (mime/hmac caching). */
   state: { mimeCache: boolean; hmacCache: boolean }
   mimeByText: Map<string, Uint8Array>
@@ -151,6 +179,7 @@ export function createContext(options: RustOptions): RustClientContext {
 
   return {
     addon,
+    runtime: runtimeNative,
     state,
     mimeByText,
     hmacSigners,

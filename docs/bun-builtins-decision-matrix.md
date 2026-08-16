@@ -12,9 +12,8 @@
   shipped profile).
 - **Driver**: `bun run check` (CPU benchmark → `bench/results/cpu/latest.json`).
   Each pair runs on the SAME input (fixture payloads, see table).
-- **Naming**: diagnostic comparisons use `diag:` task names so
-  `scripts/check-proven.ts` never aggregates them into a `PROVEN_SURFACE`
-  entry (see `src/bench/comparisons.ts`).
+- **Naming**: diagnostic comparisons use `diag:` task names so they are kept out
+  of the shipped-op `native:`/`rust:` comparisons (see `src/bench/comparisons.ts`).
 - **Honesty guard**: every Bun API is verified to actually execute real work at
   runtime before a result is trusted. This is important — the first run
   produced false "wins" (brotli 156×, validators 3–5×) because this Bun
@@ -68,7 +67,7 @@ benchmarked impl).
 | Op | Recommendation |
 |---|---|
 | `crc32` | Prefer `Bun.hash.crc32`; keep rust as fallback (pure-TS path already exists). |
-| `xxh3` | Prefer `Bun.hash.xxHash3` (~4×); keep the rust export as the Node/non-Bun fast path. Classified `not-competitive` in `PROVEN_SURFACE`. |
+| `xxh3` | Prefer `Bun.hash.xxHash3` (~4×); keep the rust export as the Node/non-Bun fast path. The runtime adapter delegates the public `rust.xxh3` to Bun under Bun. |
 | `gzipCompress` | Prefer `Bun.gzipSync` (~2×). **`gzipDecompress` is deliberately NOT delegated** — `Bun.gunzipSync` has no decompression-bomb cap; the rust surface keeps its native 64 MiB-capped path under Bun. |
 | `randomToken` | Prefer `Bun.randomUUIDv7()` (or `crypto.getRandomValues`) for token-sized output; keep rust for byte-precise control. |
 | `hmacSha256` | Prefer `Bun.CryptoHasher("sha256", key)` (1.17× — mild; keep rust batch path, which wins on larger inputs). |
@@ -77,9 +76,9 @@ benchmarked impl).
 | `hexEncode` | Prefer `Buffer.toString('hex')`. |
 | `httpDate` | Prefer `Date.toUTCString()`. |
 
-**Delegation rule of thumb**: rust stays the default only where it is
-`proven` against its **Bun** baseline (not just its JS baseline). These are the
-ops where rust genuinely wins or Bun has no equivalent.
+**Delegation rule of thumb**: rust stays the default only where it beats its
+**Bun** baseline (not just its JS baseline). These are the ops where rust
+genuinely wins or Bun has no equivalent.
 
 ### → Keep rust (rust wins or Bun has no equivalent)
 | Op | Rationale |
@@ -94,7 +93,7 @@ ops where rust genuinely wins or Bun has no equivalent.
 ### → Implemented primitives (gaps closed)
 | Primitive | Outcome |
 |---|---|
-| `rust.xxh3` (XXH3-64) | Exposed; measured `Bun.hash.xxHash3` 4.15× faster → classified `not-competitive` in `PROVEN_SURFACE`; prefer Bun under Bun. |
+| `rust.xxh3` (XXH3-64) | Exposed; measured `Bun.hash.xxHash3` 4.15× faster → the runtime adapter delegates the public `rust.xxh3` to Bun under Bun (Node keeps the addon). |
 | `rust.passwordHashBcrypt` / `rust.passwordVerifyBcrypt` | bcrypt `$2b$` PHC; hash parity, verify rust 1.49×. |
 | `rust.pbkdf2Sha256` | PBKDF2-HMAC-SHA256; parity with `node:crypto`, the only sync option in Bun. |
 | UUIDv7 (`uuidv7()`) | `Bun.randomUUIDv7` already wins — delegated to Bun (`crypto.randomUUID` on Node), not built in Rust. |

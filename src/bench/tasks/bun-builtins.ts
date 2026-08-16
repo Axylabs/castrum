@@ -2,11 +2,11 @@
 // built-ins. Answers "don't reinvent the wheel": for the same workload, does
 // Bun's native implementation beat the Rust op?
 //
-// Task names use the `diag:` prefix (NOT `native:`/`rust:`) so the proven
-// audit (src/shared/bench-classify.ts: matches PROVEN_SURFACE rustTask names
-// or their `_`-suffixed variants) never aggregates these into a registry
-// entry. The results land in bench/results/cpu/latest.json comparisons[] and
-// feed docs/bun-builtins-decision-matrix.md.
+// Task names use the `diag:` prefix (NOT `native:`/`rust:`) so they stay out
+// of the aggregate `native:`/`rust:` comparison table and are never mistaken
+// for a shipped-op measurement. The results land in
+// bench/results/cpu/latest.json comparisons[] and feed
+// docs/bun-builtins-decision-matrix.md.
 //
 // The `rust`-side row of every pair whose op is in BUN_WINS (crc32, xxh3,
 // hmacSha256, gzipCompress, randomToken) MUST use the raw-* accessor

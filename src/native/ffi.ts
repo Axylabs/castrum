@@ -52,6 +52,7 @@ import type {
   Raw8,
   Raw9,
   Raw10,
+  Raw12,
   RawCStr,
 } from './ffi/types'
 // Static import: loader.ts has no side effects (path resolution only — no
@@ -227,10 +228,12 @@ function bind(): BunFFI | null {
       castrum_hex_decode: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: U64_FAST },
       castrum_url_encode: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: U64_FAST },
       castrum_url_decode: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: U64_FAST },
-      castrum_validate_email: { args: inputAbi, returns: 'u8' },
-      castrum_validate_uuid: { args: inputAbi, returns: 'u8' },
-      castrum_validate_ipv4: { args: inputAbi, returns: 'u8' },
-      castrum_validate_ipv6: { args: inputAbi, returns: 'u8' },
+      // String-input validators: `cstring` ARG (the engine transcodes the JS
+      // string in-engine — no JS-side encode; Rust borrows via CStr::from_ptr).
+      castrum_validate_email: { args: ['cstring'], returns: 'u8' },
+      castrum_validate_uuid: { args: ['cstring'], returns: 'u8' },
+      castrum_validate_ipv4: { args: ['cstring'], returns: 'u8' },
+      castrum_validate_ipv6: { args: ['cstring'], returns: 'u8' },
       castrum_json_sum_ids: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: U64_FAST },
       castrum_hmac_sha256_verify: {
         args: abi(['ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize']),
@@ -239,10 +242,11 @@ function bind(): BunFFI | null {
       castrum_csrf_verify: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: 'u8' },
       castrum_password_verify: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: 'u8' },
       castrum_password_verify_bcrypt: {
-        args: abi(['ptr', 'usize', 'ptr', 'usize']),
+        // `phc` crosses as a `cstring` ARG; `password` stays a `(ptr,len)` pair.
+        args: abi(['ptr', 'usize', 'cstring']),
         returns: 'u8',
       },
-      castrum_ws_accept_key: { args: abi(['ptr', 'usize']), returns: 'cstring' },
+      castrum_ws_accept_key: { args: ['cstring'], returns: 'cstring' },
       castrum_ws_accept_key_into: {
         args: abi(['ptr', 'usize', 'ptr', 'usize']),
         returns: U64_FAST,
@@ -278,7 +282,8 @@ function bind(): BunFFI | null {
         returns: 'u8',
       },
       castrum_rate_limiter_check: {
-        args: abi(['usize', 'ptr', 'usize', 'i64', 'ptr', 'usize']),
+        // `key` crosses as a `cstring` ARG (text, no NUL in the intended use).
+        args: abi(['usize', 'cstring', 'i64', 'ptr', 'usize']),
         returns: U64_FAST,
       },
       castrum_rate_limiter_check_key: {
@@ -419,7 +424,7 @@ function bind(): BunFFI | null {
         args: abi(['usize', 'ptr', 'usize', 'ptr', 'usize']),
         returns: U64_FAST,
       },
-      castrum_mime_from_extension: { args: abi(['ptr', 'usize']), returns: 'cstring' },
+      castrum_mime_from_extension: { args: ['cstring'], returns: 'cstring' },
       castrum_jwt_verify: {
         args: abi(['ptr', 'usize', 'ptr', 'usize', 'i64']),
         returns: 'cstring',
@@ -428,7 +433,36 @@ function bind(): BunFFI | null {
         args: abi(['usize', 'ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize']),
         returns: U64_FAST,
       },
+      // Raw-components sibling of `castrum_ingress_handle_packed`: `url`/`ip`
+      // are `cstring` ARGs (Bun transcodes the JS strings to call-scoped
+      // NUL-terminated buffers in-engine — no JS-side Buffer.write encode);
+      // rid/headers/body are `(ptr,len)` byte slices; out is `(ptr,len)`.
+      castrum_ingress_handle_components: {
+        args: abi([
+          'usize',
+          'u8',
+          'cstring',
+          'cstring',
+          'ptr',
+          'usize',
+          'ptr',
+          'usize',
+          'ptr',
+          'usize',
+          'ptr',
+          'usize',
+        ]),
+        returns: U64_FAST,
+      },
       castrum_ingress_layout: { args: abi(['ptr', 'usize']), returns: U64_FAST },
+      // Per-route native stack (`@ignex/native` also dlopens these exact names
+      // itself; castrum binds them for the bind-time self-test + parity guard).
+      castrum_route_compile: { args: abi(['ptr', 'usize']), returns: U64_FAST },
+      castrum_route_run: {
+        args: abi(['usize', 'ptr', 'usize', 'ptr', 'usize']),
+        returns: U64_FAST,
+      },
+      castrum_route_destroy: { args: ['usize'], returns: 'void' },
     })
 
     const bindings = build(symbols as Record<string, (...a: unknown[]) => unknown>, useBufferLength)
@@ -492,12 +526,14 @@ function writeOrThrow(w: number, inputLen: number, label: string): number {
 }
 
 /** Unpack the packed rate-limit verdict `[u8 allowed][u32 remaining LE][i64 reset_ms LE]`. */
-function unpackRateCheck(out: Uint8Array): {
+function unpackRateCheck(
+  out: Uint8Array,
+  view: DataView,
+): {
   allowed: boolean
   remaining: number
   resetMs: number
 } {
-  const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
   return {
     allowed: out[0] === 1,
     remaining: view.getUint32(1, true),
@@ -569,7 +605,7 @@ function build(
   const hmacVerify = sym.castrum_hmac_sha256_verify as Raw6
   const csrfVerify = sym.castrum_csrf_verify as Raw4
   const passwordVerify = sym.castrum_password_verify as Raw4
-  const passwordVerifyBcrypt = sym.castrum_password_verify_bcrypt as Raw4
+  const passwordVerifyBcrypt = sym.castrum_password_verify_bcrypt as Raw3
   const wsAcceptKey = sym.castrum_ws_accept_key as RawCStr
   const wsAcceptKeyInto = sym.castrum_ws_accept_key_into as Raw4
   const etagCStr = sym.castrum_etag as RawCStr
@@ -581,7 +617,7 @@ function build(
   const jwtSignerVerifyRaw = sym.castrum_jwt_signer_verify as Raw6
   const templateRenderRaw = sym.castrum_template_render as Raw5
   const schemaValidatorValidateRaw = sym.castrum_schema_validator_validate as Raw3
-  const rateLimiterCheckRaw = sym.castrum_rate_limiter_check as Raw6
+  const rateLimiterCheckRaw = sym.castrum_rate_limiter_check as Raw5
   const rateLimiterCheckKeyRaw = sym.castrum_rate_limiter_check_key as Raw5
   const randomToken = sym.castrum_random_token as RawCStr
   const randomTokenInto = sym.castrum_random_token_into as Raw3
@@ -627,7 +663,11 @@ function build(
   const mimeFromExtensionSym = sym.castrum_mime_from_extension as (...a: unknown[]) => string | null
   const jwtVerifySym = sym.castrum_jwt_verify as (...a: unknown[]) => string | null
   const ingressHandlePacked = sym.castrum_ingress_handle_packed as Raw7
+  const ingressHandleComponentsSym = sym.castrum_ingress_handle_components as Raw12
   const ingressLayoutSym = sym.castrum_ingress_layout as Raw2
+  const routeCompileSym = sym.castrum_route_compile as Raw2
+  const routeRunSym = sym.castrum_route_run as Raw5
+  const routeDestroySym = sym.castrum_route_destroy as (a: unknown) => void
 
   // ── Encoder / decoder `Into` helpers ──────────────────────────────
   const hexEncodeInto = (input: Uint8Array, output: Uint8Array): number => {
@@ -731,6 +771,28 @@ function build(
   const jsonSumOut = new Uint8Array(9)
   const jsonSumView = new DataView(jsonSumOut.buffer)
 
+  // ── Reusable scratch for the STRING-returning encode wrappers ────────
+  // Each wrapper writes its result and decodes it into an immutable JS string
+  // (or primitive) SYNCHRONOUSLY before the next call reuses the buffer — the
+  // same safety rationale as `jsonSumOut` / `generateRequestId`. Per-Worker
+  // module state (single-threaded event loop); never shared across Workers.
+  // NOT used for byte-returning ops (hexDecode/urlDecode/base64Decode/aead/
+  // wsFrame/packed parsers): their returned `Uint8Array` aliases the buffer
+  // and escapes to the caller — those stay on `*Into` (caller-owned).
+  let encodeScratch = new Uint8Array(0)
+  const scratchFor = (size: number): Uint8Array => {
+    if (encodeScratch.byteLength < size) encodeScratch = new Uint8Array(size)
+    return encodeScratch
+  }
+  // Fixed-size packed-verdict scratch + cached DataViews (parseHttpDate 9 B,
+  // rate-limit check 13 B) — same pooled pattern as `jsonSumView`. Kept
+  // separate from the growable `encodeScratch` so the cached DataViews are
+  // never invalidated by a buffer replacement.
+  const dateScratch = new Uint8Array(9)
+  const dateScratchView = new DataView(dateScratch.buffer)
+  const rateScratch = new Uint8Array(13)
+  const rateScratchView = new DataView(rateScratch.buffer)
+
   return {
     crc32: (input) => Number(oneArg(crc32, input)) >>> 0,
     fnv1a64: (input) => BigInt(oneArg(fnv, input)),
@@ -738,23 +800,28 @@ function build(
     jsonValid: (input) => Number(oneArg(jsonValid, input)) === 1,
     utf8Valid: (input) => Number(oneArg(utf8Valid, input)) === 1,
     hexEncode(input) {
-      const out = new Uint8Array(input.length * 2)
+      // Pooled scratch — decoded synchronously to an immutable string (safe;
+      // removes the per-call `new Uint8Array(len*2)`). ALWAYS decode the
+      // written subarray: the shared scratch may be larger than `w` (grown by
+      // an earlier op), so decoding the whole buffer would read stale bytes.
+      const out = scratchFor(input.length * 2)
       const w = hexEncodeInto(input, out)
-      return decodeUtf8(w === input.length * 2 ? out : out.subarray(0, w))
+      return decodeUtf8(out.subarray(0, w))
     },
     hexEncodeInto,
     urlEncode(input) {
-      // RFC 3986 worst case is 3 bytes per input byte (`%XX`).
-      const out = new Uint8Array(input.length * 3)
+      // RFC 3986 worst case is 3 bytes per input byte (`%XX`). Pooled scratch
+      // (decoded synchronously — safe).
+      const out = scratchFor(input.length * 3)
       const w = urlEncodeInto(input, out)
       return decodeUtf8(out.subarray(0, w))
     },
     urlEncodeInto,
 
-    validateEmail: (input) => Number(oneArg(validateEmail, input)) === 1,
-    validateUuid: (input) => Number(oneArg(validateUuid, input)) === 1,
-    validateIpv4: (input) => Number(oneArg(validateIpv4, input)) === 1,
-    validateIpv6: (input) => Number(oneArg(validateIpv6, input)) === 1,
+    validateEmail: (input) => Number(validateEmail(input)) === 1,
+    validateUuid: (input) => Number(validateUuid(input)) === 1,
+    validateIpv4: (input) => Number(validateIpv4(input)) === 1,
+    validateIpv6: (input) => Number(validateIpv6(input)) === 1,
     jsonSumIds: (input) => {
       // Packed [u8 ok][i64 sum LE] output (9 B): ok=1 → valid array (the sum
       // may be 0); ok=0 → invalid input. Bytes written: 9/1/0 (0 = real error).
@@ -778,7 +845,7 @@ function build(
     passwordVerify: (password, phc) =>
       Number(passwordVerify(password, lenOrView(password), phc, lenOrView(phc))) === 1,
     passwordVerifyBcrypt: (password, phc) =>
-      Number(passwordVerifyBcrypt(password, lenOrView(password), phc, lenOrView(phc))) === 1,
+      Number(passwordVerifyBcrypt(password, lenOrView(password), phc)) === 1,
 
     hexDecode(input) {
       const out = new Uint8Array(Math.floor(input.length / 2))
@@ -800,7 +867,7 @@ function build(
     base64DecodeInto,
 
     wsAcceptKey(key) {
-      return cstr(wsAcceptKey(key, lenOrView(key)), 'ws accept key: bad key')
+      return cstr(wsAcceptKey(key), 'ws accept key: bad key')
     },
     wsAcceptKeyInto(key, output) {
       // Native pooled `_into`: writes the 28-byte accept key directly into the
@@ -902,28 +969,24 @@ function build(
     },
     rateLimiterCheck(inner, key, nowMs) {
       // Packed [u8 allowed][u32 remaining LE][i64 reset_ms LE] (13 bytes).
-      const out = new Uint8Array(13)
+      // Reused scratch + cached DataView (no per-call allocs). `key` is a
+      // `cstring` ARG (the engine transcodes the JS string in-engine).
+      const out = rateScratch
       const w = Number(
-        rateLimiterCheckRaw(
-          inner,
-          key,
-          lenOrView(key),
-          BigInt(Math.trunc(nowMs)),
-          out,
-          lenOrView(out),
-        ),
+        rateLimiterCheckRaw(inner, key, BigInt(Math.trunc(nowMs)), out, lenOrView(out)),
       )
       if (w === 0) throw new Error('rate limiter check: null handle')
-      return unpackRateCheck(out)
+      return unpackRateCheck(out, rateScratchView)
     },
     rateLimiterCheckKey(inner, key, nowMs) {
       // Packed [u8 allowed][u32 remaining LE][i64 reset_ms LE] (13 bytes).
-      const out = new Uint8Array(13)
+      // Reused scratch + cached DataView (no per-call allocs).
+      const out = rateScratch
       const w = Number(
         rateLimiterCheckKeyRaw(inner, BigInt(key), BigInt(Math.trunc(nowMs)), out, lenOrView(out)),
       )
       if (w === 0) throw new Error('rate limiter check: null handle')
-      return unpackRateCheck(out)
+      return unpackRateCheck(out, rateScratchView)
     },
     randomToken(byteLen) {
       // cstring return of `byteLen*2` hex chars; byteLen 0 → empty string → empty
@@ -948,13 +1011,15 @@ function build(
       return w
     },
     base64Encode(input, urlSafe, padding) {
-      const out = new Uint8Array(Math.ceil(input.length / 3) * 4)
+      // Pooled scratch — decoded synchronously to an immutable string (safe).
+      const out = scratchFor(Math.ceil(input.length / 3) * 4)
       const w = base64EncodeInto(input, out, urlSafe, padding)
       return decodeUtf8(out.subarray(0, w))
     },
     base64EncodeInto,
     hmacSha256(key, data) {
-      const out = new Uint8Array(64)
+      // Pooled 64-byte scratch — decoded synchronously (safe).
+      const out = scratchFor(64)
       const w = Number(hmacSha256(key, lenOrView(key), data, lenOrView(data), out, lenOrView(out)))
       if (w === 0) {
         throw new Error('hmac sha256: output buffer too small')
@@ -1271,6 +1336,22 @@ function build(
         'gzip decompress: invalid stream or exceeded max decompressed size',
       )
     },
+    gzipDecompressInto(data, output, maxDecompressed) {
+      // Pooled sibling — the C ABI streams the decompressed output directly
+      // into the caller buffer via the `_into` core (no internal Vec), keeping
+      // the 64 MiB decompression-bomb cap. Needed-size convention: w === 0 =
+      // real error (invalid stream / cap exceeded); w > output.length = exact
+      // required size → throw (nothing to grow — the caller owns the buffer).
+      const max = maxDecompressed ?? MAX_DECOMPRESSED
+      const w = Number(gzipDecompress(data, lenOrView(data), max, output, lenOrView(output)))
+      if (w === 0) {
+        throw new Error('gzip decompress: invalid stream or exceeded max decompressed size')
+      }
+      if (w > output.length) {
+        throw new Error('gzip decompress: output buffer too small')
+      }
+      return w
+    },
     brotliCompress(data, quality = 5) {
       // Same cap rationale as gzipCompress (streaming core); growExact for
       // incompressible data.
@@ -1310,6 +1391,19 @@ function build(
         max,
         'brotli decompress: invalid stream or exceeded max decompressed size',
       )
+    },
+    brotliDecompressInto(data, output, maxDecompressed) {
+      // Pooled sibling — streams into the caller buffer, keeps the 64 MiB cap
+      // (same convention as gzipDecompressInto above).
+      const max = maxDecompressed ?? MAX_DECOMPRESSED
+      const w = Number(brotliDecompress(data, lenOrView(data), max, output, lenOrView(output)))
+      if (w === 0) {
+        throw new Error('brotli decompress: invalid stream or exceeded max decompressed size')
+      }
+      if (w > output.length) {
+        throw new Error('brotli decompress: output buffer too small')
+      }
+      return w
     },
 
     httpParseRequestPackedInto(input, output) {
@@ -1470,15 +1564,15 @@ function build(
     parseHttpDate(input) {
       // Packed [u8 ok][i64 secs LE] (9 B) / 1 B (ok=0). A too-small buffer is
       // never a 0 here — the Rust side reports the exact size (9/1) — so a 9-byte
-      // buffer always succeeds. Reused DataView (no per-call allocs).
-      const out = new Uint8Array(9)
-      const view = new DataView(out.buffer)
+      // buffer always succeeds. Reused scratch + cached DataView (no per-call
+      // allocs).
+      const out = dateScratch
       const w = Number(parseHttpDateSym(input, lenOrView(input), out, lenOrView(out)))
       if (w === 0) {
         throw new Error('http date parse: output buffer too small')
       }
       if (out[0] === 0) return null
-      return view.getBigInt64(1, true)
+      return dateScratchView.getBigInt64(1, true)
     },
     parseAcceptEncoding(input) {
       // Packed: [u32 count]{[u32 encLen][enc][f32 q][u32 order]} (empty header →
@@ -1514,9 +1608,9 @@ function build(
       )
     },
     mimeFromExtension(ext) {
-      // Extension → MIME → cstring; unknown → `application/octet-stream`
-      // (never null for valid input).
-      return mimeFromExtensionSym(ext, lenOrView(ext))
+      // Extension → MIME → cstring (cstring ARG: the engine transcodes the JS
+      // extension in-engine); unknown → `application/octet-stream` (never null).
+      return mimeFromExtensionSym(ext)
     },
     jwtVerify(token, secret, nowSeconds) {
       // Verify an HS256 JWT → claims as a JSON cstring; `null` = invalid
@@ -1538,8 +1632,9 @@ function build(
     httpDate(secs) {
       // Allocating sibling — 32-byte buffer always fits the 29-byte date, so
       // the only 0 case is an out-of-range year (napi falls back to the
-      // allocating format! there — mirror with Date.toUTCString).
-      const out = new Uint8Array(32)
+      // allocating format! there — mirror with Date.toUTCString). Pooled
+      // scratch (decoded synchronously — safe).
+      const out = scratchFor(32)
       const w = Number(httpDateIntoRaw(secs ?? 0, out, lenOrView(out)))
       if (w !== 0) return decodeUtf8(out.subarray(0, w))
       return new Date((secs ?? 0) * 1000).toUTCString()
@@ -1623,12 +1718,58 @@ function build(
       }
       return w
     },
+    ingressHandleComponents(inner, methodKind, url, ip, rid, headers, body, output) {
+      // `url`/`ip` are passed as JS strings to `cstring` args — the engine
+      // transcodes them to call-scoped NUL-terminated UTF-8 buffers in-engine
+      // (no JS-side `Buffer.write` encode, no frame assembly for URL/IP).
+      const w = Number(
+        ingressHandleComponentsSym(
+          inner,
+          methodKind,
+          url,
+          ip,
+          rid,
+          lenOrView(rid),
+          headers,
+          lenOrView(headers),
+          body ?? EMPTY_VIEW,
+          body ? lenOrView(body) : lenOrView(EMPTY_VIEW),
+          output,
+          lenOrView(output),
+        ),
+      )
+      if (w === 0) {
+        throw new Error('ingress components: output buffer too small or pipeline error')
+      }
+      return w
+    },
     ingressLayout(out) {
       const w = Number(ingressLayoutSym(out, lenOrView(out)))
       if (w !== out.length) {
         throw new Error('ingress layout: output buffer too small')
       }
       return w
+    },
+
+    routeCompile(descriptor) {
+      const handle = Number(routeCompileSym(descriptor, lenOrView(descriptor)))
+      if (handle === 0) {
+        throw new Error('route compile: invalid route descriptor')
+      }
+      return handle
+    },
+    routeRun(handle, frame, output) {
+      // Needed-size convention: `0` = real error (malformed frame / panic); a
+      // write larger than `output.length` is the EXACT required size (caller
+      // allocates once and retries) — only a `0` write throws here.
+      const w = Number(routeRunSym(handle, frame, lenOrView(frame), output, lenOrView(output)))
+      if (w === 0) {
+        throw new Error('route run: malformed frame or pipeline error')
+      }
+      return w
+    },
+    routeDestroy(handle) {
+      routeDestroySym(handle)
     },
   }
 }

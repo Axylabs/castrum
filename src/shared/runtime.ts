@@ -1,35 +1,29 @@
-// src/shared/runtime.ts — runtime detection helpers.
+// src/shared/runtime.ts — runtime detection helpers (facade).
 //
-// castrum is Bun-first but must also run under Node.js. This module is the
-// single place that detects the host runtime, so the rest of the codebase can
-// branch on `isBun()` / `isNode()` without sprinkling `typeof Bun` checks
-// everywhere. Importing this module has zero side effects.
+// Facade over the cached detection in `src/runtime/detect.ts` (the ONLY place
+// `typeof Bun` is checked — resolved ONCE at module load by the runtime
+// adapter). Kept so existing `isBun()` / `isNode()` / `runtimeName()` /
+// `nodeMajorVersion()` call sites work unchanged.
+
+import {
+  detectedRuntime,
+  isBunRuntime,
+  isNodeRuntime,
+  nodeMajorVersion as nodeMajorVersionDetected,
+} from '../runtime/detect'
+import type { RuntimeName as RuntimeNameType } from '../runtime/types'
 
 /** Host runtime identifier. */
-export type RuntimeName = 'bun' | 'node' | 'unknown'
+export type RuntimeName = RuntimeNameType
 
-/** Whether the current runtime is Bun (the primary target). */
-export function isBun(): boolean {
-  // Bun defines the global `Bun` object; Node does not.
-  return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined'
-}
+/** Whether the current runtime is Bun (the primary target). Cached once at load. */
+export const isBun: () => boolean = isBunRuntime
 
 /** Whether the current runtime is Node.js. */
-export function isNode(): boolean {
-  return !isBun() && typeof process !== 'undefined' && process.versions?.node != null
-}
+export const isNode: () => boolean = isNodeRuntime
 
 /** Best-effort name of the current runtime. */
-export function runtimeName(): RuntimeName {
-  if (isBun()) return 'bun'
-  if (isNode()) return 'node'
-  return 'unknown'
-}
+export const runtimeName: () => RuntimeName = () => detectedRuntime
 
 /** The Node.js major version when running under Node, otherwise `null`. */
-export function nodeMajorVersion(): number | null {
-  if (!isNode()) return null
-  const v = process.versions.node
-  const major = Number(v?.split('.')[0])
-  return Number.isFinite(major) ? major : null
-}
+export const nodeMajorVersion: () => number | null = nodeMajorVersionDetected

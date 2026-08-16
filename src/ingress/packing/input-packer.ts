@@ -13,6 +13,10 @@ const EMPTY_IP_BYTES = encoder.encode('0.0.0.0')
 export class IngressInputPacker {
   private buf: Uint8Array
   private view: DataView
+  /** Cached zero-copy `Buffer` view over `buf`'s backing store (invalidated
+   *  when `buf` grows). `Buffer.write` needs a Buffer; caching it here avoids
+   *  a per-string view/`Buffer.from` allocation on the hot pack path. */
+  private bufView: Buffer | null = null
   private pos = 0
 
   constructor(initialSize = 65536) {
@@ -34,6 +38,7 @@ export class IngressInputPacker {
 
     this.buf = next
     this.view = new DataView(next.buffer)
+    this.bufView = null
   }
 
   private writeU8(value: number): void {
@@ -77,8 +82,16 @@ export class IngressInputPacker {
     this.ensure(4 + value.length * 3)
     const valueLenPos = this.pos
     this.pos += 4
-    const dest = this.buf.subarray(this.pos)
-    const { written } = encoder.encodeInto(value, dest)
+    // Reused `Buffer` view over this buffer: `Buffer.write` encodes the string
+    // in place at the current position and returns bytes written — no
+    // `{read, written}` object, no `Buffer.from`/subarray per string (those
+    // were per-request allocations on this hot path).
+    let view = this.bufView
+    if (view === null) {
+      view = Buffer.from(this.buf.buffer, this.buf.byteOffset, this.buf.byteLength)
+      this.bufView = view
+    }
+    const written = view.write(value, this.pos, 'utf8')
     this.view.setUint32(valueLenPos, written, true)
     this.pos += written
   }

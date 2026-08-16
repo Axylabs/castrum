@@ -7,7 +7,7 @@
 // observed request size to pre-size future buffers (`adaptive` option), and
 // consumers can drive their own runtime decisions (batch-vs-loop, delegate
 // vs-native, cache-size) with a bounded, noise-smoothed estimate.
-/** Options for an `AdaptiveEstimate`: EWMA smoothing, bounds, starting value. */export interface AdaptiveEstimateOptions {
+/** Options for an `AdaptiveEstimate`: EWMA smoothing, bounds, starting value. */ export interface AdaptiveEstimateOptions {
   /**
    * EWMA smoothing factor in (0, 1]. Higher reacts faster to new samples;
    * lower smooths more. Default: 0.25.

@@ -22,7 +22,7 @@ import type {
   TemplateRendererInstance,
   UrlBuilderInstance,
 } from '../../native'
-import { type BunFFI, getBunFFI } from '../../native/ffi'
+import type { BunFFI } from '../../native/ffi'
 import { encoder } from '../../shared/bytes'
 import { decodeUtf8, encodeUtf8 } from '../../shared/codec'
 import type { RustClientContext } from '../context'
@@ -43,9 +43,12 @@ import { asNumber } from '../options'
 function ffiHmacSigner(key: Uint8Array, ffi: BunFFI): HmacSignerInstance {
   return {
     sign(data) {
-      // The scalar FFI path returns the hex STRING; the instance contract is
-      // bytes (napi parity) — re-encode via the Bun-native codec.
-      return encodeUtf8(ffi.hmacSha256(key, data))
+      // Pooled `hmacSha256Into`: writes the 64 hex chars directly into a fresh
+      // buffer — no cstring return → no string clone → no encodeUtf8 round-trip
+      // (the old path cloned the hex string then re-encoded it to bytes).
+      const out = new Uint8Array(64)
+      const w = ffi.hmacSha256Into(key, data, out)
+      return out.subarray(0, w)
     },
     verify(data, sig) {
       return ffi.hmacSha256Verify(key, data, sig)
@@ -60,7 +63,11 @@ function ffiBase64Codec(
 ): Base64CodecInstance {
   return {
     encode(input) {
-      return encodeUtf8(ffi.base64Encode(input, urlSafe, padding))
+      // Pooled `base64EncodeInto`: writes the base64 bytes directly into a
+      // fresh buffer sized for the input — no cstring return / re-encode.
+      const out = new Uint8Array(Math.ceil(input.length / 3) * 4 + 3)
+      const w = ffi.base64EncodeInto(input, out, urlSafe, padding)
+      return out.subarray(0, w)
     },
     decode(input) {
       return ffi.base64Decode(input, urlSafe, padding)
@@ -71,11 +78,18 @@ function ffiBase64Codec(
 function ffiCookieSigner(secret: Uint8Array, ffi: BunFFI): CookieSignerInstance {
   return {
     sign(value) {
-      return encodeUtf8(ffi.signCookie(value, secret))
+      // Pooled `signCookieInto`: writes `value.<64-hex>` directly into a fresh
+      // buffer — no cstring return / re-encode round-trip.
+      const out = new Uint8Array(value.length + 65)
+      const w = ffi.signCookieInto(value, secret, out)
+      return out.subarray(0, w)
     },
     verify(signed) {
-      const s = ffi.verifyCookie(signed, secret)
-      return s === null ? null : encodeUtf8(s)
+      // Pooled `verifyCookieInto`: writes the verified value directly (the
+      // value is a substring of `signed`, so `signed.length + 1` always fits).
+      const out = new Uint8Array(signed.length + 1)
+      const w = ffi.verifyCookieInto(signed, secret, out)
+      return w === null ? null : out.subarray(0, w)
     },
   }
 }
@@ -225,7 +239,9 @@ function ffiRateLimiter(
   return {
     check(key, nowMs) {
       void keepAlive
-      return ffi.rateLimiterCheck(inner, encoder.encode(key), nowMs)
+      // `key` is a `cstring` ARG — the engine transcodes the rate-limit key
+      // in-engine (no JS-side encode).
+      return ffi.rateLimiterCheck(inner, key, nowMs)
     },
     checkKey(key, nowMs) {
       void keepAlive
@@ -237,7 +253,11 @@ function ffiRateLimiter(
 function ffiCsrfProtector(secret: Uint8Array, ffi: BunFFI): CsrfProtectorInstance {
   return {
     create() {
-      return encodeUtf8(ffi.csrfToken(secret))
+      // Pooled `csrfTokenInto`: writes the 129-char `hex.hex` directly into a
+      // fresh buffer — no cstring return / re-encode round-trip.
+      const out = new Uint8Array(129)
+      const w = ffi.csrfTokenInto(secret, out)
+      return out.subarray(0, w)
     },
     verify(token) {
       return ffi.csrfVerify(token, secret)
@@ -307,11 +327,12 @@ function ffiFormParser(ffi: BunFFI): FormParserInstance {
 
 /** Compiled-once factory + runtime-control methods (`Pick<RustScalar, ...>`). */
 export function buildFactories(ctx: RustClientContext) {
+  const { transport } = ctx.runtime
   const { addon } = ctx
 
   return {
     createSchemaValidator(schema: Uint8Array): SchemaValidatorInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.SchemaValidator(schema)
         return ffiSchemaValidator(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
@@ -319,12 +340,12 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.SchemaValidator(schema)
     },
     createHmacSigner(key: Uint8Array): HmacSignerInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) return ffiHmacSigner(key, ffi)
       return new addon.HmacSigner(key)
     },
     createTemplateRenderer(source: string): TemplateRendererInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.TemplateRenderer(source)
         return ffiTemplateRenderer(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
@@ -332,7 +353,7 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.TemplateRenderer(source)
     },
     createFormParser(capacity?: number): FormParserInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) return ffiFormParser(ffi)
       return new addon.FormParser(capacity)
     },
@@ -346,7 +367,7 @@ export function buildFactories(ctx: RustClientContext) {
       // FFI-first via the opaque inner handle (the napi instance compiles the
       // state once; per-call `isNotModified` is a C-ABI eval). The wrapper
       // holds the napi instance for the handle's lifetime.
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.ConditionalRequest(etagValue, lastModifiedSecs ?? undefined)
         return ffiConditionalRequest(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
@@ -354,7 +375,7 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.ConditionalRequest(etagValue, lastModifiedSecs ?? undefined)
     },
     createAcceptNegotiator(supported: string[]): AcceptNegotiatorInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.AcceptNegotiator(supported)
         return ffiAcceptNegotiator(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
@@ -362,17 +383,17 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.AcceptNegotiator(supported)
     },
     createBase64Codec(urlSafe?: boolean, padding?: boolean): Base64CodecInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) return ffiBase64Codec(urlSafe, padding, ffi)
       return new addon.Base64Codec(urlSafe ?? undefined, padding ?? undefined)
     },
     createCookieSigner(secret: Uint8Array): CookieSignerInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) return ffiCookieSigner(secret, ffi)
       return new addon.CookieSigner(secret)
     },
     createCsrfProtector(secret: Uint8Array): CsrfProtectorInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) return ffiCsrfProtector(secret, ffi)
       return new addon.CsrfProtector(secret)
     },
@@ -380,7 +401,7 @@ export function buildFactories(ctx: RustClientContext) {
       // FFI-first via the opaque inner handle (the napi instance parses the
       // base ONCE; per-call `resolve` is a C-ABI eval). The wrapper holds the
       // napi instance for the handle's lifetime.
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.UrlBuilder(base)
         return ffiUrlBuilder(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
@@ -388,7 +409,7 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.UrlBuilder(base)
     },
     createJwtSigner(secret: Uint8Array, ttlSeconds?: number): JwtSignerInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.JwtSigner(secret, ttlSeconds ?? undefined)
         return ffiJwtSigner(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
@@ -396,17 +417,17 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.JwtSigner(secret, ttlSeconds ?? undefined)
     },
     createAeadCipher(key: Uint8Array, algorithm?: string): AeadCipherInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) return ffiAeadCipher(key, algorithm, ffi)
       return new addon.AeadCipher(key, algorithm ?? undefined)
     },
     createArgon2Hasher(options?: PasswordHashOptions | null): Argon2HasherInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) return ffiArgon2Hasher(options, ffi)
       return new addon.Argon2Hasher(options ?? undefined)
     },
     createMediaTypeMatcher(expected: Uint8Array): MediaTypeMatcherInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.MediaTypeMatcher(expected)
         return ffiMediaTypeMatcher(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
@@ -418,7 +439,7 @@ export function buildFactories(ctx: RustClientContext) {
       windowMs: number,
       maxEntries?: number | null,
     ): RateLimiterInstance {
-      const ffi = getBunFFI()
+      const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.RateLimiter(limit, windowMs, maxEntries ?? undefined)
         return ffiRateLimiter(napi, Number(napi.innerPtr?.() ?? 0n), ffi)

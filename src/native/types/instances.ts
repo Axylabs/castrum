@@ -45,6 +45,18 @@ export interface IngressInstance {
   ingressInnerPtr?(): bigint
 }
 
+/**
+ * The native `Route` class instance (per-route native stack — the
+ * `@ignex/native` route-wire v3 contract). Constructed from a compiled route
+ * descriptor; `run` processes one packed request frame and returns the packed
+ * verdict result bytes written (`0` = error / too-small, `> output.length` =
+ * the exact required size — the growExact convention).
+ */
+export interface RouteInstance {
+  run(frame: Uint8Array, output: Uint8Array): number
+  destroy?(): void
+}
+
 /** A single JSON Schema validation error (fast path + DOM fallback). */
 export interface SchemaError {
   /** RFC 6901 JSON pointer to the failing instance value ("" = root). */

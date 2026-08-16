@@ -57,6 +57,15 @@ impl<'a> Cursor<'a> {
     /// Parse a JSON string token, returning the raw inner slice (between the
     /// quotes). Escapes are validated as escape characters and skipped, but
     /// not decoded. Returns `None` on malformed strings.
+    ///
+    /// RFC-8259 strictness: raw control bytes (`< 0x20`) are invalid inside a
+    /// JSON string (they must be escaped), and sonic's `json_valid_bytes`
+    /// rejects them. This is the ONE strictness gap the fast path closes so a
+    /// fast-path schema can replace the sonic gate — everything else sonic
+    /// rejects (leading zeros, trailing commas, trailing garbage, truncated
+    /// escapes, missing structure) the structural walk already rejects, and
+    /// sonic is lenient on the same things the fast path is (bad `\uXXXX` hex,
+    /// lone surrogates, invalid UTF-8, `1e999` overflow).
     pub(crate) fn raw_string(&mut self) -> Option<&'a [u8]> {
         if !self.eat(b'"') {
             return None;
@@ -69,6 +78,12 @@ impl<'a> Cursor<'a> {
             // byte-at-a-time loop over every key and string value. `?` returns
             // None for an unterminated string (no closing quote).
             let rel = memchr::memchr2(b'"', b'\\', &self.data[i..])?;
+            // Reject raw control bytes (< 0x20) in the plain run — LLVM
+            // auto-vectorizes this comparison, and control bytes are rare in
+            // real JSON so the branch is almost never taken.
+            if self.data[i..i + rel].iter().any(|&b| b < 0x20) {
+                return None;
+            }
             i += rel;
             if self.data[i] == b'"' {
                 self.pos = i + 1;
