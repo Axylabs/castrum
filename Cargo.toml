@@ -39,7 +39,7 @@ sonic-rs = { version = "0.5", features = ["sort_keys"] }
 # default-features=false: drop resolve-http + tls-aws-lc-rs which pull in
 # reqwest -> hyper/h2/tokio/rustls (large binary, attack surface). Format
 # validators (email etc.) are built-in and NOT feature-gated in 0.48.
-jsonschema = { version = "0.48", default-features = false, features = ["resolve-file"] }
+jsonschema = { version = "0.49", default-features = false, features = ["resolve-file"] }
 aws-lc-rs = "1"
 # NOTE: base64 0.23 enables SIMD (SSE/AVX) by default via the `simd-unsafe`
 # feature (part of `default`); no explicit feature is needed.
