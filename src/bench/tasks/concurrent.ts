@@ -1,3 +1,5 @@
+// src/bench/tasks/concurrent.ts — CPU benchmark tasks: concurrent worker scenario.
+
 import type { BenchFixtures, ComplexFixtures } from '../fixtures'
 import type { ConcurrentBenchTask } from '../types'
 

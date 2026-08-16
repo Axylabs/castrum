@@ -121,7 +121,8 @@ console.log("listening on", server.port);
   route options. The underlying factories (`readHandler`, `jsonWriteHandler`,
   `echoHandler`, `headHandler`, `fallbackHandler`) are also exported directly
   if you'd rather wire methods by hand.
-- **Bun-only**: `createIngressServer`. **Node**: use `createIngressServerNode`
+- **Runtime-adaptive**: `createIngressServer` picks `Bun.serve` on Bun and
+  `node:http` on Node; `createIngressServerNode` is the explicit Node adapter
   with the same `routes` spec (and `await srv.ready` for the port).
 
 The wire format is `{"ok":true,...,"requestId":...}` on success and

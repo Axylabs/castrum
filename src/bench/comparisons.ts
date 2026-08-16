@@ -1,3 +1,5 @@
+// src/bench/comparisons.ts — CPU-bench comparison tables (native vs js vs bun).
+
 import type { ComparisonReport } from './types'
 
 export const comparisonReports: ComparisonReport[] = [

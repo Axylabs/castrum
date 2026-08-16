@@ -29,6 +29,7 @@ import { BakedIngressResult } from '../src/ingress/decode/baked-result'
 import { buildHeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN } from '../src/ingress/shared'
 import { IngressInputPacker } from '../src/ingress/packing/input-packer'
 import { gatherRawHeadersPacked } from '../src/ingress/packing/gather-raw-headers'
+import { measureNs as measure } from './measure'
 
 const OPTIONS: Parameters<typeof createIngressHandler>[0] = {
   trustProxy: false,
@@ -47,18 +48,6 @@ const OPTIONS: Parameters<typeof createIngressHandler>[0] = {
     maxAge: 600,
   },
   rateLimit: { limit: 1000, windowMs: 60_000 },
-}
-
-function measure(fn: () => unknown, iterations: number): number {
-  for (let i = 0; i < Math.max(iterations / 20, 1); i++) fn()
-  let best = Infinity
-  for (let b = 0; b < 5; b++) {
-    const start = performance.now()
-    for (let i = 0; i < iterations; i++) fn()
-    const ns = ((performance.now() - start) * 1e6) / iterations
-    if (ns < best) best = ns
-  }
-  return best
 }
 
 const handler = createIngressHandler(OPTIONS, { outputBufferSize: 262144, emitRequestIdHeader: false })

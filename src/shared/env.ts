@@ -1,9 +1,9 @@
 // src/shared/env.ts — Centralized environment-variable resolution.
 //
-// Runtime env vars use the `CASTRUM_*` prefix; legacy `RUST_BENCH_*` / `RUST_*`
-// names are still read as aliases (see docs/ENVIRONMENT.md). All alias-chain
-// reads MUST go through `resolveEnvVar` so the chains can never drift apart
-// (they previously lived inline at several call sites with different shapes).
+// Runtime env vars use the `CASTRUM_*` prefix (plus the napi-rs standard
+// `NAPI_RS_NATIVE_LIBRARY_PATH`). All reads MUST go through `resolveEnvVar` so
+// they can never drift apart (they previously lived inline at several call
+// sites with different shapes).
 
 /** First set value among `preferred` and its legacy aliases, or `undefined`. */
 export function resolveEnvVar(

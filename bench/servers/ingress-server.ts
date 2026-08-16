@@ -25,6 +25,8 @@ import {
   CORS_CONFIG,
   RATE_LIMIT_CONFIG,
   MAX_BODY_BYTES,
+  envFlag,
+  envNumber,
   SECURITY_HEADERS,
 } from "./shared";
 import {
@@ -32,46 +34,6 @@ import {
 } from "../../src/ingress/constants";
 
 // ── Runtime configuration (validated) ──
-
-/** Read a boolean env flag with a safe default; warn on invalid values. */
-function envFlag(name: string, defaultValue: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return defaultValue;
-  const v = raw.trim().toLowerCase();
-  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
-  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
-  console.warn(
-    `[ingress] WARN: env ${name}=${JSON.stringify(raw)} is not a boolean; using default ${defaultValue}`,
-  );
-  return defaultValue;
-}
-
-/** Read an integer env var with min/max clamping; warn on NaN. */
-function envNumber(
-  name: string,
-  defaultValue: number,
-  min: number,
-  max = Number.MAX_SAFE_INTEGER,
-): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return defaultValue;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) {
-    console.warn(
-      `[ingress] WARN: env ${name}=${JSON.stringify(raw)} is not a number; using default ${defaultValue}`,
-    );
-    return defaultValue;
-  }
-  if (n < min) {
-    console.warn(`[ingress] WARN: env ${name}=${n} below min ${min}; using ${min}`);
-    return min;
-  }
-  if (n > max) {
-    console.warn(`[ingress] WARN: env ${name}=${n} above max ${max}; using ${max}`);
-    return max;
-  }
-  return n;
-}
 
 const RATE_ENABLED =
   RATE_LIMIT_CONFIG.limit !== RATE_LIMIT_U32_MAX &&

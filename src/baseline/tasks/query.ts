@@ -1,3 +1,5 @@
+// src/baseline/tasks/query.ts — JS baseline: query string parsing.
+
 import { decoder } from '../../shared/bytes'
 import { packPairs } from '../../shared/packed'
 

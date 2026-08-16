@@ -1,4 +1,45 @@
 // bench/servers/shared.ts — cleaned up
+
+/** Read a boolean env flag with a safe default; warn on invalid values. */
+export function envFlag(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  const v = raw.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  console.warn(
+    `[bench-server] WARN: env ${name}=${JSON.stringify(raw)} is not a boolean; using default ${defaultValue}`,
+  );
+  return defaultValue;
+}
+
+/** Read an integer env var with min/max clamping; warn on NaN. */
+export function envNumber(
+  name: string,
+  defaultValue: number,
+  min: number,
+  max = Number.MAX_SAFE_INTEGER,
+): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.warn(
+      `[bench-server] WARN: env ${name}=${JSON.stringify(raw)} is not a number; using default ${defaultValue}`,
+    );
+    return defaultValue;
+  }
+  if (n < min) {
+    console.warn(`[bench-server] WARN: env ${name}=${n} below min ${min}; using ${min}`);
+    return min;
+  }
+  if (n > max) {
+    console.warn(`[bench-server] WARN: env ${name}=${n} above max ${max}; using ${max}`);
+    return max;
+  }
+  return n;
+}
+
 export const PORTS = {
   bun: 9120,
   elysia: 9121,

@@ -1,3 +1,5 @@
+// src/baseline/tasks/password.ts — JS baseline: password hashing.
+
 import { scryptSync } from 'node:crypto'
 
 export interface PasswordHashOptions {

@@ -171,10 +171,7 @@ export function resolveAddonPathFrom(
 
 function resolveAddonPath(): string {
   return resolveAddonPathFrom(
-    resolveEnvVar('CASTRUM_NATIVE_LIBRARY_PATH', [
-      'NAPI_RS_NATIVE_LIBRARY_PATH',
-      'RUST_BENCH_NATIVE_LIBRARY_PATH',
-    ]),
+    resolveEnvVar('CASTRUM_NATIVE_LIBRARY_PATH', ['NAPI_RS_NATIVE_LIBRARY_PATH']),
     dirname(fileURLToPath(import.meta.url)),
     process.platform,
     process.arch,
@@ -214,7 +211,7 @@ export function getAddon(): NativeAddon {
       )
     }
 
-    if (resolveEnvVar('CASTRUM_DEBUG', ['RUST_BENCH_DEBUG']) !== undefined) {
+    if (resolveEnvVar('CASTRUM_DEBUG') !== undefined) {
       console.log('Native addon loaded from:', addonPath)
       console.log('Exported keys:', Object.keys(loaded).sort())
     }

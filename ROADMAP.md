@@ -1,6 +1,6 @@
 # castrum Roadmap
 
-**Status**: v0.9.0 (working tree), pre-1.0. The engine (Rust cdylib via napi-rs)
+**Status**: pre-0.10.0 (v0.9.0 shipped 2026-08-11). The engine (Rust cdylib via napi-rs)
 is feature-complete for its surface; the roadmap is dominated by hardening,
 observability, distribution, and governance.
 
@@ -8,8 +8,12 @@ Legend: ✅ done · 🔜 planned · ⏳ in progress · 💤 not started
 
 ## 1. Fix broken tooling (✅ v0.9.0)
 - ✅ `check:version` — CHANGELOG released-section alignment (0.9.0).
-- ✅ Proven registry cleanup (misplaced `createSchemaValidator` banner).
-- ✅ Annotation `fileForName` map — extended for new primitives.
+- ✅ Dual-binary v3 loader — `build:v3` ships a `castrum.linux-x64-v3-gnu.node`
+  SIMD variant; the loader CPU-detects AVX2+BMI2+FMA+SSE4.2 from `/proc/cpuinfo`.
+- ✅ Native route stack (`rust/ingress/native_route.rs`) — the route-wire v3
+  contract consumed by `@ignex/native` (per-route compiled ingress).
+- ✅ Runtime adapter seam (`src/runtime/`) — runtime detection, builtin delegation,
+  and the runtime-adaptive public `createIngressServer`.
 
 ## 2. Don't reinvent the wheel — Bun built-ins audit (✅ v0.9.0)
 - ✅ Diagnostic benchmark set (`diag:` tasks) racing castrum vs `Bun.hash`,
@@ -39,7 +43,7 @@ Legend: ✅ done · 🔜 planned · ⏳ in progress · 💤 not started
 ## 5. Distribution & supply chain (🔜)
 - ✅ musl targets added to `napi.targets` + CI build matrix.
 - ✅ SLSA build-provenance attestation + SBOM on the publish job (CI config).
-- 🔜 Cut v0.9.0 (tag + publish dry-run), flip local consumers' `file:` dev deps
+- ✅ Cut v0.9.0 (tag + publish dry-run), flip local consumers' `file:` dev deps
   to a real version range, verify the installed-tarball native path in CI.
 
 ## 6. Governance (🔜)

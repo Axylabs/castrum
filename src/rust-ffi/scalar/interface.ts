@@ -28,6 +28,10 @@ import type {
   WsFrame,
 } from '../../native'
 
+/**
+ * The flat `rust.*` scalar method surface: bytes in → normalized out. Built by
+ * the scalar builders from the native addon + Bun built-in delegations.
+ */
 export interface RustScalar {
   // ── Scalar utilities (bytes in → normalized out) ──
   crc32(input: Uint8Array): number

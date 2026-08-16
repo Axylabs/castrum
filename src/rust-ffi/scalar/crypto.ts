@@ -10,6 +10,7 @@
 
 import type { PasswordHashOptions } from '../../native'
 import { encoder } from '../../shared/bytes'
+import { writeInto } from '../into'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
 
 /** Auth / crypto scalar methods (`Pick<RustScalar, ...>`). */
@@ -50,9 +51,7 @@ export function buildCrypto(ctx: RustClientContext) {
         return need
       }
       const bytes = addon.randomToken(byteLen)
-      if (output.length < bytes.length) throw new Error('random token: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('random token', output, bytes)
     },
     base64Encode(input: Uint8Array, urlSafe?: boolean, padding?: boolean): Uint8Array | string {
       // Bun's Buffer base64 (SIMD) beats the rust+FFI crossing (~2x, measured)
@@ -140,10 +139,7 @@ export function buildCrypto(ctx: RustClientContext) {
     signCookieInto(value: Uint8Array, secret: Uint8Array, output: Uint8Array): number {
       const f = ffi()
       if (f) return f.signCookieInto(value, secret, output)
-      const bytes = addon.signCookie(value, secret)
-      if (output.length < bytes.length) throw new Error('sign cookie: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('sign cookie', output, addon.signCookie(value, secret))
     },
     verifyCookie(signed: Uint8Array, secret: Uint8Array): Uint8Array | string | null {
       return resolveNative(ctx, 'verifyCookie')(signed, secret) as Uint8Array | string | null
@@ -153,9 +149,7 @@ export function buildCrypto(ctx: RustClientContext) {
       if (f) return f.verifyCookieInto(signed, secret, output)
       const value = addon.verifyCookie(signed, secret)
       if (value === null) return null
-      if (output.length < value.length) throw new Error('verify cookie: output buffer too small')
-      output.set(value)
-      return value.length
+      return writeInto('verify cookie', output, value)
     },
     csrfToken(secret: Uint8Array): Uint8Array | string {
       return resolveNative(ctx, 'csrfToken')(secret) as Uint8Array | string
@@ -163,10 +157,7 @@ export function buildCrypto(ctx: RustClientContext) {
     csrfTokenInto(secret: Uint8Array, output: Uint8Array): number {
       const f = ffi()
       if (f) return f.csrfTokenInto(secret, output)
-      const bytes = addon.csrfToken(secret)
-      if (output.length < bytes.length) throw new Error('csrf token: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('csrf token', output, addon.csrfToken(secret))
     },
     csrfVerify(token: Uint8Array, secret: Uint8Array): boolean {
       return resolveNative(ctx, 'csrfVerify')(token, secret) as boolean
@@ -242,15 +233,16 @@ export function buildCrypto(ctx: RustClientContext) {
           output,
         )
       }
-      const bytes = addon.jwtSignBytes(
-        claimsJson,
-        secret,
-        ttlSeconds ?? null,
-        nowSeconds ?? Math.floor(Date.now() / 1000),
+      return writeInto(
+        'jwt sign',
+        output,
+        addon.jwtSignBytes(
+          claimsJson,
+          secret,
+          ttlSeconds ?? null,
+          nowSeconds ?? Math.floor(Date.now() / 1000),
+        ),
       )
-      if (output.length < bytes.length) throw new Error('jwt sign: output buffer too small')
-      output.set(bytes)
-      return bytes.length
     },
     jwtVerify(token: Uint8Array, secret: Uint8Array, nowSeconds?: number): unknown {
       const f = ffi()

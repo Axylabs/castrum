@@ -1,3 +1,5 @@
+// src/bench/tasks/websocket.ts — CPU benchmark tasks: WebSocket frame codec + accept-key.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

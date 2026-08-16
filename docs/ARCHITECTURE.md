@@ -31,7 +31,7 @@ The bridge between TypeScript and Rust has **two transports**, both loading the 
 cdylib (built with napi-rs):
 
 - **`bun:ffi` (PRIMARY on Bun)** — `src/native/ffi.ts` `dlopen`s the addon's
-  `extern "C"` exports (`rust/ffi.rs`, 75 `castrum_*` symbols — 67 direct + 4
+  `extern "C"` exports (`rust/ffi.rs`, 79 `castrum_*` symbols — 71 direct + 4
   `validator_c_abi!` + 4 `compress_to_out!`, parity guarded by
   `test/unit/features/ffi-symbol-parity.test.ts`) and Bun JIT-calls them
   directly (~10-20ns crossing vs ~100-350ns N-API). A bind-time self-test guards
@@ -54,9 +54,24 @@ Shared characteristics:
 - **Synchronous calls**: All functions are synchronous, running on the main JS thread
 - **Thread pool**: Rayon is available for parallel CPU-bound work
 
+### Dual-binary CPU-detect (x86-64-v3 SIMD variant)
+
+On `linux-x64` the package ships a second artifact, `castrum.linux-x64-v3-gnu.node`,
+built with `-C target-cpu=x86-64-v3 -C target-feature=+avx2,+bmi2,+fma,+sse4.2`
+(`scripts/build-v3.sh`, package script `build:v3`; `build:all` builds both). The
+loader (`src/native/loader.ts`) picks the v3 variant at runtime when the host
+CPU exposes AVX2+BMI2+FMA+SSE4.2 (read from `/proc/cpuinfo`), falling back to the
+baseline artifact otherwise — a v3 binary dlopened on an unsupported CPU would
+SIGILL (not catchable from JS), so detection is conservative and requires ALL
+four flags. The v3 variant is OPTIONAL (an absent v3 file resolves to baseline),
+so `build:v3` is never a hard publish requirement.
+
 ---
 
 ## Module Architecture
+
+> **Canonical tree**: [`REPO_MAP.md`](./REPO_MAP.md) is the single-source module map
+> (src/ + rust/ trees, kept in sync). The trees below are the deep-dive annotations.
 
 ### Rust Modules
 
@@ -267,10 +282,12 @@ package ships a compiled ESM bundle built by `bun run build:js`:
   from multiple candidate roots so the same loader works from `src/native/…`
   (Bun, source layout) and `dist/…` (Node, bundled layout), plus the
   `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH` override.
-- `src/shared/runtime.ts` is the single runtime-detection seam (`isBun`/`isNode`).
-- `createIngressServer` (Bun.serve) is Bun-only; `createIngressServerNode`
-  (`src/ingress/server-node.ts`) serves the SAME route handlers over `node:http`,
-  sharing `buildRouteHandlers` in `server.ts`. The `BakedServer.server` type is a
+- `src/runtime/detect.ts` is the single runtime-detection seam (the ONLY place
+  `typeof Bun` is checked); `src/shared/runtime.ts` is a thin facade over it.
+- The public `createIngressServer` is runtime-adaptive: it delegates to the
+  Bun.serve builder (`src/ingress/server.ts`) on Bun and to `createIngressServerNode`
+  (`src/ingress/server-node.ts`, same route handlers over `node:http`) on Node,
+  via `src/runtime/server.ts`. The `BakedServer.server` type is a
   runtime-agnostic `ServerHandle` so Node TS consumers don't need `@types/bun`.
 - The benchmark tooling (`bench/`, `bun:test` suites) remains Bun-only by design.
 

@@ -1,3 +1,5 @@
+// src/bench/checks.ts — CPU-bench correctness checks (rust.* vs JS baseline parity).
+
 import { Buffer } from 'node:buffer'
 import * as native from '../baseline'
 import { rust } from '../rust-ffi'
@@ -103,21 +105,6 @@ export function runCorrectnessChecks(f: BenchFixtures): void {
     assertEqual(rustM.mediaType, nativeM.mediaType, 'media type: essence parity')
     assertDeepEqual(rustM.params, nativeM.params, 'media type: params parity')
   }
-  assertEqual(
-    mediaParser.matches(f.contentTypeJson, f.contentTypeJson),
-    true,
-    'media type: exact match',
-  )
-  assertEqual(
-    mediaParser.matches(f.contentTypeJson, encoder.encode('application/*')),
-    true,
-    'media type: subtype wildcard',
-  )
-  assertEqual(
-    mediaParser.matches(f.contentTypeJson, encoder.encode('text/*')),
-    false,
-    'media type: mismatched wildcard',
-  )
 
   // ── ETag / HTTP-date / conditional (M3) ──
   const etagStr = toStr(rust.etag(f.etagData))

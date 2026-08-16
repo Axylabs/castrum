@@ -1,3 +1,5 @@
+// src/baseline/tasks/hashing.ts — JS baseline: FNV-1a / crc32 / xxh3.
+
 import * as CRC32 from 'crc-32'
 
 export function nativeCrc32(bytes: Uint8Array): number {

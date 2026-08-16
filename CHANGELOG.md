@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Cleanup
+
+- **Dead code removed**: the `MediaTypeParser.matches` napi method (no production
+  call site — the precompiled `MediaTypeMatcher` is the live path; wildcard
+  parity coverage moved to it), and the legacy `RUST_BENCH_*` / `RUST_*` /
+  `RUST_FFI_MODE` env aliases (only `CASTRUM_*` + `NAPI_RS_NATIVE_LIBRARY_PATH`
+  are read now). `verify_signature` stays `#[cfg(test)]` (test-only helper).
+- **DRY — pooled `*Into` tails** (`src/rust-ffi/into.ts`): ~14 copy-pasted
+  "check capacity → `output.set(bytes)` → return length" napi-fallback blocks
+  collapse into one `writeInto(op, output, bytes)` (identical error messages).
+- **DRY — batch table** (`src/rust-ffi/batch/build.ts`): the ~46 bulk methods
+  now share typed `via` / `via2` pack→native→unpack builders; each method keeps
+  its exact public signature.
+- **DRY — ingress route factories** (`src/ingress/routes/common.ts`): shared
+  `buildSuccessInit` (status + ratelimit headers) and `runBaked` (sync route
+  runner) dedupe the read / head / options / fallback / json-write skeletons.
+  Behavior and the two wire formats are unchanged.
+- **DRY — benches**: shared `bench/measure.ts` (`measureNs` / `measureNsAsync`,
+  min-of-5) replaces 4 copy-pasted timers; `envFlag` / `envNumber` moved to
+  `bench/servers/shared.ts`.
+- **DRY — Rust batch writers** (`rust/util/packed.rs`): `write_sum_batch_into`
+  (i64) + `write_u32_batch_into` (u32) now delegate to a generic
+  `write_scalar_batch_into<T: ToLeBytes>`; `hmac_sha256_batch_bytes` routes
+  through `bytes_map_serial` with a compiled-key closure. Byte-identical output
+  (pinned by the batch parity tests).
+- **Docs in sync with the code**: fixed the FFI symbol count (79 = 71 direct + 4
+  + 4, was 75/78), the runtime seam (`src/runtime/detect.ts`, not
+  `src/shared/runtime.ts`), and the runtime-adaptive public `createIngressServer`
+  across README/ARCHITECTURE/REPO_MAP/CASE_STUDY/FFI_BUN_GUIDE/GETTING_STARTED/
+  INGRESS/CONTRIBUTING/ROADMAP/ENVIRONMENT/AGENTS. New docs:
+  `docs/INGRESS-ROUTER.md` (`createIngressRouter`), `docs/NATIVE-ROUTE.md`
+  (native route stack + `@ignex/native` route-wire v3 + flux→ignex note), and a
+  dual-binary v3-loader section in `docs/ARCHITECTURE.md`. Dropped the stale
+  legacy-alias env rows; fixed the CHANGELOG dangling `ffi-native-margin-plan.md`
+  ref. `check:version`/`check:jsdoc` (now 100%) floors corrected in AGENTS.md.
+- **Standardization**: new `bun run check:clean` (`scripts/check-clean.ts`)
+  enforces module headers on every `src/**/*.ts`, the runtime seam (no `typeof
+  Bun` outside `src/runtime/detect.ts`), the PURE-module purity boundary, the
+  FFI doc count, and no dangling doc links (`--todos` scans TODO/FIXME); wired
+  into `test:all`. Module headers added to the previously header-less
+  `src/bench/**` + `src/baseline/**` files.
+
 ### Added
 
 - **`cstring` ARG fast path for string inputs (bun:ffi)**: the hot string-input
@@ -216,7 +258,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `castrum_csrf_token_into`, `castrum_jwt_sign_bytes_into`,
   `castrum_random_token_into`), the pooled paths avoid the cstring round-trip —
   ws_frame_decode 288→39ns, random_token 285→83ns, etag 184→88ns, etc.
-  (see `docs/ffi-native-margin-plan.md` §3c).
 
 ### Removed
 
@@ -505,7 +546,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pooled `*_into` path (which the `@deprecated` annotations already steer to);
   the allocating variants are reported explicitly as `(allocating)` rows. New
   `SSE encode (pooled)` + `http_date_into` pooled rows. Re-ran
-  `check:annotate` (98 wins / 27 losses on the headline set, up from 95/29).
+  the CPU benchmark audit (98 wins / 27 losses on the headline set, up from 95/29).
 - **Bun FFI hot-path trims** (`src/native/ffi.ts` + `rust/ffi.rs`):
   - **Per-thread HMAC key cache**: the C-ABI HMAC/cookie/CSRF fns now reuse a
     compiled `hmac::Key` from a per-thread cap-16 LRU (`HMAC_KEY_CACHE`) instead

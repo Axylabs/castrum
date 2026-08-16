@@ -1,3 +1,5 @@
+// src/bench/tasks/url.ts — CPU benchmark tasks: URL encode/decode.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

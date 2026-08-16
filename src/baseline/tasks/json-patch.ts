@@ -1,3 +1,5 @@
+// src/baseline/tasks/json-patch.ts — JS baseline: JSON Patch (RFC 6902).
+
 import { applyPatch, type Operation } from 'fast-json-patch'
 import { decoder, encoder } from '../../shared/bytes'
 

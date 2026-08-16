@@ -1,3 +1,5 @@
+// src/bench/tasks/mime.ts — CPU benchmark tasks: MIME-type lookup.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { toBytes } from '../../shared/bytes'

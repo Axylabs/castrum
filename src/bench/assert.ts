@@ -1,3 +1,5 @@
+// src/bench/assert.ts — assertion helpers for the CPU-bench correctness checks.
+
 import { decoder, encoder } from '../shared/bytes'
 
 /**

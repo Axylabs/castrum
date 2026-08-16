@@ -1,3 +1,5 @@
+// src/bench/tasks/hmac.ts — CPU benchmark tasks: HMAC-SHA256 sign/verify.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { rawHmacSha256 } from '../raw-native'

@@ -1,5 +1,6 @@
 // src/integration/websocket.ts — WebSocket upgrade handshake helper.
 
+import { isBun } from '../shared/runtime'
 import { rust } from '../rust-ffi'
 /** Options for `createWebSocketUpgrade` (supported subprotocols). */export interface WebSocketUpgradeOptions {
   /** Subprotocols this server supports; the first client-requested match wins. */
@@ -69,7 +70,7 @@ export function createWebSocketUpgrade(
   // Bun permits it. This helper produces a Bun.serve-compatible 101 Response,
   // so on Node throw a clear error pointing at the Node adapter's `upgrade`
   // option (which writes the RFC 6455 handshake head directly).
-  if (typeof Bun === 'undefined') {
+  if (!isBun()) {
     throw new Error(
       "createWebSocketUpgrade is Bun-only: Node's Response cannot carry status 101. " +
         "On Node, use createIngressServerNode's `upgrade` option and compute the " +

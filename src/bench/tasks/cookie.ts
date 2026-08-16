@@ -1,3 +1,5 @@
+// src/bench/tasks/cookie.ts — CPU benchmark tasks: cookie pair parsing.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { pairsToObject, readPairsPacked } from '../../shared/packed'

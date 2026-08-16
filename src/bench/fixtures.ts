@@ -1,3 +1,5 @@
+// src/bench/fixtures.ts — shared CPU-bench fixtures (byte payloads, schema docs).
+
 import { nativeHmacSha256 } from '../baseline/tasks/hmac'
 import { nativeJwtSign } from '../baseline/tasks/jwt'
 import { nativeAeadEncrypt } from '../baseline/tasks/aead'

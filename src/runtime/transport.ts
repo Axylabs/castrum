@@ -18,6 +18,12 @@ import { getBunFFI } from '../native/ffi'
 import { addon } from '../rust-ffi/addon'
 import type { NativeCallable, TransportAdapter } from './types'
 
+/**
+ * Build a native transport adapter: resolves native ops ffi-first (bun:ffi,
+ * cached) with the napi addon as the fallback. The one-time ffi bind is
+ * deferred until the first resolve / introspection — importing the adapter
+ * does not eagerly dlopen.
+ */
 export function createTransport(): TransportAdapter {
   let cachedFfi: BunFFI | null | undefined // undefined = not yet attempted
   const getFfi = (): BunFFI | null => {

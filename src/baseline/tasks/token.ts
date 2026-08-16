@@ -1,3 +1,5 @@
+// src/baseline/tasks/token.ts — JS baseline: random token generation.
+
 const HEX = '0123456789abcdef'
 
 export function nativeRandomToken(byteLen: number): Uint8Array {

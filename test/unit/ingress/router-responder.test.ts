@@ -42,7 +42,12 @@ describe('nativeResponderRoute (JS responder bridge)', () => {
     })
     const res = await route(req)
     expect(res.status).toBe(200)
-    const body = await res.json()
+    const body = (await res.json()) as {
+      ok: boolean
+      requestId: string
+      query: Record<string, string>
+      cookies: Record<string, string>
+    }
     expect(body.ok).toBe(true)
     expect(typeof body.requestId).toBe('string')
     expect(body.query).toEqual({ page: '1', limit: '20' })
@@ -67,7 +72,7 @@ describe('nativeResponderRoute (JS responder bridge)', () => {
     })
     const ok = await route(okReq)
     expect(ok.status).toBe(200)
-    expect((await ok.json()).hasBody).toBe(true)
+    expect(((await ok.json()) as { hasBody: boolean }).hasBody).toBe(true)
 
     // Schema-invalid body → native terminal 422 (responder never called).
     const badReq = new Request('http://localhost/x', {
@@ -93,7 +98,7 @@ describe('nativeResponderRoute (JS responder bridge)', () => {
     })
     const res = await route(req)
     expect(res.status).toBe(422)
-    const body = await res.json()
+    const body = (await res.json()) as { status: number; error: string; code: string }
     expect(body.status).toBe(422)
     expect(typeof body.error).toBe('string') // ignex: error is the message
     expect(typeof body.code).toBe('string')
@@ -115,7 +120,7 @@ describe('nativeResponderRoute (JS responder bridge)', () => {
     })
     const res = await route(req)
     expect(res.status).toBe(422)
-    const body = await res.json()
+    const body = (await res.json()) as { ok: boolean }
     expect(body.ok).toBe(false)
   })
 
@@ -141,11 +146,11 @@ describe('nativeResponderRoute (JS responder bridge)', () => {
 
     const res = await get(new Request('http://localhost/api/users?page=1'))
     expect(res.status).toBe(200)
-    expect((await res.json()).q).toEqual({ page: '1' })
+    expect(((await res.json()) as { q: Record<string, string> }).q).toEqual({ page: '1' })
 
     // router.fetch dispatches through the same route table.
     const fetched = await router.fetch(new Request('http://localhost/api/users?page=2'))
     expect(fetched.status).toBe(200)
-    expect((await fetched.json()).q).toEqual({ page: '2' })
+    expect(((await fetched.json()) as { q: Record<string, string> }).q).toEqual({ page: '2' })
   })
 })

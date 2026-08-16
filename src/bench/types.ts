@@ -1,3 +1,5 @@
+// src/bench/types.ts — CPU-bench shared types (task, report, comparison).
+
 export interface BenchResult {
   name: string
   iterations: number

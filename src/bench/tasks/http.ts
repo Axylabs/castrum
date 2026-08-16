@@ -1,3 +1,5 @@
+// src/bench/tasks/http.ts — CPU benchmark tasks: HTTP request parsing.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { readHttpPacked } from '../../shared/packed'

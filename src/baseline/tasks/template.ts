@@ -1,3 +1,5 @@
+// src/baseline/tasks/template.ts — JS baseline: template rendering.
+
 /**
  * JS baseline HTML templating: a tiny dependency-free renderer for the
  * Jinja2/`{{ }}` subset used by the benchmark fixture, producing byte-identical

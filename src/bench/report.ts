@@ -1,3 +1,5 @@
+// src/bench/report.ts — CPU-bench report writer (machine-readable JSON + markdown).
+
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
@@ -189,10 +191,7 @@ export async function writeCpuReport(options: {
       cpuModel: cpuModelName(),
       bun: process.versions.bun ?? '',
       node: process.versions.node ?? '',
-      rayonThreads: resolveEnvVar('CASTRUM_RAYON_THREADS', [
-        'RUST_BENCH_RAYON_THREADS',
-        'RUST_RAYON_THREADS',
-      ]),
+      rayonThreads: resolveEnvVar('CASTRUM_RAYON_THREADS'),
       buildFlavor: options.buildFlavor,
     },
     standard: options.standard,

@@ -146,7 +146,7 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
   ingress/                THE ingress pipeline: mod.rs (napi boundary), pipeline.rs (core 8-stage),
                           options/time/packed, cors, proxy, ip_trust, rate_limit, terminal,
                           output.rs (single numeric layout source), ingress_constants.rs (napi projection).
-  ffi.rs                  #[no_mangle] extern "C" exports (75 castrum_* symbols — 67 direct + 4
+  ffi.rs                  #[no_mangle] extern "C" exports (79 castrum_* symbols — 71 direct + 4
                           validator_c_abi! + 4 compress_to_out!; parity guarded by
                           test/unit/features/ffi-symbol-parity.test.ts) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).

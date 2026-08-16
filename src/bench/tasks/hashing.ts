@@ -1,3 +1,5 @@
+// src/bench/tasks/hashing.ts — CPU benchmark tasks: FNV-1a / crc32 / xxh3.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { rawCrc32 } from '../raw-native'

@@ -40,7 +40,8 @@ HTTP **ingress pipeline** for Bun servers.
 | Typecheck | `bun run typecheck` (== `bunx tsc --noEmit`; `include` = index.ts, bench.ts, src, bench) + `bun run typecheck:test` (== `bunx tsc --noEmit -p tsconfig.test.json`; typechecks `test/` + `bench/` with unused locals/params on) |
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
 | Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
-| JSDoc coverage guard | `bun run check:jsdoc` (== `bun scripts/check-jsdoc.ts`) — fails if < 70% of `src/`+`index.ts` exported symbols lack a JSDoc block; run after adding public exports |
+| JSDoc coverage guard | `bun run check:jsdoc` (== `bun scripts/check-jsdoc.ts`) — fails if < 95% of `src/`+`index.ts` exported symbols lack a JSDoc block; run after adding public exports |
+| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (no `typeof Bun` outside `src/runtime/detect.ts`), PURE-module purity boundary, FFI doc count = 79, no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
 | JS dependency audit | `bun run audit` |
 | Cargo deny audit | `bun run deny` (== `cargo deny check`) |
 | Coverage floors | `bun run test:coverage` (== `node scripts/check-coverage.mjs`) — 75% overall line floor + a 50% per-directory floor on the SHIPPED dirs (`src/ingress`, `src/shared`, `src/rust-ffi`, `src/native`, `src/loader`, `src/integration`) so one directory can't collapse while others compensate |
@@ -55,8 +56,8 @@ HTTP **ingress pipeline** for Bun servers.
   `castrum` (`castrum.<platform>-<arch>.node`), declared in package.json
   `napi.binaryName` and mirrored in Cargo.toml `[package]`/`[lib] name`. Keep all
   three in sync.
-- Runtime env vars use the `CASTRUM_*` prefix; legacy `RUST_BENCH_*` / `RUST_*`
-  names are still read as aliases (see `docs/ENVIRONMENT.md`).
+- Runtime env vars use the `CASTRUM_*` prefix (plus the napi-rs standard
+  `NAPI_RS_NATIVE_LIBRARY_PATH`); see `docs/ENVIRONMENT.md`.
 - **Do not `npm publish` locally** — the package ships ALL `napi.targets` in one
   tarball, and `prepublishOnly` (`node scripts/prepublish.mjs`) fails unless every
   platform `.node` is present. Push a `v*` tag instead: `.github/workflows/ci.yml`
@@ -87,7 +88,9 @@ index.ts                  package entry (re-exports src/rust-ffi, src/loader, sr
 bench.ts                  CPU benchmark entry -> src/bench
 dist/                     COMPILED ESM entry for Node (gitignored): dist/index.js + dist/index.d.ts
                           built by `bun run build:js`; wired via exports conditions (`bun` -> index.ts)
-src/shared/runtime.ts     runtime detection (isBun/isNode) — the ONLY place `typeof Bun` is checked
+src/runtime/              runtime adapter seam: detect.ts (the ONLY place `typeof Bun` is
+                          checked), builtins.ts (BUILTIN_OPS delegation), server.ts (adaptive
+                          createIngressServer); src/shared/runtime.ts is a thin facade over it
 src/shared/log.ts         createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines)
 src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── constants.ts        binary-layout constants, read from Rust at runtime (SINGLE SOURCE OF TRUTH)
@@ -136,7 +139,7 @@ src/shared/trace.ts       W3C traceparent/span-id helpers (tracing correlation)
 src/shared/uuid.ts        uuidv7() — delegates to Bun.randomUUIDv7, crypto.randomUUID on Node
 src/shared/buffer-pool.ts  generic reusable byte-buffer pool (pooled output buffers, zero-copy borrows)
 src/shared/response.ts     pooledBodyResponse: Response that returns a pooled buffer on body consumption
-src/shared/env.ts          centralized env-var alias resolution (CASTRUM_* + legacy RUST_BENCH_*/RUST_* names)
+src/shared/env.ts          centralized env-var resolution (CASTRUM_* + NAPI_RS_NATIVE_LIBRARY_PATH)
 src/shared/packed/        packed wire-format helpers (split from the old packed.ts monolith):
   ├── wire.ts             PURE byte encode/decode (u32/bitset/i64/byte-results/multipart, pairs, pack-scratch pool) — NO addon dlopen
   ├── schema.ts           SchemaValidator alias + schemaValidateBatch/Count (uses wire.ts scratch)
@@ -159,7 +162,7 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi.rs              `#[no_mangle] extern "C"` exports (78 castrum_* — 70 direct + 4
+  ├── ffi.rs              `#[no_mangle] extern "C"` exports (79 castrum_* — 71 direct + 4
                           validator_c_abi! + 4 compress_to_out! — incl. the
                           castrum_gzip_isize size probe and the per-route stack
                           castrum_route_compile/run/destroy; parity guarded by
@@ -304,10 +307,12 @@ success and `error.code` / `error.message` on errors (path 2's format).
   `dist/index.d.ts`. `dist/` is gitignored and NOT committed. Do NOT set
   `sideEffects: false` — importing the package eagerly dlopens the addon via
   `src/ingress/constants.ts`.
-- **Runtime seam**: runtime detection lives ONLY in `src/shared/runtime.ts`
-  (`isBun`/`isNode`). Do not sprinkle `typeof Bun` checks elsewhere. `createIngressServer`
-  guards on `isBun()` and throws a friendly error on Node (it builds a Bun.serve config);
-  Node users use `createIngressServerNode` (same route handlers via `buildRouteHandlers`
+- **Runtime seam**: runtime detection lives ONLY in `src/runtime/detect.ts` (the
+  single `typeof Bun` check); `src/shared/runtime.ts` is a thin facade re-exporting
+  `isBun`/`isNode`. Do not sprinkle `typeof Bun` checks elsewhere. The public
+  `createIngressServer` is runtime-adaptive (`src/runtime/server.ts`: Bun.serve on
+  Bun, `node:http` via `createIngressServerNode` on Node — same route handlers via
+  `buildRouteHandlers`
   in `server.ts`). `BakedServer.port` is the ACTUAL bound port (Bun exposes it even with
   `port: 0`; the Node adapter reports it via `ready`/getter).
 - **String-return contract (Bun vs Node)**: text-returning `rust.*` ops return JS
@@ -524,7 +529,7 @@ explicit impurity boundary so the hot path can pool/globalize state:
 - **TS**: explicit types on all public APIs; JSDoc (`@param`, `@returns`,
   `@example`) on exports; named imports; `camelCase` fns/vars, `PascalCase`
   types. One logical module per file. Every exported symbol in `src/` +
-  `index.ts` needs a JSDoc block — `bun run check:jsdoc` enforces a 70%
+  `index.ts` needs a JSDoc block — `bun run check:jsdoc` enforces a 95%
   floor (run it after adding public exports). Preserve the `// src/... — purpose`
   module-header convention on every file, and keep barrel `index.ts` files as
   lightweight re-export hubs (a 1-line header is enough).

@@ -1,3 +1,5 @@
+// src/bench/tasks/token.ts — CPU benchmark tasks: random token generation.
+
 import * as native from '../../baseline'
 import { rawRandomToken } from '../raw-native'
 import type { BenchTask } from '../types'

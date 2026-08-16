@@ -24,6 +24,7 @@ import { IngressInputPacker } from '../src/ingress/packing/input-packer'
 import { gatherRawHeadersPacked } from '../src/ingress/packing/gather-raw-headers'
 import { readBodyWithLimit } from '../src/ingress/body'
 import { USER_SCHEMA_BYTES } from '../bench/servers/shared'
+import { measureNs as measure, measureNsAsync as measureAsync } from './measure'
 
 const OPTIONS: Parameters<typeof createIngressHandler>[0] = {
   trustProxy: false,
@@ -43,33 +44,6 @@ const OPTIONS: Parameters<typeof createIngressHandler>[0] = {
     maxAge: 86400,
   },
   rateLimit: { limit: 4_294_967_295, windowMs: 60_000 },
-}
-
-function measure(fn: () => unknown, iterations: number): number {
-  for (let i = 0; i < Math.max(iterations / 20, 1); i++) fn()
-  let best = Infinity
-  for (let b = 0; b < 5; b++) {
-    const start = performance.now()
-    for (let i = 0; i < iterations; i++) fn()
-    const ns = ((performance.now() - start) * 1e6) / iterations
-    if (ns < best) best = ns
-  }
-  return best
-}
-
-async function measureAsync(
-  fn: () => Promise<unknown>,
-  iterations: number,
-): Promise<number> {
-  for (let i = 0; i < Math.max(iterations / 20, 1); i++) await fn()
-  let best = Infinity
-  for (let b = 0; b < 5; b++) {
-    const start = performance.now()
-    for (let i = 0; i < iterations; i++) await fn()
-    const ns = ((performance.now() - start) * 1e6) / iterations
-    if (ns < best) best = ns
-  }
-  return best
 }
 
 const handler = createIngressHandler(OPTIONS, {

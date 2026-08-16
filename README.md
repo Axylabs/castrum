@@ -92,8 +92,9 @@ const srv = createIngressServerNode({ port: 3000, routes: { "/health": { read: i
 await srv.ready; // resolves once listening
 ```
 
-`createIngressServer` (Bun.serve) is Bun-only; Node users use
-`createIngressServerNode` with the same route handlers. `rust.transport()` /
+The public `createIngressServer` is runtime-adaptive — it picks `Bun.serve` on
+Bun and `node:http` on Node; `createIngressServerNode` stays available for pinned
+Node users with the same route handlers. `rust.transport()` /
 `rust.ffiActive()` report which transport is live, and `CASTRUM_FFI_MODE` forces
 one (see [`docs/ENVIRONMENT.md`](./docs/ENVIRONMENT.md)).
 

@@ -307,31 +307,66 @@ where
     Ok(pos + bitset_len)
 }
 
+/// Scalar `_into` writer bound: `T` can be written as a little-endian byte
+/// array of `SIZE` bytes into a caller-provided slice.
+pub(crate) trait ToLeBytes: Copy {
+    const SIZE: usize;
+    fn write_le(self, out: &mut [u8]);
+}
+
+impl ToLeBytes for i64 {
+    const SIZE: usize = 8;
+    #[inline]
+    fn write_le(self, out: &mut [u8]) {
+        out.copy_from_slice(&self.to_le_bytes());
+    }
+}
+
+impl ToLeBytes for u32 {
+    const SIZE: usize = 4;
+    #[inline]
+    fn write_le(self, out: &mut [u8]) {
+        out.copy_from_slice(&self.to_le_bytes());
+    }
+}
+
+/// Write `[u32 count][T…]` (batch scalar array: i64 sums, u32 hashes, …) into
+/// `out`. Returns bytes written. Shared body of the scalar `_into` writers.
+#[inline]
+pub(crate) fn write_scalar_batch_into<T, F>(data: &[u8], out: &mut [u8], f: F) -> Result<usize>
+where
+    T: ToLeBytes + Send,
+    F: Fn(&[u8]) -> T + Sync,
+{
+    let iter = PackedIter::new(data)?;
+    let (count, total) = iter.count_and_total_bytes()?;
+    let mut pos = 0usize;
+    write_u32_le(out, &mut pos, count as u32)?;
+    let item_bytes = T::SIZE;
+    ensure_capacity(out, pos, count.saturating_mul(item_bytes))?;
+    if crate::util::should_parallelize(count, total) {
+        use rayon::prelude::*;
+        let items = crate::util::unpack(data)?;
+        let vals: Vec<T> = items.par_iter().map(|item| f(item)).collect();
+        for (i, v) in vals.iter().enumerate() {
+            v.write_le(&mut out[pos + i * item_bytes..pos + (i + 1) * item_bytes]);
+        }
+    } else {
+        for (i, item) in iter.enumerate() {
+            let v = f(item);
+            v.write_le(&mut out[pos + i * item_bytes..pos + (i + 1) * item_bytes]);
+        }
+    }
+    Ok(pos + count.saturating_mul(item_bytes))
+}
+
 /// Write `[u32 count][i64…]` (batch i64 array) into `out`. Returns bytes written.
 #[inline]
 pub fn write_sum_batch_into<F>(data: &[u8], out: &mut [u8], f: F) -> Result<usize>
 where
     F: Fn(&[u8]) -> i64 + Sync,
 {
-    let iter = PackedIter::new(data)?;
-    let (count, total) = iter.count_and_total_bytes()?;
-    let mut pos = 0usize;
-    write_u32_le(out, &mut pos, count as u32)?;
-    ensure_capacity(out, pos, count.saturating_mul(8))?;
-    if crate::util::should_parallelize(count, total) {
-        use rayon::prelude::*;
-        let items = crate::util::unpack(data)?;
-        let sums: Vec<i64> = items.par_iter().map(|item| f(item)).collect();
-        for (i, s) in sums.iter().enumerate() {
-            out[pos + i * 8..pos + (i + 1) * 8].copy_from_slice(&s.to_le_bytes());
-        }
-    } else {
-        for (i, item) in iter.enumerate() {
-            let s = f(item);
-            out[pos + i * 8..pos + (i + 1) * 8].copy_from_slice(&s.to_le_bytes());
-        }
-    }
-    Ok(pos + count.saturating_mul(8))
+    write_scalar_batch_into::<i64, F>(data, out, f)
 }
 
 /// Write `[u32 count][u32…]` (batch u32 array, e.g. crc32) into `out`.
@@ -341,25 +376,7 @@ pub fn write_u32_batch_into<F>(data: &[u8], out: &mut [u8], f: F) -> Result<usiz
 where
     F: Fn(&[u8]) -> u32 + Sync,
 {
-    let iter = PackedIter::new(data)?;
-    let (count, total) = iter.count_and_total_bytes()?;
-    let mut pos = 0usize;
-    write_u32_le(out, &mut pos, count as u32)?;
-    ensure_capacity(out, pos, count.saturating_mul(4))?;
-    if crate::util::should_parallelize(count, total) {
-        use rayon::prelude::*;
-        let items = crate::util::unpack(data)?;
-        let vals: Vec<u32> = items.par_iter().map(|item| f(item)).collect();
-        for (i, v) in vals.iter().enumerate() {
-            out[pos + i * 4..pos + (i + 1) * 4].copy_from_slice(&v.to_le_bytes());
-        }
-    } else {
-        for (i, item) in iter.enumerate() {
-            let v = f(item);
-            out[pos + i * 4..pos + (i + 1) * 4].copy_from_slice(&v.to_le_bytes());
-        }
-    }
-    Ok(pos + count.saturating_mul(4))
+    write_scalar_batch_into::<u32, F>(data, out, f)
 }
 
 #[cfg(test)]

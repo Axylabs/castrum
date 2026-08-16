@@ -1,3 +1,5 @@
+// src/bench/tasks/validation.ts — CPU benchmark tasks: email / UUID / IPv4 / IPv6 validation.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

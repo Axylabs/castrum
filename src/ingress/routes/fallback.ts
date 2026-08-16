@@ -2,7 +2,7 @@
 
 import type { BakedContext, OptimizedIngressHandler } from '../types'
 import type { BakedIngressResult } from '../decode/baked-result'
-import { resolveIp, type BakedHandlerOptions } from './common'
+import { runBaked, type BakedHandlerOptions } from './common'
 
 /**
  * Pre-baked fallback handler: 404 for unmatched routes / OPTIONS.
@@ -19,5 +19,5 @@ export function fallbackHandler(
     return ingress.errorResponse(undefined, result, 404, 'not_found', 'Not found', ctx)
   }
 
-  return (req, srv) => ingress.run<Response>(req, resolveIp(req, srv, opts), null, respond)
+  return runBaked(ingress, opts, respond)
 }

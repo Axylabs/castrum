@@ -21,6 +21,8 @@ import {
 } from "../../src/ingress";
 import {
   PORTS,
+  envFlag,
+  envNumber,
   USER_SCHEMA_BYTES,
   CORS_CONFIG,
   RATE_LIMIT_CONFIG,
@@ -28,45 +30,6 @@ import {
   SECURITY_HEADERS,
 } from "./shared";
 import { ERR_CODE_NONE as ERROR_CODE_NONE } from "../../src/ingress/constants";
-
-// ── Env config (mirrors ingress-server.ts so the two servers are comparable) ──
-function envFlag(name: string, defaultValue: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return defaultValue;
-  const v = raw.trim().toLowerCase();
-  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
-  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
-  console.warn(
-    `[ingress-router] WARN: env ${name}=${JSON.stringify(raw)} is not a boolean; using default ${defaultValue}`,
-  );
-  return defaultValue;
-}
-
-function envNumber(
-  name: string,
-  defaultValue: number,
-  min: number,
-  max = Number.MAX_SAFE_INTEGER,
-): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return defaultValue;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) {
-    console.warn(
-      `[ingress-router] WARN: env ${name}=${JSON.stringify(raw)} is not a number; using default ${defaultValue}`,
-    );
-    return defaultValue;
-  }
-  if (n < min) {
-    console.warn(`[ingress-router] WARN: env ${name}=${n} below min ${min}; using ${min}`);
-    return min;
-  }
-  if (n > max) {
-    console.warn(`[ingress-router] WARN: env ${name}=${n} above max ${max}; using ${max}`);
-    return max;
-  }
-  return n;
-}
 
 const RATE_ENABLED = RATE_LIMIT_CONFIG.limit !== RATE_LIMIT_U32_MAX && RATE_LIMIT_CONFIG.limit > 0;
 const TRUST_PROXY = envFlag("INGRESS_TRUST_PROXY", false);

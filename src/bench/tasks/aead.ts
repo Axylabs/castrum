@@ -1,3 +1,5 @@
+// src/bench/tasks/aead.ts — CPU benchmark tasks: AEAD encrypt/decrypt.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

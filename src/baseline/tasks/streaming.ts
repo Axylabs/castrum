@@ -1,3 +1,5 @@
+// src/baseline/tasks/streaming.ts — JS baseline: SSE event framing.
+
 import { decoder, encoder } from '../../shared/bytes'
 
 // RFC 6455 §5.7 example mask key — used by BOTH the JS baseline and the Rust

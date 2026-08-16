@@ -1,3 +1,5 @@
+// src/bench/measure.ts — CPU-bench timing/measurement helpers.
+
 import { checksumValue } from './checksum'
 import { nowMs } from './now'
 import type {

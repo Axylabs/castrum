@@ -38,6 +38,7 @@ import {
   rawXxh3,
 } from '../src/bench/raw-native'
 import { isBun } from '../src/shared/runtime'
+import { measureNs as measure } from './measure'
 
 // ── Inputs (small-input regime — where the crossing cost is visible) ──────
 const encoder = new TextEncoder()
@@ -103,19 +104,6 @@ function derived(): Record<string, Uint8Array> {
     gzip_compressed: rawGzipCompress(compress),
     brotli_compressed: rust.brotliCompress(compress),
   }
-}
-
-// ── Timing helper (min-of-5 batches after warmup → ns/op) ─────────────────
-function measure(fn: () => unknown, iterations: number): number {
-  for (let i = 0; i < Math.max(iterations / 20, 1); i++) fn()
-  let best = Infinity
-  for (let b = 0; b < 5; b++) {
-    const start = performance.now()
-    for (let i = 0; i < iterations; i++) fn()
-    const ns = ((performance.now() - start) * 1e6) / iterations
-    if (ns < best) best = ns
-  }
-  return best
 }
 
 /** Bind a raw C-ABI symbol via bun:ffi for the diagnostic probes. */

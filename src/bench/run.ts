@@ -1,3 +1,5 @@
+// src/bench/run.ts — CPU-bench orchestrator: tasks → measure → report.
+
 import { runCorrectnessChecks, runComplexCorrectnessChecks } from './checks'
 import { comparisonReports } from './comparisons'
 import { createFixtures, createComplexFixtures } from './fixtures'

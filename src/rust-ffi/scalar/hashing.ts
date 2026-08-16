@@ -9,6 +9,7 @@
 // (bun:ffi first, napi fallback) — no inline `isBun()` / `getBunFFI()`.
 
 import { toBytes } from '../../shared/bytes'
+import { writeInto } from '../into'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
 import { asBigInt, asNumber } from '../options'
 
@@ -57,10 +58,7 @@ export function buildHashing(ctx: RustClientContext) {
     hmacSha256Into(key: Uint8Array, data: Uint8Array, output: Uint8Array): number {
       const f = ffi()
       if (f) return f.hmacSha256Into(key, data, output)
-      const bytes = ctx.hmacSigner(key).sign(data)
-      if (output.length < bytes.length) throw new Error('hmac sha256: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('hmac sha256', output, ctx.hmacSigner(key).sign(data))
     },
     hmacSha256Verify(key: Uint8Array, data: Uint8Array, sig: Uint8Array | string): boolean {
       // `hmacSha256` returns the signature as a hex STRING under Bun (built-in

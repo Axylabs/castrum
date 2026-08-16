@@ -2,8 +2,8 @@
 // (POST/PUT/PATCH).
 
 import type { OptimizedIngressHandler } from '../types'
-import { resolveIp, type BakedHandlerOptions } from './common'
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS, secondsFromMs } from '../shared'
+import { buildSuccessInit, resolveIp, type BakedHandlerOptions } from './common'
+import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from '../shared'
 import { readBodyWithLimit } from '../body'
 import { getAddon } from '../../native'
 import { getBunFFI } from '../../native/ffi'
@@ -119,16 +119,7 @@ export function jsonWriteHandler(
         return ingress.errorResponse(req, result, 400, 'invalid_json', 'Invalid JSON body', ctx)
       }
 
-      const init: ResponseInit = {
-        status: 200,
-        headers: ingress.responseHeaders(
-          result.headerVariant,
-          ctx.requestIdHeader,
-          ctx.origin,
-          result.rateRemaining,
-          result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
-        ),
-      }
+      const init = buildSuccessInit(ingress, result, ctx)
 
       return copyBody
         ? new Response(result.bodyJson(true), init)

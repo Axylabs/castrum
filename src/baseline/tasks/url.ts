@@ -1,3 +1,5 @@
+// src/baseline/tasks/url.ts — JS baseline: URL encode/decode.
+
 import { decoder } from '../../shared/bytes'
 
 export function nativeUrlEncode(input: string | Uint8Array): string {

@@ -219,8 +219,9 @@ interface BakedServer {
 
 ### `createIngressServerNode(options)` — Node.js adapter
 
-Bun remains the primary server target; `createIngressServer` is Bun-only. For
-Node.js consumers, `createIngressServerNode` serves the SAME pre-baked route
+Bun remains the primary server target. The public `createIngressServer` is
+runtime-adaptive (Bun.serve on Bun, `node:http` on Node); for pinned Node
+consumers `createIngressServerNode` serves the SAME pre-baked route
 handlers over `node:http` (sharing `buildRouteHandlers`). It returns a
 `NodeIngressServer` (`BakedServer` plus an async `ready: Promise<number>` that
 resolves to the bound port — use it with `port: 0`).

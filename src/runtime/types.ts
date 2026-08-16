@@ -38,7 +38,7 @@ export interface UuidAdapter {
   uuidv7(): string
 }
 
-/** Env-var resolution (CASTRUM_* preferred, legacy RUST_* / RUST_BENCH_* aliases). */
+/** Env-var resolution (CASTRUM_* preferred, napi-rs `NAPI_RS_*` aliases). */
 export interface EnvAdapter {
   resolveVar(preferred: string, legacy: readonly string[]): string | undefined
 }

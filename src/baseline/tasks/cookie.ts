@@ -1,3 +1,5 @@
+// src/baseline/tasks/cookie.ts — JS baseline: cookie pair parsing.
+
 import { decoder } from '../../shared/bytes'
 import { packPairs } from '../../shared/packed'
 

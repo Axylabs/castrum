@@ -1,3 +1,5 @@
+// src/bench/tasks/compress.ts — CPU benchmark tasks: gzip/brotli compress/decompress.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { rawGzipCompress } from '../raw-native'

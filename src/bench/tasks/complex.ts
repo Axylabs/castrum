@@ -1,3 +1,5 @@
+// src/bench/tasks/complex.ts — CPU benchmark tasks: complex multi-op scenarios.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 // Public `rustBatch` alias removed in 0.8.0 — bench-local shorthand.

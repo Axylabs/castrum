@@ -120,6 +120,11 @@ pin at a per-core ceiling on this machine. The host is load-noisy, so use the
 every server is visited once per round, so a single slow window affects all
 servers' run-`i` equally and the median compares servers over the same load
 windows (the old server-major order biased later servers into noisier windows).
+> **Dated snapshot (2026-08-16 ingress-RPS pass).** The host is load-noisy;
+> the newest persisted autocannon medians under `bench/results/autocannon/*/final-*.median.md`
+> supersede these numbers run-to-run. Use the median-of-N runner below for fresh
+> comparisons.
+
 Current medians (`AC_DURATION=8 AC_RUNS=3`, 500 connections, single instance):
 
 - `GET /api/users?q=…` (query + cookies + CORS + metadata envelope):
@@ -300,7 +305,8 @@ bench/servers/
 ├── bun-server.ts       # Raw Bun.serve with manual routing
 ├── elysia-server.ts    # Elysia framework
 ├── ingress-server.ts   # Ingress (this project) optimized handler
-└── shared.ts           # Shared route handlers
+├── router-server.ts    # Ingress per-route compiled-router variant (createIngressRouter)
+└── shared.ts           # Shared route handlers, PORTS, env helpers
 ```
 
 Each server implements the same routes for fair comparison:

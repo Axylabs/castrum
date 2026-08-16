@@ -1,3 +1,5 @@
+// src/bench/tasks/multipart.ts — CPU benchmark tasks: multipart/form-data parsing.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

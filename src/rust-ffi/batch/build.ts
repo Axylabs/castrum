@@ -4,6 +4,10 @@
 // batch function, and unpacks the result into the friendly JS shape. Each
 // method wires one `RustBatch` (./types.ts) member to its `*BatchPacked` napi
 // fn via the shared pool-native resolver (context.ts).
+//
+// The `via` / `via2` builders below collapse the pack → native → unpack
+// plumbing every bulk op shares; each public method keeps its exact signature,
+// so the table stays type-safe against `RustBatch`.
 
 import {
   schemaValidateBatch,
@@ -29,163 +33,76 @@ function nativeFn(ctx: RustClientContext, name: string): (...args: unknown[]) =>
   return resolvePoolNative(ctx, name)
 }
 
+/**
+ * Build a single-list bulk op: `withPackScratch(items)` →
+ * `unpack(native(packed, ...extras))`. `R` is inferred from `unpack`, so the
+ * result stays assignable to the matching `RustBatch` method.
+ */
+function via<R>(
+  ctx: RustClientContext,
+  name: string,
+  unpack: (bytes: Uint8Array) => R,
+  extras: unknown[] = [],
+): (items: Uint8Array[]) => R {
+  return (items) =>
+    withPackScratch(items, (packed) => unpack(nativeFn(ctx, name)(packed, ...extras) as Buffer))
+}
+
+/**
+ * Build a two-list bulk op (docs+patches, items+sigs, ...): `withPackScratch2(a, b)`
+ * → `unpack(native(packedA, packedB, ...extras))`.
+ */
+function via2<R>(
+  ctx: RustClientContext,
+  name: string,
+  unpack: (bytes: Uint8Array) => R,
+  extras: unknown[] = [],
+): (a: Uint8Array[], b: Uint8Array[]) => R {
+  return (a, b) =>
+    withPackScratch2(a, b, (packedA, packedB) =>
+      unpack(nativeFn(ctx, name)(packedA, packedB, ...extras) as Buffer),
+    )
+}
+
 /** Build the `batch` namespace for a client context. */
 export function buildBatch(ctx: RustClientContext): RustBatch {
   return {
-    jsonValid(items) {
-      return withPackScratch(items, (packed) =>
-        unpackBitset(nativeFn(ctx, 'jsonValidBatchPacked')(packed) as Buffer),
-      )
-    },
-    crc32(items) {
-      return withPackScratch(items, (packed) =>
-        unpackU32Array(nativeFn(ctx, 'crc32BatchPacked')(packed) as Buffer),
-      )
-    },
-    validateEmail(items) {
-      return withPackScratch(items, (packed) =>
-        unpackBitset(nativeFn(ctx, 'validateEmailBatchPacked')(packed) as Buffer),
-      )
-    },
-    validateUuid(items) {
-      return withPackScratch(items, (packed) =>
-        unpackBitset(nativeFn(ctx, 'validateUuidBatchPacked')(packed) as Buffer),
-      )
-    },
-    validateIpv4(items) {
-      return withPackScratch(items, (packed) =>
-        unpackBitset(nativeFn(ctx, 'validateIpv4BatchPacked')(packed) as Buffer),
-      )
-    },
-    validateIpv6(items) {
-      return withPackScratch(items, (packed) =>
-        unpackBitset(nativeFn(ctx, 'validateIpv6BatchPacked')(packed) as Buffer),
-      )
-    },
-    jsonSumIds(items) {
-      return withPackScratch(items, (packed) =>
-        unpackI64ArrayAsBigInt(nativeFn(ctx, 'jsonSumBatchPacked')(packed) as Buffer),
-      )
-    },
-    queryParse(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'queryParseBatchPacked')(packed) as Buffer),
-      )
-    },
-    cookieParse(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'cookieParseBatchPacked')(packed) as Buffer),
-      )
-    },
-    formParse(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'formParseBatchPacked')(packed) as Buffer),
-      )
-    },
-    signCookie(items, secret) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'signCookieBatchPacked')(packed, secret) as Buffer),
-      )
-    },
-    verifyCookie(items, secret) {
-      return withPackScratch(items, (packed) =>
-        unpackBitset(nativeFn(ctx, 'verifyCookieBatchPacked')(packed, secret) as Buffer),
-      )
-    },
-    csrfVerify(items, secret) {
-      return withPackScratch(items, (packed) =>
-        unpackBitset(nativeFn(ctx, 'csrfVerifyBatchPacked')(packed, secret) as Buffer),
-      )
-    },
-    httpParseRequest(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'httpParseRequestBatchPacked')(packed) as Buffer),
-      )
-    },
-    fnv1a64(items) {
-      return withPackScratch(items, (packed) =>
-        unpackU64ArrayAsBigInt(nativeFn(ctx, 'fnv1A64BatchPacked')(packed) as Buffer),
-      )
-    },
-    etag(items, weak) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'etagBatchPacked')(packed, weak ?? null) as Buffer),
-      )
-    },
-    urlEncode(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'urlEncodeBatchPacked')(packed) as Buffer),
-      )
-    },
-    urlDecode(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'urlDecodeBatchPacked')(packed) as Buffer),
-      )
-    },
-    urlDecodeBytes(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'urlDecodeBytesBatchPacked')(packed) as Buffer),
-      )
-    },
-    mimeFromExtension(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'mimeFromExtensionBatchPacked')(packed) as Buffer),
-      )
-    },
-    wsAcceptKey(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'wsAcceptKeyBatchPacked')(packed) as Buffer),
-      )
-    },
-    base64UrlEncode(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'base64EncodeBatchPacked')(packed, true, false) as Buffer),
-      )
-    },
-    base64UrlDecode(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'base64DecodeBatchPacked')(packed, true, false) as Buffer),
-      )
-    },
-    jsonPatch(docs, patches) {
-      return withPackScratch2(docs, patches, (packedDocs, packedPatches) =>
-        unpackByteResults(
-          nativeFn(ctx, 'jsonPatchBatchPacked')(packedDocs, packedPatches) as Buffer,
-        ),
-      )
-    },
-    hexEncode(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'hexEncodeBatchPacked')(packed) as Buffer),
-      )
-    },
-    hexDecode(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'hexDecodeBatchPacked')(packed) as Buffer),
-      )
-    },
-    base64Encode(items, urlSafe, padding) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'base64EncodeBatchPacked')(
-            packed,
-            urlSafe ?? null,
-            padding ?? null,
-          ) as Buffer,
-        ),
-      )
-    },
-    base64Decode(items, urlSafe, padding) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'base64DecodeBatchPacked')(
-            packed,
-            urlSafe ?? null,
-            padding ?? null,
-          ) as Buffer,
-        ),
-      )
-    },
+    // ── Single-list, no extras ──
+    jsonValid: via(ctx, 'jsonValidBatchPacked', unpackBitset),
+    crc32: via(ctx, 'crc32BatchPacked', unpackU32Array),
+    validateEmail: via(ctx, 'validateEmailBatchPacked', unpackBitset),
+    validateUuid: via(ctx, 'validateUuidBatchPacked', unpackBitset),
+    validateIpv4: via(ctx, 'validateIpv4BatchPacked', unpackBitset),
+    validateIpv6: via(ctx, 'validateIpv6BatchPacked', unpackBitset),
+    jsonSumIds: via(ctx, 'jsonSumBatchPacked', unpackI64ArrayAsBigInt),
+    queryParse: via(ctx, 'queryParseBatchPacked', unpackByteResults),
+    cookieParse: via(ctx, 'cookieParseBatchPacked', unpackByteResults),
+    formParse: via(ctx, 'formParseBatchPacked', unpackByteResults),
+    signCookie: (items, secret) =>
+      via(ctx, 'signCookieBatchPacked', unpackByteResults, [secret])(items),
+    verifyCookie: (items, secret) =>
+      via(ctx, 'verifyCookieBatchPacked', unpackBitset, [secret])(items),
+    csrfVerify: (items, secret) =>
+      via(ctx, 'csrfVerifyBatchPacked', unpackBitset, [secret])(items),
+    httpParseRequest: via(ctx, 'httpParseRequestBatchPacked', unpackByteResults),
+    fnv1a64: via(ctx, 'fnv1A64BatchPacked', unpackU64ArrayAsBigInt),
+    etag: (items, weak) => via(ctx, 'etagBatchPacked', unpackByteResults, [weak ?? null])(items),
+    urlEncode: via(ctx, 'urlEncodeBatchPacked', unpackByteResults),
+    urlDecode: via(ctx, 'urlDecodeBatchPacked', unpackByteResults),
+    urlDecodeBytes: via(ctx, 'urlDecodeBytesBatchPacked', unpackByteResults),
+    mimeFromExtension: via(ctx, 'mimeFromExtensionBatchPacked', unpackByteResults),
+    wsAcceptKey: via(ctx, 'wsAcceptKeyBatchPacked', unpackByteResults),
+    base64UrlEncode: (items) =>
+      via(ctx, 'base64EncodeBatchPacked', unpackByteResults, [true, false])(items),
+    base64UrlDecode: (items) =>
+      via(ctx, 'base64DecodeBatchPacked', unpackByteResults, [true, false])(items),
+    jsonPatch: (docs, patches) => via2(ctx, 'jsonPatchBatchPacked', unpackByteResults)(docs, patches),
+    hexEncode: via(ctx, 'hexEncodeBatchPacked', unpackByteResults),
+    hexDecode: via(ctx, 'hexDecodeBatchPacked', unpackByteResults),
+    base64Encode: (items, urlSafe, padding) =>
+      via(ctx, 'base64EncodeBatchPacked', unpackByteResults, [urlSafe ?? null, padding ?? null])(items),
+    base64Decode: (items, urlSafe, padding) =>
+      via(ctx, 'base64DecodeBatchPacked', unpackByteResults, [urlSafe ?? null, padding ?? null])(items),
     schemaValidate(validator, items) {
       return schemaValidateBatch(validator, items)
     },
@@ -194,131 +111,45 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
     },
 
     // ── Backend-framework features ──
-    passwordHash(password, salt, options) {
-      return withPackScratch(password, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'passwordHashBatchPacked')(packed, salt, options ?? null) as Buffer,
-        ),
-      )
-    },
-    aeadEncrypt(key, nonce, items, algorithm) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'aeadEncryptBatchPacked')(packed, key, nonce, algorithm ?? null) as Buffer,
-        ),
-      )
-    },
-    aeadDecrypt(key, nonce, items, algorithm) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'aeadDecryptBatchPacked')(packed, key, nonce, algorithm ?? null) as Buffer,
-        ),
-      )
-    },
-    gzipCompress(items, level) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'gzipCompressBatchPacked')(packed, level ?? null) as Buffer,
-        ),
-      )
-    },
-    gzipDecompress(items, maxDecompressed) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'gzipDecompressBatchPacked')(packed, maxDecompressed ?? null) as Buffer,
-        ),
-      )
-    },
-    brotliCompress(items, quality) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'brotliCompressBatchPacked')(packed, quality ?? null) as Buffer,
-        ),
-      )
-    },
-    brotliDecompress(items, maxDecompressed) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'brotliDecompressBatchPacked')(packed, maxDecompressed ?? null) as Buffer,
-        ),
-      )
-    },
-    jwtVerify(tokens, secret, nowSeconds) {
-      return withPackScratch(tokens, (packed) =>
-        unpackBitset(nativeFn(ctx, 'jwtVerifyBatchPacked')(packed, secret, nowSeconds) as Buffer),
-      )
-    },
-    hmacSha256(items, key) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'hmacSha256BatchPacked')(packed, key) as Buffer),
-      )
-    },
-    hmacSha256Verify(items, sigs, key) {
-      return withPackScratch2(items, sigs, (packedItems, packedSigs) =>
-        unpackBitset(
-          nativeFn(ctx, 'hmacSha256VerifyBatchPacked')(packedItems, packedSigs, key) as Buffer,
-        ),
-      )
-    },
-    templateRender(source, contexts) {
-      return withPackScratch(contexts, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'templateRenderBatchPacked')(packed, source) as Buffer),
-      )
-    },
-    passwordVerify(items, phcs) {
-      return withPackScratch2(items, phcs, (packedItems, packedPhcs) =>
-        unpackBitset(nativeFn(ctx, 'passwordVerifyBatchPacked')(packedItems, packedPhcs) as Buffer),
-      )
-    },
-    urlResolve(bases, references) {
-      return withPackScratch2(bases, references, (packedBases, packedRefs) =>
-        unpackByteResults(
-          nativeFn(ctx, 'urlResolveBatchPacked')(packedBases, packedRefs) as Buffer,
-        ),
-      )
-    },
-    jwtSign(items, secret, ttlSeconds, nowSeconds) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'jwtSignBatchPacked')(
-            packed,
-            secret,
-            ttlSeconds ?? null,
-            nowSeconds ?? Math.floor(Date.now() / 1000),
-          ) as Buffer,
-        ),
-      )
-    },
-    sseEncode(items, event, id, retry) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'sseEncodeBatchPacked')(
-            packed,
-            event ?? null,
-            id ?? null,
-            retry ?? null,
-          ) as Buffer,
-        ),
-      )
-    },
-    wsFrameEncode(items, opcode, mask, fin) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(
-          nativeFn(ctx, 'wsFrameEncodeBatchPacked')(packed, opcode, mask, fin) as Buffer,
-        ),
-      )
-    },
-    wsFrameDecode(items) {
-      return withPackScratch(items, (packed) =>
-        unpackByteResults(nativeFn(ctx, 'wsFrameDecodeBatchPacked')(packed) as Buffer),
-      )
-    },
-    multipartParse(items, boundary) {
-      return withPackScratch(items, (packed) =>
-        unpackMultipartParts(
-          nativeFn(ctx, 'multipartParseBatchPacked')(packed, boundary) as Buffer,
-        ),
-      )
-    },
+    passwordHash: (passwords, salt, options) =>
+      via(ctx, 'passwordHashBatchPacked', unpackByteResults, [salt, options ?? null])(passwords),
+    aeadEncrypt: (key, nonce, items, algorithm) =>
+      via(ctx, 'aeadEncryptBatchPacked', unpackByteResults, [key, nonce, algorithm ?? null])(items),
+    aeadDecrypt: (key, nonce, items, algorithm) =>
+      via(ctx, 'aeadDecryptBatchPacked', unpackByteResults, [key, nonce, algorithm ?? null])(items),
+    gzipCompress: (items, level) =>
+      via(ctx, 'gzipCompressBatchPacked', unpackByteResults, [level ?? null])(items),
+    gzipDecompress: (items, maxDecompressed) =>
+      via(ctx, 'gzipDecompressBatchPacked', unpackByteResults, [maxDecompressed ?? null])(items),
+    brotliCompress: (items, quality) =>
+      via(ctx, 'brotliCompressBatchPacked', unpackByteResults, [quality ?? null])(items),
+    brotliDecompress: (items, maxDecompressed) =>
+      via(ctx, 'brotliDecompressBatchPacked', unpackByteResults, [maxDecompressed ?? null])(items),
+    jwtVerify: (tokens, secret, nowSeconds) =>
+      via(ctx, 'jwtVerifyBatchPacked', unpackBitset, [secret, nowSeconds])(tokens),
+    hmacSha256: (items, key) => via(ctx, 'hmacSha256BatchPacked', unpackByteResults, [key])(items),
+    hmacSha256Verify: (items, sigs, key) =>
+      via2(ctx, 'hmacSha256VerifyBatchPacked', unpackBitset, [key])(items, sigs),
+    // ── Two-list ──
+    passwordVerify: (items, phcs) => via2(ctx, 'passwordVerifyBatchPacked', unpackBitset)(items, phcs),
+    urlResolve: (bases, references) =>
+      via2(ctx, 'urlResolveBatchPacked', unpackByteResults)(bases, references),
+    templateRender: (source, contexts) =>
+      via(ctx, 'templateRenderBatchPacked', unpackByteResults, [source])(contexts),
+    jwtSign: (items, secret, ttlSeconds, nowSeconds) =>
+      via(ctx, 'jwtSignBatchPacked', unpackByteResults, [
+        secret,
+        ttlSeconds ?? null,
+        nowSeconds ?? Math.floor(Date.now() / 1000),
+      ])(items),
+    sseEncode: (items, event, id, retry) =>
+      via(ctx, 'sseEncodeBatchPacked', unpackByteResults, [event ?? null, id ?? null, retry ?? null])(
+        items,
+      ),
+    wsFrameEncode: (items, opcode, mask, fin) =>
+      via(ctx, 'wsFrameEncodeBatchPacked', unpackByteResults, [opcode, mask, fin])(items),
+    wsFrameDecode: via(ctx, 'wsFrameDecodeBatchPacked', unpackByteResults),
+    multipartParse: (items, boundary) =>
+      via(ctx, 'multipartParseBatchPacked', unpackMultipartParts, [boundary])(items),
   }
 }

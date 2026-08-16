@@ -1,3 +1,5 @@
+// src/baseline/tasks/http.ts — JS baseline: HTTP request parsing.
+
 import { decoder, encoder } from '../../shared/bytes'
 
 export function nativeHttpParseRequestPacked(bytes: Uint8Array): Uint8Array {

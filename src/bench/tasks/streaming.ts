@@ -1,3 +1,5 @@
+// src/bench/tasks/streaming.ts — CPU benchmark tasks: SSE event framing.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

@@ -1,3 +1,5 @@
+// src/baseline/tasks/websocket.ts — JS baseline: WebSocket frame codec + accept-key.
+
 import { createHash } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import { decoder, encoder, toPlainBuffer } from '../../shared/bytes'

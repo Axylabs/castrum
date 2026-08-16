@@ -1,3 +1,5 @@
+// src/bench/concurrent-worker.ts — worker script for the concurrent CPU-bench scenario.
+
 import * as native from '../baseline'
 import { rust } from '../rust-ffi'
 

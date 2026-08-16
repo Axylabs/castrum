@@ -43,18 +43,8 @@ describe('rust.parseMediaType', () => {
   })
 })
 
-describe('MediaTypeParser (higher-order instance)', () => {
-  test('matches wildcards', () => {
-    const parser = rust.createMediaTypeParser()
-    expect(parser.matches(JSON_CT, JSON_CT)).toBe(true)
-    expect(parser.matches(JSON_CT, encoder.encode('application/*'))).toBe(true)
-    expect(parser.matches(JSON_CT, encoder.encode('*/*'))).toBe(true)
-    expect(parser.matches(JSON_CT, encoder.encode('text/*'))).toBe(false)
-    expect(parser.matches(JSON_CT, encoder.encode('application/xml'))).toBe(false)
-  })
-
-  test('matches parity with the JS baseline', () => {
-    const parser = rust.createMediaTypeParser()
+describe('MediaTypeMatcher (higher-order instance)', () => {
+  test('wildcard parity with the JS baseline', () => {
     const actual = 'application/json'
     for (const expected of [
       'application/json',
@@ -63,7 +53,8 @@ describe('MediaTypeParser (higher-order instance)', () => {
       'text/*',
       'application/xml',
     ]) {
-      expect(parser.matches(encoder.encode(actual), encoder.encode(expected))).toBe(
+      const matcher = rust.createMediaTypeMatcher(encoder.encode(expected))
+      expect(matcher.matches(encoder.encode(actual))).toBe(
         nativeMediaTypeMatches(actual, expected),
       )
     }

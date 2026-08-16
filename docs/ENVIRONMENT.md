@@ -10,7 +10,9 @@ warned about and replaced with the documented default.
 |----------|------|---------|-------------|
 | `INGRESS_TRUST_PROXY` | bool | `false` | **Opt-in.** When `true`, honors `X-Forwarded-For` / `X-Real-IP` for client-IP resolution. Keep **off** unless the server sits behind a trusted edge that strips these headers, otherwise clients can spoof arbitrary IPs for IP-based rate limiting. |
 | `INGRESS_REQUEST_ID_HEADER` | bool | `false` | Emit an `x-request-id` response header per request. The request ID is always generated internally; this only controls whether it is echoed to clients. |
-| `INGRESS_UNSAFE_ZERO_COPY` | bool | `false` | Enable zero-copy response bodies. **Not recommended** unless per-response output buffers are implemented; leave off for safety (bodies are copied by default). |
+| `INGRESS_ZERO_COPY` | bool | `false` | Enable zero-copy response bodies (legacy alias `INGRESS_UNSAFE_ZERO_COPY` still honored). **Not recommended** unless per-response output buffers are implemented; leave off for safety (bodies are copied by default). |
+| `INGRESS_ZERO_COPY_MAX_IN_FLIGHT` | int | `128` | Max pooled output buffers kept in flight for zero-copy responses (min `1`). |
+| `INGRESS_ZERO_COPY_TIMEOUT_MS` | int | `1000` | Timeout before a zero-copy pooled buffer is force-released (min `0`). |
 | `INGRESS_OUTPUT_BUF_BYTES` | int | `131072` | Size of the Rust output buffer (min `65536`). If cookies + query + metadata JSON exceed this, `FLAG_BODY_TRUNCATED` is set and the request fails closed. |
 | `INGRESS_SECURITY_HEADERS` | bool | `true` | Emit the precomputed security headers (CSP, HSTS, X-Frame-Options, etc.). Disable only behind an edge that already sets them. |
 | `INGRESS_REUSE_PORT` | bool | `false` | Enable `SO_REUSEPORT` for multi-process deployments (spawn N processes, each with a distinct `INGRESS_WORKER_ID`). |
@@ -27,9 +29,9 @@ for false; anything else is warned about and falls back to the default.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `CASTRUM_RAYON_THREADS` / `RUST_RAYON_THREADS` (legacy `RUST_BENCH_RAYON_THREADS`) | int | `max(1, cores-1)` | Rayon thread pool size. The pool is process-wide and initialized **once** — the first use wins. With lazy init, call `rust.configure({ rayonThreads })` (or set this env) before the first batch operation. |
-| `CASTRUM_MAX_RAYON_THREADS` (legacy `RUST_BENCH_MAX_RAYON_THREADS`) | int | `cores` | Hard cap on rayon threads (native). |
-| `CASTRUM_PIN_CORES` (legacy `RUST_BENCH_PIN_CORES`) | (presence) | — | When set (Linux), pin rayon worker threads to distinct cores. |
+| `CASTRUM_RAYON_THREADS` | int | `max(1, cores-1)` | Rayon thread pool size. The pool is process-wide and initialized **once** — the first use wins. With lazy init, call `rust.configure({ rayonThreads })` (or set this env) before the first batch operation. |
+| `CASTRUM_MAX_RAYON_THREADS` | int | `cores` | Hard cap on rayon threads (native). |
+| `CASTRUM_PIN_CORES` | (presence) | — | When set (Linux), pin rayon worker threads to distinct cores. |
 
 ## Native transport selection (`src/native/ffi.ts`)
 
@@ -40,13 +42,13 @@ whether the ffi transport is live.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `CASTRUM_FFI_MODE` (legacy `RUST_FFI_MODE`) | string | `auto` | Native transport selection: `auto` (default) — use `bun:ffi` on Bun, silently fall back to napi on bind/self-test failure (and always on Node); `ffi` — force `bun:ffi` on Bun and THROW if it cannot bind or the self-test fails (for benches/CI that must run the primary transport; invalid on Node); `napi` — never bind, every call goes through the napi addon (exercises the fallback on Bun). |
+| `CASTRUM_FFI_MODE` | string | `auto` | Native transport selection: `auto` (default) — use `bun:ffi` on Bun, silently fall back to napi on bind/self-test failure (and always on Node); `ffi` — force `bun:ffi` on Bun and THROW if it cannot bind or the self-test fails (for benches/CI that must run the primary transport; invalid on Node); `napi` — never bind, every call goes through the napi addon (exercises the fallback on Bun). |
 
 ## Native addon loader (`src/native/loader.ts`)
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `CASTRUM_DEBUG` (legacy `RUST_BENCH_DEBUG`) | (presence) | — | Log the resolved addon path and exported keys at load time. |
+| `CASTRUM_DEBUG` | (presence) | — | Log the resolved addon path and exported keys at load time. |
 | `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH` | path | — | Explicit path (file or directory) to the native `.node` artifact, overriding normal resolution. Useful for bundled/electron layouts. |
 
 ## Library logging (`src/shared/log.ts`)

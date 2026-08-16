@@ -320,7 +320,7 @@ that transfer directly to castrum's cdylib:
 **Verify after any FFI change**:
 
 ```bash
-nm -D --defined-only <addon> | grep -c castrum_   # = 75
+nm -D --defined-only <addon> | grep -c castrum_   # = 79
 bun run bench:http:smoke                           # after touching decoders/handlers
 bun test test/unit/features/ffi.test.ts            # FFI↔napi parity + self-test
 bun test test/unit/features/ffi-symbol-parity.test.ts

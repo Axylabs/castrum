@@ -14,6 +14,7 @@ import type { BunFFI } from '../../native/ffi'
 import { decoder } from '../../shared/bytes'
 import { decodeUtf8Fatal } from '../../shared/codec'
 import { packPairs } from '../../shared/packed'
+import { writeInto } from '../into'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
 
 // Mirror napi `url_decode`'s UTF-8 validation (rust/http/url_codec.rs): only
@@ -214,10 +215,7 @@ export function buildHttp(ctx: RustClientContext) {
     wsAcceptKeyInto(key: Uint8Array, output: Uint8Array): number {
       const f = ffi()
       if (f) return f.wsAcceptKeyInto(key, output)
-      const bytes = n('wsAcceptKey')(key) as Uint8Array
-      if (output.length < bytes.length) throw new Error('ws accept key: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('ws accept key', output, n('wsAcceptKey')(key) as Uint8Array)
     },
     httpParseRequestPacked(input: Uint8Array): Uint8Array {
       const f = ffi()
@@ -271,10 +269,7 @@ export function buildHttp(ctx: RustClientContext) {
       // call on that path; same wire output, so the copy is exact).
       const f = ffi()
       if (f) return f.formParsePackedInto(input, output)
-      const bytes = n('formParsePacked')(input) as Uint8Array
-      if (output.length < bytes.length) throw new Error('form parse: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('form parse', output, n('formParsePacked')(input) as Uint8Array)
     },
     parseMediaType(input: Uint8Array): MediaTypeResult {
       const f = ffi()

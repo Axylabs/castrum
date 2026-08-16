@@ -221,18 +221,12 @@ pub(crate) fn run_packed_batch_idx(
 /// Packed HMAC-SHA256 sign batch (hex signatures out) — key compiled once.
 #[inline]
 fn hmac_sha256_batch_bytes(data: &[u8], key: &aws_lc_rs::hmac::Key) -> Result<Vec<u8>> {
-    let iter = PackedIter::new(data)?;
-    let count = iter.len();
-    let mut out = Vec::with_capacity(4 + count * (4 + 64));
-    out.extend_from_slice(&(count as u32).to_le_bytes());
-    for item in iter {
-        let tag = aws_lc_rs::hmac::sign(key, item);
+    bytes_map_serial(data, |v| {
+        let tag = aws_lc_rs::hmac::sign(key, v);
         let mut sig = [0u8; 64];
         crate::util::bytes::hex_encode_32(tag.as_ref(), &mut sig);
-        out.extend_from_slice(&64u32.to_le_bytes());
-        out.extend_from_slice(&sig);
-    }
-    Ok(out)
+        sig.to_vec()
+    })
 }
 
 /// Packed HMAC-SHA256 verify batch (two packed lists: data + hex sigs, zipped)

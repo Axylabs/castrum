@@ -7,6 +7,8 @@ root via the `bun` export condition, so there is nothing to build first.
 | File | What it shows |
 |------|---------------|
 | `basic-server.ts` | Pre-baked ingress server (`createIngressHandler` + `createIngressServer`): routes, CORS, rate limiting, the `ratelimit-*`/`{"ok":...}` wire format, plus a couple of `rust.*` primitives. |
+| `loader-demo.ts` | Higher-order loader (`createLoader`): N same-tick items coalesced into ONE packed native batch call (scalar vs bulk dispatch, DataLoader-style `load()`). |
+| `pipeline-demo.ts` | Framework-agnostic pipeline (`createPipeline`): `handleRequest` / `preprocess` middleware + W3C trace correlation for any Bun/Node framework. |
 
 ## Run
 

@@ -1,6 +1,8 @@
 // src/ingress/routes/common.ts — Shared route-handler options + helpers.
 
-import type { OptimizedIngressHandler } from '../types'
+import type { BakedContext, OptimizedIngressHandler } from '../types'
+import type { BakedIngressResult } from '../decode/baked-result'
+import { secondsFromMs } from '../shared'
 
 /** Options accepted by the pre-baked route factories. */
 export interface BakedHandlerOptions {
@@ -35,4 +37,43 @@ export function resolveIp(
   opts: BakedHandlerOptions,
 ): string | undefined {
   return opts.getIp ? opts.getIp(req, srv) : undefined
+}
+
+/**
+ * Build the success `ResponseInit` (status + ratelimit headers) shared by
+ * every pre-baked success path. A plain function call, so the hot path keeps
+ * its single init-object allocation and nothing else.
+ *
+ * @param status Success status; defaults to 200.
+ */
+export function buildSuccessInit(
+  ingress: OptimizedIngressHandler,
+  result: BakedIngressResult,
+  ctx: BakedContext,
+  status = 200,
+): ResponseInit {
+  return {
+    status,
+    headers: ingress.responseHeaders(
+      result.headerVariant,
+      ctx.requestIdHeader,
+      ctx.origin,
+      result.rateRemaining,
+      result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
+    ),
+  }
+}
+
+/**
+ * Wrap a `(result, ctx) => Response` responder in the shared sync route
+ * runner: resolve the client IP once and dispatch through the native pipeline
+ * (`ingress.run` with a null body). Used by the read / head / fallback route
+ * factories whose responder never needs the request object.
+ */
+export function runBaked(
+  ingress: OptimizedIngressHandler,
+  opts: BakedHandlerOptions,
+  respond: (result: BakedIngressResult, ctx: BakedContext) => Response,
+): (req: Request, srv?: unknown) => Response {
+  return (req, srv) => ingress.run<Response>(req, resolveIp(req, srv, opts), null, respond)
 }

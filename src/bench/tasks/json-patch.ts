@@ -1,3 +1,5 @@
+// src/bench/tasks/json-patch.ts — CPU benchmark tasks: JSON Patch (RFC 6902).
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

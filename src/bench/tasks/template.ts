@@ -1,3 +1,5 @@
+// src/bench/tasks/template.ts — CPU benchmark tasks: template rendering.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { encoder } from '../../shared/bytes'

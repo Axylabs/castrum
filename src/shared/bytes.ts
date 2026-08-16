@@ -1,3 +1,5 @@
+// src/shared/bytes.ts — shared UTF-8 / byte helpers (encoder, decoder, toBytes, toText).
+
 import { decodeUtf8, encodeUtf8, encodeUtf8Into } from './codec'
 
 /**

@@ -76,7 +76,7 @@ let bufferAbiMode: 'buffer-pair' | 'ptr-len' | null = null
 // ── Transport selection (CASTRUM_FFI_MODE) ───────────────────────
 
 function resolveFfiMode(): FfiMode {
-  const raw = resolveEnvVar('CASTRUM_FFI_MODE', ['RUST_FFI_MODE'])
+  const raw = resolveEnvVar('CASTRUM_FFI_MODE')
   switch (raw) {
     case 'ffi':
       return 'ffi'

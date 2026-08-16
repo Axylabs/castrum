@@ -1,3 +1,5 @@
+// src/baseline/tasks/validation.ts — JS baseline: email / UUID / IPv4 / IPv6 validation.
+
 import { isIP } from 'node:net'
 import validator from 'validator'
 import { decoder } from '../../shared/bytes'

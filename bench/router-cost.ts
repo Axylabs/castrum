@@ -12,18 +12,7 @@
 import { createIngressRouter } from '../src/ingress/router'
 import type { RouterRouteSpec } from '../src/ingress/router'
 import { getBunFFI } from '../src/native/ffi'
-
-function measure(fn: () => unknown, iterations: number): number {
-  for (let i = 0; i < Math.max(iterations / 20, 1); i++) fn()
-  let best = Infinity
-  for (let b = 0; b < 5; b++) {
-    const start = performance.now()
-    for (let i = 0; i < iterations; i++) fn()
-    const ns = ((performance.now() - start) * 1e6) / iterations
-    if (ns < best) best = ns
-  }
-  return best
-}
+import { measureNs as measure } from './measure'
 
 if (getBunFFI() === null) {
   throw new Error('bun:ffi not active — cannot measure the per-route FFI cost')

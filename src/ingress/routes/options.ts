@@ -1,8 +1,7 @@
 // src/ingress/routes/options.ts — Pre-baked OPTIONS handler (CORS preflight).
 
 import type { OptimizedIngressHandler } from '../types'
-import { resolveIp, type BakedHandlerOptions } from './common'
-import { secondsFromMs } from '../shared'
+import { buildSuccessInit, resolveIp, type BakedHandlerOptions } from './common'
 
 /**
  * Pre-baked OPTIONS handler: serves the native pipeline's CORS preflight
@@ -22,15 +21,6 @@ export function optionsHandler(
       const terminal = ingress.terminalResponse(req, result, ctx)
       if (terminal) return terminal
 
-      return new Response(null, {
-        status: 204,
-        headers: ingress.responseHeaders(
-          result.headerVariant,
-          ctx.requestIdHeader,
-          ctx.origin,
-          result.rateRemaining,
-          result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
-        ),
-      })
+      return new Response(null, buildSuccessInit(ingress, result, ctx, 204))
     })
 }

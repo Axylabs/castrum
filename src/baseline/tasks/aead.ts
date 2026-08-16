@@ -1,3 +1,5 @@
+// src/baseline/tasks/aead.ts — JS baseline: AEAD encrypt/decrypt.
+
 import { createCipheriv, createDecipheriv, type CipherGCM, type DecipherGCM } from 'node:crypto'
 
 const TAG_LEN = 16

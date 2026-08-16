@@ -1,3 +1,5 @@
+// src/bench/checksum.ts — deterministic checksum for CPU-bench result comparison.
+
 export function checksumValue(value: unknown): bigint {
   if (typeof value === 'bigint') {
     return value

@@ -1,3 +1,5 @@
+// src/bench/tasks/json.ts — CPU benchmark tasks: JSON validity / sum / parse.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

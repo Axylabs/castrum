@@ -1,3 +1,5 @@
+// src/bench/tasks/jwt.ts — CPU benchmark tasks: JWT sign / verify.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { encoder } from '../../shared/bytes'

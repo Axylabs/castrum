@@ -1,3 +1,5 @@
+// src/bench/tasks/stress.ts — CPU benchmark tasks: stress (multi-op) scenarios.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures, ComplexFixtures } from '../fixtures'

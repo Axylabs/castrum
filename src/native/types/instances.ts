@@ -139,8 +139,6 @@ export interface MediaTypeResult {
 /** The native `MediaTypeParser` class instance. */
 export interface MediaTypeParserInstance {
   parse(input: Uint8Array): MediaTypeResult
-  /** Wildcard match: any/any, type/any, or exact type/subtype. */
-  matches(actual: Uint8Array, expected: Uint8Array): boolean
 }
 
 /** The native `ConditionalRequest` class instance (per-resource 304 checks). */

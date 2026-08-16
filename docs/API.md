@@ -43,7 +43,7 @@ runtimes, and binary ops (`gzip*`, `brotli*`, `aead*`, `pbkdf2Sha256`,
 | `AdaptiveEstimate`, `AdaptiveEstimateOptions` | Bounded EWMA adaptive-estimate utility. |
 | `createMetrics`, `DEFAULT_BUCKETS` | Zero-dependency metrics registry (counters/gauges/histograms + Prometheus text). |
 | `packBatch`, `packPairs`, `readPairsPacked`, `readHttpPacked`, `pairsToObject`, `parseQueryString`, `parseCookieHeader`, `parseFormBody`, `unpackBitset`, `unpackByteResults`, `unpackI64ArrayAsBigInt`, `unpackU32Array` | Packed-wire + high-level parsing utilities. |
-| Ingress: `createIngress`, `createIngressSync`, `createIngressFast`, `createIngressHandler`, `createIngressServer`, `createIngressServerNode`, route factories, metrics/health/trace helpers | See [`INGRESS.md`](./INGRESS.md). |
+| Ingress: `createIngress`, `createIngressSync`, `createIngressFast`, `createIngressHandler`, `createIngressServer`, `createIngressServerNode`, `createIngressRouter`, route factories, metrics/health/trace helpers | See [`INGRESS.md`](./INGRESS.md) and [`INGRESS-ROUTER.md`](./INGRESS-ROUTER.md). |
 | Integration: `createPipeline`, `createWebSocketUpgrade`, `sseResponse` | Framework-agnostic helpers — see [`INGRESS.md`](./INGRESS.md) §Framework Integration. |
 
 ---

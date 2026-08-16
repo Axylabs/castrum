@@ -1,3 +1,5 @@
+// src/bench/tasks/password.ts — CPU benchmark tasks: password hashing.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import type { BenchFixtures } from '../fixtures'

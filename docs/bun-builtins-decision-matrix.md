@@ -59,8 +59,8 @@
 These rust ops lose to Bun's native implementation on the SAME workload — the
 FFI crossing cannot beat Bun's in-process C++:
 
-This table mirrors `BUN_WINS` in `src/selection.ts` (the 11 ops that delegate to
-Bun built-ins under Bun). `fnv1a64` is parity/either but is NOT delegated
+This table mirrors `BUILTIN_OPS` in `src/runtime/builtins.ts` (the 11 ops that
+delegate to Bun built-ins under Bun; `src/selection.ts` derives from it). `fnv1a64` is parity/either but is NOT delegated
 (`Bun.hash` is wyhash — a different algorithm — and rust `fnv1a64` stays the
 benchmarked impl).
 

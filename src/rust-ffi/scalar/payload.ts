@@ -10,6 +10,7 @@
 
 import type { MultipartPart, WsFrame } from '../../native'
 import { decoder } from '../../shared/bytes'
+import { writeInto } from '../into'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
 
 /** Read an unsigned little-endian u32 at `off`. */
@@ -85,10 +86,7 @@ export function buildPayload(ctx: RustClientContext) {
     gzipCompressInto(data: Uint8Array, output: Uint8Array, level?: number | null): number {
       const f = ffi()
       if (f) return f.gzipCompressInto(data, output, level ?? undefined)
-      const bytes = addon.gzipCompress(data, level ?? null)
-      if (output.length < bytes.length) throw new Error('gzip compress: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('gzip compress', output, addon.gzipCompress(data, level ?? null))
     },
     gzipDecompress(data: Uint8Array, maxDecompressed?: number | null): Uint8Array {
       const f = ffi()
@@ -104,12 +102,7 @@ export function buildPayload(ctx: RustClientContext) {
       // it via the `_into` core; keeps the 64 MiB decompression-bomb cap).
       const f = ffi()
       if (f) return f.gzipDecompressInto(data, output, maxDecompressed ?? undefined)
-      const bytes = addon.gzipDecompress(data, maxDecompressed ?? null)
-      if (output.length < bytes.length) {
-        throw new Error('gzip decompress: output buffer too small')
-      }
-      output.set(bytes)
-      return bytes.length
+      return writeInto('gzip decompress', output, addon.gzipDecompress(data, maxDecompressed ?? null))
     },
     brotliCompress(data: Uint8Array, quality?: number | null): Uint8Array {
       const f = ffi()
@@ -119,10 +112,7 @@ export function buildPayload(ctx: RustClientContext) {
     brotliCompressInto(data: Uint8Array, output: Uint8Array, quality?: number | null): number {
       const f = ffi()
       if (f) return f.brotliCompressInto(data, output, quality ?? undefined)
-      const bytes = addon.brotliCompress(data, quality ?? null)
-      if (output.length < bytes.length) throw new Error('brotli compress: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('brotli compress', output, addon.brotliCompress(data, quality ?? null))
     },
     brotliDecompress(data: Uint8Array, maxDecompressed?: number | null): Uint8Array {
       const f = ffi()
@@ -137,12 +127,7 @@ export function buildPayload(ctx: RustClientContext) {
       // Pooled sibling — caller-owned output buffer (keeps the 64 MiB cap).
       const f = ffi()
       if (f) return f.brotliDecompressInto(data, output, maxDecompressed ?? undefined)
-      const bytes = addon.brotliDecompress(data, maxDecompressed ?? null)
-      if (output.length < bytes.length) {
-        throw new Error('brotli decompress: output buffer too small')
-      }
-      output.set(bytes)
-      return bytes.length
+      return writeInto('brotli decompress', output, addon.brotliDecompress(data, maxDecompressed ?? null))
     },
     multipartParse(body: Uint8Array, boundary: Uint8Array): MultipartPart[] {
       // FFI-first: packed parts (castrum_multipart_parse_packed) → unpack to
@@ -167,10 +152,7 @@ export function buildPayload(ctx: RustClientContext) {
       // packed `Into` for multipart, so copy via the allocating call there).
       const f = ffi()
       if (f) return f.multipartParsePackedInto(body, boundary, output)
-      const bytes = addon.multipartParsePacked(body, boundary)
-      if (output.length < bytes.length) throw new Error('multipart parse: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('multipart parse', output, addon.multipartParsePacked(body, boundary))
     },
     wsFrameEncode(opcode: number, payload: Uint8Array, mask: boolean, fin: boolean): Uint8Array {
       return resolveNative(ctx, 'wsFrameEncode')(opcode, payload, mask, fin) as Uint8Array
@@ -184,10 +166,7 @@ export function buildPayload(ctx: RustClientContext) {
     ): number {
       const f = ffi()
       if (f) return f.wsFrameEncodeInto(opcode, payload, mask, fin, output)
-      const bytes = addon.wsFrameEncode(opcode, payload, mask, fin)
-      if (output.length < bytes.length) throw new Error('ws frame encode: output buffer too small')
-      output.set(bytes)
-      return bytes.length
+      return writeInto('ws frame encode', output, addon.wsFrameEncode(opcode, payload, mask, fin))
     },
     wsFrameDecode(data: Uint8Array): WsFrame | null {
       const f = ffi()

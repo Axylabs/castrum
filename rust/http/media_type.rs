@@ -204,24 +204,6 @@ impl MediaTypeParser {
     pub fn parse(&self, input: Uint8Array) -> Result<MediaTypeResult> {
         parse_media_type(input)
     }
-
-    /// Wildcard match: `expected` may be `*/*`, `type/*`, or exact `type/subtype`.
-    /// Zero-alloc: both sides are split into byte slices and compared
-    /// case-insensitively (no String / params-Vec allocation per call).
-    #[napi]
-    pub fn matches(&self, actual: Uint8Array, expected: Uint8Array) -> bool {
-        let (Some((aty, ast)), Some((ety, est))) = (
-            split_type_subtype(actual.as_ref()),
-            split_type_subtype(expected.as_ref()),
-        ) else {
-            return false;
-        };
-        let ty_ok = crate::util::bytes::ascii_eq_ignore_case(ety, b"*")
-            || crate::util::bytes::ascii_eq_ignore_case(ety, aty);
-        let st_ok = crate::util::bytes::ascii_eq_ignore_case(est, b"*")
-            || crate::util::bytes::ascii_eq_ignore_case(est, ast);
-        ty_ok && st_ok
-    }
 }
 
 /// Higher-order instance: precompiles the EXPECTED media type once at
@@ -338,27 +320,6 @@ mod tests {
         assert_eq!(m.ty, "text");
         assert_eq!(m.subtype, "html");
         assert_eq!(m.params.len(), 2);
-    }
-
-    #[test]
-    fn wildcard_matches() {
-        let parser = MediaTypeParser;
-        assert!(parser.matches(
-            Uint8Array::new(b"application/json".to_vec()),
-            Uint8Array::new(b"*/*".to_vec())
-        ));
-        assert!(parser.matches(
-            Uint8Array::new(b"application/json".to_vec()),
-            Uint8Array::new(b"application/*".to_vec())
-        ));
-        assert!(!parser.matches(
-            Uint8Array::new(b"application/json".to_vec()),
-            Uint8Array::new(b"text/*".to_vec())
-        ));
-        assert!(!parser.matches(
-            Uint8Array::new(b"application/json".to_vec()),
-            Uint8Array::new(b"application/xml".to_vec())
-        ));
     }
 
     #[test]

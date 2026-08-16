@@ -86,7 +86,8 @@ bun run check
 2. **Batch operations**: High-throughput operations process multiple items in a single FFI call
 3. **Lazy decoding**: Parse result buffers on-demand rather than eagerly
 4. **Pure-Rust core**: Modules keep napi types out of internal signatures so the core stays testable and composable (`cargo test`)
-5. **Single source of truth**: Output buffer layout constants come from Rust via NAPI exports
+5. **Single source of truth**: Output buffer layout constants come from Rust — the
+   `castrum_ingress_layout` C-ABI blob on Bun (NAPI projection on Node).
 
 ## Coding Standards
 
@@ -149,8 +150,10 @@ pub fn fnv1a64_bytes(input: &[u8]) -> u64 {
 
 ### Test Coverage
 
-- **TypeScript unit tests**: ≥ 80% line coverage for all `src/` modules
-- **Rust unit tests**: ≥ 70% line coverage for all `rust/` modules
+- **TypeScript unit tests**: 75% overall line coverage for `src/` (50% per shipped
+  directory floor — `scripts/check-coverage.mjs`)
+- **Rust unit tests**: 75% overall line coverage for `rust/` (50% per shipped
+  directory floor)
 - **Integration tests**: Cover the ingress pipeline end-to-end
 
 ### Test Structure
@@ -168,10 +171,6 @@ test/
 └── property/              # Property-style parity tests
     └── pool-parity.test.ts
 ```
-
-(`test/fixtures/` and `test/unit/ffi/` are empty leftover dirs from the old
-`src/ffi/` layout — do not add fixtures there; put data under `src/data/` or
-inline fixtures in the test file.)
 
 ### Writing Tests
 

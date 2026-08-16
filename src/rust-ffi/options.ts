@@ -51,7 +51,7 @@ export function resolveRayonThreads(explicit?: number): number {
   }
 
   const envThreads = Number(
-    resolveEnvVar('CASTRUM_RAYON_THREADS', ['RUST_BENCH_RAYON_THREADS', 'RUST_RAYON_THREADS']),
+    resolveEnvVar('CASTRUM_RAYON_THREADS'),
   )
 
   if (Number.isFinite(envThreads) && envThreads > 0) {

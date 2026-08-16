@@ -1,3 +1,5 @@
+// src/data/json-rows.ts — generated JSON row fixtures + row types for benchmarks.
+
 import { encoder } from '../shared/bytes'
 
 /** Nested metadata embedded in every generated JSON row. */

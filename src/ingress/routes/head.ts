@@ -2,8 +2,7 @@
 
 import type { BakedContext, OptimizedIngressHandler } from '../types'
 import type { BakedIngressResult } from '../decode/baked-result'
-import { resolveIp, type BakedHandlerOptions } from './common'
-import { secondsFromMs } from '../shared'
+import { buildSuccessInit, runBaked, type BakedHandlerOptions } from './common'
 
 /**
  * Pre-baked HEAD read handler: headers only, no body.
@@ -21,17 +20,8 @@ export function headHandler(
       return ingress.internalErrorResponse(ctx, result)
     }
 
-    return new Response(null, {
-      status: 200,
-      headers: ingress.responseHeaders(
-        result.headerVariant,
-        ctx.requestIdHeader,
-        ctx.origin,
-        result.rateRemaining,
-        result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
-      ),
-    })
+    return new Response(null, buildSuccessInit(ingress, result, ctx))
   }
 
-  return (req, srv) => ingress.run<Response>(req, resolveIp(req, srv, opts), null, respond)
+  return runBaked(ingress, opts, respond)
 }

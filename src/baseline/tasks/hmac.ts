@@ -1,3 +1,5 @@
+// src/baseline/tasks/hmac.ts — JS baseline: HMAC-SHA256 sign/verify.
+
 import { Buffer } from 'node:buffer'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { decoder, encoder } from '../../shared/bytes'

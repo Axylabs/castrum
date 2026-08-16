@@ -1,3 +1,5 @@
+// src/baseline/tasks/compress.ts — JS baseline: gzip/brotli compress/decompress.
+
 import {
   brotliCompressSync,
   brotliDecompressSync,

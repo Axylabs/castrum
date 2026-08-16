@@ -1,3 +1,5 @@
+// src/baseline/tasks/jwt.ts — JS baseline: JWT sign/verify.
+
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { decoder, encoder } from '../../shared/bytes'
 

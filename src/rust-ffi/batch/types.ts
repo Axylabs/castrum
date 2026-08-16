@@ -8,6 +8,12 @@
 import type { MultipartPart, PasswordHashOptions } from '../../native'
 import type { SchemaValidator } from '../../shared/packed'
 
+/**
+ * The `rust.batch.*` array-of-bytes batch surface: N items in → one packed
+ * native call → bitsets / typed arrays / byte arrays out. Separated from the
+ * implementation (`./build.ts`) so type-only consumers don't pull the native
+ * resolver.
+ */
 export interface RustBatch {
   jsonValid(items: Uint8Array[]): Uint8Array
   crc32(items: Uint8Array[]): Uint32Array

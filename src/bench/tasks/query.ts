@@ -1,3 +1,5 @@
+// src/bench/tasks/query.ts — CPU benchmark tasks: query string parsing.
+
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
 import { pairsToObject, readPairsPacked } from '../../shared/packed'
