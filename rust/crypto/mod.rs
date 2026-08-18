@@ -18,6 +18,7 @@ pub mod base64;
 pub mod bcrypt;
 pub mod cookie_sign;
 pub mod csrf;
+pub mod ed25519;
 pub mod hashing;
 pub mod hmac_sha256;
 pub mod jwt;

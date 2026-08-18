@@ -32,10 +32,21 @@ pub fn jwt_header_b64() -> &'static [u8] {
     })
 }
 
+/// The canonical EdDSA (Ed25519) JWT header (`{"alg":"EdDSA","typ":"JWT"}`),
+/// serialized + base64url-encoded ONCE (lazily) — twin of `jwt_header_b64`.
+static EDDSA_HEADER_B64: OnceLock<Vec<u8>> = OnceLock::new();
+
+pub fn eddsa_header_b64() -> &'static [u8] {
+    EDDSA_HEADER_B64.get_or_init(|| {
+        let header = serde_json::json!({ "alg": "EdDSA", "typ": "JWT" });
+        b64url_encode(&serde_json::to_vec(&header).expect("constant JWT header serializes"))
+    })
+}
+
 // ── base64url (RFC 7515 §2 — URL-safe, no padding) ─────────────
 
 #[inline]
-fn b64url_encode(data: &[u8]) -> Vec<u8> {
+pub(crate) fn b64url_encode(data: &[u8]) -> Vec<u8> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     URL_SAFE_NO_PAD.encode(data).into_bytes()
 }
@@ -257,6 +268,40 @@ pub fn verify_token(token: &[u8], secret: &[u8], now_seconds: i64) -> Option<Vec
     verify_token_with_key(token, &key, now_seconds)
 }
 
+/// Zero-DOM time-claim checks over a base64url payload segment: `exp`
+/// (reject when `now >= exp`), `nbf` (reject when not yet valid), `iat`
+/// (reject tokens issued beyond the clock-skew leeway). Returns the decoded
+/// payload bytes (valid JSON claims) or `None`. Shared by the HS256 and
+/// EdDSA verify paths so the claim semantics can't drift.
+pub(crate) fn verify_time_claims(payload_b64: &[u8], now_seconds: i64) -> Option<Vec<u8>> {
+    let payload = b64url_decode(payload_b64)?;
+    let value: sonic_rs::Value = sonic_rs::from_slice(&payload).ok()?;
+
+    // `exp`: reject when now >= exp.
+    if let Some(exp) = value.get("exp").and_then(|v| v.as_i64()) {
+        if now_seconds >= exp {
+            return None;
+        }
+    }
+
+    // `nbf` (not before): reject when the token is not yet valid.
+    if let Some(nbf) = value.get("nbf").and_then(|v| v.as_i64()) {
+        if now_seconds < nbf {
+            return None;
+        }
+    }
+
+    // `iat` (issued at): reject tokens issued in the future beyond a small
+    // clock-skew leeway.
+    if let Some(iat) = value.get("iat").and_then(|v| v.as_i64()) {
+        if now_seconds < iat.saturating_sub(CLOCK_SKEW_LEEWAY_SECS) {
+            return None;
+        }
+    }
+
+    Some(payload)
+}
+
 /// Verify with a PRE-COMPILED key (no per-call key derivation). Time-claim
 /// checks run over a compact `sonic_rs::Value` (zero per-key heap `String`);
 /// the decoded payload bytes are returned verbatim.
@@ -284,33 +329,109 @@ pub fn verify_token_with_key(
         }
     }
 
-    // ── Payload: decode once; zero-DOM time-claim checks ──
-    let payload = b64url_decode(parts.payload_b64)?;
-    let value: sonic_rs::Value = sonic_rs::from_slice(&payload).ok()?;
+    // ── Payload: decode once; zero-DOM time-claim checks (shared) ──
+    verify_time_claims(parts.payload_b64, now_seconds)
+}
 
-    // `exp`: reject when now >= exp.
-    if let Some(exp) = value.get("exp").and_then(|v| v.as_i64()) {
-        if now_seconds >= exp {
+/// Sign an EdDSA (Ed25519) JWT from pre-serialized claim JSON bytes. Claims
+/// parsing/`iat`/`exp` injection is shared with the HS256 byte path; only the
+/// signature primitive differs. Returns the compact token bytes, or `None` on
+/// invalid claims JSON / invalid private key.
+pub fn sign_eddsa(
+    claims_json: &[u8],
+    private_der: &[u8],
+    ttl_seconds: Option<i64>,
+    now_seconds: i64,
+) -> Option<Vec<u8>> {
+    let mut claims: sonic_rs::Value = sonic_rs::from_slice(claims_json).ok()?;
+    let payload_b64 =
+        inject_and_payload_b64_sonic(&mut claims, ttl_seconds, now_seconds).ok()?;
+    build_eddsa_token(eddsa_header_b64(), &payload_b64, private_der)
+}
+
+/// Assemble an EdDSA token from base64url header + payload segments: sign
+/// `header.payload` with the Ed25519 private key, append the base64url sig.
+pub fn build_eddsa_token(
+    header_b64: &[u8],
+    payload_b64: &[u8],
+    private_der: &[u8],
+) -> Option<Vec<u8>> {
+    let mut signing_input = Vec::with_capacity(header_b64.len() + 1 + payload_b64.len());
+    signing_input.extend_from_slice(header_b64);
+    signing_input.push(b'.');
+    signing_input.extend_from_slice(payload_b64);
+    let sig = crate::crypto::ed25519::sign(private_der, &signing_input)?;
+    signing_input.push(b'.');
+    signing_input.extend_from_slice(&b64url_encode(&sig));
+    Some(signing_input)
+}
+
+/// Verify an EdDSA (Ed25519) JWT: signature + `alg` allowlist + time claims
+/// (shared with the HS256 path). Returns the decoded payload bytes (valid JSON
+/// claims), or `None` on any failure.
+pub fn verify_token_eddsa(
+    token: &[u8],
+    public_der: &[u8],
+    now_seconds: i64,
+) -> Option<Vec<u8>> {
+    let parts = split_token(token)?;
+
+    // ── Header: enforce the alg allowlist (prevents alg-confusion) ──
+    // Fast path: the canonical EdDSA header matches — accept without parsing.
+    if parts.header_b64 != eddsa_header_b64() {
+        let header: sonic_rs::Value =
+            sonic_rs::from_slice(&b64url_decode(parts.header_b64)?).ok()?;
+        if header.get("alg").and_then(|v| v.as_str()) != Some("EdDSA") {
             return None;
         }
     }
 
-    // `nbf` (not before): reject when the token is not yet valid.
-    if let Some(nbf) = value.get("nbf").and_then(|v| v.as_i64()) {
-        if now_seconds < nbf {
-            return None;
-        }
+    // ── Signature: constant-time Ed25519 verify over `header.payload` ──
+    let sig = b64url_decode(parts.sig_b64)?;
+    let mut signing_input = Vec::with_capacity(parts.header_b64.len() + 1 + parts.payload_b64.len());
+    signing_input.extend_from_slice(parts.header_b64);
+    signing_input.push(b'.');
+    signing_input.extend_from_slice(parts.payload_b64);
+    if !crate::crypto::ed25519::verify(public_der, &signing_input, &sig) {
+        return None;
     }
 
-    // `iat` (issued at): reject tokens issued in the future beyond a small
-    // clock-skew leeway.
-    if let Some(iat) = value.get("iat").and_then(|v| v.as_i64()) {
-        if now_seconds < iat.saturating_sub(CLOCK_SKEW_LEEWAY_SECS) {
-            return None;
-        }
-    }
+    verify_time_claims(parts.payload_b64, now_seconds)
+}
 
-    Some(payload)
+/// Sign an EdDSA (Ed25519) JWT from pre-serialized claim JSON bytes. Semantics
+/// identical to `jwt_sign_bytes` (incl. `iat`/`exp` injection); the signature
+/// is Ed25519 (RFC 8032) under the `EdDSA` alg.
+#[napi]
+pub fn jwt_sign_eddsa(
+    claims_json: Uint8Array,
+    private_key: Uint8Array,
+    ttl_seconds: Option<i64>,
+    now_seconds: i64,
+) -> Result<Buffer> {
+    match sign_eddsa(claims_json.as_ref(), private_key.as_ref(), ttl_seconds, now_seconds) {
+        Some(token) => Ok(Buffer::from(token)),
+        None => Err(Error::from_reason("EdDSA sign failed (invalid claims or private key)")),
+    }
+}
+
+/// Verify an EdDSA (Ed25519) JWT (signature + time claims). Returns the decoded
+/// claims object, or `null` on any failure.
+#[napi]
+pub fn jwt_verify_eddsa(
+    env: Env,
+    token: Uint8Array,
+    public_key: Uint8Array,
+    now_seconds: i64,
+) -> Result<Unknown<'static>> {
+    let Some(payload) = verify_token_eddsa(token.as_ref(), public_key.as_ref(), now_seconds) else {
+        return crate::json::napi_marshal::sonic_value_to_js(&env, &sonic_rs::Value::new());
+    };
+    match sonic_rs::from_slice::<sonic_rs::Value>(&payload) {
+        Ok(v) => crate::json::napi_marshal::sonic_value_to_js(&env, &v),
+        // The payload already parsed for the time-claim check — unreachable.
+        Err(_) => crate::json::napi_marshal::sonic_value_to_js(&env, &sonic_rs::Value::new()),
+    }
 }
 
 /// Verify a JWT (HS256 signature + time claims). Returns the decoded claims
@@ -718,5 +839,82 @@ mod tests {
         let v2: sonic_rs::Value = sonic_rs::from_slice(&v2_payload).unwrap();
         assert_eq!(v2["iat"], 2_000_000);
         assert_eq!(v2["exp"], 2_000_000 + 3600);
+    }
+
+    #[test]
+    fn eddsa_sign_verify_round_trip() {
+        let (private_der, public_der) = crate::crypto::ed25519::generate_keypair().unwrap();
+        let claims_json = br#"{"sub":"user-1","roles":["admin"]}"#.to_vec();
+
+        let token = sign_eddsa(&claims_json, &private_der, None, 1_000_000).unwrap();
+        // Compact token: exactly two dots, EdDSA header.
+        let parts = split_token(&token).unwrap();
+        assert_eq!(
+            b64url_decode(parts.header_b64).unwrap(),
+            br#"{"alg":"EdDSA","typ":"JWT"}"#
+        );
+
+        // Verifies with the matching public key.
+        let payload = verify_token_eddsa(&token, &public_der, 1_000_000).unwrap();
+        let v: sonic_rs::Value = sonic_rs::from_slice(&payload).unwrap();
+        assert_eq!(v["sub"], "user-1");
+        assert_eq!(v["roles"][0], "admin");
+
+        // Wrong public key (a different keypair) fails.
+        let (_, other_pub) = crate::crypto::ed25519::generate_keypair().unwrap();
+        assert!(verify_token_eddsa(&token, &other_pub, 1_000_000).is_none());
+
+        // Tampered payload fails (signature over header.payload is invalid).
+        let mut bad = token.clone();
+        let n = bad.len();
+        bad[n - 2] ^= 0x01;
+        assert!(verify_token_eddsa(&bad, &public_der, 1_000_000).is_none());
+    }
+
+    #[test]
+    fn eddsa_injects_ttl_and_enforces_time_claims() {
+        let (private_der, public_der) = crate::crypto::ed25519::generate_keypair().unwrap();
+        let claims_json = br#"{"sub":"user-1"}"#.to_vec();
+
+        let token = sign_eddsa(&claims_json, &private_der, Some(3600), 1_000_000).unwrap();
+        let v: sonic_rs::Value = sonic_rs::from_slice(
+            &verify_token_eddsa(&token, &public_der, 1_000_000).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["iat"], 1_000_000);
+        assert_eq!(v["exp"], 1_000_000 + 3600);
+
+        // Expired token rejected.
+        assert!(verify_token_eddsa(&token, &public_der, 1_000_000 + 3600).is_none());
+        // Not-yet-valid (future iat beyond leeway) rejected.
+        let future = sign_eddsa(&claims_json, &private_der, Some(3600), 1_000_000).unwrap();
+        assert!(verify_token_eddsa(&future, &public_der, 1_000_000 - 61).is_none());
+        assert!(verify_token_eddsa(&future, &public_der, 1_000_000).is_some());
+    }
+
+    #[test]
+    fn eddsa_rejects_wrong_alg_and_malformed() {
+        let (private_der, public_der) = crate::crypto::ed25519::generate_keypair().unwrap();
+        let claims_json = br#"{"sub":"x"}"#.to_vec();
+        let token = sign_eddsa(&claims_json, &private_der, None, 1_000_000).unwrap();
+
+        // Swap the header alg to HS256 while keeping a valid Ed25519 signature
+        // over the new header.payload — the alg allowlist must reject it.
+        let header_b64 = b64url_encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+        let parts = split_token(&token).unwrap();
+        let mut forged_input = Vec::new();
+        forged_input.extend_from_slice(&header_b64);
+        forged_input.push(b'.');
+        forged_input.extend_from_slice(parts.payload_b64);
+        let sig = crate::crypto::ed25519::sign(&private_der, &forged_input).unwrap();
+        let mut forged = forged_input;
+        forged.push(b'.');
+        forged.extend_from_slice(&b64url_encode(&sig));
+        assert!(verify_token_eddsa(&forged, &public_der, 1_000_000).is_none());
+
+        // Malformed tokens.
+        assert!(verify_token_eddsa(b"not-a-token", &public_der, 1_000_000).is_none());
+        assert!(verify_token_eddsa(b"a.b.c.d", &public_der, 1_000_000).is_none());
+        assert!(verify_token_eddsa(&token, &[], 1_000_000).is_none());
     }
 }
