@@ -1,4 +1,9 @@
-// rust/json/json_ops.rs — v2: tighter inlining
+// rust/json/json_ops.rs — zero-DOM JSON validation/sum + DOM parse.
+//
+// `json_valid_bytes` / `json_sum_ids_bytes` operate on raw bytes with no
+// per-key heap `String` DOM; `json_parse` materializes a `serde_json::Value`
+// when a caller needs the full DOM. Heavily inlined for the hot paths.
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::de::{Deserializer, IgnoredAny, SeqAccess, Visitor};

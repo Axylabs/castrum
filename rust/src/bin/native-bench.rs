@@ -30,7 +30,8 @@ use castrum::crypto::base64::{
 };
 use castrum::crypto::hashing::{crc32_bytes, fast_hash_bytes, fnv1a64_bytes};
 use castrum::http::cookie_parser::cookie_parse_packed_into_slice;
-use castrum::http::etag::{etag_from_crc32_into, http_date_into_slice};
+use castrum::http::etag::etag_from_crc32_into;
+use castrum::http::http_date::http_date_into_slice;
 use castrum::http::http_parser::http_parse_request_packed_into_slice;
 use castrum::http::query_parser::query_parse_packed_into_slice;
 use castrum::http::url_codec::{url_decode_into_slice, url_encode_into_slice};

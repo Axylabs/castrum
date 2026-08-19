@@ -1,3 +1,5 @@
+// rust/crypto/hashing.rs — FNV-1a / XXH3 checksums.
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 

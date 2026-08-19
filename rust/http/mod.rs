@@ -10,7 +10,8 @@
 //   - media_type.rs    Content-Type parser + wildcard matching instances
 //   - url_codec.rs     percent-encoding encode/decode
 //   - url_join.rs      RFC 3986 url_resolve + query builder (UrlBuilder)
-//   - etag.rs          HTTP cache semantics (etag / http_date / 304)
+//   - etag.rs          HTTP cache semantics (etag / conditional / 304)
+//   - http_date.rs     HTTP-date (IMF-fixdate) format + parse
 //   - accept.rs        Accept-Encoding negotiation (AcceptNegotiator)
 //   - mime_lookup.rs   extension → MIME type (phf table)
 //   - multipart.rs     multipart/form-data parser (+ limits)
@@ -20,6 +21,7 @@ pub mod cookie_parser;
 pub mod etag;
 pub mod form;
 pub mod headers;
+pub mod http_date;
 pub mod http_parser;
 pub mod media_type;
 pub mod method;

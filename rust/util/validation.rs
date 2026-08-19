@@ -1,4 +1,8 @@
-// rust/util/validation.rs — v2: memchr for IPv4 dots
+// rust/util/validation.rs — email / UUID / IPv4 / IPv6 validators.
+//
+// Each validator has a `*_bytes` zero-DOM core (the C-ABI + packed-batch
+// paths) and a napi entry point. IPv4 dot-splitting uses `memchr`; the
+// `fast-email` feature gates a regex-free email fast path.
 
 #[cfg(not(feature = "fast-email"))]
 use email_address::EmailAddress;

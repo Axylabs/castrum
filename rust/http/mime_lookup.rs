@@ -1,3 +1,5 @@
+// rust/http/mime_lookup.rs — file extension → MIME type (phf table).
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use phf::{phf_map, Map};

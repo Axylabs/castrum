@@ -1,3 +1,5 @@
+// rust/crypto/hmac_sha256.rs — HMAC-SHA256 sign/verify (scalar + HmacSigner instance).
+
 use crate::util::bytes::{hex_decode_32, hex_encode_32, trim_ascii_whitespace};
 use aws_lc_rs::hmac;
 use napi::bindgen_prelude::*;

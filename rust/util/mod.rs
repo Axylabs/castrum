@@ -3,7 +3,7 @@
 // Task-focused modules (no napi types in core signatures):
 //   - bytes.rs        byte primitives (word-compare, hex, %XX decode, trim, cookie_pairs)
 //   - packed.rs       zero-alloc packed iterators + byte writers
-//   - batch.rs        aggregate packed batch napi APIs
+//   - batch/          packed aggregate batch helpers (core.rs routing + api.rs napi)
 //   - batch_core.rs   generic rayon-parallel batch helpers
 //   - threadpool.rs   rayon global pool init + parallelism heuristics
 //   - validation.rs   email / UUID / IPv4 / IPv6 validators

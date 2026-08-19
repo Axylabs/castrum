@@ -1775,7 +1775,7 @@ pub unsafe extern "C" fn castrum_http_date_into(
         return 0;
     }
     let output = slice::from_raw_parts_mut(out, out_cap);
-    crate::http::etag::http_date_into_slice(secs as i64, output).unwrap_or(0)
+    crate::http::http_date::http_date_into_slice(secs as i64, output).unwrap_or(0)
 }
 
 /// Encode one SSE event into `out`. Optional fields use `flags` bits
@@ -2355,7 +2355,7 @@ pub unsafe extern "C" fn castrum_parse_http_date(
         return 0;
     }
     let input = slice::from_raw_parts(data, len);
-    let secs = panic_guard(|| crate::http::etag::parse_http_date_secs(input), None);
+    let secs = panic_guard(|| crate::http::http_date::parse_http_date_secs(input), None);
     match secs {
         Some(secs) => {
             if out_cap < 9 {

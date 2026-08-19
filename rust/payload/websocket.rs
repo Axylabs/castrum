@@ -1,3 +1,5 @@
+// rust/payload/websocket.rs — RFC 6455 Sec-WebSocket-Accept key derivation.
+
 use aws_lc_rs::digest;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;

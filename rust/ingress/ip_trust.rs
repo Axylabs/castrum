@@ -1,3 +1,5 @@
+// rust/ingress/ip_trust.rs — trusted-proxy client-IP resolution.
+
 use crate::util::trim_ascii_whitespace;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use std::net::IpAddr;

@@ -1,3 +1,5 @@
+// rust/json/json_schema.rs — SchemaValidator napi class (fast + DOM fallback + batch).
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::Value;

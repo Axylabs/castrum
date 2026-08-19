@@ -1,3 +1,5 @@
+// rust/ingress/rate_limit.rs — sharded per-IP rate limiter + shared registry.
+
 use crate::crypto::hashing::fast_hash_bytes;
 use lru::LruCache;
 use napi_derive::napi;
