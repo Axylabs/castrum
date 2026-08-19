@@ -325,8 +325,10 @@ struct Pair<'a> {
 /// Split `a=1&b=2`-style bytes into `[name, value]` pairs, skipping empty
 /// segments (matches JS `decodePairList`).
 fn query_pairs(query: &[u8]) -> impl Iterator<Item = Pair<'_>> + '_ {
-    query.split(|&b| b == b'&').filter(|p| !p.is_empty()).map(|pair| {
-        match pair.iter().position(|&b| b == b'=') {
+    query
+        .split(|&b| b == b'&')
+        .filter(|p| !p.is_empty())
+        .map(|pair| match pair.iter().position(|&b| b == b'=') {
             Some(eq) => Pair {
                 name: &pair[..eq],
                 value: &pair[eq + 1..],
@@ -335,8 +337,7 @@ fn query_pairs(query: &[u8]) -> impl Iterator<Item = Pair<'_>> + '_ {
                 name: pair,
                 value: &[],
             },
-        }
-    })
+        })
 }
 
 // `cookie_pairs` (crate::util::bytes) yields raw (trimmed, DQUOTE-unwrapped,
@@ -624,7 +625,13 @@ mod tests {
             let mut pos = 8;
             let pairs = decode_pairs(&out[..w], &mut pos);
             let names: Vec<Vec<u8>> = pairs.iter().map(|(n, _)| n.clone()).collect();
-            assert_eq!(names, expected_names.iter().map(|n| n.to_vec()).collect::<Vec<_>>());
+            assert_eq!(
+                names,
+                expected_names
+                    .iter()
+                    .map(|n| n.to_vec())
+                    .collect::<Vec<_>>()
+            );
             // Spot-check the tricky decodes.
             let vals: Vec<Vec<u8>> = pairs.iter().map(|(_, v)| v.clone()).collect();
             match *qs {
@@ -680,14 +687,23 @@ mod tests {
         let mut pos = 8;
         let q = decode_pairs(&out[..w], &mut pos);
         let c = decode_pairs(&out[..w], &mut pos);
-        assert_eq!(q, vec![(b"a".to_vec(), b"1".to_vec()), (b"b".to_vec(), b"2".to_vec())]);
+        assert_eq!(
+            q,
+            vec![
+                (b"a".to_vec(), b"1".to_vec()),
+                (b"b".to_vec(), b"2".to_vec())
+            ]
+        );
         assert_eq!(c, vec![(b"s".to_vec(), b"v".to_vec())]);
     }
 
     #[test]
     fn body_validation_verdicts() {
         let schema = br#"{"type":"object","required":["x"],"properties":{"x":{"type":"number"}}}"#;
-        let d = descriptor(&[STAGE_REQUIRE_JSON_BODY, STAGE_VALIDATE_BODY], &[(PART_BODY, schema)]);
+        let d = descriptor(
+            &[STAGE_REQUIRE_JSON_BODY, STAGE_VALIDATE_BODY],
+            &[(PART_BODY, schema)],
+        );
         let r = NativeRoute::compile(&d).unwrap();
 
         let read = |f: Vec<u8>| {

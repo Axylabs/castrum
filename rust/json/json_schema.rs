@@ -20,10 +20,7 @@ pub struct SchemaValidator {
 /// # Safety
 /// `p` must be a valid `*const SchemaValidator` from `inner_ptr`, alive for
 /// the call (the JS wrapper holds the napi instance).
-pub(crate) unsafe fn schema_validator_validate_core(
-    p: *const SchemaValidator,
-    doc: &[u8],
-) -> bool {
+pub(crate) unsafe fn schema_validator_validate_core(p: *const SchemaValidator, doc: &[u8]) -> bool {
     let this = &*p;
     this.validate_doc(doc)
 }

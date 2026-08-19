@@ -120,7 +120,10 @@ fn main() {
         }
     }
     let inp = |key: &str, fallback: &[u8]| -> Vec<u8> {
-        inputs.get(key).cloned().unwrap_or_else(|| fallback.to_vec())
+        inputs
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| fallback.to_vec())
     };
 
     let crc = inp("crc_input", DEFAULT_CRC);
@@ -207,8 +210,8 @@ fn main() {
         &mut ws_frame_out,
     )
     .unwrap();
-    let aead_ct = castrum::crypto::aead::encrypt(&AES_256_GCM, &aead_key, &aead_nonce, &aead_pt)
-        .unwrap();
+    let aead_ct =
+        castrum::crypto::aead::encrypt(&AES_256_GCM, &aead_key, &aead_nonce, &aead_pt).unwrap();
     let argon_phc = castrum::crypto::argon2::hash_password(&password, &password_salt, 8, 1, 1, 16)
         .unwrap()
         .into_bytes();
@@ -261,14 +264,24 @@ fn main() {
     });
 
     // ── Validators ──
-    bench("validate_email", 1_000_000, || validate_email_bytes(&email) as u64);
-    bench("validate_uuid", 1_000_000, || validate_uuid_bytes(&uuid) as u64);
-    bench("validate_ipv4", 1_000_000, || validate_ipv4_bytes(&ipv4) as u64);
-    bench("validate_ipv6", 1_000_000, || validate_ipv6_bytes(&ipv6) as u64);
+    bench("validate_email", 1_000_000, || {
+        validate_email_bytes(&email) as u64
+    });
+    bench("validate_uuid", 1_000_000, || {
+        validate_uuid_bytes(&uuid) as u64
+    });
+    bench("validate_ipv4", 1_000_000, || {
+        validate_ipv4_bytes(&ipv4) as u64
+    });
+    bench("validate_ipv6", 1_000_000, || {
+        validate_ipv6_bytes(&ipv6) as u64
+    });
 
     // ── JSON (zero-DOM) ──
     bench("json_valid", 500_000, || json_valid_bytes(&json) as u64);
-    bench("json_sum_ids", 500_000, || json_sum_ids_bytes(&json).unwrap() as u64);
+    bench("json_sum_ids", 500_000, || {
+        json_sum_ids_bytes(&json).unwrap() as u64
+    });
     // ── JSON DOM parse ALONE (no napi marshal) — the reference for the
     // structural json_parse split: proves the sonic-rs parse is cheap and the
     // ~5x CPU-bench loss is the napi DOM→JS marshal, not the parser. ──
@@ -349,7 +362,10 @@ fn main() {
         129
     });
     bench("csrf_verify", 300_000, || {
-        u64::from(castrum::crypto::csrf::csrf_verify_with_key(&csrf_token_bytes, &csrf_key))
+        u64::from(castrum::crypto::csrf::csrf_verify_with_key(
+            &csrf_token_bytes,
+            &csrf_key,
+        ))
     });
 
     // ── Password KDFs (work-bound; low iterations) ──
@@ -359,7 +375,9 @@ fn main() {
             .len() as u64
     });
     bench("password_verify", 50, || {
-        u64::from(castrum::crypto::argon2::verify_password(&password, &argon_phc))
+        u64::from(castrum::crypto::argon2::verify_password(
+            &password, &argon_phc,
+        ))
     });
     bench("password_hash_bcrypt", 3, || {
         bcrypt::hash(&password, castrum::crypto::bcrypt::clamp_cost(4))
@@ -392,8 +410,14 @@ fn main() {
 
     // ── WebSocket frames ──
     bench("ws_frame_encode", 300_000, || {
-        castrum::payload::ws_frames::encode_frame_into(1, &ws_payload, false, true, &mut ws_frame_out)
-            .unwrap() as u64
+        castrum::payload::ws_frames::encode_frame_into(
+            1,
+            &ws_payload,
+            false,
+            true,
+            &mut ws_frame_out,
+        )
+        .unwrap() as u64
     });
     bench("ws_frame_decode", 300_000, || {
         let frame = castrum::payload::ws_frames::decode_frame(&ws_frame_out[..ws_frame]).unwrap();

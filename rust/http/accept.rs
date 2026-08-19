@@ -241,6 +241,94 @@ fn negotiate_refs(supported: &[String], prefs: &[EncodingPrefRef<'_>]) -> Option
     best.map(|(e, _, _, _)| (*e).clone())
 }
 
+/// ignex-compatible SERVER-preference negotiation (q-only, server order breaks
+/// ties). This is the semantic of ignex's `negotiateEncoding` (compression
+/// plugin): parse the header, apply explicit q-values with a wildcard
+/// fallback for unlisted encodings, exclude `q <= 0`, and on a tie keep the
+/// EARLIER supported entry (server preference) — NOT the client's order and
+/// NOT the RFC-specificity rule. Empty/absent header → `None` (identity),
+/// unlike the specificity negotiator which returns the first supported.
+pub fn negotiate_encoding_server_preference(supported: &[String], header: &[u8]) -> Option<String> {
+    let mut stack = [EncodingPrefRef {
+        name: &[],
+        q: 0.0,
+        order: 0,
+    }; MAX_STACK_PREFS];
+    let count = parse_accept_encoding_refs(header, &mut stack);
+    if count == usize::MAX {
+        return negotiate_server_preference_heap(supported, header);
+    }
+    if count == 0 {
+        return None; // empty header → identity (no encoding preferred)
+    }
+    negotiate_server_preference_refs(supported, &stack[..count])
+}
+
+/// Server-preference negotiation core over borrowed prefs (stack path).
+fn negotiate_server_preference_refs(
+    supported: &[String],
+    prefs: &[EncodingPrefRef<'_>],
+) -> Option<String> {
+    // Wildcard q applies to every encoding not listed explicitly.
+    let mut wildcard_q = -1.0f32;
+    for p in prefs {
+        if p.name == b"*" {
+            wildcard_q = wildcard_q.max(p.q);
+        }
+    }
+    let mut best: Option<(&String, f32)> = None; // (enc, q); ties keep the FIRST
+    for sup in supported {
+        // Explicit q for `sup` (first occurrence wins — RFC 7231 §5.3.4
+        // duplicates are undefined; ignex keeps the first).
+        let mut q = if wildcard_q >= 0.0 { wildcard_q } else { -1.0 };
+        for p in prefs {
+            if name_eq_supported(p.name, sup.as_bytes()) {
+                q = p.q;
+                break;
+            }
+        }
+        if q <= 0.0 {
+            continue;
+        }
+        if best.is_none() || q > best.unwrap().1 {
+            best = Some((sup, q));
+        }
+        // Tie (q == best q) → keep the earlier supported entry (server pref).
+    }
+    best.map(|(e, _)| (*e).clone())
+}
+
+/// Heap fallback for the server-preference negotiator (identical semantics).
+fn negotiate_server_preference_heap(supported: &[String], header: &[u8]) -> Option<String> {
+    let prefs = parse_accept_encoding_core(header);
+    if prefs.is_empty() {
+        return None;
+    }
+    let mut wildcard_q = -1.0f32;
+    for p in &prefs {
+        if p.encoding == "*" {
+            wildcard_q = wildcard_q.max(p.q);
+        }
+    }
+    let mut best: Option<(&String, f32)> = None;
+    for sup in supported {
+        let mut q = if wildcard_q >= 0.0 { wildcard_q } else { -1.0 };
+        for p in &prefs {
+            if p.encoding == sup.as_str() {
+                q = p.q;
+                break;
+            }
+        }
+        if q <= 0.0 {
+            continue;
+        }
+        if best.is_none() || q > best.unwrap().1 {
+            best = Some((sup, q));
+        }
+    }
+    best.map(|(e, _)| (*e).clone())
+}
+
 /// napi-projected parse result.
 #[napi(object)]
 pub struct EncodingPrefResult {
@@ -285,6 +373,14 @@ impl AcceptNegotiator {
         negotiate_encoding(&self.supported, header.as_ref())
     }
 
+    /// Best supported encoding for `header` with SERVER-preference
+    /// tie-breaking (q-only; the supported list's order decides ties). Matches
+    /// ignex's `negotiateEncoding` semantics; empty header → None (identity).
+    #[napi]
+    pub fn negotiate_server_preference(&self, header: Uint8Array) -> Option<String> {
+        negotiate_encoding_server_preference(&self.supported, header.as_ref())
+    }
+
     /// Opaque handle to the precompiled supported list, for the `bun:ffi`
     /// C-ABI fast path (`castrum_accept_negotiator_negotiate` in rust/ffi.rs).
     /// Only valid while THIS instance is alive; the JS wrapper holds it.
@@ -305,6 +401,20 @@ pub(crate) unsafe fn accept_negotiator_negotiate_core(
 ) -> Option<Vec<u8>> {
     let this = &*p;
     negotiate_encoding(&this.supported, header).map(String::into_bytes)
+}
+
+/// C-ABI support: server-preference negotiation (ignex `negotiateEncoding`
+/// semantics). `None` = identity (no supported encoding acceptable / empty).
+///
+/// # Safety
+/// `p` must be a valid `*const AcceptNegotiator` from `inner_ptr`, alive for
+/// the call.
+pub(crate) unsafe fn accept_negotiator_negotiate_server_core(
+    p: *const AcceptNegotiator,
+    header: &[u8],
+) -> Option<Vec<u8>> {
+    let this = &*p;
+    negotiate_encoding_server_preference(&this.supported, header).map(String::into_bytes)
 }
 
 #[cfg(test)]
@@ -433,5 +543,64 @@ mod tests {
             negotiate(&["gzip", "br"], &header),
             Some("gzip".to_string())
         );
+    }
+
+    #[test]
+    fn server_preference_matches_ignex_negotiate_encoding() {
+        let sup: Vec<String> = ["br", "gzip", "deflate"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let neg = |h: &str| negotiate_encoding_server_preference(&sup, h.as_bytes());
+        // The exact vectors from ignex content-encoding.ts `negotiateEncoding`.
+        assert_eq!(neg("gzip, br"), Some("br".to_string())); // tie → server pref (br first)
+        assert_eq!(neg("br;q=0.8, gzip;q=0.9"), Some("gzip".to_string()));
+        assert_eq!(neg("*"), Some("br".to_string()));
+        assert_eq!(neg("gzip;q=0, deflate"), Some("deflate".to_string()));
+        assert_eq!(neg("identity"), None);
+        assert_eq!(neg(""), None); // empty → identity
+        assert_eq!(
+            neg("deflate, gzip;q=0.5, br;q=0.3"),
+            Some("deflate".to_string())
+        );
+    }
+
+    #[test]
+    fn server_preference_wildcard_vs_explicit() {
+        let sup: Vec<String> = ["gzip", "br"].iter().map(|s| s.to_string()).collect();
+        let neg = |h: &str| negotiate_encoding_server_preference(&sup, h.as_bytes());
+        // Explicit q=0.5 < wildcard q=1 → br (unlisted) wins (q-only, no specificity).
+        assert_eq!(neg("gzip;q=0.5, *;q=1"), Some("br".to_string()));
+        // Explicit q=1 beats wildcard q=0.5.
+        assert_eq!(neg("gzip;q=1, *;q=0.5"), Some("gzip".to_string()));
+        // Tie (both q=1) → FIRST supported entry wins (server preference):
+        // supported is ["gzip", "br"], so gzip wins regardless of client order.
+        assert_eq!(neg("br;q=1, gzip;q=1"), Some("gzip".to_string()));
+    }
+
+    #[test]
+    fn server_preference_stack_heap_parity() {
+        let sup: Vec<String> = ["br", "gzip", "deflate"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let cases = [
+            "gzip, br, deflate",
+            "GZip;q=0.8, br;q=1.0",
+            "*;q=0.5",
+            "gzip;q=0, br;q=1",
+            "",
+            "zstd;q=1, *;q=0.1",
+            "gzip;q=0.2, gzip;q=0.9",
+            " br ;q = 0.5 ",
+            "gzip;q=0.9999, br;q=0.9998",
+        ];
+        for c in cases {
+            assert_eq!(
+                negotiate_encoding_server_preference(&sup, c.as_bytes()),
+                negotiate_server_preference_heap(&sup, c.as_bytes()),
+                "server-pref stack vs heap parity for {c:?}"
+            );
+        }
     }
 }

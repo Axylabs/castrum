@@ -105,7 +105,8 @@ mod tests {
             ("cookie".to_string(), "a=1".to_string()),
             ("x-forwarded-for".to_string(), "1.2.3.4".to_string()),
         ];
-        let frame = build_packed_input_sync(3, b"/api/users?a=1", b"127.0.0.1", b"rid-123", &headers);
+        let frame =
+            build_packed_input_sync(3, b"/api/users?a=1", b"127.0.0.1", b"rid-123", &headers);
 
         // Method kind byte.
         assert_eq!(frame[0], 3);
@@ -113,7 +114,10 @@ mod tests {
         let mut pos = 1;
 
         // URL section.
-        assert_eq!(read_section(&frame, &mut pos, 8192).unwrap(), b"/api/users?a=1");
+        assert_eq!(
+            read_section(&frame, &mut pos, 8192).unwrap(),
+            b"/api/users?a=1"
+        );
         // IP section.
         assert_eq!(read_section(&frame, &mut pos, 128).unwrap(), b"127.0.0.1");
         // Request-ID section.

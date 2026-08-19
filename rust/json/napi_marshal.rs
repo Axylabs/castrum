@@ -19,7 +19,9 @@
 //! This module is napi-type-laden by design (it bridges to JS); pure numeric /
 //! equality logic stays in the small private fns below and is unit-tested.
 
-use napi::bindgen_prelude::{BigInt, Env, FromNapiValue, Null, Object, Result, ToNapiValue, Unknown};
+use napi::bindgen_prelude::{
+    BigInt, Env, FromNapiValue, Null, Object, Result, ToNapiValue, Unknown,
+};
 use sonic_rs::JsonNumberTrait;
 
 /// Wrap a `ToNapiValue` as an unconstrained-lifetime `Unknown`.
@@ -116,14 +118,15 @@ pub(crate) fn sonic_values_equal(a: &sonic_rs::Value, b: &sonic_rs::Value) -> bo
         (ValueRef::String(x), ValueRef::String(y)) => x == y,
         (ValueRef::Array(x), ValueRef::Array(y)) => {
             x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|(a, b)| sonic_values_equal(a, b))
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|(a, b)| sonic_values_equal(a, b))
         }
         (ValueRef::Object(x), ValueRef::Object(y)) => {
             // Insertion-order comparison, replicating jsonschema's cmp::equal
             // (key order is SIGNIFICANT in the crate's object equality).
             x.len() == y.len()
-                && x
-                    .iter()
+                && x.iter()
                     .zip(y.iter())
                     .all(|((ka, va), (kb, vb))| ka == kb && sonic_values_equal(va, vb))
         }
@@ -187,12 +190,14 @@ mod tests {
             }
             (serde_json::Value::String(x), serde_json::Value::String(y)) => x == y,
             (serde_json::Value::Array(x), serde_json::Value::Array(y)) => {
-                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| serde_values_equal(a, b))
+                x.len() == y.len()
+                    && x.iter()
+                        .zip(y.iter())
+                        .all(|(a, b)| serde_values_equal(a, b))
             }
             (serde_json::Value::Object(x), serde_json::Value::Object(y)) => {
                 x.len() == y.len()
-                    && x
-                        .iter()
+                    && x.iter()
                         .zip(y.iter())
                         .all(|((ka, va), (kb, vb))| ka == kb && serde_values_equal(va, vb))
             }
@@ -281,7 +286,10 @@ mod tests {
         // 1 == 1.0 across representations (jsonschema cmp::equal).
         let one_int: serde_json::Value = json!(1);
         let one_float: serde_json::Value = json!(1.0);
-        assert!(sonic_values_equal(&to_sonic(&one_int), &to_sonic(&one_float)));
+        assert!(sonic_values_equal(
+            &to_sonic(&one_int),
+            &to_sonic(&one_float)
+        ));
 
         // u64 that exceeds i64::MAX is NOT equal to its wrapped i64.
         let big: serde_json::Value = json!(u64::MAX);
@@ -294,7 +302,10 @@ mod tests {
         assert!(!sonic_values_equal(&to_sonic(&a), &to_sonic(&b)));
 
         // String vs number never equal.
-        assert!(!sonic_values_equal(&to_sonic(&json!("1")), &to_sonic(&json!(1))));
+        assert!(!sonic_values_equal(
+            &to_sonic(&json!("1")),
+            &to_sonic(&json!(1))
+        ));
     }
 
     #[test]

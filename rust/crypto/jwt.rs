@@ -10,8 +10,8 @@
 
 use base64::Engine as _;
 use memchr::memchr;
-use napi::bindgen_prelude::*;
 use napi::bindgen_prelude::Unknown;
+use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use sonic_rs::{JsonValueMutTrait, JsonValueTrait};
 use std::sync::OnceLock;
@@ -344,8 +344,7 @@ pub fn sign_eddsa(
     now_seconds: i64,
 ) -> Option<Vec<u8>> {
     let mut claims: sonic_rs::Value = sonic_rs::from_slice(claims_json).ok()?;
-    let payload_b64 =
-        inject_and_payload_b64_sonic(&mut claims, ttl_seconds, now_seconds).ok()?;
+    let payload_b64 = inject_and_payload_b64_sonic(&mut claims, ttl_seconds, now_seconds).ok()?;
     build_eddsa_token(eddsa_header_b64(), &payload_b64, private_der)
 }
 
@@ -369,11 +368,7 @@ pub fn build_eddsa_token(
 /// Verify an EdDSA (Ed25519) JWT: signature + `alg` allowlist + time claims
 /// (shared with the HS256 path). Returns the decoded payload bytes (valid JSON
 /// claims), or `None` on any failure.
-pub fn verify_token_eddsa(
-    token: &[u8],
-    public_der: &[u8],
-    now_seconds: i64,
-) -> Option<Vec<u8>> {
+pub fn verify_token_eddsa(token: &[u8], public_der: &[u8], now_seconds: i64) -> Option<Vec<u8>> {
     let parts = split_token(token)?;
 
     // ── Header: enforce the alg allowlist (prevents alg-confusion) ──
@@ -388,7 +383,8 @@ pub fn verify_token_eddsa(
 
     // ── Signature: constant-time Ed25519 verify over `header.payload` ──
     let sig = b64url_decode(parts.sig_b64)?;
-    let mut signing_input = Vec::with_capacity(parts.header_b64.len() + 1 + parts.payload_b64.len());
+    let mut signing_input =
+        Vec::with_capacity(parts.header_b64.len() + 1 + parts.payload_b64.len());
     signing_input.extend_from_slice(parts.header_b64);
     signing_input.push(b'.');
     signing_input.extend_from_slice(parts.payload_b64);
@@ -409,9 +405,16 @@ pub fn jwt_sign_eddsa(
     ttl_seconds: Option<i64>,
     now_seconds: i64,
 ) -> Result<Buffer> {
-    match sign_eddsa(claims_json.as_ref(), private_key.as_ref(), ttl_seconds, now_seconds) {
+    match sign_eddsa(
+        claims_json.as_ref(),
+        private_key.as_ref(),
+        ttl_seconds,
+        now_seconds,
+    ) {
         Some(token) => Ok(Buffer::from(token)),
-        None => Err(Error::from_reason("EdDSA sign failed (invalid claims or private key)")),
+        None => Err(Error::from_reason(
+            "EdDSA sign failed (invalid claims or private key)",
+        )),
     }
 }
 
@@ -501,8 +504,7 @@ impl JwtSigner {
     pub fn sign_bytes(&self, claims_json: Uint8Array, now_seconds: i64) -> Result<Buffer> {
         let mut claims: sonic_rs::Value =
             sonic_rs::from_slice(claims_json.as_ref()).map_err(napi_err)?;
-        let payload_b64 =
-            inject_and_payload_b64_sonic(&mut claims, self.ttl_seconds, now_seconds)?;
+        let payload_b64 = inject_and_payload_b64_sonic(&mut claims, self.ttl_seconds, now_seconds)?;
         Ok(Buffer::from(build_token_with_key(
             jwt_header_b64(),
             &payload_b64,
@@ -513,7 +515,12 @@ impl JwtSigner {
     /// Verify a JWT with the precompiled key (signature + `alg` + time claims).
     /// Returns the decoded claims object, or `null` on any failure.
     #[napi]
-    pub fn verify(&self, env: Env, token: Uint8Array, now_seconds: i64) -> Result<Unknown<'static>> {
+    pub fn verify(
+        &self,
+        env: Env,
+        token: Uint8Array,
+        now_seconds: i64,
+    ) -> Result<Unknown<'static>> {
         let Some(payload) = verify_token_with_key(token.as_ref(), &self.key, now_seconds) else {
             return crate::json::napi_marshal::sonic_value_to_js(&env, &sonic_rs::Value::new());
         };
@@ -539,7 +546,11 @@ pub(crate) unsafe fn jwt_signer_sign_bytes_core(
     let mut claims: sonic_rs::Value = sonic_rs::from_slice(claims_json).map_err(|_| ())?;
     let payload_b64 =
         inject_and_payload_b64_sonic(&mut claims, this.ttl_seconds, now_seconds).map_err(|_| ())?;
-    Ok(build_token_with_key(jwt_header_b64(), &payload_b64, &this.key))
+    Ok(build_token_with_key(
+        jwt_header_b64(),
+        &payload_b64,
+        &this.key,
+    ))
 }
 
 /// C-ABI support: verify a JWT with the precompiled key → the decoded payload
@@ -877,10 +888,9 @@ mod tests {
         let claims_json = br#"{"sub":"user-1"}"#.to_vec();
 
         let token = sign_eddsa(&claims_json, &private_der, Some(3600), 1_000_000).unwrap();
-        let v: sonic_rs::Value = sonic_rs::from_slice(
-            &verify_token_eddsa(&token, &public_der, 1_000_000).unwrap(),
-        )
-        .unwrap();
+        let v: sonic_rs::Value =
+            sonic_rs::from_slice(&verify_token_eddsa(&token, &public_der, 1_000_000).unwrap())
+                .unwrap();
         assert_eq!(v["iat"], 1_000_000);
         assert_eq!(v["exp"], 1_000_000 + 3600);
 

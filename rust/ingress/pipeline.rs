@@ -167,7 +167,15 @@ impl IngressInner {
         // schema, section serialization, output header) is shared with the
         // C-ABI `castrum_ingress_handle_components` path (which skips JS-side
         // frame assembly for URL/IP by passing them as `bun:ffi` cstrings).
-        self.handle_components(mk, url_bytes, ip_bytes, rid_bytes, headers_packed, body_bytes, out)
+        self.handle_components(
+            mk,
+            url_bytes,
+            ip_bytes,
+            rid_bytes,
+            headers_packed,
+            body_bytes,
+            out,
+        )
     }
 
     /// Process one request from raw components.

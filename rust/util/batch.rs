@@ -412,17 +412,26 @@ fn parse_pairs_batch(
 
 #[inline]
 fn query_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
-    parse_pairs_batch(data, crate::http::query_parser::query_parse_packed_into_slice)
+    parse_pairs_batch(
+        data,
+        crate::http::query_parser::query_parse_packed_into_slice,
+    )
 }
 
 #[inline]
 fn cookie_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
-    parse_pairs_batch(data, crate::http::cookie_parser::cookie_parse_packed_into_slice)
+    parse_pairs_batch(
+        data,
+        crate::http::cookie_parser::cookie_parse_packed_into_slice,
+    )
 }
 
 #[inline]
 fn form_parse_batch_bytes(data: &[u8]) -> Result<Vec<u8>> {
-    parse_pairs_batch(data, crate::http::query_parser::query_parse_packed_into_slice)
+    parse_pairs_batch(
+        data,
+        crate::http::query_parser::query_parse_packed_into_slice,
+    )
 }
 
 #[inline]

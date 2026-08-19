@@ -186,7 +186,11 @@ pub fn url_resolve_batch_packed(bases: Uint8Array, references: Uint8Array) -> Re
     Ok(Buffer::from(out))
 }
 
-pub(crate) fn encode_query_component(input: &[u8], scratch: &mut Vec<u8>, out: &mut Vec<u8>) -> Result<()> {
+pub(crate) fn encode_query_component(
+    input: &[u8],
+    scratch: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+) -> Result<()> {
     // Reuse one caller-provided scratch buffer across all keys/values instead of
     // allocating a fresh `vec![0u8; len*3]` per component. Grows only when the
     // largest component needs more room.

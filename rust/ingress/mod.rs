@@ -52,10 +52,10 @@ pub(crate) mod proxy;
 pub(crate) mod rate_limit;
 pub(crate) mod terminal;
 
+pub(crate) use self::native_route::NativeRoute;
 pub(crate) use self::options::{IngressOptions, Limits};
 pub(crate) use self::packed::build_packed_input_sync;
 pub(crate) use self::pipeline::IngressSchema;
-pub(crate) use self::native_route::NativeRoute;
 
 // ── Ingress state ─────────────────────────────────────────────────
 #[derive(Clone)]

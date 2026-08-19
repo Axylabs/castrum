@@ -230,10 +230,7 @@ fn apply_add(
 }
 
 /// RFC 6902 `remove`.
-fn apply_remove(
-    doc: &mut sonic_rs::Value,
-    path: &Pointer,
-) -> std::result::Result<(), String> {
+fn apply_remove(doc: &mut sonic_rs::Value, path: &Pointer) -> std::result::Result<(), String> {
     if path.segments.is_empty() {
         return Err("remove: cannot remove the document root".into());
     }
@@ -243,8 +240,7 @@ fn apply_remove(
     match parent.get_type() {
         JsonType::Object => {
             let obj = parent.as_object_mut().unwrap();
-            obj.remove(last)
-                .ok_or("remove: member does not exist")?;
+            obj.remove(last).ok_or("remove: member does not exist")?;
             Ok(())
         }
         JsonType::Array => {
@@ -294,10 +290,7 @@ fn apply_move(
 }
 
 /// Apply a parsed patch to a document (RFC 6902 semantics over sonic Value).
-fn apply_patch(
-    doc: &mut sonic_rs::Value,
-    ops: &[PatchOp],
-) -> std::result::Result<(), String> {
+fn apply_patch(doc: &mut sonic_rs::Value, ops: &[PatchOp]) -> std::result::Result<(), String> {
     for op in ops {
         match op {
             PatchOp::Add { path, value } => apply_add(doc, path, value.clone())?,
@@ -325,8 +318,8 @@ fn apply_patch(
 /// Parse a patch document into a list of operations (eager RFC 6901 pointer
 /// validation). `Err` → `InvalidPatch`.
 fn parse_patch(patch: &[u8]) -> std::result::Result<Vec<PatchOp>, JsonPatchError> {
-    let patch_val: sonic_rs::Value = sonic_rs::from_slice(patch)
-        .map_err(|e| JsonPatchError::InvalidPatch(e.to_string()))?;
+    let patch_val: sonic_rs::Value =
+        sonic_rs::from_slice(patch).map_err(|e| JsonPatchError::InvalidPatch(e.to_string()))?;
     let arr = patch_val
         .as_array()
         .ok_or_else(|| JsonPatchError::InvalidPatch("patch must be an array".into()))?;
@@ -408,8 +401,8 @@ fn apply_json_patch_bytes_limited(
         return Err(JsonPatchError::TooLarge("patch", patch.len()));
     }
 
-    let mut doc_val: sonic_rs::Value = sonic_rs::from_slice(doc)
-        .map_err(|e| JsonPatchError::InvalidDoc(e.to_string()))?;
+    let mut doc_val: sonic_rs::Value =
+        sonic_rs::from_slice(doc).map_err(|e| JsonPatchError::InvalidDoc(e.to_string()))?;
 
     let ops = parse_patch(patch)?;
     apply_patch(&mut doc_val, &ops).map_err(JsonPatchError::ApplyFailed)?;

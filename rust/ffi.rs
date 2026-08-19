@@ -706,6 +706,41 @@ pub unsafe extern "C" fn castrum_accept_negotiator_negotiate(
     })
 }
 
+/// AcceptNegotiator: best supported encoding for `header` with SERVER-
+/// preference tie-breaking (ignex `negotiateEncoding` semantics — q-only, the
+/// supported list's order breaks ties, empty header → identity). Same opaque
+/// handle + cstring contract as `castrum_accept_negotiator_negotiate`.
+///
+/// # Safety
+/// `inner` must be a valid `AcceptNegotiator` pointer from `inner_ptr()`, alive
+/// for the call.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_accept_negotiator_negotiate_server(
+    inner: usize,
+    header: *const u8,
+    header_len: usize,
+) -> *const std::os::raw::c_char {
+    if inner == 0 || header.is_null() {
+        return std::ptr::null();
+    }
+    let h = slice::from_raw_parts(header, header_len);
+    let Some(bytes) = panic_guard(
+        || unsafe {
+            crate::http::accept::accept_negotiator_negotiate_server_core(
+                inner as *const crate::http::accept::AcceptNegotiator,
+                h,
+            )
+        },
+        None,
+    ) else {
+        return std::ptr::null();
+    };
+    cstring_return(bytes.len(), |out| {
+        out[..bytes.len()].copy_from_slice(&bytes);
+        Some(bytes.len())
+    })
+}
+
 /// JwtSigner: sign pre-serialized claim JSON with the PRECOMPILED key + ttl via
 /// its opaque inner handle. Needed-size convention; 0 = invalid claims JSON /
 /// null handle (real error).
@@ -4063,6 +4098,32 @@ mod tests {
         assert_eq!(f(b"identity;q=0.9"), None); // no supported match → identity
         assert!(
             unsafe { castrum_accept_negotiator_negotiate(0, b"gzip".as_ptr(), 4) }.is_null()
+        );
+    }
+
+    #[test]
+    fn accept_negotiator_negotiate_server_c_abi() {
+        use crate::http::accept::AcceptNegotiator;
+        let n = AcceptNegotiator::new(vec!["br".to_string(), "gzip".to_string()]);
+        let inner = n.inner_ptr() as usize;
+        let f = |h: &[u8]| -> Option<Vec<u8>> {
+            let s =
+                unsafe { castrum_accept_negotiator_negotiate_server(inner, h.as_ptr(), h.len()) };
+            if s.is_null() {
+                None
+            } else {
+                unsafe { cstr_bytes(s) }
+            }
+        };
+        // Server-preference: tie → first supported (br), NOT client order.
+        assert_eq!(f(b"gzip, br"), Some(b"br".to_vec()));
+        assert_eq!(f(b"br;q=0.8, gzip;q=0.9"), Some(b"gzip".to_vec()));
+        assert_eq!(f(b"*"), Some(b"br".to_vec()));
+        assert_eq!(f(b"gzip;q=0"), None); // q=0 excluded, no wildcard
+        assert_eq!(f(b""), None); // empty → identity (server-pref differs from client-order)
+        assert!(
+            unsafe { castrum_accept_negotiator_negotiate_server(0, b"gzip".as_ptr(), 4) }
+                .is_null()
         );
     }
 
