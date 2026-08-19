@@ -108,9 +108,9 @@ pub fn generate_ed25519_keypair() -> Result<Ed25519Keypair> {
     let (private_key, public_key) = generate_keypair()
         .ok_or_else(|| Error::from_reason("ed25519 keypair generation failed (CSPRNG error)"))?;
     Ok(Ed25519Keypair {
-        private_key: String::from_utf8(crate::crypto::jwt::b64url_encode(&private_key))
+        private_key: String::from_utf8(crate::crypto::base64::base64url_encode_bytes(&private_key))
             .expect("base64url output is ASCII"),
-        public_key: String::from_utf8(crate::crypto::jwt::b64url_encode(&public_key))
+        public_key: String::from_utf8(crate::crypto::base64::base64url_encode_bytes(&public_key))
             .expect("base64url output is ASCII"),
     })
 }

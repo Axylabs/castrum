@@ -31,7 +31,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 //              accept, mime_lookup, multipart.
 //   crypto/    auth & hashing: hmac_sha256, cookie_sign, csrf, jwt, aead,
 //              argon2, base64, hashing (fnv/crc32/xxh3), random_token.
-//   json/      JSON & schema: json_ops, json_ser, json_patch_ops,
+//   json/      JSON & schema: json_ops, json_ser, patch, json_schema,
 //              json_schema (napi) + fast_schema (zero-DOM engine).
 //   payload/   output & streaming: compress, sse, ws_frames, websocket,
 //              template.

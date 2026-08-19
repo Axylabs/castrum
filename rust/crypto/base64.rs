@@ -69,6 +69,26 @@ pub fn base64_decode_bytes(input: &[u8], url_safe: bool, padding: bool) -> Resul
         .map_err(|e| Error::from_reason(e.to_string()))
 }
 
+/// Base64url (RFC 7515 §2 — URL-safe alphabet, NO padding) encode to raw
+/// bytes. The single shared source of truth for JWT segment encoding
+/// (`crate::crypto::jwt`) and Ed25519 keypair serialization
+/// (`crate::crypto::ed25519`) — keeps the url-safe alphabet defined in exactly
+/// one place.
+#[inline]
+pub fn base64url_encode_bytes(data: &[u8]) -> Vec<u8> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(data)
+        .into_bytes()
+}
+
+/// Base64url (RFC 7515 §2 — URL-safe alphabet, NO padding) decode from raw
+/// bytes. Returns `None` on invalid UTF-8 or non-base64url input.
+#[inline]
+pub fn base64url_decode_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    let text = std::str::from_utf8(data).ok()?;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text).ok()
+}
+
 // ── hex ──────────────────────────────────────────────────────────
 
 /// Encode bytes as lowercase hex (uses the shared `HEX_LOWER` table — direct

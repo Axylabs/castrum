@@ -426,7 +426,7 @@ fn main() {
 
     // ── JSON patch ──
     bench("json_patch", 200_000, || {
-        castrum::json::json_patch_ops::apply_json_patch_bytes(&json_doc, &json_patch_data)
+        castrum::json::patch::apply_json_patch_bytes(&json_doc, &json_patch_data)
             .unwrap()
             .len() as u64
     });

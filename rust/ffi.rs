@@ -1560,7 +1560,7 @@ pub unsafe extern "C" fn castrum_json_patch(
     // the C ABI (process crash) — it becomes 0 (invalid input) instead.
     let Some(patched) = panic_guard(
         || {
-            crate::json::json_patch_ops::apply_json_patch_bytes(
+            crate::json::patch::apply_json_patch_bytes(
                 slice::from_raw_parts(doc, dlen),
                 slice::from_raw_parts(patch, plen),
             )
