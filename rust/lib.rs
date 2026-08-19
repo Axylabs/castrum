@@ -24,21 +24,26 @@ static GLOBAL: MiMalloc = MiMalloc;
 // composable; only the entry points use napi types.
 //
 //   util/      shared infrastructure: bytes, packed iterators/writers,
-//              batch (napi) + batch_core (rayon helpers), threadpool,
-//              validation. The `util::*` re-exports keep legacy call sites.
+//              batch/ (packed routing + napi) + batch_core (rayon helpers),
+//              threadpool, validation. The `util::*` re-exports keep legacy
+//              call sites.
 //   http/      HTTP wire formats & parsing: headers, method, http/cookie/
 //              query parsers, form, media_type, url_codec, url_join, etag,
-//              accept, mime_lookup, multipart.
-//   crypto/    auth & hashing: hmac_sha256, cookie_sign, csrf, jwt, aead,
-//              argon2, base64, hashing (fnv/crc32/xxh3), random_token.
-//   json/      JSON & schema: json_ops, json_ser, patch, json_schema,
-//              json_schema (napi) + fast_schema (zero-DOM engine).
+//              http_date, accept, mime_lookup, multipart.
+//   crypto/    auth & hashing: hmac_sha256, cookie_sign, csrf, jwt/ (token +
+//              api), aead, argon2, base64, hashing (fnv/crc32/xxh3),
+//              random_token.
+//   json/      JSON & schema: json_ops, json_ser, patch/ (pointer/ops/engine/
+//              api), json_schema (napi) + fast_schema (zero-DOM engine).
 //   payload/   output & streaming: compress, sse, ws_frames, websocket,
 //              template.
-//   ingress/   the ingress pipeline: mod.rs (Ingress + entry points),
-//              options/time/packed submodules, cors, proxy, ip_trust,
-//              rate_limit, terminal, output (single numeric layout source),
-//              ingress_constants (napi projection of output).
+//   ingress/   the ingress pipeline: api.rs (Ingress class + IngressInner),
+//              pipeline, options/time/packed submodules, cors, proxy,
+//              ip_trust, rate_limit, terminal, output (single numeric layout
+//              source), ingress_constants (napi projection of output).
+//   ffi/       the C-ABI surface for bun:ffi, split by domain: util (shared
+//              helpers), hashing, validators, crypto, jwt, http, payload,
+//              json, rate_limit, ingress, route, probe (bench-only).
 //
 // Hot-path napi APIs (do not remove): ingress::handle_request_packed,
 // ingress::handle_request_full_sync{,_into}, util::init_thread_pool,

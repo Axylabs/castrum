@@ -12,9 +12,16 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
-const rustSource = readFileSync(new URL('../../../rust/ffi.rs', import.meta.url), 'utf8')
+// The C-ABI surface lives in rust/ffi/ (a folder since the ffi.rs split) —
+// scan every .rs file so a symbol moved between the domain files is still seen.
+const ffiDir = new URL('../../../rust/ffi/', import.meta.url)
+const rustSource = readdirSync(ffiDir)
+  .filter((f) => f.endsWith('.rs'))
+  .map((f) => readFileSync(new URL(f, ffiDir), 'utf8'))
+  .join('\n')
 const ffiSource = readFileSync(new URL('../../../src/native/ffi.ts', import.meta.url), 'utf8')
 // The bind-time self-test lives in its own module (src/native/ffi/selftest.ts)
 // after the transport-core decomposition — scan IT for wrapper coverage.
@@ -23,7 +30,7 @@ const selftestSource = readFileSync(
   'utf8',
 )
 
-/** All `castrum_*` C-ABI export names declared in rust/ffi.rs. */
+/** All `castrum_*` C-ABI export names declared in rust/ffi/. */
 function rustExports(src: string): Set<string> {
   const names = new Set<string>()
   // Direct `extern "C" fn castrum_x(...)` declarations...
@@ -32,7 +39,7 @@ function rustExports(src: string): Set<string> {
     if (name) names.add(name)
   }
   // ...plus macro-generated exports (compress_to_out!, validator_c_abi!). The
-  // invocation is formatted multi-line in rust/ffi.rs (name on its own line
+  // invocation is formatted multi-line in rust/ffi/ (name on its own line
   // after the macro + `(`), so allow whitespace/newlines before the name.
   for (const m of src.matchAll(/(?:compress_to_out|validator_c_abi)!\s*\(\s*(castrum_\w+)/g)) {
     const name = m[1]
