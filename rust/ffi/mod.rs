@@ -24,21 +24,21 @@
 //! registry contract (the dlopen map in `src/native/ffi.ts` + the source-level
 //! parity guard in `test/unit/features/ffi-symbol-parity.test.ts`) is agnostic
 //! to module layout — symbol NAMES never move, only the files they live in:
-//!   - `util.rs`     — shared helpers (`panic_guard`, `hmac_key_cached`,
-//!                     `aead_alg`, `cstring_return`/`CSTR_BUF`, `write_rate_check`)
-//!   - `hashing.rs`  — crc32 / fnv1a / xxh3, json/utf8 validity, hex/url codecs
+//!   - `util.rs` — shared helpers (`panic_guard`, `hmac_key_cached`, `aead_alg`,
+//!     `cstring_return`/`CSTR_BUF`, `write_rate_check`)
+//!   - `hashing.rs` — crc32 / fnv1a / xxh3, json/utf8 validity, hex/url codecs
 //!   - `validators.rs` — email / UUID / IPv4 / IPv6 (`validator_c_abi!`)
-//!   - `crypto.rs`   — hmac, cookie sign/verify, csrf, password hash/verify,
-//!                     pbkdf2, aead, base64, random token
-//!   - `jwt.rs`      — jwt signer/verify + ed25519 / EdDSA JWT
-//!   - `http.rs`     — etag, conditional, http-date, media-type, accept, mime,
-//!                     url resolve/encode, http/query/cookie/form/multipart parse
-//!   - `payload.rs`  — ws accept key + frames, gzip/brotli, sse
-//!   - `json.rs`     — json patch, packed json token stream, schema validator
+//!   - `crypto.rs` — hmac, cookie sign/verify, csrf, password hash/verify, pbkdf2,
+//!     aead, base64, random token
+//!   - `jwt.rs` — jwt signer/verify + ed25519 / EdDSA JWT
+//!   - `http.rs` — etag, conditional, http-date, media-type, accept, mime, url
+//!     resolve/encode, http/query/cookie/form/multipart parse
+//!   - `payload.rs` — ws accept key + frames, gzip/brotli, sse
+//!   - `json.rs` — json patch, packed json token stream, schema validator
 //!   - `rate_limit.rs` — rate limiter checks
-//!   - `ingress.rs`  — ingress pipeline + layout constants
-//!   - `route.rs`    — per-route native stack (`castrum_route_*`)
-//!   - `tests.rs`    — C-ABI unit tests
+//!   - `ingress.rs` — ingress pipeline + layout constants
+//!   - `route.rs` — per-route native stack (`castrum_route_*`)
+//!   - `tests.rs` — C-ABI unit tests
 
 mod crypto;
 mod hashing;
