@@ -109,3 +109,17 @@ pub fn should_parallelize(items: usize, bytes: usize) -> bool {
     let threads = rayon::current_num_threads().max(1);
     items >= threads.saturating_mul(2048) || bytes >= threads.saturating_mul(1024 * 1024)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn init_thread_pool_is_idempotent() {
+        // The rayon global pool is process-wide and first-call-wins. A second
+        // init_thread_pool (after a prior init OR after a direct par_iter
+        // auto-initialized rayon) must return Ok — never a poisoned error.
+        let first = super::init_thread_pool(Some(2));
+        let second = super::init_thread_pool(Some(2));
+        assert!(first.is_ok(), "first init must succeed (got {first:?})");
+        assert!(second.is_ok(), "second init must be a no-op, not an error (got {second:?})");
+    }
+}

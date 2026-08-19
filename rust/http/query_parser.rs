@@ -106,3 +106,75 @@ pub fn query_parse_packed(input: Uint8Array) -> Result<Buffer> {
 pub fn query_parse_packed_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
     crate::util::run_packed_into(&input, &mut output, query_parse_packed_into_slice)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::query_parse_packed_vec;
+    use crate::test_support::decode_packed_pairs;
+
+    #[test]
+    fn query_parse_basic_pairs() {
+        let packed = query_parse_packed_vec(b"a=1&b=2").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
+        assert_eq!(pairs[1], (b"b".to_vec(), b"2".to_vec()));
+    }
+
+    #[test]
+    fn query_parse_percent_and_plus_decoding() {
+        let packed = query_parse_packed_vec(b"name=John%20Doe&q=a+b").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], (b"name".to_vec(), b"John Doe".to_vec()));
+        assert_eq!(pairs[1], (b"q".to_vec(), b"a b".to_vec()));
+    }
+
+    #[test]
+    fn query_parse_empty_value() {
+        let packed = query_parse_packed_vec(b"flag").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], (b"flag".to_vec(), b"".to_vec()));
+    }
+
+    #[test]
+    fn query_parse_invalid_percent_rejected() {
+        assert!(query_parse_packed_vec(b"a=%ZZ").is_err());
+    }
+
+    #[test]
+    fn query_parse_empty_input() {
+        let packed = query_parse_packed_vec(b"").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn query_parse_null_byte_preserved() {
+        // `%00` decodes to a NUL byte inside the value (byte-oriented parser).
+        let packed = query_parse_packed_vec(b"a=%00b").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], (b"a".to_vec(), b"\x00b".to_vec()));
+    }
+
+    #[test]
+    fn query_parse_semicolon_is_data() {
+        // In a query string `&` separates pairs; `;` is ordinary data.
+        let packed = query_parse_packed_vec(b"a=1;b=2").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], (b"a".to_vec(), b"1;b=2".to_vec()));
+    }
+
+    #[test]
+    fn query_parse_non_utf8_byte_passthrough() {
+        // `%FF` decodes to a raw 0xFF byte; the parser does not require valid
+        // UTF-8 in query values (callers must handle it when they do).
+        let packed = query_parse_packed_vec(b"a=%FF").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], (b"a".to_vec(), vec![0xFF]));
+    }
+}

@@ -649,3 +649,228 @@ pub fn write_full_body_json(
     wp += 1;
     wp - pos
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        cookie_json_into_slice, json_escaped_len, packed_pairs_to_json_into_slice,
+        query_to_json_into_slice, write_json_escaped, QueryJsonError,
+    };
+
+    #[test]
+    fn json_escaped_len_plain_ascii() {
+        assert_eq!(json_escaped_len(b"hello world"), 11);
+    }
+
+    #[test]
+    fn json_escaped_len_quotes_and_backslash() {
+        // "a\"b" -> a, \", b = 3 chars + 1 extra for the escaped quote.
+        assert_eq!(json_escaped_len(b"a\"b"), 4);
+        // backslash doubles: bytes a, \, b = 3 -> 4 escaped.
+        assert_eq!(json_escaped_len(b"a\\b"), 4);
+    }
+
+    #[test]
+    fn json_escaped_len_newline() {
+        assert_eq!(json_escaped_len(b"a\nb"), 4);
+    }
+
+    #[test]
+    fn json_escaped_len_control_char_wide() {
+        // 0x01 must be escaped as \u0001 -> 6 bytes for 1 input byte.
+        assert_eq!(json_escaped_len(&[b'a', 0x01, b'b']), 8);
+    }
+
+    #[test]
+    fn json_escaped_len_short_control_escapes() {
+        // \r, \t, \x08, \x0c are written as 2-byte escapes, each contributing
+        // +1. (memchr3 only finds ", \, \n; the run scanner handles these.)
+        assert_eq!(json_escaped_len(b"a\rb"), 4); // a, \r, b
+        assert_eq!(json_escaped_len(b"a\tb"), 4);
+        assert_eq!(json_escaped_len(&[b'a', 0x08, b'b']), 4);
+        assert_eq!(json_escaped_len(&[b'a', 0x0c, b'b']), 4);
+        // Mixed: newline (memchr3 path) + tab (trailing path).
+        assert_eq!(json_escaped_len(b"a\n\tb"), 6);
+    }
+
+    #[test]
+    fn json_escaped_len_fused_matches_write_on_utf8_corpus() {
+        // The fused len (single pass: memchr3 + gap UTF-8 validation) must exactly
+        // equal the bytes `write_json_escaped` emits for valid non-ASCII UTF-8 AND
+        // invalid UTF-8 (where every byte becomes \u00XX).
+        let cases: &[&[u8]] = &[
+            "héllo wörld".as_bytes(), // valid non-ASCII, no escapes
+            "caf\u{00e9} \u{201c}quoted\u{201d}".as_bytes(), // valid with escapes
+            &[b'a', 0xC3, 0xA9, b'b'], // é valid
+            &[b'"', 0xC3, 0xA9, b'\\'], // escapes + multibyte
+            &[0xFF, 0xFE, b'a'],      // invalid UTF-8
+            &[b'a', 0x80, b'b'],      // lone continuation byte
+            &[0xC3, b' ', b'x'],      // truncated multibyte
+            &[b'a', b'\\', 0xFF, b'\n', 0x01], // mixed invalid + escapes
+            "日本語のテキスト".as_bytes(), // pure multibyte, no ASCII
+        ];
+        for input in cases {
+            let len = json_escaped_len(input);
+            let mut out = vec![0u8; len];
+            let mut pos = 0usize;
+            write_json_escaped(&mut out, &mut pos, input);
+            assert_eq!(pos, len, "len must match written for {input:?}");
+        }
+    }
+
+    #[test]
+    fn json_escaped_len_invalid_utf8_is_len_times_six() {
+        let cases: &[&[u8]] = &[
+            &[0xFF, 0xFE],
+            &[b'a', 0x80, b'b'],
+            &[0xC3, b' '],
+            &[b'a', b'\\', 0xFF],
+        ];
+        for input in cases {
+            let len = json_escaped_len(input);
+            assert_eq!(len, input.len() * 6, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn write_json_escaped_never_overflows_exact_buffer() {
+        // Regression: a buffer sized EXACTLY by json_escaped_len must never
+        // overflow. Before the fix, \r/\t/\x08/\x0c were undercounted → the write
+        // past the end panicked (caught by napi → 500) or corrupted memory.
+        let cases: &[&[u8]] = &[
+            b"a\rb",
+            b"a\tb",
+            &[b'a', 0x08, b'b'],
+            &[b'a', 0x0c, b'b'],
+            b"cookie=1; other=2\r\n\t",
+            b"\t\r\x08\x0c\"\\\n\x01\x1f",
+        ];
+
+        for input in cases {
+            let len = json_escaped_len(input);
+            let mut out = vec![0u8; len];
+            let mut pos = 0usize;
+            write_json_escaped(&mut out, &mut pos, input);
+            assert_eq!(pos, len, "must write exactly json_escaped_len bytes: {input:?}");
+        }
+    }
+
+    #[test]
+    fn write_json_escaped_escapes_control_before_special() {
+        // Regression: control chars that appear BEFORE a memchr3 special (", \,
+        // \n) must still be escaped. Previously they were copied raw into the JSON
+        // string → RFC-8259-invalid output (e.g. a cookie value `a\tb"c` or a URL
+        // query `?q=%09%22`). The length accounting must match the write exactly.
+        let cases: &[(&[u8], &[u8])] = &[
+            // a\rb"c → a \\r b \"
+            (
+                b"a\rb\"c",
+                &[b'a', b'\\', b'r', b'b', b'\\', b'"', b'c'], // \r → \\r, " → \"
+            ),
+            // a\tb\\c → a \t b \ \
+            (
+                b"a\tb\\c",
+                &[b'a', b'\\', b't', b'b', b'\\', b'\\', b'c'], // \t → \\t, \ → \\
+            ),
+            // 0x01 before \n → \u0001 then \n
+            (
+                &[b'a', 0x01, b'b', b'\n', b'c'],
+                &[b'a', b'\\', b'u', b'0', b'0', b'0', b'1', b'b', b'\\', b'n', b'c'],
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let len = json_escaped_len(input);
+            let mut out = vec![0u8; len];
+            let mut pos = 0usize;
+            write_json_escaped(&mut out, &mut pos, input);
+            assert_eq!(pos, len, "accounting must be exact for {input:?}");
+            assert_eq!(&out[..pos], *expected, "output must be valid JSON for {input:?}");
+        }
+    }
+
+    #[test]
+    fn cookie_json_into_slice_short_control_escapes() {
+        // Cookie values containing \r/\t must serialize correctly into a buffer
+        // sized by the (fixed) length accounting.
+        let mut out = vec![0u8; 256];
+        let written = cookie_json_into_slice(b"a=va\tl; b=x\ry", &mut out, 100).unwrap();
+        assert_eq!(&out[..written], b"{\"a\":\"va\\tl\",\"b\":\"x\\ry\"}");
+    }
+
+    #[test]
+    fn cookie_json_into_slice_output() {
+        let mut out = vec![0u8; 256];
+        let written = cookie_json_into_slice(b"a=1; b=hello world", &mut out, 100).unwrap();
+        assert_eq!(&out[..written], b"{\"a\":\"1\",\"b\":\"hello world\"}");
+    }
+
+    #[test]
+    fn cookie_json_into_slice_unwraps_dquote() {
+        let mut out = vec![0u8; 256];
+        // RFC 6265 §5.2: a DQUOTE-wrapped cookie value is unwrapped before
+        // serializing (matches the JS fallback + the native cookie parser).
+        let written = cookie_json_into_slice(b"k=\"v\"", &mut out, 100).unwrap();
+        assert_eq!(&out[..written], b"{\"k\":\"v\"}");
+        // JSON escaping still applies to unquoted values with special characters.
+        let written = cookie_json_into_slice(b"k=a\"b", &mut out, 100).unwrap();
+        assert_eq!(&out[..written], b"{\"k\":\"a\\\"b\"}");
+    }
+
+    #[test]
+    fn cookie_json_into_slice_small_buffer_errors() {
+        let mut out = vec![0u8; 8];
+        let res = cookie_json_into_slice(b"a=1; b=2; c=3; d=4", &mut out, 100);
+        assert!(res.is_err(), "truncation must surface as an error, not silent data loss");
+    }
+
+    #[test]
+    fn packed_pairs_to_json_into_slice_output() {
+        // Build packed query pairs for a=1 & b=2 via the query parser, then serialize.
+        let packed = crate::http::query_parser::query_parse_packed_vec(b"a=1&b=2").unwrap();
+        let mut out = vec![0u8; 256];
+        let written = packed_pairs_to_json_into_slice(&packed, &mut out, 100).unwrap();
+        assert_eq!(&out[..written], b"{\"a\":\"1\",\"b\":\"2\"}");
+    }
+
+    #[test]
+    fn query_to_json_into_slice_matches_packed_pipeline() {
+        // The direct writer must produce byte-identical output to the two-step
+        // query_parse_packed_vec + packed_pairs_to_json_into_slice pipeline it
+        // replaces on the ingress hot path.
+        let cases: &[&[u8]] = &[
+            b"a=1&b=2",
+            b"name=John%20Doe&q=a+b",
+            b"flag",
+            b"",
+            b"x=%41%42",
+            b"a=%ZZ",
+            b"k=%E2%82%AC", // euro (valid UTF-8 after decode)
+            b"weird=%FF",   // invalid UTF-8 after decode (binary escape path)
+            b"a=1&a=2&a=3",
+            b"spaces=+a+b+c+",
+        ];
+        for &raw in cases {
+            let packed = crate::http::query_parser::query_parse_packed_vec(raw);
+            let mut direct_out = vec![0u8; 512];
+            let direct = query_to_json_into_slice(raw, &mut direct_out, 100);
+            match (&packed, &direct) {
+                (Ok(packed), Ok(written)) => {
+                    let mut ref_out = vec![0u8; 512];
+                    let ref_written =
+                        packed_pairs_to_json_into_slice(packed, &mut ref_out, 100).unwrap();
+                    assert_eq!(&direct_out[..*written], &ref_out[..ref_written], "query={raw:?}");
+                }
+                (Err(_), Err(QueryJsonError::Malformed)) => {} // both reject malformed %XX
+                (other, _) => panic!("mismatched outcome for query={raw:?}: {other:?} vs {direct:?}"),
+            }
+        }
+
+        // Buffer-too-small must surface as BufferTooSmall (→ truncated), not Malformed.
+        let mut tiny = vec![0u8; 2];
+        assert!(matches!(
+            query_to_json_into_slice(b"a=1", &mut tiny, 100),
+            Err(QueryJsonError::BufferTooSmall)
+        ));
+    }
+}

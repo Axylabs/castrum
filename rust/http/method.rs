@@ -113,3 +113,58 @@ impl MethodKind {
         1u16 << (self.to_u8() as u16)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MethodKind;
+
+    #[test]
+    fn method_from_bytes_ignore_case_upper() {
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"GET"), MethodKind::Get);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"HEAD"), MethodKind::Head);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"POST"), MethodKind::Post);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"PUT"), MethodKind::Put);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"PATCH"), MethodKind::Patch);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"DELETE"), MethodKind::Delete);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"OPTIONS"), MethodKind::Options);
+    }
+
+    #[test]
+    fn method_from_bytes_ignore_case_lower() {
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"get"), MethodKind::Get);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"post"), MethodKind::Post);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"options"), MethodKind::Options);
+    }
+
+    #[test]
+    fn method_from_bytes_ignore_case_unknown() {
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"FETCH"), MethodKind::Other);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b""), MethodKind::Other);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"GETX"), MethodKind::Other);
+        assert_eq!(MethodKind::from_bytes_ignore_case(b"POSTING"), MethodKind::Other);
+    }
+
+    #[test]
+    fn method_from_str_upper() {
+        assert_eq!(MethodKind::from_str("GET"), MethodKind::Get);
+        assert_eq!(MethodKind::from_str("DELETE"), MethodKind::Delete);
+        assert_eq!(MethodKind::from_str("WEIRD"), MethodKind::Other);
+    }
+
+    #[test]
+    fn method_bits_are_distinct() {
+        let bits: std::collections::HashSet<u16> = [
+            MethodKind::Get,
+            MethodKind::Head,
+            MethodKind::Post,
+            MethodKind::Put,
+            MethodKind::Patch,
+            MethodKind::Delete,
+            MethodKind::Options,
+        ]
+        .iter()
+        .map(|m| m.bit())
+        .collect();
+        assert_eq!(bits.len(), 7, "each method must have a unique bit");
+    }
+}

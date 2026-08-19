@@ -190,3 +190,78 @@ impl<'a> HeaderRefs<'a> {
         (self.flags & HAS_ACRM) != 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::HeaderRefs;
+    use crate::test_support::pack_headers;
+
+    #[test]
+    fn headers_parse_empty_ok() {
+        let h = HeaderRefs::parse(b"", false, 100).unwrap();
+        assert!(h.origin().is_none());
+        assert!(h.cookie().is_none());
+    }
+
+    #[test]
+    fn headers_parse_presence_and_values() {
+        let packed = pack_headers([
+            ("Origin", "https://example.com"),
+            ("Cookie", "session=abc"),
+            ("X-Forwarded-For", "1.2.3.4"),
+        ]);
+        let h = HeaderRefs::parse(&packed, false, 100).unwrap();
+        assert_eq!(h.origin(), Some(&b"https://example.com"[..]));
+        assert_eq!(h.cookie(), Some(&b"session=abc"[..]));
+        assert_eq!(h.xff(), Some(&b"1.2.3.4"[..]));
+    }
+
+    #[test]
+    fn headers_parse_case_insensitive_names() {
+        let packed = pack_headers([("ORIGIN", "https://x.io")]);
+        let h = HeaderRefs::parse(&packed, false, 100).unwrap();
+        assert_eq!(h.origin(), Some(&b"https://x.io"[..]));
+    }
+
+    #[test]
+    fn headers_parse_acrm_only_for_options() {
+        let packed = pack_headers([
+            ("access-control-request-method", "POST"),
+            ("access-control-request-headers", "Content-Type"),
+        ]);
+        // Non-OPTIONS: ACRM/ACRH should not be captured.
+        let h = HeaderRefs::parse(&packed, false, 100).unwrap();
+        assert!(!h.has_acrm());
+        // OPTIONS: they should be captured.
+        let h2 = HeaderRefs::parse(&packed, true, 100).unwrap();
+        assert!(h2.has_acrm());
+        // ACRH value is captured on OPTIONS (no dedicated flag/method).
+        assert_eq!(h2.acrh(), Some(&b"Content-Type"[..]));
+    }
+
+    #[test]
+    fn headers_parse_too_many_headers_rejected() {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for i in 0..10 {
+            pairs.push(("x".to_string(), format!("v{i}")));
+        }
+
+        let mut packed = Vec::new();
+        packed.extend_from_slice(&(pairs.len() as u16).to_le_bytes());
+        for (name, value) in &pairs {
+            packed.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            packed.extend_from_slice(name.as_bytes());
+            packed.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            packed.extend_from_slice(value.as_bytes());
+        }
+
+        assert!(HeaderRefs::parse(&packed, false, 5).is_err());
+    }
+
+    #[test]
+    fn headers_parse_malformed_rejected() {
+        // Declares a name_len that runs past the end of the buffer.
+        let packed = [2u8, 0, 0xFF, 0xFF, b'x'];
+        assert!(HeaderRefs::parse(&packed, false, 100).is_err());
+    }
+}

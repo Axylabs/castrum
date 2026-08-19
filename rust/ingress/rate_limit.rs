@@ -373,4 +373,148 @@ mod tests {
         // `b` is a fresh independent budget — not shared with `a`.
         assert!(b.check_key(9, 1_700_000_000_000).allowed);
     }
+
+    // ── Cross-module parity (moved from unit_tests.rs) ─────────────
+
+    #[test]
+    fn rate_limit_allows_up_to_limit_within_window() {
+        let rl = KeyedRateLimiter::new(5, 1000, None);
+        let key = 42;
+
+        for i in 0..5 {
+            let o = rl.check_key(key, 100 + i as u64);
+            assert!(o.allowed, "request {} should be allowed", i);
+            let expected = (5 - i - 1) as u32;
+            assert_eq!(o.remaining, expected, "remaining mismatch at request {}", i);
+        }
+
+        let denied = rl.check_key(key, 105);
+        assert!(!denied.allowed, "6th request within window should be denied");
+        assert_eq!(denied.remaining, 0);
+    }
+
+    #[test]
+    fn rate_limit_denied_after_limit() {
+        let rl = KeyedRateLimiter::new(2, 60_000, None);
+        assert!(rl.check_key(1, 0).allowed);
+        assert!(rl.check_key(1, 1).allowed);
+        assert!(!rl.check_key(1, 2).allowed);
+    }
+
+    #[test]
+    fn rate_limit_window_advances_and_recovers() {
+        let rl = KeyedRateLimiter::new(2, 1000, None);
+        let key = 7;
+
+        assert!(rl.check_key(key, 0).allowed);
+        assert!(rl.check_key(key, 1).allowed);
+        assert!(!rl.check_key(key, 2).allowed);
+
+        // New window: previous weight decays; at least one slot must open.
+        let o = rl.check_key(key, 1001);
+        assert!(o.allowed, "request after window rollover should be allowed");
+        assert!(o.reset_ms > 1001, "reset should be in the future");
+    }
+
+    #[test]
+    fn rate_limit_reset_ms_is_in_future() {
+        let rl = KeyedRateLimiter::new(3, 5000, None);
+        let o = rl.check_key(9, 1000);
+        assert!(o.allowed);
+        assert!(o.reset_ms > 1000);
+    }
+
+    #[test]
+    fn rate_limit_zero_limit_denies_everything() {
+        let rl = KeyedRateLimiter::new(0, 1000, None);
+        let o = rl.check_key(1, 0);
+        assert!(!o.allowed);
+        assert_eq!(o.remaining, 0);
+    }
+
+    #[test]
+    fn rate_limit_max_limit_allows_everything() {
+        let rl = KeyedRateLimiter::new(u32::MAX, 1000, None);
+        let o = rl.check_key(1, 0);
+        assert!(o.allowed);
+        assert_eq!(o.remaining, u32::MAX);
+    }
+
+    #[test]
+    fn rate_limit_keys_are_independent() {
+        let rl = KeyedRateLimiter::new(1, 1000, None);
+        assert!(rl.check_key(1, 0).allowed);
+        assert!(!rl.check_key(1, 1).allowed);
+        assert!(rl.check_key(2, 1).allowed, "different key should have its own bucket");
+    }
+
+    #[test]
+    fn rate_limit_seed_is_stable_per_instance() {
+        let a = KeyedRateLimiter::new(10, 1000, None);
+        let b = KeyedRateLimiter::new(10, 1000, None);
+        // Seeds differ per instance (unique per limiter id) but are stable within one.
+        assert_ne!(a.seed(), b.seed());
+        assert_eq!(a.seed(), a.seed());
+    }
+
+    #[test]
+    fn rate_limit_shared_limiter_is_shared_by_config() {
+        use std::sync::Arc;
+
+        let a = super::shared_limiter(100, 60_000, None).unwrap();
+        let b = super::shared_limiter(100, 60_000, None).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "identical config must share one process-wide limiter");
+
+        let c = super::shared_limiter(100, 60_000, Some(10_000)).unwrap();
+        assert!(!Arc::ptr_eq(&a, &c), "different max_entries must not share a limiter");
+
+        let d = super::shared_limiter(200, 60_000, None).unwrap();
+        assert!(!Arc::ptr_eq(&a, &d), "different limit must not share a limiter");
+    }
+
+    #[test]
+    fn rate_limit_shared_limiter_refuses_17th_distinct_config() {
+        // The registry is BOUNDED (MAX_SHARED_LIMITERS = 16) and must never
+        // SILENTLY evict a live limiter (eviction resets per-IP budgets — a
+        // rate-limit bypass vector). Fill it with 16 distinct configs (starting
+        // with the 4 the other shared_limiter tests already register, so this is
+        // deterministic regardless of test order), then assert a 17th throws.
+        let mut configs: Vec<(u32, u32, usize)> = vec![
+            (100, 60_000, crate::ingress::rate_limit::DEFAULT_MAX_ENTRIES), // matches shared_limiter(100, 60_000, None)
+            (100, 60_000, 10_000), // matches shared_limiter(100, 60_000, Some(10_000))
+            (200, 60_000, crate::ingress::rate_limit::DEFAULT_MAX_ENTRIES), // matches shared_limiter(200, 60_000, None)
+            (2, 60_000, crate::ingress::rate_limit::DEFAULT_MAX_ENTRIES), // matches shared_limiter(2, 60_000, None)
+        ];
+        for i in 0..12u32 {
+            configs.push((300 + i, 60_000, 1000 + i as usize));
+        }
+        for &(limit, window, max_entries) in &configs {
+            let _ = super::shared_limiter(limit, window, Some(max_entries))
+                .expect("distinct config registers");
+        }
+        // Registry at capacity: a genuinely new config must error, not evict.
+        let res = super::shared_limiter(500_000, 60_000, Some(123_456));
+        let err = match res {
+            Ok(_) => panic!("17th distinct config must be refused, not silently evicted"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("too many distinct rate-limit configurations"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rate_limit_shared_limiter_shares_budget() {
+        // Two instances with the same config share one bucket — a request consumed
+        // via one instance must count against the other (prevents route-splitting
+        // bypass).
+        let a = super::shared_limiter(2, 60_000, None).unwrap();
+        let b = super::shared_limiter(2, 60_000, None).unwrap();
+        let key = 1234u64;
+
+        assert!(a.check_key(key, 0).allowed);
+        assert!(b.check_key(key, 1).allowed, "shared budget consumed by a");
+        assert!(!a.check_key(key, 2).allowed, "budget must be exhausted across both instances");
+    }
 }

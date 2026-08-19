@@ -208,3 +208,102 @@ pub fn resolve_client_ip<'a>(
         peer_trusted,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_client_ip, ProxyTrustMode};
+
+    #[test]
+    fn ip_trust_disabled_mode_is_none() {
+        let mode = ProxyTrustMode::from_config(false, None).unwrap();
+        assert!(mode.is_none());
+    }
+
+    #[test]
+    fn ip_trust_enabled_without_networks_trusts_nothing() {
+        // Regression: this must NOT become ProxyTrustMode::All (spoofing vector).
+        let mode = ProxyTrustMode::from_config(true, None).unwrap();
+        assert!(!mode.is_none());
+        assert!(!mode.is_trusted("10.0.0.1".parse().unwrap()));
+        assert!(!mode.is_trusted("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn ip_trust_enabled_with_empty_networks_trusts_nothing() {
+        let mode = ProxyTrustMode::from_config(true, Some(vec![])).unwrap();
+        assert!(!mode.is_trusted("10.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ip_trust_network_list_matches() {
+        let mode = ProxyTrustMode::from_config(true, Some(vec!["10.0.0.0/8".to_string()])).unwrap();
+        assert!(mode.is_trusted("10.1.2.3".parse().unwrap()));
+        assert!(!mode.is_trusted("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn ip_trust_single_ip_network() {
+        let mode = ProxyTrustMode::from_config(true, Some(vec!["192.168.1.1".to_string()])).unwrap();
+        assert!(mode.is_trusted("192.168.1.1".parse().unwrap()));
+        assert!(!mode.is_trusted("192.168.1.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn ip_trust_invalid_network_is_error() {
+        let res = ProxyTrustMode::from_config(true, Some(vec!["not-an-ip".to_string()]));
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn ip_trust_resolves_socket_ip_when_not_trusting_proxy() {
+        let mode = ProxyTrustMode::from_config(false, None).unwrap();
+        let (resolved, peer_trusted) = resolve_client_ip(&mode, b"203.0.113.5", Some(b"6.6.6.6"), None);
+        assert!(!peer_trusted);
+        // Socket IP must win; XFF must be ignored.
+        match resolved {
+            super::ResolvedIp::V4(o) => assert_eq!(o, [203, 0, 113, 5]),
+            _ => panic!("expected V4 socket IP"),
+        }
+    }
+
+    #[test]
+    fn ip_trust_untrusted_socket_ignores_xff() {
+        // Socket is NOT in the trusted networks -> XFF cannot spoof the client IP.
+        let mode = ProxyTrustMode::from_config(true, Some(vec!["10.0.0.0/8".to_string()])).unwrap();
+        let (resolved, peer_trusted) = resolve_client_ip(&mode, b"203.0.113.9", Some(b"6.6.6.6"), None);
+        assert!(!peer_trusted);
+        match resolved {
+            super::ResolvedIp::V4(o) => assert_eq!(o, [203, 0, 113, 9]),
+            _ => panic!("expected V4 socket IP"),
+        }
+    }
+
+    #[test]
+    fn ip_trust_trusted_socket_uses_leftmost_untrusted_xff() {
+        let mode = ProxyTrustMode::from_config(true, Some(vec!["10.0.0.0/8".to_string()])).unwrap();
+        let (resolved, peer_trusted) = resolve_client_ip(
+            &mode,
+            b"10.0.0.5",
+            Some(b"8.8.8.8, 10.0.0.1, 10.0.0.2"),
+            None,
+        );
+        assert!(peer_trusted);
+        // Right-to-left: 10.0.0.2 trusted, 10.0.0.1 trusted, 8.8.8.8 NOT trusted -> client = 8.8.8.8.
+        match resolved {
+            super::ResolvedIp::V4(o) => assert_eq!(o, [8, 8, 8, 8]),
+            _ => panic!("expected V4 8.8.8.8"),
+        }
+    }
+
+    #[test]
+    fn ip_trust_all_trusted_xff_returns_last_entry() {
+        let mode = ProxyTrustMode::from_config(true, Some(vec!["10.0.0.0/8".to_string()])).unwrap();
+        let (resolved, peer_trusted) =
+            resolve_client_ip(&mode, b"10.0.0.5", Some(b"10.0.0.1, 10.0.0.2"), None);
+        assert!(peer_trusted);
+        match resolved {
+            super::ResolvedIp::V4(o) => assert_eq!(o, [10, 0, 0, 1]),
+            _ => panic!("expected V4 10.0.0.1"),
+        }
+    }
+}

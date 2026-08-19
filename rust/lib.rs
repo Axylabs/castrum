@@ -62,7 +62,7 @@ pub mod util;
 mod test_support;
 
 #[cfg(test)]
-mod unit_tests;
+mod panic_safety;
 
 #[cfg(test)]
 mod proptest_suite;

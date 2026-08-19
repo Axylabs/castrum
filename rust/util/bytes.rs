@@ -398,4 +398,9 @@ mod tests {
             ]
         );
     }
-}
+    #[test]
+    #[should_panic(expected = "hex_encode: output buffer too small")]
+    fn hex_encode_panics_on_undersized() {
+        let mut out = [0u8; 4];
+        super::hex_encode(b"abcd", &mut out);
+    }}

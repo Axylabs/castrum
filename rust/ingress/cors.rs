@@ -263,3 +263,141 @@ pub struct CorsOptions {
     // produced by the TS header templates (both ingress paths), which read the
     // same `cors` option object.
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{CorsEngine, CorsOptions};
+    use crate::http::headers::HeaderRefs;
+    use crate::http::method::MethodKind;
+    use crate::test_support::pack_headers;
+
+    fn cors_options(
+        origin: Vec<String>,
+        methods: Vec<String>,
+        headers: Vec<String>,
+        creds: bool,
+    ) -> CorsOptions {
+        CorsOptions {
+            allow_origin: Some(origin),
+            allow_methods: Some(methods),
+            allow_headers: Some(headers),
+            allow_credentials: Some(creds),
+        }
+    }
+
+    #[test]
+    fn cors_wildcard_with_credentials_rejected() {
+        let opts = cors_options(vec!["*".to_string()], vec![], vec![], true);
+        assert!(CorsEngine::from_options(Some(opts)).is_err());
+    }
+
+    #[test]
+    fn cors_wildcard_without_credentials_ok() {
+        let opts = cors_options(vec!["*".to_string()], vec![], vec![], false);
+        let engine = CorsEngine::from_options(Some(opts)).unwrap();
+        let packed = pack_headers([("origin", "https://anywhere.com")]);
+        let h = HeaderRefs::parse(&packed, false, 100).unwrap();
+        let ev = engine.evaluate(MethodKind::Get, &h);
+        assert!(ev.allowed);
+        assert!(!ev.preflight);
+    }
+
+    #[test]
+    fn cors_allowlist_matching_origin() {
+        let opts = cors_options(
+            vec!["https://app.example.com".to_string()],
+            vec!["GET".to_string(), "POST".to_string()],
+            vec![],
+            true,
+        );
+        let engine = CorsEngine::from_options(Some(opts)).unwrap();
+        let packed = pack_headers([("origin", "https://app.example.com")]);
+        let h = HeaderRefs::parse(&packed, false, 100).unwrap();
+        let ev = engine.evaluate(MethodKind::Get, &h);
+        assert!(ev.allowed);
+    }
+
+    #[test]
+    fn cors_allowlist_non_matching_origin() {
+        let opts = cors_options(
+            vec!["https://app.example.com".to_string()],
+            vec!["GET".to_string()],
+            vec![],
+            true,
+        );
+        let engine = CorsEngine::from_options(Some(opts)).unwrap();
+        let packed = pack_headers([("origin", "https://evil.example.net")]);
+        let h = HeaderRefs::parse(&packed, false, 100).unwrap();
+        let ev = engine.evaluate(MethodKind::Get, &h);
+        assert!(!ev.allowed);
+    }
+
+    #[test]
+    fn cors_no_origin_never_allowed() {
+        let opts = cors_options(vec!["*".to_string()], vec![], vec![], false);
+        let engine = CorsEngine::from_options(Some(opts)).unwrap();
+        let packed = pack_headers([]);
+        let h = HeaderRefs::parse(&packed, false, 100).unwrap();
+        let ev = engine.evaluate(MethodKind::Get, &h);
+        assert!(!ev.allowed);
+    }
+
+    #[test]
+    fn cors_preflight_allowed() {
+        let opts = cors_options(
+            vec!["https://app.example.com".to_string()],
+            vec!["POST".to_string()],
+            vec!["Content-Type".to_string()],
+            true,
+        );
+        let engine = CorsEngine::from_options(Some(opts)).unwrap();
+        let packed = pack_headers([
+            ("origin", "https://app.example.com"),
+            ("access-control-request-method", "POST"),
+            ("access-control-request-headers", "Content-Type"),
+        ]);
+        let h = HeaderRefs::parse(&packed, true, 100).unwrap();
+        let ev = engine.evaluate(MethodKind::Options, &h);
+        assert!(ev.preflight);
+        assert!(ev.allowed);
+    }
+
+    #[test]
+    fn cors_preflight_disallowed_method() {
+        let opts = cors_options(
+            vec!["https://app.example.com".to_string()],
+            vec!["GET".to_string()],
+            vec![],
+            true,
+        );
+        let engine = CorsEngine::from_options(Some(opts)).unwrap();
+        let packed = pack_headers([
+            ("origin", "https://app.example.com"),
+            ("access-control-request-method", "DELETE"),
+        ]);
+        let h = HeaderRefs::parse(&packed, true, 100).unwrap();
+        let ev = engine.evaluate(MethodKind::Options, &h);
+        assert!(ev.preflight);
+        assert!(!ev.allowed);
+    }
+
+    #[test]
+    fn cors_preflight_disallowed_header() {
+        let opts = cors_options(
+            vec!["https://app.example.com".to_string()],
+            vec!["POST".to_string()],
+            vec!["Content-Type".to_string()],
+            true,
+        );
+        let engine = CorsEngine::from_options(Some(opts)).unwrap();
+        let packed = pack_headers([
+            ("origin", "https://app.example.com"),
+            ("access-control-request-method", "POST"),
+            ("access-control-request-headers", "X-Secret-Token"),
+        ]);
+        let h = HeaderRefs::parse(&packed, true, 100).unwrap();
+        let ev = engine.evaluate(MethodKind::Options, &h);
+        assert!(ev.preflight);
+        assert!(!ev.allowed);
+    }
+}

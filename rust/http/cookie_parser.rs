@@ -63,3 +63,77 @@ pub fn cookie_parse_packed(input: Uint8Array) -> Result<Buffer> {
 pub fn cookie_parse_packed_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
     crate::util::run_packed_into(&input, &mut output, cookie_parse_packed_into_slice)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::cookie_parse_packed_vec;
+    use crate::test_support::decode_packed_pairs;
+
+    #[test]
+    fn cookie_parse_basic() {
+        let packed = cookie_parse_packed_vec(b"a=1; b=2").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
+        assert_eq!(pairs[1], (b"b".to_vec(), b"2".to_vec()));
+    }
+
+    #[test]
+    fn cookie_parse_trims_whitespace() {
+        let packed = cookie_parse_packed_vec(b" a = 1 ; b = hello world ").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], (b"a".to_vec(), b"1".to_vec()));
+        assert_eq!(pairs[1], (b"b".to_vec(), b"hello world".to_vec()));
+    }
+
+    #[test]
+    fn cookie_parse_skips_empty_name() {
+        let packed = cookie_parse_packed_vec(b"=1; =2; ok=3").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], (b"ok".to_vec(), b"3".to_vec()));
+    }
+
+    #[test]
+    fn cookie_parse_empty_value() {
+        let packed = cookie_parse_packed_vec(b"session=").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], (b"session".to_vec(), b"".to_vec()));
+    }
+
+    #[test]
+    fn cookie_parse_equals_in_value() {
+        // Only the first `=` separates name from value.
+        let packed = cookie_parse_packed_vec(b"a=b=c").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], (b"a".to_vec(), b"b=c".to_vec()));
+    }
+
+    #[test]
+    fn cookie_parse_expires_value_with_commas() {
+        let packed = cookie_parse_packed_vec(
+            b"session=abc; expires=Wed, 21 Oct 2015 07:28:00 GMT",
+        )
+        .unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(
+            pairs[1],
+            (b"expires".to_vec(), b"Wed, 21 Oct 2015 07:28:00 GMT".to_vec())
+        );
+    }
+
+    #[test]
+    fn cookie_parse_quotes_are_not_special() {
+        // Cookies split on `;` unconditionally — quotes are ordinary data, and a
+        // token without `=` becomes a pair with an empty value.
+        let packed = cookie_parse_packed_vec(b"a=\"x;y\"").unwrap();
+        let pairs = decode_packed_pairs(&packed);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], (b"a".to_vec(), b"\"x".to_vec()));
+        assert_eq!(pairs[1], (b"y\"".to_vec(), b"".to_vec()));
+    }
+}

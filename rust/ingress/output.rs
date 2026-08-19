@@ -248,3 +248,107 @@ pub fn write_output_header(
 
     OUT_DATA_START + cookies_json_len as usize + query_json_len as usize + body_json_len as usize
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compute_header_variant, write_output_header, HV_CORS_PREFLIGHT, HV_CORS_SIMPLE, HV_JSON,
+        HV_RATE_ACTIVE, HV_RATE_LIMITED, OUT_BODY_JSON_LEN, OUT_COOKIES_JSON_LEN, OUT_DATA_START,
+        OUT_ERROR_CODE, OUT_FLAGS, OUT_HEADER_VARIANT, OUT_QUERY_JSON_LEN, OUT_RATE_LIMIT,
+        OUT_RATE_REMAINING, OUT_RATE_RESET, OUT_RETRY_AFTER, OUT_STATUS, OUT_VERDICT,
+    };
+
+    #[test]
+    fn output_compute_header_variant_bits() {
+        assert_eq!(compute_header_variant(false, false, false, false, true), HV_JSON);
+        assert_eq!(compute_header_variant(true, false, false, false, true), HV_JSON | HV_CORS_SIMPLE);
+        assert_eq!(compute_header_variant(false, true, false, false, true), HV_JSON | HV_CORS_PREFLIGHT);
+        assert_eq!(compute_header_variant(true, false, true, false, true), HV_JSON | HV_CORS_SIMPLE | HV_RATE_ACTIVE);
+        assert_eq!(compute_header_variant(false, false, true, true, true), HV_JSON | HV_RATE_ACTIVE | HV_RATE_LIMITED);
+    }
+
+    #[test]
+    fn output_write_header_layout() {
+        let mut out = vec![0u8; 1024];
+        let written = write_output_header(
+            &mut out,
+            0,       // verdict
+            3,       // error_code
+            200,     // status
+            0x1F,    // flags
+            100,     // rate_limit
+            50,      // rate_remaining
+            123_456, // rate_reset_ms
+            5,       // retry_after_ms
+            10,      // cookies_json_len
+            20,      // query_json_len
+            HV_JSON | HV_RATE_ACTIVE,
+            30, // body_json_len
+        );
+
+        assert_eq!(out[OUT_VERDICT], 0);
+        assert_eq!(out[OUT_ERROR_CODE], 3);
+        assert_eq!(u16::from_le_bytes([out[OUT_STATUS], out[OUT_STATUS + 1]]), 200);
+        assert_eq!(
+            u32::from_le_bytes([out[OUT_FLAGS], out[OUT_FLAGS + 1], out[OUT_FLAGS + 2], out[OUT_FLAGS + 3]]),
+            0x1F
+        );
+        assert_eq!(
+            u32::from_le_bytes([out[OUT_RATE_LIMIT], out[OUT_RATE_LIMIT + 1], out[OUT_RATE_LIMIT + 2], out[OUT_RATE_LIMIT + 3]]),
+            100
+        );
+        assert_eq!(
+            u32::from_le_bytes([out[OUT_RATE_REMAINING], out[OUT_RATE_REMAINING + 1], out[OUT_RATE_REMAINING + 2], out[OUT_RATE_REMAINING + 3]]),
+            50
+        );
+        let reset = u64::from_le_bytes(out[OUT_RATE_RESET..OUT_RATE_RESET + 8].try_into().unwrap());
+        assert_eq!(reset, 123_456);
+        let retry = u64::from_le_bytes(out[OUT_RETRY_AFTER..OUT_RETRY_AFTER + 8].try_into().unwrap());
+        assert_eq!(retry, 5);
+        assert_eq!(
+            u32::from_le_bytes([out[OUT_COOKIES_JSON_LEN], out[OUT_COOKIES_JSON_LEN + 1], out[OUT_COOKIES_JSON_LEN + 2], out[OUT_COOKIES_JSON_LEN + 3]]),
+            10
+        );
+        assert_eq!(
+            u32::from_le_bytes([out[OUT_QUERY_JSON_LEN], out[OUT_QUERY_JSON_LEN + 1], out[OUT_QUERY_JSON_LEN + 2], out[OUT_QUERY_JSON_LEN + 3]]),
+            20
+        );
+        assert_eq!(out[OUT_HEADER_VARIANT], HV_JSON | HV_RATE_ACTIVE);
+        assert_eq!(
+            u32::from_le_bytes([out[OUT_BODY_JSON_LEN], out[OUT_BODY_JSON_LEN + 1], out[OUT_BODY_JSON_LEN + 2], out[OUT_BODY_JSON_LEN + 3]]),
+            30
+        );
+
+        assert_eq!(written, OUT_DATA_START + 10 + 20 + 30);
+    }
+
+    #[test]
+    fn output_write_header_normalizes_invalid_status() {
+        let mut out = vec![0u8; 128];
+        let written = write_output_header(&mut out, 1, 6, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        let status = u16::from_le_bytes([out[OUT_STATUS], out[OUT_STATUS + 1]]);
+        assert_eq!(status, 500, "invalid status must be coerced to 500");
+        assert_eq!(written, OUT_DATA_START);
+    }
+
+    #[test]
+    fn output_write_header_clamps_out_of_range_status() {
+        // The pipeline only emits 200 (`HeaderFields::ok`) or terminal 4xx/5xx;
+        // out-of-range statuses (e.g. 101, 600) are intentionally clamped to 500
+        // (see output.rs write_output_header).
+        let mut out = vec![0u8; 128];
+        write_output_header(&mut out, 1, 0, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        let status = u16::from_le_bytes([out[OUT_STATUS], out[OUT_STATUS + 1]]);
+        assert_eq!(status, 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "output buffer too small")]
+    fn output_header_panics_on_undersized() {
+        // Enterprise guard: `write_output_header` self-checks the full 48-byte
+        // header up front so a miscalculated buffer becomes a clean panic (→ napi
+        // catch_unwind → JS 500) instead of a silent OOB write.
+        let mut out = vec![0u8; crate::ingress::output::OUT_DATA_START - 1];
+        crate::ingress::output::write_output_header(&mut out, 0, 0, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+}
