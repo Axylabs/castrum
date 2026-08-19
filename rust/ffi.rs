@@ -606,26 +606,27 @@ pub unsafe extern "C" fn castrum_etag_into(
 /// # Safety
 /// `inner` must be a valid `ConditionalRequest` pointer obtained from
 /// `inner_ptr()` and must stay alive for the call (the JS wrapper holds the
-/// napi instance). `inm`/`ims` must be valid for reads of their lengths.
+/// napi instance). `inm`/`ims` are `bun:ffi` `cstring` ARGs — NUL-terminated
+/// C strings (the engine transcodes the JS header strings in-engine; zero JS
+/// encode); presence is gated by `flags`, so their pointers are ignored when
+/// the corresponding bit is 0.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_conditional_is_not_modified(
     inner: usize,
-    inm: *const u8,
-    inm_len: usize,
-    ims: *const u8,
-    ims_len: usize,
+    inm: *const std::os::raw::c_char,
+    ims: *const std::os::raw::c_char,
     flags: u8,
 ) -> u8 {
     if inner == 0 {
         return 0;
     }
     let inm_opt = if flags & 1 != 0 {
-        Some(slice::from_raw_parts(inm, inm_len))
+        Some(std::ffi::CStr::from_ptr(inm).to_bytes())
     } else {
         None
     };
     let ims_opt = if flags & 2 != 0 {
-        Some(slice::from_raw_parts(ims, ims_len))
+        Some(std::ffi::CStr::from_ptr(ims).to_bytes())
     } else {
         None
     };
@@ -679,16 +680,18 @@ pub unsafe extern "C" fn castrum_media_type_matcher_matches(
 /// # Safety
 /// `inner` must be a valid `AcceptNegotiator` pointer from `inner_ptr()`, alive
 /// for the call.
+/// `header` is a `bun:ffi` `cstring` ARG — a NUL-terminated C string (the
+/// engine transcodes the JS header string in-engine; zero JS encode), never
+/// NUL-containing (see the `cstring`-arg rule in docs/FFI_BUN_GUIDE.md).
 #[no_mangle]
 pub unsafe extern "C" fn castrum_accept_negotiator_negotiate(
     inner: usize,
-    header: *const u8,
-    header_len: usize,
+    header: *const std::os::raw::c_char,
 ) -> *const std::os::raw::c_char {
     if inner == 0 || header.is_null() {
         return std::ptr::null();
     }
-    let h = slice::from_raw_parts(header, header_len);
+    let h = std::ffi::CStr::from_ptr(header).to_bytes();
     let Some(bytes) = panic_guard(
         || unsafe {
             crate::http::accept::accept_negotiator_negotiate_core(
@@ -713,17 +716,18 @@ pub unsafe extern "C" fn castrum_accept_negotiator_negotiate(
 ///
 /// # Safety
 /// `inner` must be a valid `AcceptNegotiator` pointer from `inner_ptr()`, alive
-/// for the call.
+/// for the call. `header` is a `bun:ffi` `cstring` ARG — a NUL-terminated C
+/// string (the engine transcodes the JS header string in-engine; zero JS
+/// encode), never NUL-containing.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_accept_negotiator_negotiate_server(
     inner: usize,
-    header: *const u8,
-    header_len: usize,
+    header: *const std::os::raw::c_char,
 ) -> *const std::os::raw::c_char {
     if inner == 0 || header.is_null() {
         return std::ptr::null();
     }
-    let h = slice::from_raw_parts(header, header_len);
+    let h = std::ffi::CStr::from_ptr(header).to_bytes();
     let Some(bytes) = panic_guard(
         || unsafe {
             crate::http::accept::accept_negotiator_negotiate_server_core(
@@ -4086,19 +4090,17 @@ mod tests {
     fn accept_negotiator_negotiate_c_abi() {
         let n = crate::http::accept::AcceptNegotiator::new(vec!["gzip".to_string()]);
         let inner = n.inner_ptr() as usize;
-        let f = |h: &[u8]| -> Option<Vec<u8>> {
-            let s = unsafe { castrum_accept_negotiator_negotiate(inner, h.as_ptr(), h.len()) };
+        let f = |h: &std::ffi::CStr| -> Option<Vec<u8>> {
+            let s = unsafe { castrum_accept_negotiator_negotiate(inner, h.as_ptr()) };
             if s.is_null() {
                 None
             } else {
                 unsafe { cstr_bytes(s) }
             }
         };
-        assert_eq!(f(b"gzip, deflate;q=0.5"), Some(b"gzip".to_vec()));
-        assert_eq!(f(b"identity;q=0.9"), None); // no supported match → identity
-        assert!(
-            unsafe { castrum_accept_negotiator_negotiate(0, b"gzip".as_ptr(), 4) }.is_null()
-        );
+        assert_eq!(f(c"gzip, deflate;q=0.5"), Some(b"gzip".to_vec()));
+        assert_eq!(f(c"identity;q=0.9"), None); // no supported match → identity
+        assert!(unsafe { castrum_accept_negotiator_negotiate(0, c"gzip".as_ptr()) }.is_null());
     }
 
     #[test]
@@ -4106,9 +4108,8 @@ mod tests {
         use crate::http::accept::AcceptNegotiator;
         let n = AcceptNegotiator::new(vec!["br".to_string(), "gzip".to_string()]);
         let inner = n.inner_ptr() as usize;
-        let f = |h: &[u8]| -> Option<Vec<u8>> {
-            let s =
-                unsafe { castrum_accept_negotiator_negotiate_server(inner, h.as_ptr(), h.len()) };
+        let f = |h: &std::ffi::CStr| -> Option<Vec<u8>> {
+            let s = unsafe { castrum_accept_negotiator_negotiate_server(inner, h.as_ptr()) };
             if s.is_null() {
                 None
             } else {
@@ -4116,14 +4117,13 @@ mod tests {
             }
         };
         // Server-preference: tie → first supported (br), NOT client order.
-        assert_eq!(f(b"gzip, br"), Some(b"br".to_vec()));
-        assert_eq!(f(b"br;q=0.8, gzip;q=0.9"), Some(b"gzip".to_vec()));
-        assert_eq!(f(b"*"), Some(b"br".to_vec()));
-        assert_eq!(f(b"gzip;q=0"), None); // q=0 excluded, no wildcard
-        assert_eq!(f(b""), None); // empty → identity (server-pref differs from client-order)
+        assert_eq!(f(c"gzip, br"), Some(b"br".to_vec()));
+        assert_eq!(f(c"br;q=0.8, gzip;q=0.9"), Some(b"gzip".to_vec()));
+        assert_eq!(f(c"*"), Some(b"br".to_vec()));
+        assert_eq!(f(c"gzip;q=0"), None); // q=0 excluded, no wildcard
+        assert_eq!(f(c""), None); // empty → identity (server-pref differs from client-order)
         assert!(
-            unsafe { castrum_accept_negotiator_negotiate_server(0, b"gzip".as_ptr(), 4) }
-                .is_null()
+            unsafe { castrum_accept_negotiator_negotiate_server(0, c"gzip".as_ptr()) }.is_null()
         );
     }
 
@@ -4258,32 +4258,28 @@ mod tests {
             Some(784_111_777f64),
         );
         let inner = c.inner_ptr() as usize;
-        let f = |flags: u8, inm: Option<&[u8]>, ims: Option<&[u8]>| -> u8 {
-            let (ip, il) = match inm {
-                Some(b) => (b.as_ptr(), b.len()),
-                None => (std::ptr::null(), 0),
-            };
-            let (sp, sl) = match ims {
-                Some(b) => (b.as_ptr(), b.len()),
-                None => (std::ptr::null(), 0),
-            };
-            unsafe { castrum_conditional_is_not_modified(inner, ip, il, sp, sl, flags) }
+        let f = |flags: u8, inm: Option<&std::ffi::CStr>, ims: Option<&std::ffi::CStr>| -> u8 {
+            let ip = inm.map_or(std::ptr::null(), |c| c.as_ptr());
+            let sp = ims.map_or(std::ptr::null(), |c| c.as_ptr());
+            unsafe { castrum_conditional_is_not_modified(inner, ip, sp, flags) }
         };
         // If-None-Match "*" → 304.
-        assert_eq!(f(1, Some(b"*"), None), 1);
+        assert_eq!(f(1, Some(c"*"), None), 1);
         // Exact etag → 304; weak compare W/"abc123" → 304.
-        assert_eq!(f(1, Some(b"\"abc123\""), None), 1);
-        assert_eq!(f(1, Some(b"W/\"abc123\""), None), 1);
+        assert_eq!(f(1, Some(c"\"abc123\""), None), 1);
+        assert_eq!(f(1, Some(c"W/\"abc123\""), None), 1);
         // Non-matching list → not 304.
-        assert_eq!(f(1, Some(b"\"xyz\", \"other\""), None), 0);
+        assert_eq!(f(1, Some(c"\"xyz\", \"other\""), None), 0);
         // If-Modified-Since == lastModified → 304; 1s before → not 304.
-        assert_eq!(f(2, None, Some(b"Sun, 06 Nov 1994 08:49:37 GMT")), 1);
-        assert_eq!(f(2, None, Some(b"Sun, 06 Nov 1994 08:49:36 GMT")), 0);
+        assert_eq!(f(2, None, Some(c"Sun, 06 Nov 1994 08:49:37 GMT")), 1);
+        assert_eq!(f(2, None, Some(c"Sun, 06 Nov 1994 08:49:36 GMT")), 0);
         // Absent flags → not 304 (nothing to match).
         assert_eq!(f(0, None, None), 0);
         // Null handle → 0 (never dereferences freed state).
         assert_eq!(
-            unsafe { castrum_conditional_is_not_modified(0, std::ptr::null(), 0, std::ptr::null(), 0, 0) },
+            unsafe {
+                castrum_conditional_is_not_modified(0, std::ptr::null(), std::ptr::null(), 0)
+            },
             0
         );
     }
