@@ -1,8 +1,8 @@
 // src/ingress/routes/common.ts — Shared route-handler options + helpers.
 
-import type { BakedContext, OptimizedIngressHandler } from '../types'
 import type { BakedIngressResult } from '../decode/baked-result'
 import { secondsFromMs } from '../shared'
+import type { BakedContext, OptimizedIngressHandler } from '../types'
 
 /** Options accepted by the pre-baked route factories. */
 export interface BakedHandlerOptions {
@@ -20,6 +20,14 @@ export interface BakedHandlerOptions {
   bodyTimeoutMs?: number
   /** Fallback handler used for write error paths. Defaults to the write ingress. */
   fallback?: OptimizedIngressHandler
+  /**
+   * Zero-DOM JSON-validity check for the write-route fallback validation
+   * (`jsonWriteHandler` when neither `requireJsonBody` nor a `schema` is
+   * configured). Injected so the pure route factories never import the native
+   * layer (dependency injection across the purity boundary). Defaults to the
+   * `ingress.jsonValid` capability that `createIngressHandler` provides.
+   */
+  jsonValid?: (bytes: Uint8Array) => boolean
   /**
    * When true, route the JSON-validity fallback check through the higher-order
    * loader (`loader("jsonValid")`) instead of the direct native call —

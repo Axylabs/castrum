@@ -20,10 +20,10 @@ import {
   type ServerResponse,
 } from 'node:http'
 import { type Duplex, Readable } from 'node:stream'
+import { buildPathMatcher } from './path-matcher'
 import { fallbackHandler } from './routes'
 import {
   type BakedServer,
-  buildPathMatcher,
   buildRouteHandlers,
   type CreateIngressServerOptions,
   type RouteHandler,

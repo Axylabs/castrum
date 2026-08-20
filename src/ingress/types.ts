@@ -148,6 +148,15 @@ export interface OptimizedIngressHandler {
   withContentType(headers: ReadonlyArray<[string, string]>, contentType: string): [string, string][]
 
   /**
+   * Zero-DOM JSON-validity check bound to this handler's native transport
+   * (bun:ffi primary, napi fallback). Provided so the pure route factories
+   * (`routes/*`) can validate request bodies via dependency injection without
+   * importing the native layer. Always present on handlers from
+   * `createIngressHandler`; optional so hand-rolled mocks need not provide it.
+   */
+  jsonValid?: (bytes: Uint8Array) => boolean
+
+  /**
    * Build a zero-copy `Response` whose body is the request's pooled output
    * slice. The pooled buffer is returned to its pool once the body has been
    * consumed (stream closed) or the request aborted. Use when `copyBody` is

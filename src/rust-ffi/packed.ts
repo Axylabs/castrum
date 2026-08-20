@@ -10,15 +10,25 @@ import { asNumber } from './options'
 /** Raw packed-wire FFI namespace. */
 export interface RustPacked {
   // ── Sync batch (packed in → packed out) ──
+  /** Packed CRC32 batch: packed `[u8[]]` items → packed u32 results. */
   crc32BatchPacked(input: Uint8Array): Uint8Array
+  /** Packed JSON-validity batch: packed `[u8[]]` items → packed 0/1 bitset. */
   jsonValidBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed email-validator batch: packed `[u8[]]` items → packed 0/1 bitset. */
   validateEmailBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed UUID-validator batch: packed `[u8[]]` items → packed 0/1 bitset. */
   validateUuidBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed IPv4-validator batch: packed `[u8[]]` items → packed 0/1 bitset. */
   validateIpv4BatchPacked(input: Uint8Array): Uint8Array
+  /** Packed IPv6-validator batch: packed `[u8[]]` items → packed 0/1 bitset. */
   validateIpv6BatchPacked(input: Uint8Array): Uint8Array
+  /** Packed JSON-sum batch: packed `[{id}]` docs → packed `[ok u8][sum i64 LE]`. */
   jsonSumBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed query-string parser batch: packed `[u8[]]` queries → packed pair lists. */
   queryParseBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed cookie-header parser batch: packed `[u8[]]` headers → packed pair lists. */
   cookieParseBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed HTTP-request parser batch: packed `[u8[]]` requests → packed request sections. */
   httpParseRequestBatchPacked(input: Uint8Array): Uint8Array
   /** Batch RFC 6902 JSON Patch (two packed lists, zipped) → packed results. */
   jsonPatchBatchPacked(docs: Uint8Array, patches: Uint8Array): Uint8Array
@@ -26,24 +36,39 @@ export interface RustPacked {
   fnv1A64BatchPacked(input: Uint8Array): Uint8Array
   /** Packed ETag batch (10 strong / 12 weak bytes per item). */
   etagBatchPacked(input: Uint8Array, weak?: boolean | null): Uint8Array
+  /** Packed percent-encoding batch: packed `[u8[]]` items → packed hex-percent bytes. */
   urlEncodeBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed percent-decoding batch: packed `[u8[]]` items → packed decoded bytes (string-safe). */
   urlDecodeBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed percent-decoding batch returning raw bytes (`%FF` preserved). */
   urlDecodeBytesBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed MIME-lookup batch: packed `[u8[]]` extensions → packed media-type strings. */
   mimeFromExtensionBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed WebSocket accept-key batch: packed `[u8[]]` keys → packed base64 SHA-1 results. */
   wsAcceptKeyBatchPacked(input: Uint8Array): Uint8Array
 
   // ── Batch metadata / counts ──
+  /** Valid JSON count in a packed JSON batch (0..n; invalid items not counted). */
   jsonValidBatchCountPacked(input: Uint8Array): number
+  /** Valid-email count in a packed email batch. */
   validateEmailBatchCountPacked(input: Uint8Array): number
+  /** Valid-UUID count in a packed UUID batch. */
   validateUuidBatchCountPacked(input: Uint8Array): number
+  /** Valid-IPv4 count in a packed IPv4 batch. */
   validateIpv4BatchCountPacked(input: Uint8Array): number
+  /** Valid-IPv6 count in a packed IPv6 batch. */
   validateIpv6BatchCountPacked(input: Uint8Array): number
+  /** Total `id` sum across a packed JSON batch (valid items only). */
   jsonSumBatchTotalPacked(input: Uint8Array): number
+  /** Total packed-output length (bytes) a query batch will produce. */
   queryParseBatchTotalLenPacked(input: Uint8Array): number
+  /** Total packed-output length (bytes) a cookie batch will produce. */
   cookieParseBatchTotalLenPacked(input: Uint8Array): number
+  /** Total packed-output length (bytes) an HTTP-request batch will produce. */
   httpParseRequestBatchTotalLenPacked(input: Uint8Array): number
 
   // ── Backend-framework features ──
+  /** Packed Argon2id-hash batch: packed `[u8[]]` passwords + shared salt → packed PHC strings. */
   passwordHashBatchPacked(
     input: Uint8Array,
     salt: Uint8Array,
@@ -53,47 +78,60 @@ export interface RustPacked {
   passwordVerifyBatchPacked(passwords: Uint8Array, phcs: Uint8Array): Uint8Array
   /** Packed URL-resolve batch (two packed lists, zipped) → packed results. */
   urlResolveBatchPacked(bases: Uint8Array, references: Uint8Array): Uint8Array
+  /** Packed AEAD-encrypt batch (packed inputs + shared key/nonce) → packed ciphertexts. */
   aeadEncryptBatchPacked(
     input: Uint8Array,
     key: Uint8Array,
     nonce: Uint8Array,
     algorithm?: string | null,
   ): Uint8Array
+  /** Packed AEAD-decrypt batch (packed inputs + shared key/nonce) → packed plaintexts. */
   aeadDecryptBatchPacked(
     input: Uint8Array,
     key: Uint8Array,
     nonce: Uint8Array,
     algorithm?: string | null,
   ): Uint8Array
+  /** Packed gzip-compress batch: packed `[u8[]]` items → packed gzip streams. */
   gzipCompressBatchPacked(input: Uint8Array, level?: number | null): Uint8Array
+  /** Packed gzip-decompress batch (64 MiB cap per item) → packed plaintexts. */
   gzipDecompressBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed brotli-compress batch: packed `[u8[]]` items → packed brotli streams. */
   brotliCompressBatchPacked(input: Uint8Array, quality?: number | null): Uint8Array
+  /** Packed brotli-decompress batch (64 MiB cap per item) → packed plaintexts. */
   brotliDecompressBatchPacked(input: Uint8Array): Uint8Array
+  /** Packed HS256 JWT-sign batch (packed claims + shared secret) → packed tokens. */
   jwtSignBatchPacked(
     input: Uint8Array,
     secret: Uint8Array,
     ttlSeconds: number | null,
     nowSeconds: number,
   ): Uint8Array
+  /** Packed HS256 JWT-verify batch (packed tokens + shared secret) → packed claims/validity. */
   jwtVerifyBatchPacked(input: Uint8Array, secret: Uint8Array, nowSeconds: number): Uint8Array
   /** Batch HMAC-SHA256 sign (packed in → hex-signature byte results). */
   hmacSha256BatchPacked(input: Uint8Array, key: Uint8Array): Uint8Array
   /** Batch HMAC-SHA256 verify (two packed lists: data + hex sigs, zipped) → bitset. */
   hmacSha256VerifyBatchPacked(input: Uint8Array, sigs: Uint8Array, key: Uint8Array): Uint8Array
+  /** Packed multipart/form-data parser batch (packed bodies + shared boundary) → packed parts. */
   multipartParseBatchPacked(input: Uint8Array, boundary: Uint8Array): Uint8Array
+  /** Packed minijinja template batch: packed contexts + shared source → packed renders. */
   templateRenderBatchPacked(input: Uint8Array, source: string): Uint8Array
+  /** Packed SSE-frame batch: packed data + shared event/id/retry → packed frames. */
   sseEncodeBatchPacked(
     input: Uint8Array,
     event: string | null,
     id: string | null,
     retry: number | null,
   ): Uint8Array
+  /** Packed WebSocket-frame encode batch: packed payloads + shared opcode/mask/fin → packed frames. */
   wsFrameEncodeBatchPacked(
     input: Uint8Array,
     opcode: number,
     mask: boolean,
     fin: boolean,
   ): Uint8Array
+  /** Packed WebSocket-frame decode batch: packed frames → packed (fin, opcode, payload) results. */
   wsFrameDecodeBatchPacked(input: Uint8Array): Uint8Array
 }
 

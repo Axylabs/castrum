@@ -24,8 +24,10 @@
 import type { BakedIngressResult } from './decode/baked-result'
 import { type BakedIngressRuntime, createIngressHandler } from './handlers'
 import type { IngressHandlerOptions } from './options'
-import type { BakedRoute, PathMatch, RouteHandler } from './server'
-import { buildPathMatcher, buildRouteHandlers } from './server'
+import type { PathMatch } from './path-matcher'
+import { buildPathMatcher } from './path-matcher'
+import type { BakedRoute, RouteHandler } from './server'
+import { buildRouteHandlers } from './server'
 import type { BakedContext, NativeResponder, OptimizedIngressHandler, TerminalStyle } from './types'
 
 /** Per-route spec for {@link createIngressRouter}. */

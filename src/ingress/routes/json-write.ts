@@ -1,27 +1,26 @@
 // src/ingress/routes/json-write.ts — Pre-baked JSON-write handler
 // (POST/PUT/PATCH).
 
-import type { OptimizedIngressHandler } from '../types'
-import { buildSuccessInit, resolveIp, type BakedHandlerOptions } from './common'
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from '../shared'
+import { decodeUtf8 } from '../../shared/codec'
 import { readBodyWithLimit } from '../body'
-import { getAddon } from '../../native'
-import { getBunFFI } from '../../native/ffi'
+import { DEFAULT_BODY_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES } from '../shared'
+import type { OptimizedIngressHandler } from '../types'
+import { type BakedHandlerOptions, buildSuccessInit, resolveIp } from './common'
 
 /**
- * Zero-DOM JSON-validity check — the same native fast path the ingress
- * pipeline uses internally (`json_valid_bytes`).
- *
- * Used by `jsonWriteHandler` as a fallback when the pipeline skipped JSON
- * validation because neither `requireJsonBody` nor a `schema` is configured
- * on the ingress (see the `bodyValidJson` handling in the route).
- *
- * bun:ffi is primary on Bun; the napi addon is the fallback (Node, forced
- * `CASTRUM_FFI_MODE=napi`, or a failed ffi self-test).
+ * Pure JSON-validity fallback used ONLY for hand-rolled
+ * `OptimizedIngressHandler` mocks that carry no native `jsonValid` capability.
+ * Real handlers from `createIngressHandler` always provide the zero-DOM native
+ * check (`ingress.jsonValid`), so this never runs on the hot path — it exists
+ * to keep the security property (invalid JSON must be rejected) for mocks.
  */
-function isValidJsonBytes(bytes: Uint8Array): boolean {
-  const ffi = getBunFFI()
-  return ffi ? ffi.jsonValid(bytes) : getAddon().jsonValid(bytes)
+function defaultJsonValid(bytes: Uint8Array): boolean {
+  try {
+    JSON.parse(decodeUtf8(bytes))
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -39,6 +38,10 @@ export function jsonWriteHandler(
   // Non-zero default: protect against slowloris / trickling bodies. Set
   // `bodyTimeoutMs: 0` to disable.
   const bodyTimeoutMs = opts.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS
+  // JSON-validity check via DI across the purity boundary: an explicit option
+  // wins, otherwise the handler's own native capability (from
+  // `createIngressHandler`), otherwise the pure mock fallback.
+  const jsonValid = opts.jsonValid ?? ingress.jsonValid ?? defaultJsonValid
 
   return async (req, srv) => {
     const ip = resolveIp(req, srv, opts)
@@ -115,7 +118,7 @@ export function jsonWriteHandler(
             ctx,
           )
         }
-      } else if (!isValidJsonBytes(bodyBytes)) {
+      } else if (!jsonValid(bodyBytes)) {
         return ingress.errorResponse(req, result, 400, 'invalid_json', 'Invalid JSON body', ctx)
       }
 

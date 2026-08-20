@@ -31,6 +31,8 @@
 // The pre-baked pipeline is decomposed into task-focused submodules:
 //   - decode/baked-result.ts       BakedIngressResult (zero-alloc decode)
 //   - response/error-bodies.ts     pre-encoded error bodies
+//   - response/baked-response.ts   pre-baked response builders (baked wire)
+//   - headers/security.ts          security header merge
 //   - headers/baked-templates.ts   ratelimit-* header templates
 //   - packing/gather-raw-headers.ts raw header gathering
 //   - routes/*                     route factories
@@ -39,23 +41,13 @@
 import { getAddon } from '../native'
 import { getBunFFI } from '../native/ffi'
 import { BufferPool, type PooledBuffer } from '../shared/buffer-pool'
-import { decoder, encoder, viewForArrayBuffer } from '../shared/bytes'
+import { decoder, viewForArrayBuffer } from '../shared/bytes'
 import { createStructuredLogger } from '../shared/log'
 import { generateRequestId } from '../shared/request-id'
-import { pooledBodyResponse } from '../shared/response'
-import {
-  ERR_CODE_RATE_LIMITED as ERROR_CODE_RATE_LIMITED,
-  HV_CORS_PREFLIGHT,
-  HV_CORS_SIMPLE,
-  HV_JSON,
-  HV_RATE_ACTIVE,
-  HV_RATE_LIMITED,
-  OUT_DATA_START,
-} from './constants'
+import { OUT_DATA_START } from './constants'
 import { BakedIngressResult } from './decode/baked-result'
 import { buildBakedHeaderTemplates } from './headers/baked-templates'
-import type { SecurityHeadersOptions } from './headers/hsts'
-import { buildSecurityPairs } from './headers/hsts'
+import { buildBakedSecurityEntries } from './headers/security'
 import {
   assertIngressOptionValues,
   assertKnownIngressOptions,
@@ -64,7 +56,7 @@ import {
 } from './options'
 import { gatherRawHeadersPacked } from './packing/gather-raw-headers'
 import { IngressInputPacker } from './packing/input-packer'
-import { ERROR_BODIES, ERROR_CODE_BODIES, rateLimitedBody } from './response/error-bodies'
+import { type BakedResponseState, buildBakedResponseBuilders } from './response/baked-response'
 import {
   assertSyncCallback,
   buildHeaderPlan,
@@ -73,7 +65,6 @@ import {
   type HeaderPlan,
   METHOD_KIND,
   METHOD_KIND_UNKNOWN,
-  secondsFromMs,
 } from './shared'
 import { safeTerminalStatus } from './status'
 import type { BakedContext, OptimizedIngressHandler } from './types'
@@ -132,32 +123,6 @@ function pathForLog(req: Request): string {
   } catch {
     return req.url
   }
-}
-
-/**
- * Merge structured `options.security` (SecurityHeadersOptions) with raw
- * `runtime.securityHeaders` pairs into the ordered entries the baked templates
- * prepend to every response variant. Raw pairs win on name conflicts; names are
- * lowercased for the template merge.
- *
- * The structured defaults (nosniff/DENY/no-referrer) are ONLY applied when the
- * user explicitly opted into security on this path (`security !== undefined`) —
- * the baked path's long-standing default is no security headers, and silently
- * adding them would change every response.
- */
-function buildBakedSecurityEntries(
-  security: SecurityHeadersOptions | undefined,
-  https: boolean | undefined,
-  raw: ReadonlyArray<[string, string]> | undefined,
-): Array<[string, string]> {
-  const structured = security === undefined ? [] : buildSecurityPairs(security, https, true)
-
-  if (raw === undefined || raw.length === 0) return structured
-
-  const byName = new Map<string, string>()
-  for (const [k, v] of structured) byName.set(k, v)
-  for (const [k, v] of raw) byName.set(k.toLowerCase(), v)
-  return [...byName.entries()]
 }
 
 // ── Types ────────────────────────────────────────────────────────
@@ -333,11 +298,12 @@ export function createIngressHandler(
   // the napi `Vec<Vec<String>>` header marshaling of the full_sync family.
   const inputPacker = new IngressInputPacker()
 
-  // Per-call state: the output handle backing the current `run()`'s result,
-  // and whether a zero-copy Response claimed it (so `run()` must not release
-  // it back to the pool before the body is consumed).
-  let currentHandle: PooledBuffer | null = null
-  let responseBorrowsBuffer = false
+  // Shared per-request state with the response builders
+  // (response/baked-response.ts): `zeroCopyResponse` marks the pooled output
+  // buffer as borrowed so `run()` must not release it before the body is
+  // consumed. The result decoders share a single mutable object too, so this
+  // is the same pattern — one live request per handler at a time.
+  const responseState: BakedResponseState = { currentHandle: null, responseBorrowsBuffer: false }
 
   // FFI circuit breaker (defense-in-depth): the raw C ABI cannot contain
   // non-panic UB (a segfault still crashes the process), but a RECURRING
@@ -400,222 +366,18 @@ export function createIngressHandler(
     rateLimitStr,
   })
 
-  function responseHeaders(
-    variant: number,
-    requestIdHeader: string | null,
-    origin: string | null,
-    rateRemaining?: number,
-    rateResetSecs?: number,
-    retryAfterSecs?: number,
-  ): [string, string][] {
-    const template: ReadonlyArray<[string, string]> =
-      headerTemplates[variant & 31] ?? headerTemplates[0] ?? []
-
-    const needsRequestId = emitRequestIdHeader && requestIdHeader !== null
-    const needsOrigin =
-      ((variant & HV_CORS_SIMPLE) !== 0 || (variant & HV_CORS_PREFLIGHT) !== 0) && origin !== null
-    const needsRate = (variant & HV_RATE_ACTIVE) !== 0
-    const needsRetry = (variant & HV_RATE_LIMITED) !== 0
-
-    if (!needsRequestId && !needsOrigin && !needsRate && !needsRetry) {
-      // Frozen-readonly → mutable: callers only ever read the baked template
-      // (zero-copy steady-state path), so the widening is safe in practice.
-      return template as unknown as [string, string][]
-    }
-
-    if (!needsRequestId && !needsRate && !needsRetry && needsOrigin) {
-      // Steady-state CORS: only the origin varies — cache the augmented array
-      // per (variant, origin) so the Origin-present case (the common
-      // browser/bench case) stays allocation-free after the first hit for EACH
-      // distinct origin (a single-slot memo thrashed when clients alternate
-      // between allowed origins, allocating a fresh array on every switch).
-      const key = `${variant & 31}\u0000${origin as string}`
-      const cached = originHeaderCache.get(key)
-      if (cached !== undefined) {
-        return cached
-      }
-      const entries = new Array<[string, string]>(template.length + 1)
-      let i = 0
-      for (const pair of template) {
-        entries[i++] = pair
-      }
-      entries[i] = ['access-control-allow-origin', origin as string]
-      originHeaderCache.set(key, entries)
-      return entries
-    }
-
-    let extra = 0
-    if (needsRequestId) extra++
-    if (needsOrigin) extra++
-    if (needsRate) extra += 2
-    if (needsRetry) extra++
-
-    const entries = new Array<[string, string]>(template.length + extra)
-    let i = 0
-
-    for (const pair of template) {
-      entries[i++] = pair
-    }
-
-    if (needsRequestId) {
-      entries[i++] = ['x-request-id', requestIdHeader as string]
-    }
-
-    if (needsOrigin) {
-      entries[i++] = ['access-control-allow-origin', origin as string]
-    }
-
-    if (needsRate) {
-      entries[i++] = ['ratelimit-remaining', String(rateRemaining ?? 0)]
-      entries[i++] = ['ratelimit-reset', String(rateResetSecs ?? 0)]
-    }
-
-    if (needsRetry) {
-      entries[i++] = ['retry-after', String(retryAfterSecs ?? 0)]
-    }
-
-    return entries
-  }
-
-  function terminalHeaders(
-    variant: number,
-    ctx: BakedContext,
-    result: BakedIngressResult | null,
-  ): [string, string][] {
-    const v = variant | HV_JSON
-    const requestIdHeader = ctx.requestIdHeader
-    const origin = ctx.origin
-    const rateResetSecs =
-      result && result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined
-    const retryAfterSecs =
-      result && result.retryAfterMs > 0 ? secondsFromMs(result.retryAfterMs) : undefined
-
-    const needsRequestId = emitRequestIdHeader && requestIdHeader !== null
-    const needsOrigin =
-      ((v & HV_CORS_SIMPLE) !== 0 || (v & HV_CORS_PREFLIGHT) !== 0) && origin !== null
-    const needsRate = (v & HV_RATE_ACTIVE) !== 0
-    const needsRetry = (v & HV_RATE_LIMITED) !== 0
-
-    // Steady state: no request-id/origin/rate extras — serve the pre-baked
-    // terminal template (JSON + `cache-control: no-store`) directly with zero
-    // per-response array allocation/copy.
-    if (!needsRequestId && !needsOrigin && !needsRate && !needsRetry) {
-      // Frozen-readonly → mutable: the baked terminal template is only read.
-      return terminalTemplates[v & 31] as unknown as [string, string][]
-    }
-
-    // Rare path: extras appended after the baked entries, then `cache-control`.
-    const base = responseHeaders(
-      v,
-      requestIdHeader,
-      origin,
-      result?.rateRemaining,
-      rateResetSecs,
-      retryAfterSecs,
-    )
-
-    const out = new Array<[string, string]>(base.length + 1)
-    let i = 0
-    for (const pair of base) {
-      out[i++] = pair
-    }
-    out[base.length] = ['cache-control', 'no-store']
-    return out
-  }
-
-  function terminalResponse(
-    _req: Request | undefined,
-    result: BakedIngressResult,
-    ctx: BakedContext,
-  ): Response | null {
-    if (!result.terminal) {
-      return null
-    }
-
-    const preflightAllowed = result.isPreflight && result.corsAllowed
-
-    if (preflightAllowed) {
-      return new Response(null, {
-        status: 204,
-        headers: responseHeaders(
-          result.headerVariant,
-          ctx.requestIdHeader,
-          ctx.origin,
-          result.rateRemaining,
-          result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
-          result.retryAfterMs > 0 ? secondsFromMs(result.retryAfterMs) : undefined,
-        ),
-      })
-    }
-
-    const status = safeTerminalStatus(result)
-
-    const body: Uint8Array =
-      result.errorCode === ERROR_CODE_RATE_LIMITED
-        ? rateLimitedBody(result.retryAfterMs)
-        : (ERROR_CODE_BODIES[result.errorCode] ?? ERROR_BODIES.internal ?? EMPTY_BODY)
-
-    return new Response(body, {
-      status,
-      headers: terminalHeaders(result.headerVariant, ctx, result),
-    })
-  }
-
-  function errorResponse(
-    _req: Request | undefined,
-    result: BakedIngressResult | null,
-    status: number,
-    code: string,
-    message: string,
-    ctx: BakedContext,
-  ): Response {
-    const body =
-      ERROR_BODIES[code] ?? encoder.encode(JSON.stringify({ ok: false, error: { code, message } }))
-
-    return new Response(body, {
-      status,
-      headers: terminalHeaders(result?.headerVariant ?? HV_JSON, ctx, result),
-    })
-  }
-
-  function internalErrorResponse(ctx: BakedContext, result?: BakedIngressResult): Response {
-    return new Response(ERROR_BODIES.internal, {
-      status: 500,
-      headers: terminalHeaders(result?.headerVariant ?? HV_JSON, ctx, result ?? null),
-    })
-  }
-
-  function withContentType(
-    headers: ReadonlyArray<[string, string]>,
-    contentType: string,
-  ): [string, string][] {
-    const out = new Array<[string, string]>(headers.length + 1)
-    let i = 0
-    for (const pair of headers) {
-      out[i++] = pair
-    }
-    out[headers.length] = ['content-type', contentType]
-    return out
-  }
-
-  function zeroCopyResponse(
-    result: BakedIngressResult,
-    _ctx: BakedContext,
-    init: ResponseInit,
-  ): Response {
-    if (currentHandle === null) {
-      // `zeroCopyResponse` must only run inside a live `run()` callback (a
-      // pooled output buffer must be in flight). Called outside `run()` the
-      // result has already been invalidated and `result.bodyJson` is empty —
-      // throw instead of silently serving an empty body.
-      throw new Error(
-        'zeroCopyResponse() can only be called from within a run() callback ' +
-          '(the pooled output buffer is only live during run()).',
-      )
-    }
-    responseBorrowsBuffer = true
-    return pooledBodyResponse(currentHandle, result.bodyJson(false), init, zeroCopyTimeoutMs)
-  }
+  // Response builders, pre-bound to this handler's header templates, request-id
+  // policy, CORS cache and shared per-request state. This is the extracted
+  // response/terminal family (see response/baked-response.ts) — identical
+  // bodies, now living next to response/error-bodies.ts for navigability.
+  const responseBuilders = buildBakedResponseBuilders({
+    headerTemplates,
+    terminalTemplates,
+    emitRequestIdHeader,
+    zeroCopyTimeoutMs,
+    originHeaderCache,
+    state: responseState,
+  })
 
   const result = new BakedIngressResult()
   const ctx: BakedContext = {
@@ -648,8 +410,8 @@ export function createIngressHandler(
     // full_sync family paid on every request. The response wire format is
     // unchanged because both entries run the identical `handle_packed` core.
     let handle: PooledBuffer | null = null
-    currentHandle = null
-    responseBorrowsBuffer = false
+    responseState.currentHandle = null
+    responseState.responseBorrowsBuffer = false
 
     try {
       // Pack the request frame (inside the try: an unexpected packing failure
@@ -669,7 +431,7 @@ export function createIngressHandler(
         // Acquire inside the try: pool exhaustion (maxInFlight) becomes a 500
         // via setInternalError — never an uncaught exception out of run().
         handle = outputPool.acquire(outputBufferSize)
-        currentHandle = handle
+        responseState.currentHandle = handle
 
         // Write into the pooled buffer — no per-request allocation. Bun
         // PRIMARY: the raw-components C-ABI (`castrum_ingress_handle_components`)
@@ -718,13 +480,7 @@ export function createIngressHandler(
             written = handler.handleRequestPacked(input, body, handle.buffer)
           }
         } else if (bunFFI !== null && ingressPtr !== 0 && !ffiDisabled) {
-          const input = inputPacker.packParts(
-            methodKind,
-            packUrl,
-            packIp,
-            ridBytes,
-            packedHeaders,
-          )
+          const input = inputPacker.packParts(methodKind, packUrl, packIp, ridBytes, packedHeaders)
           try {
             written = bunFFI.ingressHandlePacked(ingressPtr, input, body, handle.buffer)
             ffiFailures = 0
@@ -738,13 +494,7 @@ export function createIngressHandler(
             written = handler.handleRequestPacked(input, body, handle.buffer)
           }
         } else {
-          const input = inputPacker.packParts(
-            methodKind,
-            packUrl,
-            packIp,
-            ridBytes,
-            packedHeaders,
-          )
+          const input = inputPacker.packParts(methodKind, packUrl, packIp, ridBytes, packedHeaders)
           written = handler.handleRequestPacked(input, body, handle.buffer)
         }
 
@@ -797,14 +547,14 @@ export function createIngressHandler(
       // request accounting completes (metrics in_flight must not leak), then
       // rethrow for the caller. The native-failure path above does NOT rethrow,
       // so this fires at most once per request.
-      if (responseBorrowsBuffer && handle !== null) {
+      if (responseState.responseBorrowsBuffer && handle !== null) {
         // `zeroCopyResponse` was called but the Response never escaped (the
         // callback threw): the stream that would release the pooled buffer was
         // never delivered. Release it here so the buffer isn't stuck in flight
         // forever.
         handle.release()
         handle = null
-        responseBorrowsBuffer = false
+        responseState.responseBorrowsBuffer = false
       }
       const error = err instanceof Error ? err : new Error(String(err))
       runtime.onError?.(req, requestIdStr, error)
@@ -820,21 +570,26 @@ export function createIngressHandler(
       // A zero-copy Response owns the handle until its body is consumed; in
       // every other case (copy mode, terminal/error responses) the buffer is
       // safe to return to the pool immediately.
-      if (handle !== null && !responseBorrowsBuffer) {
+      if (handle !== null && !responseState.responseBorrowsBuffer) {
         handle.release()
       }
-      currentHandle = null
+      responseState.currentHandle = null
     }
   }
 
+  // Native JSON-validity capability for the pure route factories: the zero-DOM
+  // `json_valid` fast path (same one the pipeline uses), routed through the
+  // primary bun:ffi transport with the napi fallback. Exposed on the handler so
+  // `routes/json-write.ts` validates request bodies via DI — it must not import
+  // the native layer (purity boundary).
+  const nativeJsonValid = (bytes: Uint8Array): boolean =>
+    bunFFI !== null && typeof bunFFI.jsonValid === 'function'
+      ? bunFFI.jsonValid(bytes)
+      : addon.jsonValid(bytes)
+
   return {
     run,
-    responseHeaders,
-    terminalHeaders,
-    terminalResponse,
-    errorResponse,
-    internalErrorResponse,
-    withContentType,
-    zeroCopyResponse,
+    ...responseBuilders,
+    jsonValid: nativeJsonValid,
   }
 }
