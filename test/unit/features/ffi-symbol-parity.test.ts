@@ -13,7 +13,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 
 // The C-ABI surface lives in rust/ffi/ (a folder since the ffi.rs split) —
 // scan every .rs file so a symbol moved between the domain files is still seen.
@@ -23,12 +22,14 @@ const rustSource = readdirSync(ffiDir)
   .map((f) => readFileSync(new URL(f, ffiDir), 'utf8'))
   .join('\n')
 const ffiSource = readFileSync(new URL('../../../src/native/ffi.ts', import.meta.url), 'utf8')
-// The bind-time self-test lives in its own module (src/native/ffi/selftest.ts)
-// after the transport-core decomposition — scan IT for wrapper coverage.
-const selftestSource = readFileSync(
-  new URL('../../../src/native/ffi/selftest.ts', import.meta.url),
-  'utf8',
-)
+// The bind-time self-test lives in src/native/ffi/build/*.ts (per-domain
+// `selfTest*` functions) after the transport-core decomposition — scan the
+// whole folder for wrapper coverage.
+const selftestDir = new URL('../../../src/native/ffi/build/', import.meta.url)
+const selftestSource = readdirSync(selftestDir)
+  .filter((f) => f.endsWith('.ts'))
+  .map((f) => readFileSync(new URL(f, selftestDir), 'utf8'))
+  .join('\n')
 
 /** All `castrum_*` C-ABI export names declared in rust/ffi/. */
 function rustExports(src: string): Set<string> {
@@ -62,10 +63,11 @@ function ffiBoundSymbols(src: string): Set<string> {
 
 /** Distinct BunFFI wrapper methods exercised by the bind-time self-test. */
 function selfTestCovers(src: string): Set<string> {
-  const start = src.indexOf('function selfTest(')
-  const body = src.slice(start, src.indexOf('\n}', start))
   const methods = new Set<string>()
-  for (const m of body.matchAll(/\bb\.(\w+)\(/g)) {
+  // The per-domain self-tests in ffi/build/*.ts each take `b: BunFFI` and call
+  // `b.<method>(`; the builders call `sym.castrum_*` instead, so scanning the
+  // build folder for `b.` calls is a precise coverage map.
+  for (const m of src.matchAll(/\bb\.(\w+)\(/g)) {
     const name = m[1]
     if (name) methods.add(name)
   }
