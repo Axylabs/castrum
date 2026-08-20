@@ -70,30 +70,37 @@ pub unsafe extern "C" fn castrum_etag_into(
 /// Returns 1 → 304. A null handle (0) → 0, so a dropped instance can never
 /// dereference freed state.
 ///
+/// `inm`/`ims` cross as `(ptr, len)` byte slices — the same convention as every
+/// other instance op (`castrum_media_type_matcher_matches`, `castrum_jwt_signer_*`,
+/// `castrum_template_render`, `castrum_schema_validator_validate`) — so the JS
+/// side passes arbitrary header bytes with no NUL-termination requirement.
+/// Presence is gated by `flags`, so the pointers are ignored when the
+/// corresponding bit is 0.
+///
 /// # Safety
 /// `inner` must be a valid `ConditionalRequest` pointer obtained from
 /// `inner_ptr()` and must stay alive for the call (the JS wrapper holds the
-/// napi instance). `inm`/`ims` are `bun:ffi` `cstring` ARGs — NUL-terminated
-/// C strings (the engine transcodes the JS header strings in-engine; zero JS
-/// encode); presence is gated by `flags`, so their pointers are ignored when
-/// the corresponding bit is 0.
+/// napi instance). `inm`/`ims` must be valid for `inm_len`/`ims_len` bytes when
+/// the corresponding `flags` bit is set.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_conditional_is_not_modified(
     inner: usize,
-    inm: *const std::os::raw::c_char,
-    ims: *const std::os::raw::c_char,
+    inm: *const u8,
+    inm_len: usize,
+    ims: *const u8,
+    ims_len: usize,
     flags: u8,
 ) -> u8 {
     if inner == 0 {
         return 0;
     }
-    let inm_opt = if flags & 1 != 0 {
-        Some(std::ffi::CStr::from_ptr(inm).to_bytes())
+    let inm_opt = if flags & 1 != 0 && !inm.is_null() {
+        Some(std::slice::from_raw_parts(inm, inm_len))
     } else {
         None
     };
-    let ims_opt = if flags & 2 != 0 {
-        Some(std::ffi::CStr::from_ptr(ims).to_bytes())
+    let ims_opt = if flags & 2 != 0 && !ims.is_null() {
+        Some(std::slice::from_raw_parts(ims, ims_len))
     } else {
         None
     };
@@ -144,21 +151,23 @@ pub unsafe extern "C" fn castrum_media_type_matcher_matches(
 /// PRECOMPILED supported list via its opaque inner handle → cstring (`null` =
 /// identity, matching napi `Option<String>`).
 ///
+/// `header` crosses as a `(ptr, len)` byte slice — the same convention as
+/// `castrum_media_type_matcher_matches` — so the JS side passes arbitrary
+/// header bytes with no NUL-termination requirement.
+///
 /// # Safety
 /// `inner` must be a valid `AcceptNegotiator` pointer from `inner_ptr()`, alive
-/// for the call.
-/// `header` is a `bun:ffi` `cstring` ARG — a NUL-terminated C string (the
-/// engine transcodes the JS header string in-engine; zero JS encode), never
-/// NUL-containing (see the `cstring`-arg rule in docs/FFI_BUN_GUIDE.md).
+/// for the call; `header` must be valid for `header_len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_accept_negotiator_negotiate(
     inner: usize,
-    header: *const std::os::raw::c_char,
+    header: *const u8,
+    header_len: usize,
 ) -> *const std::os::raw::c_char {
     if inner == 0 || header.is_null() {
         return std::ptr::null();
     }
-    let h = std::ffi::CStr::from_ptr(header).to_bytes();
+    let h = slice::from_raw_parts(header, header_len);
     let Some(bytes) = panic_guard(
         || unsafe {
             crate::http::accept::accept_negotiator_negotiate_core(

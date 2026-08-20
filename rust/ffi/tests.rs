@@ -644,17 +644,17 @@ fn media_type_matcher_matches_c_abi() {
 fn accept_negotiator_negotiate_c_abi() {
     let n = crate::http::accept::AcceptNegotiator::new(vec!["gzip".to_string()]);
     let inner = n.inner_ptr() as usize;
-    let f = |h: &std::ffi::CStr| -> Option<Vec<u8>> {
-        let s = unsafe { castrum_accept_negotiator_negotiate(inner, h.as_ptr()) };
+    let f = |h: &[u8]| -> Option<Vec<u8>> {
+        let s = unsafe { castrum_accept_negotiator_negotiate(inner, h.as_ptr(), h.len()) };
         if s.is_null() {
             None
         } else {
             unsafe { cstr_bytes(s) }
         }
     };
-    assert_eq!(f(c"gzip, deflate;q=0.5"), Some(b"gzip".to_vec()));
-    assert_eq!(f(c"identity;q=0.9"), None); // no supported match → identity
-    assert!(unsafe { castrum_accept_negotiator_negotiate(0, c"gzip".as_ptr()) }.is_null());
+    assert_eq!(f(b"gzip, deflate;q=0.5"), Some(b"gzip".to_vec()));
+    assert_eq!(f(b"identity;q=0.9"), None); // no supported match → identity
+    assert!(unsafe { castrum_accept_negotiator_negotiate(0, b"gzip".as_ptr(), 4) }.is_null());
 }
 
 #[test]
@@ -808,26 +808,26 @@ fn conditional_is_not_modified_c_abi() {
         Some(784_111_777f64),
     );
     let inner = c.inner_ptr() as usize;
-    let f = |flags: u8, inm: Option<&std::ffi::CStr>, ims: Option<&std::ffi::CStr>| -> u8 {
-        let ip = inm.map_or(std::ptr::null(), |c| c.as_ptr());
-        let sp = ims.map_or(std::ptr::null(), |c| c.as_ptr());
-        unsafe { castrum_conditional_is_not_modified(inner, ip, sp, flags) }
+    let f = |flags: u8, inm: Option<&[u8]>, ims: Option<&[u8]>| -> u8 {
+        let (ip, il) = inm.map_or((std::ptr::null(), 0usize), |s| (s.as_ptr(), s.len()));
+        let (sp, sl) = ims.map_or((std::ptr::null(), 0usize), |s| (s.as_ptr(), s.len()));
+        unsafe { castrum_conditional_is_not_modified(inner, ip, il, sp, sl, flags) }
     };
     // If-None-Match "*" → 304.
-    assert_eq!(f(1, Some(c"*"), None), 1);
+    assert_eq!(f(1, Some(b"*"), None), 1);
     // Exact etag → 304; weak compare W/"abc123" → 304.
-    assert_eq!(f(1, Some(c"\"abc123\""), None), 1);
-    assert_eq!(f(1, Some(c"W/\"abc123\""), None), 1);
+    assert_eq!(f(1, Some(b"\"abc123\""), None), 1);
+    assert_eq!(f(1, Some(b"W/\"abc123\""), None), 1);
     // Non-matching list → not 304.
-    assert_eq!(f(1, Some(c"\"xyz\", \"other\""), None), 0);
+    assert_eq!(f(1, Some(b"\"xyz\", \"other\""), None), 0);
     // If-Modified-Since == lastModified → 304; 1s before → not 304.
-    assert_eq!(f(2, None, Some(c"Sun, 06 Nov 1994 08:49:37 GMT")), 1);
-    assert_eq!(f(2, None, Some(c"Sun, 06 Nov 1994 08:49:36 GMT")), 0);
+    assert_eq!(f(2, None, Some(b"Sun, 06 Nov 1994 08:49:37 GMT")), 1);
+    assert_eq!(f(2, None, Some(b"Sun, 06 Nov 1994 08:49:36 GMT")), 0);
     // Absent flags → not 304 (nothing to match).
     assert_eq!(f(0, None, None), 0);
     // Null handle → 0 (never dereferences freed state).
     assert_eq!(
-        unsafe { castrum_conditional_is_not_modified(0, std::ptr::null(), std::ptr::null(), 0) },
+        unsafe { castrum_conditional_is_not_modified(0, std::ptr::null(), 0, std::ptr::null(), 0, 0) },
         0
     );
 }
