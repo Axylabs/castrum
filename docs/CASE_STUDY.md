@@ -42,7 +42,7 @@ as a pre-baked pipeline, and still be usable from both runtimes.
 ### 2.1 One cdylib, two transports
 
 The addon is built with napi-rs (so Node can load it), but it *also* exports
-`extern "C"` symbols (`rust/ffi.rs`, **79 `castrum_*` symbols** — 71 direct + 4
+`extern "C"` symbols (`rust/ffi/`, **79 `castrum_*` symbols** — 71 direct + 4
 `validator_c_abi!` + 4 `compress_to_out!`) so Bun can
 `dlopen` it directly:
 
@@ -56,7 +56,7 @@ The addon is built with napi-rs (so Node can load it), but it *also* exports
 
 ```mermaid
 flowchart LR
-    TS["TypeScript (index.ts)"] -->|"bun:ffi · 75 C-ABI symbols · ~10–20 ns"| RUST["Rust cdylib (rust/ffi.rs)"]
+    TS["TypeScript (index.ts)"] -->|"bun:ffi · 79 C-ABI symbols · ~10–20 ns"| RUST["Rust cdylib (rust/ffi/)"]
     TS -.->|"NAPI fallback (Node / self-test failure)"| RUST
     RUST --> PIPELINE["8-stage ingress pipeline"]
     TS --> PACKED["Packed, length-prefixed buffers (zero-copy)"]
@@ -155,7 +155,7 @@ The most instructive moment: under `11-concurrent-burst`, the ingress server
 exception, but a panic unwinding through raw `extern "C"` is undefined behaviour
 that takes the whole process down.
 
-The fix (in `rust/ffi.rs`): every fallible / allocating C-ABI export now routes
+The fix (in `rust/ffi/`): every fallible / allocating C-ABI export now routes
 its core through `panic_guard` (`catch_unwind`) and reports a sentinel instead
 of panicking. After the fix, the same scenario completes cleanly:
 

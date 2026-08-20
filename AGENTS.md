@@ -13,7 +13,7 @@ export or touching `src/native/ffi.ts`.
 cdylib (`castrum.<platform>-<arch>.node`, built with napi-rs) provides
 performance-critical primitives; TypeScript (`src/`) provides the ergonomic
 public API. It ships a CPU benchmark (`bench.ts`), an HTTP benchmark
-(`bench/run-bench.ts` + `bench/servers/*-server.ts`), and a production-grade
+(`bench/run-bench.ts` + `bench/http/servers/*-server.ts`), and a production-grade
 HTTP **ingress pipeline** for Bun servers.
 
 ## Commands
@@ -29,13 +29,16 @@ HTTP **ingress pipeline** for Bun servers.
 | Build compiled JS entry (Node) | `bun run build:js` (bundle + types → `dist/`) |
 | Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
-| Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/unit_tests.rs`) |
+| Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/panic_safety.rs` + `rust/proptest_suite.rs`) |
 | TS unit tests | `bun test` (~540 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts) feed docs/bun-builtins-decision-matrix.md (NOT a shipped-op measurement) |
-| Proven selection | baked registry `src/shared/proven.ts` (`PROVEN_SELECTION`: native/js/bun winners) + `proven` surface (`src/rust-ffi/proven.ts`); `test/unit/shared/proven.test.ts` verifies each winner is wired (opImpl/builtins/selection.json) — NO live bench gate |
+| Proven selection | baked registry `src/shared/proven.ts` (`PROVEN_SELECTION`: native/js/bun winners) + `proven` surface (`src/rust-ffi/proven.ts`); `test/unit/contract/proven.test.ts` verifies each winner is wired (opImpl/builtins/selection.json) — NO live bench gate |
 | Startup / first-call benchmark | `bun run bench:startup` |
-| FFI transport benches | `bun run bench:ffi` / `bench:ffi:load` / `bench:ffi:public` / `bench:ffi:workers` |
+| FFI transport benches | `bun run bench:ffi` / `bench:ffi:load` / `bench:ffi:public` / `bench:ffi:workers` / `bench:margin` (`bench/ffi/`) |
+| Ingress cost benches | `bun run bench:ingress-cost` / `bench:ingress-cost:post` / `bench:router` (`bench/cost/`) |
+| Load-phase bench | `bun run bench:load` |
+| Autocannon stress | `bun run bench:http:ac` (with `AC_*` env: `AC_DURATION`, `AC_PATH`, `AC_METHOD`, `AC_BODY`, `AC_CONTENT_TYPE`, `AC_CONNECTIONS`, `AC_WORKERS`, `AC_INSTANCES`, `AC_PIPELINING`, `SERVER`) |
 | Native batch parity check | `bun run verify:native:batch` |
 | Typecheck | `bun run typecheck` (== `bunx tsc --noEmit`; `include` = index.ts, bench.ts, src, bench) + `bun run typecheck:test` (== `bunx tsc --noEmit -p tsconfig.test.json`; typechecks `test/` + `bench/` with unused locals/params on) |
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
@@ -109,26 +112,31 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── router.ts           createIngressRouter — per-route compiled ingress (each route compiles its
   │                       OWN native IngressInner from per-route options + per-route HeaderPlan +
   │                       optional pre-warm; same wire format as handlers.ts; the bench server has a
-  │                       router variant at bench/servers/router-server.ts). Its per-route native
+  │                       router variant at bench/http/servers/router-server.ts). Its per-route native
   │                       compile-time-routing idea is the same one the (now LIVE) native route
   │                       stack (rust/ingress/native_route.rs) exposes to `@ignex/native`.
   │                       NOTE: the old `rust/route.rs` was dead external-project wire — superseded
   │                       by `native_route.rs`, which implements ignex's route-wire v3 contract.
   ├── packing/            header-packing.ts (fast) + input-packer.ts + gather-raw-headers.ts (pre-baked) + scratch.ts (shared TLS buffers + per-header size guards)
-  ├── headers/            cors.ts + hsts.ts + fast-templates.ts + baked-templates.ts (two template builders, NOT unified)
+  ├── headers/            cors.ts + hsts.ts + security.ts (baked security merge) + fast-templates.ts + baked-templates.ts (two template builders, NOT unified)
   ├── decode/             fast-result.ts + baked-result.ts (two decoders, NOT unified) + packed-sections.ts (shared section layout)
-  ├── response/           terminal.ts (fast) + error-bodies.ts (pre-baked)
-  ├── routes/             read/head/json-write/echo/delete/options/fallback factories + common.ts
+  ├── response/           terminal.ts (fast) + error-bodies.ts (pre-baked) + baked-response.ts (pre-baked response builders)
+  ├── routes/             read/head/json-write/echo/delete/options/fallback factories + common.ts + responder.ts
   ├── fast.ts             thin: createIngressFast (packed-input path, handleRequestPacked) + re-exports
   ├── handlers.ts         thin: createIngressHandler (packed-input path: frame packed in
   │                       JS via IngressInputPacker + gatherRawHeadersPacked, driven by
   │                       handleRequestPacked, pooled output); used by the bench server
-  └── index.ts            barrel: public API + async createIngress + re-exports
+  ├── sync.ts             createIngressSync / createIngress convenience factories (path 1 wrapper)
+  ├── path-matcher.ts     buildPathMatcher + PathMatch + safeDecode (shared by server-node + router)
+  └── index.ts            pure public barrel (all re-exports)
 src/native/               native transport layer: types.ts (NativeAddon module surface) + types/instances.ts (per-class
                           INSTANCE types, merged single AcceptNegotiatorInstance) + loader.ts (getAddonPath/getAddon/lazyAddon) +
-                          ffi.ts (Bun PRIMARY bun:ffi C-ABI transport over rust/ffi.rs; lazy bind + bind-time self-test +
-                          CASTRUM_FFI_MODE gating + castrum_ingress_layout blob + growExact needed-size retry for variable-size
-                          outputs; napi is the FALLBACK) + ffi/{types,constants,selftest}.ts + index.ts barrel
+                          ffi.ts (Bun PRIMARY bun:ffi C-ABI transport core over rust/ffi/; mode resolution + buffer/buffer_length
+                          probe + bind() orchestration — self-test + CASTRUM_FFI_MODE gating + napi fallback; the bind-time self-test
+                          is the safety net, castrum_ingress_layout blob + growExact needed-size retry for variable-size outputs)
+                          + ffi/ (types.ts BunFFI + constants.ts + selftest.ts thin aggregator + build.ts orchestrator +
+                          build/{util,codecs,compress,parse,instances}.ts — per-domain method builders EACH with its self-test*
+                          function, so a new symbol is bound AND self-tested in one domain file) + index.ts barrel
 src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + addon.ts + context.ts (resolveNative/resolvePoolNative
                           shared first-use caches) + text.ts + batch/ (types.ts interface + build.ts impl + index.ts barrel) +
                           packed.ts + scalar/ (interface + hashing/json/http/crypto/payload/factories builders) + client.ts +
@@ -153,32 +161,40 @@ src/bench/                CPU benchmark framework (tasks, measure, report, ...)
   │                       rust.* delegates to Bun under Bun — the CPU bench `rust:`
   │                       column must measure the ADDON, not the delegated built-in
 src/data, src/shared/     JSON rows + bytes/packed helpers
-bench/servers/            bun-server.ts, elysia-server.ts, ingress-server.ts (HTTP bench)
-bench/load.ts             HTTP load generator + scenarios; validates response SHAPE
+bench/http/servers/            bun-server.ts, elysia-server.ts, ingress-server.ts, router-server.ts (HTTP bench)
+bench/http/run-bench.ts        HTTP scenario runner (`bench:http*`)
+bench/http/load.ts             HTTP load generator + scenarios; validates response SHAPE
+bench/http/load-phase.ts       load/startup cost decomposition (`bench:load`)
+bench/ffi/                     FFI transport benches: ffi-all.ts + ffi-load.ts + ffi-public.ts + ffi-margin.ts + ffi-workers.ts (+ ffi-worker-script.ts)
+bench/cost/                    per-request cost benches: ingress-cost.ts + ingress-cost-post.ts + router-cost.ts
 bench/startup.ts          "instant execution" benchmark (import + first-call timing)
+bench/autocannon-stress.mjs    autocannon stress (`bench:http:ac`)
+bench/measure.ts               shared measureNs/measureNsAsync timing helpers
 scripts/build-perf.sh     LOCAL-only max-perf build (x86-64-v3 + SIMD)
-test/unit/                TS tests (ingress/fast, shared/packed, shared/bytes, features, ingress/body)
+test/unit/                TS tests (native, rust-ffi, contract, ingress, shared, integration)
 test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test.mjs, run via node --test; the enterprise file adds Buffer interop, the precompiled instances, node:crypto cross-checks, keep-alive/413/clientError/slowloris)
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi.rs              `#[no_mangle] extern "C"` exports (79 castrum_* — 71 direct + 4
+  ├── ffi/                `#[no_mangle] extern "C"` exports (79 castrum_* — 71 direct + 4
                           validator_c_abi! + 4 compress_to_out! — incl. the
                           castrum_gzip_isize size probe and the per-route stack
                           castrum_route_compile/run/destroy; parity guarded by
-                          test/unit/features/ffi-symbol-parity.test.ts) for Bun's `bun:ffi`
+                          test/unit/native/ffi-symbol-parity.test.ts) for Bun's `bun:ffi`
                           C-ABI PRIMARY transport (scalar hot fns + ingress layout blob +
                           per-route native stack;
                           SAME cdylib serves both napi on Node/fallback and bun:ffi on Bun
-                          — see src/native/ffi.ts).
+                          — see src/native/ffi.ts). mod.rs (module map) + util.rs
+                          (panic_guard / HMAC_KEY_CACHE / cstring helpers) + per-domain
+                          wrappers (hashing/validators/crypto/jwt/http/payload/json/
+                          rate_limit/ingress/route/probe) + tests.rs.
                           VARIABLE-SIZE convention: return the EXACT required byte count on a
                           too-small buffer (0 = real error) so JS allocates once and retries at
                           most once (no grow-retry re-run loop).
   ├── util/               SHARED INFRASTRUCTURE (mod.rs re-exports keep `crate::util::*`)
   │   ├── bytes.rs        byte primitives: word-compare, hex, %XX decode, cookie_pairs
   │   ├── packed.rs       zero-alloc packed iterators + byte writers (VecWriter, PackedIter)
-  │   ├── batch.rs        aggregate packed batch napi APIs (bitset/count/sum/direct)
-  │   ├── batch_core.rs   generic rayon-parallel batch helpers (bitset/count/sum)
+  │   ├── batch/         aggregate packed batch napi APIs (api.rs + core.rs + tests.rs)
   │   ├── threadpool.rs   rayon global pool init + parallelism heuristic
   │   └── validation.rs   email / UUID / IPv4 / IPv6 validators
   ├── http/               HTTP WIRE FORMATS & PARSING
@@ -189,7 +205,7 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   ├── form.rs         x-www-form-urlencoded parser + FormParser instance
   │   ├── media_type.rs   Content-Type parser + MediaTypeParser / MediaTypeMatcher
   │   ├── url_codec.rs / url_join.rs   percent-encoding + RFC 3986 resolve (UrlBuilder)
-  │   ├── etag.rs         etag / http_date / parse_http_date + ConditionalRequest (304)
+  │   ├── etag.rs / http_date.rs   ETag + ConditionalRequest (304); IMF-fixdate format/parse
   │   ├── accept.rs       Accept-Encoding + AcceptNegotiator (q-values, specificity-first)
   │   ├── mime_lookup.rs  extension → MIME (phf table)
   │   └── multipart.rs    multipart/form-data parser (+ limits)
@@ -210,11 +226,11 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   │                   cmp::equal, insertion-order object keys) — shared by jwt_verify,
   │   │                   json_parse and fast_schema enum/const/uniqueItems
   │   ├── json_ser.rs     zero-alloc JSON escaping + cookie/query → JSON writers
-  │   ├── json_patch_ops.rs  CUSTOM sonic RFC 6902 JSON patch engine (Pointer ~0/~1
-  │   │                   unescape + PatchOp add/remove/replace/move/copy/test incl.
-  │   │                   array `-`/bounds + 1==1.0; serde_json-DOM json-patch/jsonptr
-  │   │                   deps REMOVED). Same JsonPatchError semantics + size guards +
-  │   │                   packed batch entry points as before
+  │   ├── patch/          CUSTOM sonic RFC 6902 JSON patch engine (pointer.rs + ops.rs + engine.rs +
+  │   │                   api.rs + tests.rs; Pointer ~0/~1 unescape + PatchOp add/remove/replace/
+  │   │                   move/copy/test incl. array `-`/bounds + 1==1.0; serde_json-DOM
+  │   │                   json-patch/jsonptr deps REMOVED). Same JsonPatchError semantics +
+  │   │                   size guards + packed batch entry points as before
   │   ├── json_schema.rs  SchemaValidator napi class (fast path + jsonschema-crate fallback; 
   │   │                   also SchemaValidator.derive — one-pass validate + extract)
   │   └── fast_schema/    zero-DOM draft-07 JSON Schema fast path: mod.rs (re-exports compile/FastNode + SchemaError)
@@ -234,15 +250,15 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   │                   result `[flags u32][errorCode u32]` + optional pair sections).
   │   │                   Lenient parse (byte-parity with ignex queryPairs/cookiePairs), body
   │   │                   schema via IngressSchema (fast_schema + jsonschema). Supersedes the
-  │   │                   deleted dead `rust/route.rs`. Tests: native_route.rs + ffi.rs C-ABI +
+  │   │                   deleted dead `rust/route.rs`. Tests: native_route.rs + rust/ffi/ C-ABI +
   │   │                   test/unit/ingress/native-route.test.ts.
   │   ├── tests.rs        ingress unit tests
   │   ├── options.rs / time.rs / packed.rs   option structs, clock, packed readers/builder
   │   ├── cors.rs / proxy.rs / ip_trust.rs / rate_limit.rs / terminal.rs
   │   ├── output.rs       SINGLE NUMERIC SOURCE for the ingress binary layout
   │   └── ingress_constants.rs  NAPI projection of output.rs (single numeric source = output.rs)
+  ├── panic_safety.rs     #[cfg(test)] cross-parser fuzz tests (malformed input never panics)
   ├── test_support.rs     shared #[cfg(test)] helpers (pack_headers, decode_packed_pairs, Rng)
-  └── unit_tests.rs       cross-module test suite
   └── proptest_suite.rs   #[cfg(test)] property-based adversarial-parser tests (dev-dep proptest)
 ```
 
@@ -263,9 +279,9 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
    `{"ok":true,...,"requestId":...}`, errors =
    `{"ok":false,"error":{"code","message"}}`, `ratelimit-*` headers.
 
-The HTTP benchmark server (`bench/servers/ingress-server.ts`) uses path 2 and
+The HTTP benchmark server (`bench/http/servers/ingress-server.ts`) uses path 2 and
 re-exports the pre-baked functions. **Do not unify the two formats** — the load
-generator `bench/load.ts` requires `ok === true` + `requestId: string` on
+generator `bench/http/load.ts` requires `ok === true` + `requestId: string` on
 success and `error.code` / `error.message` on errors (path 2's format).
 
 > **Pooled output buffers (handlers.ts)**: `createIngressHandler` owns a
@@ -446,13 +462,13 @@ success and `error.code` / `error.message` on errors (path 2's format).
   the reusable-output variant; keep `handleRequestFullSync` as the allocating
   compat wrapper), `rust/ingress/ingress_constants.rs`, sync `util/batch.rs`,
   `util/mod.rs::init_thread_pool`, and the scalar NAPI fns used by
-  `src/bench/tasks/*`. ALSO `rust/ffi.rs` (`castrum_*` C ABI exports) +
+  `src/bench/tasks/*`. ALSO `rust/ffi/` (`castrum_*` C ABI exports) +
   `src/native/ffi.ts` (Bun `bun:ffi` — the PRIMARY transport on Bun; NAPI is
   the fallback for Node / `CASTRUM_FFI_MODE=napi` / self-test failure): the
   bind-time self-test is the safety net — do not remove it, `CASTRUM_FFI_MODE`
   gating, or the napi fallback. Any `castrum_*` export that runs a fallible /
   allocating core MUST route it through `panic_guard` (`catch_unwind` in
-  rust/ffi.rs): the raw C ABI has no napi-style unwind guard, so an uncaught
+  rust/ffi/): the raw C ABI has no napi-style unwind guard, so an uncaught
   panic unwinds through `extern "C"` and kills the whole Bun process (this is
   how the ingress server died under `11-concurrent-burst`). The bind-time
   self-test must cover any new C-ABI symbol.
@@ -461,7 +477,7 @@ success and `error.code` / `error.message` on errors (path 2's format).
     old scalar-i64 ABI (0 for both a legit zero-sum and invalid input) forced
     the JS builder to re-dispatch to napi on every 0n. Keep the ok byte.
   - Repeated same-secret HMAC/CSRF/cookie calls reuse a compiled key via the
-    **per-thread `HMAC_KEY_CACHE` LRU** (rust/ffi.rs, cap 16): the C-ABI
+    **per-thread `HMAC_KEY_CACHE` LRU** (rust/ffi/, cap 16): the C-ABI
     equivalent of the compiled-once `HmacSigner`. Keep it thread-local (zero
     lock contention across Bun Worker threads) and owned (no dangling handles).
 - **Rust crate history**: it is ONE cdylib crate (Cargo `[lib]` → `rust/lib.rs`).
@@ -536,7 +552,7 @@ explicit impurity boundary so the hot path can pool/globalize state:
 - **Rust**: `rustfmt`, `cargo clippy` clean, `///` doc comments, snake_case.
   Keep NAPI types out of internal signatures so core logic stays testable.
 - **Wire format is a contract**: changing success/error body shape or the
-  `ratelimit-*` header names in `handlers.ts` breaks `bench/load.ts` checks and
+  `ratelimit-*` header names in `handlers.ts` breaks `bench/http/load.ts` checks and
   invalidates benchmark baselines.
 - **Benchmark controls**: `CASTRUM_BENCH_BATCH_SIZE` (CPU-bench batch size for
   sub-µs ops; default 64), `HTTP_NO_SHAPE=1` (load generator skips response-shape
@@ -549,7 +565,7 @@ explicit impurity boundary so the hot path can pool/globalize state:
   decision matrix. `proven` (`src/rust-ffi/proven.ts`) exports the FULL `rust.*`
   surface (`export const proven = rust`). There is NO live benchmark audit or
   `@deprecated` JSDoc machinery (the old `check:proven` / `check:annotate`
-  friction — removed). Instead `test/unit/shared/proven.test.ts` verifies each
+  friction — removed). Instead `test/unit/contract/proven.test.ts` verifies each
   baked winner is actually wired: `opImpl(op)` agrees, `builtins.has(op)` matches
   for `bun` entries, and native/js entries match the addon's embedded
   `selection.json`. When you add/change a public function, add/update its
@@ -568,16 +584,16 @@ explicit impurity boundary so the hot path can pool/globalize state:
   (mirrored in `PROVEN_SELECTION`'s `bun` entries). The CPU
   bench measures the RAW addon for delegated ops via `src/bench/raw-native.ts`
   (FFI-first/napi) so the report reflects the addon, not the delegated built-in.
-  Parity is pinned by `test/unit/features/delegation.test.ts`.
+  Parity is pinned by `test/unit/contract/delegation.test.ts`.
 
 ## Testing
 
-- **TS**: `bun test` (~540). Add tests under `test/unit/<area>/` (`ingress/`,
-  `shared/`, `features/`).
+- **TS**: `bun test` (~540). Add tests under `test/unit/<area>/` (`native/`,
+  `rust-ffi/`, `contract/`, `ingress/`, `shared/`, `integration/`) — see `test/README.md`.
 - **Rust**: `cargo test`. New logic ships with a `#[cfg(test)] mod tests` block in
   the SAME module file (ingress.rs, url_codec.rs, validation.rs, proxy.rs,
-  hmac_sha256.rs already do). Cross-module suites live in `rust/unit_tests.rs`;
-  shared test helpers live in `rust/test_support.rs`.
+  hmac_sha256.rs already do). Cross-module suites live in `rust/panic_safety.rs` +
+  `rust/proptest_suite.rs`; shared test helpers live in `rust/test_support.rs`.
 - **HTTP**: after touching any server or `handlers.ts`, run
   `bun run bench:http:smoke` (or `SERVER=ingress SCENARIO=01-smoke bun run bench:http:smoke`)
   and confirm no `shape_failure` / `unexpected_status` in the report.

@@ -14,7 +14,7 @@ agent editing this repo, [`AGENTS.md`](../AGENTS.md) is the agent-facing map.
 
 - A **Rust cdylib** (`castrum.<platform>-<arch>.node`, built with napi-rs,
   ALSO exporting `extern "C"` symbols for Bun's `bun:ffi` — see
-  `rust/ffi.rs`) provides the performance-critical primitives (parsers,
+  `rust/ffi/`) provides the performance-critical primitives (parsers,
   crypto, hashing, JSON, compression, and the HTTP **ingress pipeline**).
   Under Bun, `bun:ffi` is the PRIMARY transport; NAPI is the fallback
   (Node, `CASTRUM_FFI_MODE=napi`, or a failed ffi self-test).
@@ -45,6 +45,8 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 | CPU benchmark + correctness | `bun run check` | == `bun bench.ts`; writes `bench/results/cpu/` |
 | HTTP bench (all servers) | `bun run bench:http` | |
 | HTTP smoke (fast sanity) | `bun run bench:http:smoke` | **the wire-format guard** (CI-gated) |
+| FFI transport benches | `bun run bench:ffi` / `bench:ffi:load` / `bench:ffi:public` / `bench:ffi:workers` / `bench:margin` | `bench/ffi/` |
+| Ingress cost benches | `bun run bench:ingress-cost` / `bench:ingress-cost:post` / `bench:router` | `bench/cost/` |
 | Startup bench | `bun run bench:startup` | import + first-call timing |
 | JS lint (Biome) | `bun run lint` / `lint:fix` | `bunx biome check [--write] .` |
 | JS format (Biome) | `bun run format` | `bunx biome format --write .` |
@@ -71,9 +73,13 @@ src/
     types.ts              NativeAddon module-surface interface (mirrors index.d.ts).
     types/instances.ts    Per-class INSTANCE types (Ingress, SchemaValidator, JwtSigner, ...) + result types.
     loader.ts             Addon path resolution (multi-root) + getAddon()/lazyAddon().
-    ffi.ts                bun:ffi C-ABI bindings (Bun-only): lazy bind + bind-time self-test,
-                          CASTRUM_FFI_MODE gating, castrum_ingress_layout blob for constants.ts.
-    ffi/                  ffi/types.ts (BunFFI interface) + constants.ts + selftest.ts (bind-time self-test).
+    ffi.ts                bun:ffi C-ABI transport core (Bun-only): mode resolution, buffer/buffer_length
+                          probe, bind() orchestration (self-test + CASTRUM_FFI_MODE gating + napi fallback).
+    ffi/                  Decomposed bind surface: types.ts (BunFFI interface) + constants.ts +
+                          selftest.ts (thin aggregator) + build.ts (orchestrator) +
+                          build/{util,codecs,compress,parse,instances}.ts — per-domain method builders
+                          EACH with its self-test* function, so a new castrum_* symbol is bound AND
+                          self-tested in one domain file.
     index.ts              Barrel.
   runtime/                THE RUNTIME ADAPTER seam (Bun/Node) — selected once at load.
     detect.ts             Cached runtime detection — the ONLY place `typeof Bun` is checked.
@@ -108,21 +114,31 @@ src/
     buffer-pool.ts        Generic reusable byte-buffer pool (pooled ingress output).
     response.ts           pooledBodyResponse (releases the pool on body consume).
     log.ts                createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines).
+    metrics.ts            Zero-dep metrics registry (counters/gauges/histograms + Prometheus render).
+    trace.ts              W3C traceparent/span-id helpers.
+    env.ts                Centralized env-var resolution (CASTRUM_* + NAPI_RS_NATIVE_LIBRARY_PATH).
+    proven.ts             Baked benchmark-proven op selection (PROVEN_SELECTION — pure data).
+  loader/                 Higher-order-function data loader (HFC) over the curated op set.
+    index.ts              Dispatch core + factory (scalar/bulk dispatch, coalescing, LRU cache).
+    ops.ts                Op registry (LOADER_OPS) + type tower; state.ts / cost.ts / batch.ts / types.ts.
   ingress/                The HTTP ingress pipeline (two paths — see §4.2).
     fast.ts               PATH 1: createIngressFast (packed-input via handleRequestPacked).
     handlers.ts           PATH 2: createIngressHandler (JS-packs the frame via IngressInputPacker
-                          + gatherRawHeadersPacked → handleRequestPacked).
-    index.ts              Barrel + createIngress / createIngressSync convenience factories.
+                          + gatherRawHeadersPacked → handleRequestPacked); response builders
+                          extracted to response/baked-response.ts.
+    index.ts              Pure public barrel (all re-exports).
+    sync.ts               createIngressSync / createIngress convenience factories (path 1 wrapper).
     shared.ts             JS constants + buildHeaderPlan + assertSyncCallback (shared by both paths).
     constants.ts          Binary-layout constants read from Rust at runtime (SINGLE SOURCE).
     status.ts / errors.ts / options.ts / types.ts / body.ts / context.ts
     packing/              header-packing.ts, input-packer.ts, gather-raw-headers.ts
-    headers/              cors.ts, hsts.ts, fast-templates.ts, baked-templates.ts
+    headers/              cors.ts, hsts.ts, security.ts (baked security merge), fast-templates.ts, baked-templates.ts
     decode/               fast-result.ts, baked-result.ts   (TWO decoders — see §4.2)
-    response/             terminal.ts, error-bodies.ts
-    routes/               read/head/json-write/echo/fallback factories + common.ts
+    response/             terminal.ts, error-bodies.ts, baked-response.ts (pre-baked response builders)
+    routes/               read/head/json-write/echo/fallback factories + common.ts + responder.ts
     server.ts             createIngressServer (Bun.serve) + buildRouteHandlers + gracefulShutdown.
     server-node.ts        createIngressServerNode (node:http adapter, same route handlers).
+    path-matcher.ts       buildPathMatcher + PathMatch + safeDecode (shared by server-node + router).
   integration/            Framework integration (wraps path 2 — createIngressHandler).
     pipeline.ts           createPipeline (framework-agnostic request stage for Hono/Elysia/Bun.serve).
     websocket.ts          createWebSocketUpgrade (RFC 6455 101 handshake + subprotocol).
@@ -135,22 +151,33 @@ src/
 ```
 rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
   lib.rs                  Declaration hub + module map + crate docs.
-  util/                   Shared infrastructure: bytes, packed, batch (+batch_core), threadpool, validation.
+  selection.rs            Rust-side op selection metadata (mirrors src/selection.json).
+  util/                   Shared infrastructure: bytes, packed, batch/ (api.rs + core.rs + tests.rs),
+                          threadpool, validation.
   http/                   HTTP wire formats & parsing: headers, method, http/cookie/query parsers,
-                          form, media_type, url_codec, url_join, etag, accept, mime_lookup, multipart.
-  crypto/                 Auth & hashing: hmac_sha256, cookie_sign, csrf, jwt, aead, argon2,
-                          base64, hashing (fnv/crc32/xxh3), random_token.
-  json/                   JSON & schema: json_ops, json_ser, json_patch_ops, json_schema (napi),
+                          form, media_type, url_codec, url_join, http_date, etag, accept,
+                          mime_lookup, multipart.
+  crypto/                 Auth & hashing: hmac_sha256, cookie_sign, csrf, jwt/ (token.rs + api.rs +
+                          tests.rs), aead, argon2, base64, ed25519, hashing (fnv/crc32/xxh3),
+                          random_token.
+  json/                   JSON & schema: json_ops, json_ser, json/patch/ (pointer.rs + ops.rs +
+                          engine.rs + api.rs + tests.rs), json_schema (napi),
                           fast_schema/ (zero-DOM engine — pure, no napi).
   payload/                Output & streaming: compress, sse, ws_frames, websocket, template.
-  ingress/                THE ingress pipeline: mod.rs (napi boundary), pipeline.rs (core 8-stage),
-                          options/time/packed, cors, proxy, ip_trust, rate_limit, terminal,
-                          output.rs (single numeric layout source), ingress_constants.rs (napi projection).
-  ffi.rs                  #[no_mangle] extern "C" exports (79 castrum_* symbols — 71 direct + 4
+  ingress/                THE ingress pipeline: api.rs (Ingress/IngressInner napi class) + mod.rs
+                          (declaration hub), pipeline.rs (core 8-stage), native_route.rs (per-route
+                          native stack), options/time/packed, cors, proxy, ip_trust, rate_limit,
+                          terminal, output.rs (single numeric layout source),
+                          ingress_constants.rs (napi projection).
+  ffi/                    #[no_mangle] extern "C" exports (79 castrum_* symbols — 71 direct + 4
                           validator_c_abi! + 4 compress_to_out!; parity guarded by
-                          test/unit/features/ffi-symbol-parity.test.ts) for Bun's bun:ffi
+                          test/unit/native/ffi-symbol-parity.test.ts) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).
-  unit_tests.rs / test_support.rs   Cross-module Rust test suites.
+                          mod.rs (module map) + util.rs (panic_guard / HMAC cache / cstring helpers)
+                          + per-domain wrappers (hashing/validators/crypto/jwt/http/payload/json/
+                          rate_limit/ingress/route/probe) + tests.rs.
+  panic_safety.rs / test_support.rs   Cross-module fuzz + shared #[cfg(test)] helpers.
+  proptest_suite.rs      Property-based adversarial-parser tests (dev-dep proptest).
 ```
 
 ### Generated / ignored (do NOT edit)
@@ -160,7 +187,7 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
 | `dist/` | Compiled ESM entry + types for Node | Built by `build:js`; gitignored |
 | `index.js` / `index.d.ts` | NAPI-RS generated loader/declarations | Regenerated by `napi build`; gitignored |
 | `castrum.<platform>-<arch>.node` | The native addon binary | Built locally; gitignored |
-| `bench/results/` | Bench reports (cpu/, http/) | Generated; gitignored |
+| `bench/results/` | Bench reports (cpu/, per-server http/, ffi-margin/, router/, startup/, autocannon/) | Generated; gitignored |
 | `target/` | Cargo build output | gitignored |
 | `node_modules/` | Deps | gitignored |
 | `artifacts/` | CI publish staging dir | gitignored |
@@ -172,7 +199,7 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
 ### 4.1 Constants never drift (single numeric source)
 `rust/ingress/output.rs` defines every ingress layout constant once → projected
 to JS two ways: `rust/ingress/ingress_constants.rs` via `#[napi] const` (NAPI)
-AND `rust/ffi.rs` `IngressLayout` via `castrum_ingress_layout` (C ABI, primary
+AND `rust/ffi/` `IngressLayout` via `castrum_ingress_layout` (C ABI, primary
 on Bun) → `src/ingress/constants.ts` reads them at runtime (ffi blob on Bun,
 napi on Node). Drift is pinned by the Rust unit test
 `ingress_layout_c_abi_matches_output_source` and the bun:ffi bind-time
@@ -235,16 +262,19 @@ consumed.
 
 ## 5. Testing & benchmarks
 
-- **TS**: `bun test` → `test/unit/**` (`ingress/`, `shared/`, `features/`).
+- **TS**: `bun test` → `test/unit/**` (`native/`, `rust-ffi/`, `contract/`,
+  `ingress/`, `shared/`, `integration/`) + `test/compat/` + `test/property/`.
+  See `test/README.md` for the intended split.
 - **Rust**: `cargo test` → per-module `#[cfg(test)] mod tests` + cross-module
-  `rust/unit_tests.rs`.
+  `rust/panic_safety.rs` (fuzz) + `rust/proptest_suite.rs`.
 - **Node**: `test/integration/node-smoke.test.mjs` + `node-enterprise.test.mjs`
   via `node --test` (run with `bun run test:node`).
 - **CPU bench**: `bun run check` (correctness checks + comparisons). Sub-µs ops
   are batched (`CASTRUM_BENCH_BATCH_SIZE`). Report → `bench/results/cpu/`.
 - **HTTP bench**: `bench/http/run-bench.ts` + `bench/http/load.ts` (load generator that
-  validates response SHAPE) + `bench/http/servers/{bun,elysia,ingress}-server.ts`.
-  `bench:http:smoke` is the fast CI wire-format gate.
+  validates response SHAPE) + `bench/http/servers/{bun,elysia,ingress,router}-server.ts`.
+  `bench:http:smoke` is the fast CI wire-format gate. FFI-transport benches live in
+  `bench/ffi/`; per-request cost benches in `bench/cost/` (see `bench/README.md`).
 
 ---
 

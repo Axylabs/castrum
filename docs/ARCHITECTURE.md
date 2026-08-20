@@ -31,9 +31,9 @@ The bridge between TypeScript and Rust has **two transports**, both loading the 
 cdylib (built with napi-rs):
 
 - **`bun:ffi` (PRIMARY on Bun)** — `src/native/ffi.ts` `dlopen`s the addon's
-  `extern "C"` exports (`rust/ffi.rs`, 79 `castrum_*` symbols — 71 direct + 4
+  `extern "C"` exports (`rust/ffi/`, 79 `castrum_*` symbols — 71 direct + 4
   `validator_c_abi!` + 4 `compress_to_out!`, parity guarded by
-  `test/unit/features/ffi-symbol-parity.test.ts`) and Bun JIT-calls them
+  `test/unit/native/ffi-symbol-parity.test.ts`) and Bun JIT-calls them
   directly (~10-20ns crossing vs ~100-350ns N-API). A bind-time self-test guards
   correctness: on ANY failure the layer is disabled and calls fall back to napi.
   `CASTRUM_FFI_MODE=auto|ffi|napi` selects the transport (default `auto`).
@@ -83,7 +83,8 @@ shared-infra names so legacy `crate::util::*` call sites keep working.
 rust/
 ├── lib.rs                 ── Crate root: folder declarations + module map, global allocator
 ├── test_support.rs        ── shared #[cfg(test)] helpers (pack_headers, decode_packed_pairs, Rng)
-├── unit_tests.rs          ── cross-module test suite
+├── panic_safety.rs        ── #[cfg(test)] cross-parser fuzz tests (malformed input never panics)
+├── proptest_suite.rs      ── #[cfg(test)] property-based adversarial-parser tests
 │
 ├── util/                  ── Shared infrastructure (mod.rs re-exports crate::util::*)
 │   ├── bytes.rs           ── byte primitives (word-compare, hex, %XX decode, cookie_pairs)
@@ -126,9 +127,10 @@ rust/
 │   │                        (jsonschema cmp::equal; shared by jwt_verify, json_parse,
 │   │                        fast_schema enum/const/uniqueItems)
 │   ├── json_ser.rs        ── zero-alloc JSON escaping + cookie/query → JSON writers
-│   ├── json_patch_ops.rs  ── CUSTOM sonic RFC 6902 engine (Pointer ~0/~1 unescape +
-│   │                        add/remove/replace/move/copy/test incl. array `-`/bounds +
-│   │                        1==1.0; json-patch/jsonptr deps REMOVED)
+│   ├── patch/             ── CUSTOM sonic RFC 6902 engine (pointer.rs + ops.rs + engine.rs +
+│   │                        api.rs + tests.rs; Pointer ~0/~1 unescape + add/remove/replace/
+│   │                        move/copy/test incl. array `-`/bounds + 1==1.0; json-patch/jsonptr
+│   │                        deps REMOVED)
 │   ├── json_schema.rs     ── SchemaValidator napi class (fast + jsonschema fallback)
 │   └── fast_schema/       ── zero-DOM draft-07 JSON Schema fast path
 │       └── mod.rs + types.rs / cursor.rs / compile.rs / validate.rs / errors.rs / email.rs (format:"email" replica) / tests.rs
@@ -458,7 +460,7 @@ Offset (bytes)
   - fast_schema enum/const/uniqueItems re-parse the doc into `sonic_rs::Value`
     and compare with `sonic_values_equal` (no `Vec<serde_json::Value>`).
   - minijinja contexts are `sonic_rs::Value` (implements `Serialize`).
-- **Custom RFC 6902 patch engine** (`json_patch_ops.rs`): no longer round-trips
+- **Custom RFC 6902 patch engine** (`rust/json/patch/`): no longer round-trips
   through the serde_json-DOM `json-patch` crate. A `Pointer` type (`~0`/`~1`
   unescape, RFC 6901) + `PatchOp` parser + applicator (add incl. array `-` and
   bounds, remove, replace, move, copy, test incl. `1 == 1.0`) runs directly on
@@ -497,7 +499,7 @@ Offset (bytes)
               └─── [cookie_parser]
               [hashing] ──── [hmac_sha256]
               [validation]
-              [json_ops] ──── [json_patch_ops]
+              [json_ops] ──── [json/patch]
               [json_schema]
               [url_codec]
               [mime_lookup]

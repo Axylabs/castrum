@@ -59,24 +59,27 @@ bun run check
 /
 ├── rust/          # Rust source (one NAPI cdylib, domain folders)
 │   ├── lib.rs     # Crate root — folder declarations + module map
-│   ├── util/      # Shared infra (bytes, packed, batch, batch_core, threadpool, validation)
-│   ├── http/      # Wire formats & parsing (headers, method, parsers, form, media_type, ...)
-│   ├── crypto/    # Auth & hashing (jwt, aead, argon2, base64, hmac, ...)
-│   ├── json/      # JSON & schema (json_ops, json_ser, json_schema, fast_schema/)
+│   ├── util/      # Shared infra (bytes, packed, batch/, threadpool, validation)
+│   ├── http/      # Wire formats & parsing (headers, method, parsers, form, media_type, http_date, ...)
+│   ├── crypto/    # Auth & hashing (jwt/, aead, argon2, base64, ed25519, hmac, ...)
+│   ├── json/      # JSON & schema (json_ops, json_ser, json/patch/, json_schema, fast_schema/)
 │   ├── payload/   # Output & streaming (compress, sse, ws_frames, template)
-│   ├── ingress/   # The ingress pipeline (mod.rs napi boundary + pipeline.rs core + tests)
-│   ├── unit_tests.rs # Rust unit tests (run with `cargo test`)
-│   └── test_support.rs # shared test helpers
+│   ├── ingress/   # The ingress pipeline (api.rs napi boundary + pipeline.rs core + native_route.rs)
+│   ├── ffi/       # #[no_mangle] extern "C" exports (79 castrum_* symbols — bun:ffi primary transport)
+│   ├── panic_safety.rs / proptest_suite.rs / test_support.rs  # cross-module test suites
+│   └── selection.rs  # Rust-side op selection metadata
 ├── src/           # TypeScript source
-│   ├── ingress/   # HTTP ingress pipeline (fast.ts = packed, handlers.ts = pre-baked)
-│   ├── native/    # Native addon loader
-│   ├── rust-ffi/  # Raw Rust FFI bindings
+│   ├── ingress/   # HTTP ingress pipeline (fast.ts = packed, handlers.ts = pre-baked + sync.ts)
+│   ├── native/    # Native addon transport (loader.ts + ffi.ts + ffi/ decomposed bind surface)
+│   ├── rust-ffi/  # Flat `rust.*` FFI client (scalar/text/batch/packed namespaces)
+│   ├── loader/    # Higher-order-function data loader (dispatch core + op registry)
+│   ├── runtime/   # Runtime adapter seam (Bun/Node detection — the only typeof Bun check)
 │   ├── baseline/  # JS baseline impls (benchmarks)
-│   ├── bench/     # Benchmark framework
+│   ├── bench/     # CPU benchmark framework
 │   ├── data/      # Data utilities
-│   └── shared/    # Shared utilities
-├── test/          # Tests (mirrors src/ structure)
-├── bench/         # HTTP server benchmarks
+│   └── shared/    # Shared utilities (bytes, packed, buffer-pool, metrics, trace, proven, ...)
+├── test/          # Tests (mirrors src/: unit/native, rust-ffi, contract, ingress, shared, integration)
+├── bench/         # Benchmarks (http/, ffi/, cost/ + startup/autocannon at root)
 └── docs/          # Documentation
 ```
 
@@ -161,10 +164,12 @@ pub fn fnv1a64_bytes(input: &[u8]) -> u64 {
 ```
 test/
 ├── unit/                  # Unit tests (mirror src/ structure)
+│   ├── native/            # addon loader + bun:ffi transport + loader HFC
+│   ├── rust-ffi/          # rust.* op surface (json, jwt, hmac, compress, ...)
+│   ├── contract/          # wiring / delegation / import-contract / proven
 │   ├── shared/            # bytes, packed, buffer-pool, response
-│   ├── ingress/           # fast path, handlers path, header-plan
-│   ├── features/          # rust.* FFI feature tests (largest area)
-│   └── ...
+│   ├── ingress/           # fast path, handlers path, header-plan, router, server
+│   └── integration/       # createPipeline / websocket / SSE
 ├── integration/           # Node.js compatibility tests (node --test)
 │   ├── node-smoke.test.mjs
 │   └── node-enterprise.test.mjs
@@ -175,7 +180,7 @@ test/
 ### Writing Tests
 
 - **TypeScript tests**: Use Bun's built-in test runner (`bun test`)
-- **Rust tests**: `cargo test` — per-module `#[cfg(test)] mod tests` blocks + cross-module suites in `rust/unit_tests.rs`
+- **Rust tests**: `cargo test` — per-module `#[cfg(test)] mod tests` blocks + cross-module suites (`rust/panic_safety.rs`, `rust/proptest_suite.rs`)
 - **Property-style tests**: parity/round-trip property tests live in `test/property/` (the project does **not** use fast-check)
 - **Naming**: `describe` blocks for modules, `test` for individual cases
 - **Edge cases**: Always include: empty input, max-size input, invalid input, concurrent access

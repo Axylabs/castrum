@@ -42,7 +42,7 @@ first-failure-wins in stage order.
 
 ## Tests / parity
 
-- `rust/ingress/native_route.rs` unit tests + `rust/ffi.rs` C-ABI tests.
+- `rust/ingress/native_route.rs` unit tests + `rust/ffi/` C-ABI tests.
 - `test/unit/ingress/native-route.test.ts`.
 - `scripts/verify-native-route.ts` + ignex's `route-wire.test.ts` /
   `packages/native/test/route.test.ts`.

@@ -86,8 +86,7 @@ loader.run("jsonPatch", docs, patches);           // paired ops (companion array
 loader.schema(validator)(docs);                   // schema bitset (+ .count())
 ```
 
-See the README "Higher-order data loader" section for the full op table and
-`createLoader` options.
+See docs/API.md — [Higher-order data loader](API.md#higher-order-data-loader-loader--createloader) — for the full op table and `createLoader` options.
 
 ## 3. Stand up an HTTP server (the ingress pipeline)
 

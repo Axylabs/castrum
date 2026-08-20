@@ -1,7 +1,7 @@
 # Writing Rust for Bun — FFI Optimization Guide
 
 > **Who this is for**: anyone (human or agent) writing or reviewing the Rust
-> `extern "C"` surface in `rust/ffi.rs` and its `bun:ffi` binding in
+> `extern "C"` surface in `rust/ffi/` and its `bun:ffi` binding in
 > `src/native/ffi.ts`. The rules below are the concrete, citable behaviors of
 > Bun's own `bun:ffi` implementation, distilled so that future generated Rust
 > code is **optimized for Bun** out of the box — correct on the first `dlopen`,
@@ -168,7 +168,7 @@ string into a JS `string` at call time and returns that; `NULL` → `null`
 copies **nothing itself** — the C side must own the memory until the call
 returns.
 
-- **castrum's application**: the per-thread reused `CSTR_BUF` in `rust/ffi.rs`
+- **castrum's application**: the per-thread reused `CSTR_BUF` in `rust/ffi/`
   (`cstring_return`) is exactly right — the clone is synchronous, so reusing
   the buffer across calls is safe.
 - **Aliasing caveat**: a C function that returns a pointer *derived from a
@@ -267,7 +267,7 @@ These are not optional — they are what make the C-ABI surface safe on Bun (no
 napi-style unwind guard exists for raw `extern "C"`).
 
 1. **`panic_guard` every fallible/allocating core** (`std::panic::catch_unwind`
-   in `rust/ffi.rs`, `AssertUnwindSafe` for captured `&mut [u8]`). An uncaught
+   in `rust/ffi/`, `AssertUnwindSafe` for captured `&mut [u8]`). An uncaught
    panic unwinding through `extern "C"` kills the whole Bun process — this is
    what happened under `11-concurrent-burst`.
 2. **Bind-time self-test for EVERY new symbol** (`src/native/ffi/selfTest`).
@@ -322,6 +322,6 @@ that transfer directly to castrum's cdylib:
 ```bash
 nm -D --defined-only <addon> | grep -c castrum_   # = 79
 bun run bench:http:smoke                           # after touching decoders/handlers
-bun test test/unit/features/ffi.test.ts            # FFI↔napi parity + self-test
-bun test test/unit/features/ffi-symbol-parity.test.ts
+bun test test/unit/native/ffi.test.ts            # FFI↔napi parity + self-test
+bun test test/unit/native/ffi-symbol-parity.test.ts
 ```
