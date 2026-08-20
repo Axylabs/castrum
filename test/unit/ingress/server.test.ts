@@ -6,13 +6,13 @@
  * - `createIngressServer` — a REAL Bun.serve started on a random port
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { createIngressHandler } from '../../../src/ingress/handlers'
 import {
   buildRouteHandlers,
   createIngressServer,
   gracefulShutdown,
 } from '../../../src/ingress/server'
-import { createIngressHandler } from '../../../src/ingress/handlers'
 
 const ingress = createIngressHandler({
   parseCookies: true,

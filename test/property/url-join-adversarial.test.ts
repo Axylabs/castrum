@@ -11,10 +11,10 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { nativeUrlResolve } from '../../src/bench/url-join-baseline'
 import { rust } from '../../src/rust-ffi'
 import { decoder, encoder } from '../../src/shared/bytes'
 import { seededRandom } from './seeded'
-import { nativeUrlResolve } from '../../src/bench/url-join-baseline'
 
 const rand = seededRandom()
 
@@ -63,7 +63,10 @@ function hostPort(u: string): string | null {
 }
 
 /** Resolve a reference against `base` with BOTH engines; null on throw. */
-function resolveBoth(base: Uint8Array, ref: string): { expected: string | null; actual: string | null } {
+function resolveBoth(
+  base: Uint8Array,
+  ref: string,
+): { expected: string | null; actual: string | null } {
   const refBytes = encoder.encode(ref)
   let expected: string | null = null
   try {

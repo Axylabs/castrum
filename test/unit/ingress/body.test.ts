@@ -3,7 +3,7 @@
  * enforcement and an overall deadline.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { readBodyWithLimit } from '../../../src/ingress/body'
 
 const decoder = new TextDecoder()

@@ -3,8 +3,8 @@
  * fail-fast typo protection for both the fast path and the pre-baked path.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { assertKnownIngressOptions, assertIngressOptionValues } from '../../../src/ingress/options'
+import { describe, expect, test } from 'bun:test'
+import { assertIngressOptionValues, assertKnownIngressOptions } from '../../../src/ingress/options'
 
 const VALID_OPTIONS: Record<string, unknown> = {
   trustProxy: false,

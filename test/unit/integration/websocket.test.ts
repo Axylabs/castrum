@@ -2,7 +2,7 @@
  * Tests for src/integration/websocket.ts — the RFC 6455 upgrade helper.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createWebSocketUpgrade } from '../../../src/integration'
 
 function wsReq(path = '/ws', headers: Record<string, string> = {}): Request {

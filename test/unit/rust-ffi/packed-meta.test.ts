@@ -11,7 +11,7 @@
  * a drift between the packed-metadata path and the array-batch path is caught.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { rust } from '../../../src/rust-ffi'
 import { packBatch } from '../../../src/shared/packed'
 

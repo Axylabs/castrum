@@ -11,10 +11,10 @@
 //
 // Run with: bun run build:js && node --test test/integration/node-enterprise.test.mjs
 
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import net from 'node:net'
 import { createCipheriv, randomBytes } from 'node:crypto'
+import net from 'node:net'
+import { test } from 'node:test'
 
 import * as castrum from '../../dist/index.js'
 

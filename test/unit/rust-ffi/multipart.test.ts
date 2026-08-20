@@ -3,7 +3,7 @@
  * hand-rolled JS baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { nativeMultipartParse } from '../../../src/baseline/tasks/multipart'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'

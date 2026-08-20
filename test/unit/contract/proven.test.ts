@@ -15,27 +15,29 @@
  * plain unit test instead of by re-running the CPU benchmark.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { getAddon } from '../../../src/native'
 import { BUILTIN_OPS, runtimeBuiltins } from '../../../src/runtime/builtins'
 import { proven, rust } from '../../../src/rust-ffi'
+import { opImpl } from '../../../src/selection'
 import {
-  PROVEN_SELECTION,
   isProven,
+  PROVEN_SELECTION,
   provenEntry,
   provenImpl,
   provenStatus,
   provenSummary,
   provenSurface,
 } from '../../../src/shared/proven'
-import { opImpl } from '../../../src/selection'
 
 const selectionOps = new Set<string>(
   Object.keys(
-    (JSON.parse(
-      readFileSync(new URL('../../../src/selection.json', import.meta.url), 'utf8'),
-    ) as { ops: Record<string, unknown> }).ops,
+    (
+      JSON.parse(readFileSync(new URL('../../../src/selection.json', import.meta.url), 'utf8')) as {
+        ops: Record<string, unknown>
+      }
+    ).ops,
   ),
 )
 const builtinOps = new Set<string>(BUILTIN_OPS)

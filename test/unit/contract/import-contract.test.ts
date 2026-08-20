@@ -11,13 +11,13 @@
  * without the test suite noticing the surface change.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import * as castrum from '../../..'
-import { rust } from '../../../src/rust-ffi'
-import { createIngressHandler } from '../../../src/ingress/handlers'
+import { ERR_CODE_INTERNAL, OUT_DATA_START, OUT_VERDICT } from '../../../src/ingress/constants'
 import { createIngressFast } from '../../../src/ingress/fast'
+import { createIngressHandler } from '../../../src/ingress/handlers'
 import { createPipeline } from '../../../src/integration/pipeline'
-import { OUT_VERDICT, OUT_DATA_START, ERR_CODE_INTERNAL } from '../../../src/ingress/constants'
+import { rust } from '../../../src/rust-ffi'
 
 describe('package entry eager-load contract', () => {
   test('importing the barrel exposes the full documented surface', () => {
@@ -76,9 +76,7 @@ describe('package entry eager-load contract', () => {
 
   test('createPipeline is composable from the entry-adjacent module', async () => {
     const pipeline = createPipeline({ maxBodyBytes: 1024 })
-    const outcome = await pipeline.preprocess(
-      new Request('http://localhost:1/', { method: 'GET' }),
-    )
+    const outcome = await pipeline.preprocess(new Request('http://localhost:1/', { method: 'GET' }))
     // GET with no body → non-terminal (flows through to the renderer).
     expect(outcome.terminal).toBe(false)
     expect(typeof outcome.ctx.requestId).toBe('string')

@@ -8,15 +8,15 @@
  * path is only safe if it is a drop-in replacement for the allocating one.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { getAddon } from '../../src/native'
+import { describe, expect, test } from 'bun:test'
 import {
-  OUT_DATA_START,
-  OUT_COOKIES_JSON_LEN,
-  OUT_QUERY_JSON_LEN,
   FLAG_HAS_COOKIES,
   FLAG_HAS_QUERY,
+  OUT_COOKIES_JSON_LEN,
+  OUT_DATA_START,
+  OUT_QUERY_JSON_LEN,
 } from '../../src/ingress/constants'
+import { getAddon } from '../../src/native'
 import { seededRandom } from './seeded'
 
 const addon = getAddon()

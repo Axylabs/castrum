@@ -5,7 +5,7 @@
  * place that inspects `typeof Bun`. These tests run under `bun test` (Bun).
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { isBun, isNode, nodeMajorVersion, runtimeName } from '../../../src/shared/runtime'
 
 describe('runtime detection seam', () => {

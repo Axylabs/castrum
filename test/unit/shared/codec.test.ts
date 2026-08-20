@@ -11,7 +11,7 @@
  * - Round-trips for ASCII / multi-byte / emoji.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { decodeUtf8, encodeUtf8, encodeUtf8Into } from '../../../src/shared/codec'
 
 describe('encodeUtf8', () => {

@@ -2,7 +2,7 @@
  * Tests for the zero-dep metrics registry (src/shared/metrics.ts).
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createMetrics } from '../../../src/shared/metrics'
 
 describe('createMetrics', () => {

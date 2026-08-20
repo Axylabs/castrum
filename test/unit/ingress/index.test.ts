@@ -13,7 +13,7 @@
  * - createIngressSync captures synchronous result fields
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createIngress, createIngressSync } from '../../../src/ingress'
 
 function req(path: string, init?: RequestInit): Request {

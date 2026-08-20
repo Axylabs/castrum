@@ -2,11 +2,11 @@
  * Tests for W3C trace-context helpers (src/shared/trace.ts).
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import {
-  parseTraceParent,
-  createTraceId,
   createSpanId,
+  createTraceId,
+  parseTraceParent,
   serializeTraceParent,
 } from '../../../src/shared/trace'
 

@@ -7,12 +7,12 @@
  * overflow bytes.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { packHeaders } from '../../../src/ingress/packing/header-packing'
+import { describe, expect, test } from 'bun:test'
 import { gatherRawHeadersPacked } from '../../../src/ingress/packing/gather-raw-headers'
+import { packHeaders } from '../../../src/ingress/packing/header-packing'
 import { forEachSelectedHeader } from '../../../src/ingress/packing/select-headers'
+import { type HeaderPlan, METHOD_KIND } from '../../../src/ingress/shared'
 import { decoder } from '../../../src/shared/bytes'
-import { METHOD_KIND, type HeaderPlan } from '../../../src/ingress/shared'
 
 /**
  * Test-local string-array reference for the packed header path — mirrors the

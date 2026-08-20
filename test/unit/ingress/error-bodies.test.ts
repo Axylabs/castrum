@@ -10,26 +10,26 @@
  *   (incl. the JS-only ERR_CODE_REQUEST_TIMEOUT sentinel)
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import {
+  ERR_CODE_BAD_REQUEST,
+  ERR_CODE_BODY_TOO_LARGE,
+  ERR_CODE_CORS_PREFLIGHT,
+  ERR_CODE_INTERNAL,
+  ERR_CODE_INVALID_JSON,
+  ERR_CODE_NONE,
+  ERR_CODE_RATE_LIMITED,
+  ERR_CODE_REQUEST_TIMEOUT,
+  ERR_CODE_REQUEST_TOO_LARGE,
+  ERR_CODE_SCHEMA_VALIDATION,
+} from '../../../src/ingress/constants'
+import { errorCodeName, errorMessage } from '../../../src/ingress/errors'
 import {
   ERROR_BODIES,
   ERROR_CODE_BODIES,
   rateLimitedBody,
 } from '../../../src/ingress/response/error-bodies'
-import { errorCodeName, errorMessage } from '../../../src/ingress/errors'
 import { statusForErrorCode } from '../../../src/ingress/status'
-import {
-  ERR_CODE_NONE,
-  ERR_CODE_CORS_PREFLIGHT,
-  ERR_CODE_RATE_LIMITED,
-  ERR_CODE_BODY_TOO_LARGE,
-  ERR_CODE_INVALID_JSON,
-  ERR_CODE_SCHEMA_VALIDATION,
-  ERR_CODE_BAD_REQUEST,
-  ERR_CODE_REQUEST_TOO_LARGE,
-  ERR_CODE_REQUEST_TIMEOUT,
-  ERR_CODE_INTERNAL,
-} from '../../../src/ingress/constants'
 
 const decoder = new TextDecoder()
 

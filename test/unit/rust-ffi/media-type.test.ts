@@ -4,13 +4,13 @@
  * the hand-rolled JS baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { rust } from '../../../src/rust-ffi'
-import { decoder, encoder } from '../../../src/shared/bytes'
+import { describe, expect, test } from 'bun:test'
 import {
   nativeMediaTypeMatches,
   nativeParseMediaType,
 } from '../../../src/bench/media-type-baseline'
+import { rust } from '../../../src/rust-ffi'
+import { decoder, encoder } from '../../../src/shared/bytes'
 
 const JSON_CT = encoder.encode('application/json; charset=utf-8')
 const MULTIPART_CT = encoder.encode(
@@ -54,9 +54,7 @@ describe('MediaTypeMatcher (higher-order instance)', () => {
       'application/xml',
     ]) {
       const matcher = rust.createMediaTypeMatcher(encoder.encode(expected))
-      expect(matcher.matches(encoder.encode(actual))).toBe(
-        nativeMediaTypeMatches(actual, expected),
-      )
+      expect(matcher.matches(encoder.encode(actual))).toBe(nativeMediaTypeMatches(actual, expected))
     }
   })
 })

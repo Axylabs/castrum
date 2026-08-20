@@ -8,9 +8,9 @@
  * Bun.serve / Node-adapter compatible.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { createIngressRouter } from '../../../src/ingress/router'
+import { describe, expect, test } from 'bun:test'
 import { createIngressHandler } from '../../../src/ingress/handlers'
+import { createIngressRouter } from '../../../src/ingress/router'
 import type { OptimizedIngressHandler } from '../../../src/ingress/types'
 
 describe('createIngressRouter', () => {
@@ -42,14 +42,20 @@ describe('createIngressRouter', () => {
     const router = createIngressRouter({
       routes: {
         '/health': { read: true, options: { parseCookies: false, parseQuery: false } },
-        '/api/users': { read: true, write: true, options: { parseCookies: true, parseQuery: true } },
+        '/api/users': {
+          read: true,
+          write: true,
+          options: { parseCookies: true, parseQuery: true },
+        },
         '/api/echo': { echo: true, options: { parseCookies: false, parseQuery: false } },
         '/api/thing': { delete: true, options: { parseCookies: false, parseQuery: false } },
       },
     })
 
     expect((await router.fetch(new Request('http://x/health'))).status).toBe(200)
-    expect((await router.fetch(new Request('http://x/health', { method: 'HEAD' }))).status).toBe(200)
+    expect((await router.fetch(new Request('http://x/health', { method: 'HEAD' }))).status).toBe(
+      200,
+    )
     expect(
       (
         await router.fetch(
@@ -61,9 +67,9 @@ describe('createIngressRouter', () => {
         )
       ).status,
     ).toBe(200)
-    expect((await router.fetch(new Request('http://x/api/thing', { method: 'DELETE' }))).status).toBe(
-      200,
-    )
+    expect(
+      (await router.fetch(new Request('http://x/api/thing', { method: 'DELETE' }))).status,
+    ).toBe(200)
     // echo returns the body back.
     const echoRes = await router.fetch(
       new Request('http://x/api/echo', {
@@ -120,7 +126,11 @@ describe('createIngressRouter', () => {
       warmOnCreate: true,
       routes: {
         '/health': { read: true, options: { parseCookies: false, parseQuery: false } },
-        '/api/users': { read: true, write: true, options: { parseCookies: true, parseQuery: true } },
+        '/api/users': {
+          read: true,
+          write: true,
+          options: { parseCookies: true, parseQuery: true },
+        },
         '/metrics': { raw: () => new Response('metrics') },
       },
     })
@@ -163,8 +173,14 @@ describe('createIngressRouter', () => {
     const rateOpts = { limit: 2, windowMs: 60_000 }
     const router = createIngressRouter({
       routes: {
-        '/a': { read: true, options: { rateLimit: rateOpts, parseCookies: false, parseQuery: false } },
-        '/b': { read: true, options: { rateLimit: rateOpts, parseCookies: false, parseQuery: false } },
+        '/a': {
+          read: true,
+          options: { rateLimit: rateOpts, parseCookies: false, parseQuery: false },
+        },
+        '/b': {
+          read: true,
+          options: { rateLimit: rateOpts, parseCookies: false, parseQuery: false },
+        },
       },
     })
     const req = (p: string) => new Request(`http://x${p}`)

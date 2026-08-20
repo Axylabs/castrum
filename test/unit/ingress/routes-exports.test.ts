@@ -8,15 +8,17 @@
  * - `optionsHandler` serves a 204 for a plain (non-preflight) OPTIONS request.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import {
+  deleteHandler as entryDeleteHandler,
+  optionsHandler as entryOptionsHandler,
+} from '../../../index'
+import {
+  createIngressHandler,
   deleteHandler,
   optionsHandler,
   readHandler,
-  createIngressHandler,
 } from '../../../src/ingress/handlers'
-import { deleteHandler as entryDeleteHandler } from '../../../index'
-import { optionsHandler as entryOptionsHandler } from '../../../index'
 
 const ingress = createIngressHandler({
   parseCookies: true,

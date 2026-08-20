@@ -9,11 +9,11 @@
  * neither source is provided, and the raw-wins merge rule.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { ERR_CODE_NONE, HV_CORS_SIMPLE, HV_JSON } from '../../../src/ingress/constants'
+import { buildResponseContext, buildTerminalResponse } from '../../../src/ingress/fast'
 import { createIngressHandler, readHandler } from '../../../src/ingress/handlers'
 import { buildSecurityPairs } from '../../../src/ingress/headers/hsts'
-import { buildResponseContext, buildTerminalResponse } from '../../../src/ingress/fast'
-import { ERR_CODE_NONE, HV_CORS_SIMPLE, HV_JSON } from '../../../src/ingress/constants'
 
 const baseOptions = {
   parseCookies: true,

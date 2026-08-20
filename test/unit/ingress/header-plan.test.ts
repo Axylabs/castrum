@@ -12,7 +12,7 @@
  * alone, matching the fast path.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { buildHeaderPlan } from '../../../src/ingress/shared'
 
 describe('buildHeaderPlan', () => {

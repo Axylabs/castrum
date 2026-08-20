@@ -4,10 +4,10 @@
  * the WHATWG URL baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { nativeUrlEncodeQuery, nativeUrlResolve } from '../../../src/bench/url-join-baseline'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'
-import { nativeUrlEncodeQuery, nativeUrlResolve } from '../../../src/bench/url-join-baseline'
 
 const BASE = encoder.encode('http://example.com/api/users?page=1')
 

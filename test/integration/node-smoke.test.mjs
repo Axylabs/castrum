@@ -6,8 +6,8 @@
 // Covers: native FFI primitives, the fast ingress path, the pre-baked handler
 // path, and the node:http server adapter — all under plain Node.js.
 
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { test } from 'node:test'
 
 import * as castrum from '../../dist/index.js'
 

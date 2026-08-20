@@ -2,12 +2,12 @@
  * Tests for the Rust gzip/brotli compression FFI.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import {
-  nativeBrotliDecompress,
   nativeBrotliCompress,
-  nativeGzipDecompress,
+  nativeBrotliDecompress,
   nativeGzipCompress,
+  nativeGzipDecompress,
 } from '../../../src/baseline/tasks/compress'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'

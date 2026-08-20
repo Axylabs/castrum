@@ -5,7 +5,7 @@
  * no-alloc `packFromStrings` path.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { IngressInputPacker } from '../../../src/ingress/packing/input-packer'
 import { decoder, encoder } from '../../../src/shared/bytes'
 

@@ -4,13 +4,13 @@
  * the hand-rolled JS negotiation baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { rust } from '../../../src/rust-ffi'
-import { encoder } from '../../../src/shared/bytes'
+import { describe, expect, test } from 'bun:test'
 import {
   nativeNegotiateEncoding,
   nativeParseAcceptEncoding,
 } from '../../../src/bench/accept-baseline'
+import { rust } from '../../../src/rust-ffi'
+import { encoder } from '../../../src/shared/bytes'
 
 const SUPPORTED = ['gzip', 'br', 'identity']
 

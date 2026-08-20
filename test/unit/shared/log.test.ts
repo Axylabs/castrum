@@ -5,7 +5,7 @@
  * gating is deterministic.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createStructuredLogger } from '../../../src/shared/log'
 
 class MemoryStream {

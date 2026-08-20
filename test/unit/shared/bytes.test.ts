@@ -7,8 +7,8 @@
  * - toPlainBuffer copy semantics
  */
 
-import { describe, test, expect } from 'bun:test'
-import { encoder, decoder, toPlainBuffer } from '../../../src/shared/bytes'
+import { describe, expect, test } from 'bun:test'
+import { decoder, encoder, toPlainBuffer } from '../../../src/shared/bytes'
 
 describe('encoder', () => {
   test('encodes ASCII string to Uint8Array', () => {

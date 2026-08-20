@@ -3,7 +3,7 @@
  * against the JS mini-renderer baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { nativeTemplateRender } from '../../../src/baseline/tasks/template'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'

@@ -3,11 +3,11 @@
  * (src/ingress/metrics.ts, src/ingress/health.ts).
  */
 
-import { describe, test, expect } from 'bun:test'
-import { createIngressHandler } from '../../../src/ingress/handlers'
-import { createIngressMetrics, metricsHandler } from '../../../src/ingress/metrics'
-import { livenessHandler, readinessHandler, healthHandler } from '../../../src/ingress/health'
+import { describe, expect, test } from 'bun:test'
 import type { BakedIngressResult } from '../../../src/ingress/decode/baked-result'
+import { createIngressHandler } from '../../../src/ingress/handlers'
+import { healthHandler, livenessHandler, readinessHandler } from '../../../src/ingress/health'
+import { createIngressMetrics, metricsHandler } from '../../../src/ingress/metrics'
 
 const baseOptions = {
   parseQuery: true,

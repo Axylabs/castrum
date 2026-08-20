@@ -10,10 +10,10 @@
  * exact wire framing, which `fetch()` cannot.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { connect } from 'node:net'
-import { createIngressServer } from '../../../src/ingress/server'
 import { createIngressHandler } from '../../../src/ingress/handlers'
+import { createIngressServer } from '../../../src/ingress/server'
 
 const handler = createIngressHandler({
   parseCookies: true,
@@ -43,7 +43,10 @@ function statusLine(raw: string): string {
   return raw.split('\r\n')[0] ?? ''
 }
 
-async function startServer(): Promise<{ srv: ReturnType<typeof createIngressServer>; port: number }> {
+async function startServer(): Promise<{
+  srv: ReturnType<typeof createIngressServer>
+  port: number
+}> {
   const srv = createIngressServer({
     port: 0,
     routes: {

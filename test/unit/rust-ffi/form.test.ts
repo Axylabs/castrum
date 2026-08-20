@@ -4,11 +4,11 @@
  * and the `parseFormBody` helper — cross-checked against URLSearchParams.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { nativeFormParsePacked } from '../../../src/bench/form-baseline'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'
 import { pairsToObject, parseFormBody, readPairsPacked } from '../../../src/shared/packed'
-import { nativeFormParsePacked } from '../../../src/bench/form-baseline'
 
 const BODY = encoder.encode('name=John+Doe&email=john%40example.com&age=30&tags=a&tags=b&empty=')
 

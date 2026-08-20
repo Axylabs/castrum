@@ -3,7 +3,7 @@
  * sizing (`adaptive` option) — the loader's EWMA machinery, generalized.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { AdaptiveEstimate } from '../../../src/shared/adaptive'
 import { BufferPool } from '../../../src/shared/buffer-pool'
 

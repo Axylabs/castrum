@@ -3,7 +3,7 @@
  * byte parity against the JS baselines.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { nativeSseEncodeEvent, nativeWsFrameEncode } from '../../../src/baseline/tasks/streaming'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'

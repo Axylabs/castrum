@@ -11,20 +11,20 @@
  * seeded (../property/seeded.ts) for reproducibility.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { FastIngressResult } from '../../../src/ingress/decode/fast-result'
-import { BakedIngressResult } from '../../../src/ingress/decode/baked-result'
+import { describe, expect, test } from 'bun:test'
 import {
   ERR_CODE_INTERNAL,
-  OUT_DATA_START,
-  OUT_VERDICT,
-  OUT_ERROR_CODE,
-  OUT_STATUS,
-  OUT_FLAGS,
-  OUT_COOKIES_JSON_LEN,
-  OUT_QUERY_JSON_LEN,
   OUT_BODY_JSON_LEN,
+  OUT_COOKIES_JSON_LEN,
+  OUT_DATA_START,
+  OUT_ERROR_CODE,
+  OUT_FLAGS,
+  OUT_QUERY_JSON_LEN,
+  OUT_STATUS,
+  OUT_VERDICT,
 } from '../../../src/ingress/constants'
+import { BakedIngressResult } from '../../../src/ingress/decode/baked-result'
+import { FastIngressResult } from '../../../src/ingress/decode/fast-result'
 import { seededRandom } from '../../property/seeded'
 
 const rand = seededRandom()

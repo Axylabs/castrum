@@ -2,8 +2,8 @@
  * Tests for src/integration/streaming.ts — the SSE response helper.
  */
 
-import { describe, test, expect } from 'bun:test'
-import { sseResponse, type SseEvent } from '../../../src/integration'
+import { describe, expect, test } from 'bun:test'
+import { type SseEvent, sseResponse } from '../../../src/integration'
 import { rust } from '../../../src/rust-ffi'
 
 const encoder = new TextEncoder()

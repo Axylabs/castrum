@@ -5,7 +5,7 @@
  * covered by the default suite, not only the Node CI job.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createIngressHandler } from '../../../src/ingress/handlers'
 import { buildPathMatcher } from '../../../src/ingress/server'
 import { createIngressServerNode } from '../../../src/ingress/server-node'

@@ -153,7 +153,7 @@ jobs:
       - name: CPU benchmark (writes bench/results/cpu/latest.json)
         run: bun run check
       - name: FFI symbol parity + transport self-test
-        run: bun test test/unit/features/ffi-symbol-parity.test.ts test/unit/features/ffi.test.ts
+        run: bun test test/unit/native/ffi-symbol-parity.test.ts test/unit/native/ffi.test.ts
 
   # ── Node.js compatibility ────────────────────────────────────────
   # Builds the compiled ESM entry (dist/) and runs the Node smoke suite on the

@@ -12,7 +12,7 @@
  * - preprocess body-read failure maps to a terminal 413
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createPipeline } from '../../../src/integration'
 
 function req(path: string, init?: RequestInit): Request {

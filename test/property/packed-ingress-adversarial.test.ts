@@ -12,11 +12,11 @@
  * draws are seeded (../property/seeded.ts) for reproducibility.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { BakedIngressResult } from '../../src/ingress/decode/baked-result'
+import { IngressInputPacker } from '../../src/ingress/packing/input-packer'
 import { getAddon } from '../../src/native'
 import { getBunFFI } from '../../src/native/ffi'
-import { IngressInputPacker } from '../../src/ingress/packing/input-packer'
-import { BakedIngressResult } from '../../src/ingress/decode/baked-result'
 import { isBun } from '../../src/shared/runtime'
 import { seededRandom } from './seeded'
 

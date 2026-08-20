@@ -13,7 +13,7 @@
  * every "URL needed" configuration still packs (and uses) the URL.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createIngressHandler } from '../../../src/ingress/handlers'
 
 function req(path: string, init?: RequestInit): Request {

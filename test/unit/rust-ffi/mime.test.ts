@@ -3,7 +3,7 @@
  * extension → MIME lookup (rust/http/mime_lookup.rs, phf table).
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'
 

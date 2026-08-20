@@ -8,8 +8,8 @@
  * - jsonWriteHandler works end-to-end through the pooled path
  */
 
-import { describe, test, expect } from 'bun:test'
-import { createIngressHandler, readHandler, jsonWriteHandler } from '../../../src/ingress/handlers'
+import { describe, expect, test } from 'bun:test'
+import { createIngressHandler, jsonWriteHandler, readHandler } from '../../../src/ingress/handlers'
 
 const baseOptions = {
   parseCookies: true,

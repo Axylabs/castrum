@@ -5,7 +5,7 @@
  * the FFI-crossing rust path, so this is the "don't reinvent the wheel" path.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { uuidv7 } from '../../../src/shared/uuid'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

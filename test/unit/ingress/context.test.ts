@@ -10,15 +10,15 @@
  * - staticCorsAllowed honors allowOrigin / credentials rules
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { ERR_CODE_BODY_TOO_LARGE, ERR_CODE_REQUEST_TIMEOUT } from '../../../src/ingress/constants'
 import {
-  snapshotResult,
-  syntheticContext,
   internalContext,
+  snapshotResult,
   staticCorsAllowed,
+  syntheticContext,
 } from '../../../src/ingress/context'
 import { buildResponseContext } from '../../../src/ingress/headers/fast-templates'
-import { ERR_CODE_BODY_TOO_LARGE, ERR_CODE_REQUEST_TIMEOUT } from '../../../src/ingress/constants'
 
 const encoder = new TextEncoder()
 

@@ -3,7 +3,7 @@
  * for byte parity against node:crypto.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { nativeAeadEncrypt } from '../../../src/baseline/tasks/aead'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'

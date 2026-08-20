@@ -3,7 +3,7 @@
  * (previously untested).
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { buildHstsValue } from '../../../src/ingress/headers/hsts'
 
 describe('buildHstsValue', () => {

@@ -3,7 +3,7 @@
  * cross-checked against the node:crypto baseline.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { nativeJwtSign, nativeJwtVerify } from '../../../src/baseline/tasks/jwt'
 import { rust } from '../../../src/rust-ffi'
 import { decoder, encoder } from '../../../src/shared/bytes'

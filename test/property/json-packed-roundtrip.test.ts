@@ -29,7 +29,18 @@ function randString(): string {
   // Whole, complete strings (never astral characters split into lone
   // surrogates) — indexing a string by UTF-16 code unit can yield a lone
   // surrogate, which is a separate edge case pinned below.
-  const words = ['abc', 'hello world', '_x-', 'café', 'naïve', '你好世界', 'emoji🚀test', '€uro', '🐉dragon', '']
+  const words = [
+    'abc',
+    'hello world',
+    '_x-',
+    'café',
+    'naïve',
+    '你好世界',
+    'emoji🚀test',
+    '€uro',
+    '🐉dragon',
+    '',
+  ]
   let s = ''
   const len = randInt(4)
   for (let i = 0; i < len; i++) {

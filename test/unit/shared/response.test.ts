@@ -7,7 +7,7 @@
  * - keeping the handle in flight until the body is consumed
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { BufferPool } from '../../../src/shared/buffer-pool'
 import { pooledBodyResponse } from '../../../src/shared/response'
 
