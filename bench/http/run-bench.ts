@@ -1,8 +1,8 @@
-// bench/run-bench.ts — updated to show scenario groups
+// bench/http/run-bench.ts — updated to show scenario groups
 import { PORTS, type ServerKind } from "./servers/shared";
 import { HTTP_SCENARIO_NAMES, HTTP_SCENARIOS, runHttpScenario } from "./load";
-import { getBunFFI } from "../src/native/ffi";
-import { isBun } from "../src/shared/runtime";
+import { getBunFFI } from '../../src/native/ffi';
+import { isBun } from '../../src/shared/runtime';
 
 const SERVERS: ServerKind[] = ["bun", "elysia", "ingress", "router"];
 
@@ -63,7 +63,7 @@ async function waitForServer(
 }
 
 async function startServer(kind: ServerKind): Promise<ServerHandle> {
-  const script = `./bench/servers/${kind}-server.ts`;
+  const script = `./bench/http/servers/${kind}-server.ts`;
   await assertPortFree(PORTS[kind]);
   const proc = Bun.spawn(["bun", "run", script], {
     stdout: "inherit",

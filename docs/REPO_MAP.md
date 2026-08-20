@@ -21,7 +21,7 @@ agent editing this repo, [`AGENTS.md`](../AGENTS.md) is the agent-facing map.
 - **TypeScript** (`src/`) provides the ergonomic public API: the flat `rust.*`
   FFI client and the ingress layer.
 - It ships benchmarks: a **CPU benchmark** (`bench.ts` → `src/bench`) and an
-  **HTTP benchmark** (`bench/run-bench.ts` + `bench/servers/*`).
+  **HTTP benchmark** (`bench/http/run-bench.ts` + `bench/http/servers/*`).
 
 Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entry
 (`dist/`).
@@ -191,7 +191,7 @@ self-test. **Never hardcode a layout value** — if you change the layout, chang
    `{"ok":true,...,"requestId":...}` (success) / `{"ok":false,"error":{code,
    message}}` (errors) with `ratelimit-*` headers.
 
-These wire formats are a **benchmark contract** (`bench/load.ts` validates
+These wire formats are a **benchmark contract** (`bench/http/load.ts` validates
 them) — they are intentionally NOT unified. The two decoders
 (`decode/fast-result.ts` vs `decode/baked-result.ts`) and the two header-template
 builders (`headers/fast-templates.ts` vs `headers/baked-templates.ts`) exist for
@@ -242,8 +242,8 @@ consumed.
   via `node --test` (run with `bun run test:node`).
 - **CPU bench**: `bun run check` (correctness checks + comparisons). Sub-µs ops
   are batched (`CASTRUM_BENCH_BATCH_SIZE`). Report → `bench/results/cpu/`.
-- **HTTP bench**: `bench/run-bench.ts` + `bench/load.ts` (load generator that
-  validates response SHAPE) + `bench/servers/{bun,elysia,ingress}-server.ts`.
+- **HTTP bench**: `bench/http/run-bench.ts` + `bench/http/load.ts` (load generator that
+  validates response SHAPE) + `bench/http/servers/{bun,elysia,ingress}-server.ts`.
   `bench:http:smoke` is the fast CI wire-format gate.
 
 ---

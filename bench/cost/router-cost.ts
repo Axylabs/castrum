@@ -1,4 +1,4 @@
-// bench/router-cost.ts — per-route compiled-router cost decomposition.
+// bench/cost/router-cost.ts — per-route compiled-router cost decomposition.
 //
 // Proves the core claim behind `createIngressRouter`: a route whose options
 // need NO cookies/query/CORS/proxy compiles a native `IngressInner` + header
@@ -9,10 +9,10 @@
 //
 // Run: `bun bench/router-cost.ts` (Bun only — measures the bun:ffi transport).
 
-import { createIngressRouter } from '../src/ingress/router'
-import type { RouterRouteSpec } from '../src/ingress/router'
-import { getBunFFI } from '../src/native/ffi'
-import { measureNs as measure } from './measure'
+import { createIngressRouter } from '../../src/ingress/router'
+import type { RouterRouteSpec } from '../../src/ingress/router'
+import { getBunFFI } from '../../src/native/ffi'
+import { measureNs as measure } from '../measure'
 
 if (getBunFFI() === null) {
   throw new Error('bun:ffi not active — cannot measure the per-route FFI cost')

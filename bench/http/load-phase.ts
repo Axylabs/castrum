@@ -1,4 +1,4 @@
-// bench/load-phase.ts — load/startup cost decomposition (fresh `bun` per phase).
+// bench/http/load-phase.ts — load/startup cost decomposition (fresh `bun` per phase).
 //
 // Answers "where does the ~36ms `import castrum` go?" by measuring each phase
 // in its own fresh process (no shared cache):
@@ -16,8 +16,8 @@
 
 import { spawnSync } from 'node:child_process'
 
-const ROOT = new URL('../', import.meta.url).pathname
-const ADDON = new URL('../castrum.linux-x64-gnu.node', import.meta.url).pathname
+const ROOT = new URL('../../', import.meta.url).pathname
+const ADDON = new URL('../../castrum.linux-x64-gnu.node', import.meta.url).pathname
 const ITERATIONS = 10
 
 const PHASES: Record<string, string> = {

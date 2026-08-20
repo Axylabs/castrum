@@ -99,7 +99,7 @@ and the run measures the *generator*, not the server — the classic signature i
 a sub-ms `p50` with a multi-second tail and a flat RPS wall across every server.
 
 - All `bench:http:*` scripts set `BUN_CONFIG_MAX_HTTP_REQUESTS=65536` for you.
-- `bench/run-bench.ts` warns if a selected scenario exceeds the effective cap.
+- `bench/http/run-bench.ts` warns if a selected scenario exceeds the effective cap.
 - For **max-throughput** server comparisons use **autocannon**
   (`bench/autocannon-stress.mjs`, run with `node`): it has no such cap, uses a
   real socket pool, scales across worker threads, and reports RPS + latency
@@ -135,7 +135,7 @@ Current medians (`AC_DURATION=8 AC_RUNS=3`, 500 connections, single instance):
   vs bun. The pre-optimization ingress POST gap (≈ −24% vs bun) is closed by
   the changes in `CHANGELOG [Unreleased]` (JS hot-path elimination + single-pass
   body validation).
-- Per-request cost breakdown (`bun bench/ingress-cost.ts` / `ingress-cost-post.ts`,
+- Per-request cost breakdown (`bun bench/cost/ingress-cost.ts` / `ingress-cost-post.ts`,
   min-of-5): GET `run` ~826ns (native 168ns + JS ~446ns packing + decode 60ns);
   POST `run` ~1154ns (native ~740ns — was 808ns before the single-pass — + JS).
   The POST body read is now **synchronous for buffered bodies**: `Bun.peek` on
@@ -294,14 +294,14 @@ Each task runs:
 | Env / flag | Effect |
 |------------|--------|
 | `CASTRUM_BENCH_BATCH_SIZE` | Batch size for sub-µs operations (default `64`). Batching amortizes the timer/measurement overhead for very fast ops. |
-| `HTTP_NO_SHAPE=1` | The HTTP load generator (`bench/load.ts`) skips response-shape `JSON.parse` for pure-throughput runs. |
+| `HTTP_NO_SHAPE=1` | The HTTP load generator (`bench/http/load.ts`) skips response-shape `JSON.parse` for pure-throughput runs. |
 
 ---
 
 ## HTTP Server Architecture
 
 ```
-bench/servers/
+bench/http/servers/
 ├── bun-server.ts       # Raw Bun.serve with manual routing
 ├── elysia-server.ts    # Elysia framework
 ├── ingress-server.ts   # Ingress (this project) optimized handler

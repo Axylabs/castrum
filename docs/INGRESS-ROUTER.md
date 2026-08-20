@@ -76,6 +76,6 @@ const router = createIngressRouter({
 const server = Bun.serve({ routes: router.routes }) // or router.fetch
 ```
 
-The benchmark server `bench/servers/router-server.ts` uses this API (same route
+The benchmark server `bench/http/servers/router-server.ts` uses this API (same route
 surface as `ingress-server.ts` but per-route compiled). Cost breakdown:
-`bun bench/router-cost.ts` (`bun run bench:router`).
+`bun bench/cost/router-cost.ts` (`bun run bench:router`).

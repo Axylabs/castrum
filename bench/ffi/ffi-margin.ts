@@ -1,4 +1,4 @@
-// bench/ffi-margin.ts — FULL native vs bun:ffi margin pinpointer.
+// bench/ffi/ffi-margin.ts — FULL native vs bun:ffi margin pinpointer.
 //
 // Runs the ENTIRE C-ABI surface (every op `bun:ffi` wraps) two ways and merges
 // them into a loss-breakdown table that pinpoints WHERE the FFI-vs-native
@@ -24,11 +24,11 @@ import { dlopen, type FFITypeOrString } from 'bun:ffi'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { getAddonPath } from '../src/native/loader'
-import { getBunFFI } from '../src/native/ffi'
-import { toBytes } from '../src/bench/assert'
-import { rust } from '../src/rust-ffi'
-import { encodeUtf8 } from '../src/shared/codec'
+import { getAddonPath } from '../../src/native/loader'
+import { getBunFFI } from '../../src/native/ffi'
+import { toBytes } from '../../src/bench/assert'
+import { rust } from '../../src/rust-ffi'
+import { encodeUtf8 } from '../../src/shared/codec'
 import {
   rawBase64Encode,
   rawCrc32,
@@ -36,9 +36,9 @@ import {
   rawHmacSha256,
   rawUrlEncode,
   rawXxh3,
-} from '../src/bench/raw-native'
-import { isBun } from '../src/shared/runtime'
-import { measureNs as measure } from './measure'
+} from '../../src/bench/raw-native'
+import { isBun } from '../../src/shared/runtime'
+import { measureNs as measure } from '../measure'
 
 // ── Inputs (small-input regime — where the crossing cost is visible) ──────
 const encoder = new TextEncoder()
@@ -473,8 +473,16 @@ for (const op of ops) {
 }
 render(rows)
 
-// 4. Persist a machine-readable report.
-const outDir = join(dirname(new URL(import.meta.url).pathname), 'results', 'ffi-margin')
+// Persist a machine-readable report. The results dir is anchored to
+// `bench/results/<family>` (one level up from bench/ffi/), so reports stay
+// centralized and gitignored (`.gitignore: bench/results`) regardless of where
+// this bench lives.
+const outDir = join(
+  dirname(new URL(import.meta.url).pathname),
+  '..',
+  'results',
+  'ffi-margin',
+)
 mkdirSync(outDir, { recursive: true })
 const report = {
   addon: addonPath,

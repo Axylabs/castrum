@@ -1,4 +1,4 @@
-// bench/ffi-load.ts — compare the THREE native-call paths under sustained load:
+// bench/ffi/ffi-load.ts — compare the THREE native-call paths under sustained load:
 //   NAPI  (the fallback/reference — raw napi addon via getAddon())
 //   FFI   (the PRIMARY transport on Bun — public rust.* routes through bun:ffi)
 //   Native Bun (Bun's built-in implementations)
@@ -9,9 +9,9 @@
 // at small / medium / large input sizes.
 //
 // Run: bun run bench/ffi-load.ts
-import { rust } from "../index";
-import { getAddon } from "../src/native";
-import { getBunFFI } from "../src/native/ffi";
+import { rust } from '../../index';
+import { getAddon } from '../../src/native';
+import { getBunFFI } from '../../src/native/ffi';
 
 const addon = getAddon();
 const ffi = getBunFFI();

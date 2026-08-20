@@ -204,7 +204,7 @@ all bound symbols are unreachable.
 ## 8. Thread-safety & per-thread caches
 
 `bun:ffi` symbols are shared across Worker threads (same dlopen'd cdylib
-mapping; verified by castrum's `bench/ffi-workers.ts` — 4 workers, no
+mapping; verified by castrum's `bench/ffi/ffi-workers.ts` — 4 workers, no
 thread-safety issue). The Rust side must therefore keep any per-call mutable
 state **thread-local**, never global:
 

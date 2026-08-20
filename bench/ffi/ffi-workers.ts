@@ -1,4 +1,4 @@
-// bench/ffi-workers.ts — verify the bun:ffi layer holds up under multi-worker
+// bench/ffi/ffi-workers.ts — verify the bun:ffi layer holds up under multi-worker
 // server load (the realistic "huge request rate" scenario): N workers each
 // hammer rust.crc32 / rust.hexEncode via the ffi path and cross-check results
 // against the napi addon. Confirms no thread-safety issue from sharing one

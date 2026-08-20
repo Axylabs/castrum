@@ -1,9 +1,9 @@
-// bench/ffi-worker-script.ts — worker body for bench/ffi-workers.ts.
+// bench/ffi/ffi-worker-script.ts — worker body for bench/ffi/ffi-workers.ts.
 // Runs the bun:ffi fast path in a worker thread and posts the results (or an
 // error) back to the parent.
-import { rust } from "../index";
-import { getAddon } from "../src/native";
-import { getBunFFI } from "../src/native/ffi";
+import { rust } from '../../index';
+import { getAddon } from '../../src/native';
+import { getBunFFI } from '../../src/native/ffi';
 
 try {
   const addon = getAddon();

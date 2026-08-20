@@ -1,4 +1,4 @@
-// bench/servers/elysia-server.ts — Using Elysia primitives
+// bench/http/servers/elysia-server.ts — Using Elysia primitives
 import { Elysia, t } from "elysia";
 import { cors } from "@elysia/cors";
 import {

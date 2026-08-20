@@ -1,8 +1,8 @@
-// bench/ffi-public.ts — verify the Bun ffi fast path is live on the public
+// bench/ffi/ffi-public.ts — verify the Bun ffi fast path is live on the public
 // `rust.*` API and measure the real end-to-end crossing win.
 // Run: bun run bench/ffi-public.ts
-import { rust } from "../index";
-import { getBunFFI } from "../src/native/ffi";
+import { rust } from '../../index';
+import { getBunFFI } from '../../src/native/ffi';
 
 const ffi = getBunFFI();
 console.log("bun:ffi fast path active:", ffi !== null);
@@ -34,7 +34,7 @@ bench("rust.hexEncode (5.4KiB)", () => rust.hexEncode(big).length);
 bench("rust.urlEncode (small)", () => rust.urlEncode(data).length);
 
 // Correctness: ffi results must equal napi results.
-import { getAddon } from "../src/native";
+import { getAddon } from '../../src/native';
 const addon = getAddon();
 console.log("");
 console.log("crc32 ffi===napi:", rust.crc32(data) === addon.crc32(data));

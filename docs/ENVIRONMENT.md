@@ -4,7 +4,7 @@ This document lists every environment variable read by the package and its
 example servers. All values are read once at module load; invalid values are
 warned about and replaced with the documented default.
 
-## Ingress server (`bench/servers/ingress-server.ts`)
+## Ingress server (`bench/http/servers/ingress-server.ts`)
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|

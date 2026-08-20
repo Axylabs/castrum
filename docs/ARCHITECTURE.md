@@ -265,7 +265,7 @@ src/
 >    (`handle_request_packed`). Different wire format: success
 >    `{"ok":true,...,"requestId":...}`, errors
 >    `{"ok":false,"error":{code,message}}`, `ratelimit-*` headers. The
->    benchmark server (`bench/servers/ingress-server.ts`) uses this path and
+>    benchmark server (`bench/http/servers/ingress-server.ts`) uses this path and
 >    re-exports the pre-baked functions.
 
 ## Node.js Compatibility

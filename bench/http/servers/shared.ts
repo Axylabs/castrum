@@ -1,4 +1,4 @@
-// bench/servers/shared.ts — cleaned up
+// bench/http/servers/shared.ts — cleaned up
 
 /** Read a boolean env flag with a safe default; warn on invalid values. */
 export function envFlag(name: string, defaultValue: boolean): boolean {

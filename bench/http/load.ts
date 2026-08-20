@@ -1,4 +1,4 @@
-// bench/load.ts
+// bench/http/load.ts
 import { mkdirSync } from "node:fs";
 
 // Global switch: set HTTP_NO_SHAPE=1 to skip response-shape validation (and
@@ -110,7 +110,7 @@ interface ErrorGroup {
 
 
 
-// bench/load.ts — ADD THESE SCENARIOS to the HTTP_SCENARIOS object
+// bench/http/load.ts — ADD THESE SCENARIOS to the HTTP_SCENARIOS object
 
 // ── Heavy JSON Validation Scenarios ──
 

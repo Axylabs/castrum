@@ -1,4 +1,4 @@
-// bench/servers/ingress-server.ts — production-ready optimized Bun ingress server
+// bench/http/servers/ingress-server.ts — production-ready optimized Bun ingress server
 //
 // This server is a thin wiring layer over the pre-baked ingress handlers in
 // src/ingress/handlers.ts. The handlers are re-exported at the bottom of this
@@ -6,7 +6,7 @@
 // effort:
 //
 //   import { createIngressHandler, readHandler, createIngressServer } from "./ingress-server";
-import { errorCodeName } from "../../src/ingress";
+import { errorCodeName } from '../../../src/ingress';
 import {
   createIngressHandler,
   createIngressServer,
@@ -18,7 +18,7 @@ import {
   RATE_LIMIT_U32_MAX,
   type BakedIngressResult,
   type BakedRoute,
-} from "../../src/ingress";
+} from '../../../src/ingress';
 import {
   PORTS,
   USER_SCHEMA_BYTES,
@@ -31,7 +31,7 @@ import {
 } from "./shared";
 import {
   ERR_CODE_NONE as ERROR_CODE_NONE,
-} from "../../src/ingress/constants";
+} from '../../../src/ingress/constants';
 
 // ── Runtime configuration (validated) ──
 
@@ -284,7 +284,7 @@ export {
   fallbackHandler,
   RATE_LIMIT_U32_MAX,
   ERROR_BODIES,
-} from "../../src/ingress/handlers";
+} from '../../../src/ingress/handlers';
 export type {
   BakedIngressResult,
   BakedContext,
@@ -294,4 +294,4 @@ export type {
   CreateIngressServerOptions,
   BakedServer,
   OptimizedIngressHandler,
-} from "../../src/ingress/handlers";
+} from '../../../src/ingress/handlers';

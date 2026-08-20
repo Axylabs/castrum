@@ -20,7 +20,7 @@ They also use separate result decoders (`FastIngressResult` vs
 
 ## Decision
 
-**Do not unify them.** The HTTP benchmark load generator (`bench/load.ts`)
+**Do not unify them.** The HTTP benchmark load generator (`bench/http/load.ts`)
 requires `ok === true` + `requestId: string` on success and `error.code` /
 `error.message` on errors — i.e. path 2's format. The two formats are a
 **benchmark contract**: the benchmark server uses path 2, and changing its

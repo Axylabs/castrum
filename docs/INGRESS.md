@@ -83,7 +83,7 @@ provides ready-made route handlers, response builders, and a `Bun.serve`
 builder — no need to hand-build responses, header templates, or error bodies.
 
 All of these are exported from the package root and are **re-exported from the
-benchmark server** (`bench/servers/ingress-server.ts`), which itself is built
+benchmark server** (`bench/http/servers/ingress-server.ts`), which itself is built
 entirely from them:
 
 ```ts
@@ -106,7 +106,7 @@ createIngressServer({
 });
 ```
 
-> **Wire format** (a contract — `bench/load.ts` depends on it):
+> **Wire format** (a contract — `bench/http/load.ts` depends on it):
 > - Success (with `emitMetadataJson: true` — the bench enables it): the body is
 >   Rust-generated `{"ok":true,"requestId":"...",...}`. With the DEFAULT
 >   `emitMetadataJson: false` the success body is **empty** (lean reads) — serve
@@ -288,7 +288,7 @@ rendering).
 > (`createIngressServer`) and Node (`createIngressServerNode`). Raw handlers
 > are served for GET only and skip the ingress pipeline / OPTIONS preflight.
 > See `examples/basic-server.ts` and the bench ingress server
-> (`bench/servers/ingress-server.ts`), which wire `/metrics` + `/healthz`
+> (`bench/http/servers/ingress-server.ts`), which wire `/metrics` + `/healthz`
 > `/readyz` `/livez` end-to-end.
 
 **Tracing** — W3C trace-context helpers: `parseTraceParent(header)`,

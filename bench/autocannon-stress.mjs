@@ -40,7 +40,7 @@ import autocannon from "autocannon";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** Ports must match bench/servers/shared.ts (kept in sync manually). */
+/** Ports must match bench/http/servers/shared.ts (kept in sync manually). */
 const PORTS = {
   bun: 9120,
   elysia: 9121,
@@ -193,7 +193,7 @@ async function waitForServer(port, proc, timeoutMs = 15_000) {
 function startServer(kind) {
   const port = PORTS[kind];
   const count = REUSE_CAPABLE.has(kind) ? INSTANCES : 1;
-  const script = `bench/servers/${kind}-server.ts`;
+  const script = `bench/http/servers/${kind}-server.ts`;
   return assertPortFree(port).then(() => {
     const procs = [];
     for (let i = 0; i < count; i++) {

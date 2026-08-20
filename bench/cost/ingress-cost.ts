@@ -1,4 +1,4 @@
-// bench/ingress-cost.ts — per-request runtime cost decomposition for the
+// bench/cost/ingress-cost.ts — per-request runtime cost decomposition for the
 // pre-baked ingress handler (the "millions of requests" path).
 //
 // Times each phase of a request through `createIngressHandler(...).run()` in
@@ -19,21 +19,21 @@
 //                pipeline) on a PRE-PACKED frame — the pure native+FFI cost
 //   refresh    : BakedIngressResult.refresh on a pre-written output (decode)
 
-import { getAddon } from '../src/native'
-import { getBunFFI } from '../src/native/ffi'
-import { BufferPool } from '../src/shared/buffer-pool'
-import { viewForArrayBuffer } from '../src/shared/bytes'
-import { generateRequestId } from '../src/shared/request-id'
-import { createIngressHandler } from '../src/ingress/handlers'
-import { BakedIngressResult } from '../src/ingress/decode/baked-result'
-import { buildHeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN } from '../src/ingress/shared'
-import { IngressInputPacker } from '../src/ingress/packing/input-packer'
-import { gatherRawHeadersPacked } from '../src/ingress/packing/gather-raw-headers'
-import { measureNs as measure } from './measure'
+import { getAddon } from '../../src/native'
+import { getBunFFI } from '../../src/native/ffi'
+import { BufferPool } from '../../src/shared/buffer-pool'
+import { viewForArrayBuffer } from '../../src/shared/bytes'
+import { generateRequestId } from '../../src/shared/request-id'
+import { createIngressHandler } from '../../src/ingress/handlers'
+import { BakedIngressResult } from '../../src/ingress/decode/baked-result'
+import { buildHeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN } from '../../src/ingress/shared'
+import { IngressInputPacker } from '../../src/ingress/packing/input-packer'
+import { gatherRawHeadersPacked } from '../../src/ingress/packing/gather-raw-headers'
+import { measureNs as measure } from '../measure'
 
 const OPTIONS: Parameters<typeof createIngressHandler>[0] = {
   trustProxy: false,
-  // Match the real bench server (bench/servers/ingress-server.ts): CORS-only
+  // Match the real bench server (bench/http/servers/ingress-server.ts): CORS-only
   // header plan (parseCookies/parseQuery off), pinned https, emitMetadataJson
   // on, rate limit on.
   https: true,

@@ -1,4 +1,4 @@
-// bench/servers/bun-server.ts — Correct Bun routing via `routes` property
+// bench/http/servers/bun-server.ts — Correct Bun routing via `routes` property
 import {
   PORTS,
   SECURITY_HEADERS,

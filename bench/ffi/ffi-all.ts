@@ -1,4 +1,4 @@
-// bench/ffi-all.ts — FFI (PRIMARY on Bun) vs NAPI (fallback/reference) for
+// bench/ffi/ffi-all.ts — FFI (PRIMARY on Bun) vs NAPI (fallback/reference) for
 // EVERY migrated function.
 //
 // bun:ffi is the PRIMARY transport under Bun; the napi addon is the fallback
@@ -11,11 +11,11 @@
 // (the host is noisy; min isolates the true crossing + core cost).
 //
 // Run: bun run bench/ffi-all.ts
-import { rust } from '../index'
-import { getAddon } from '../src/native'
-import { getBunFFI } from '../src/native/ffi'
-import { toBytes } from '../src/bench/assert'
-import { IngressInputPacker } from '../src/ingress/packing/input-packer'
+import { rust } from '../../index'
+import { getAddon } from '../../src/native'
+import { getBunFFI } from '../../src/native/ffi'
+import { toBytes } from '../../src/bench/assert'
+import { IngressInputPacker } from '../../src/ingress/packing/input-packer'
 
 const addon = getAddon()
 const ffi = getBunFFI()
