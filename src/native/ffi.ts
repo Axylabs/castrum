@@ -241,6 +241,12 @@ function bind(): BunFFI | null {
         args: abi(['usize', 'ptr', 'usize']),
         returns: 'cstring',
       },
+      // Server-preference sibling (RFC 7231 server semantics): `header` is a
+      // `cstring` ARG — the engine transcodes the JS header string in-engine.
+      castrum_accept_negotiator_negotiate_server: {
+        args: ['usize', 'cstring'],
+        returns: 'cstring',
+      },
       castrum_jwt_signer_sign: {
         args: abi(['usize', 'ptr', 'usize', 'i64', 'ptr', 'usize']),
         returns: U64_FAST,
@@ -362,6 +368,28 @@ function bind(): BunFFI | null {
       castrum_jwt_sign_bytes_into: {
         args: abi(['ptr', 'usize', 'ptr', 'usize', 'i64', 'i64', 'ptr', 'usize']),
         returns: U64_FAST,
+      },
+      // ── Ed25519 / EdDSA JWT (RBAC auth) — bound + self-tested; the public
+      //    surface is deferred to the auth-module consumer ────────────────
+      castrum_ed25519_generate_keypair: {
+        args: abi(['ptr', 'usize']),
+        returns: U64_FAST,
+      },
+      castrum_ed25519_sign: {
+        args: abi(['ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize']),
+        returns: U64_FAST,
+      },
+      castrum_ed25519_verify: {
+        args: abi(['ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize']),
+        returns: 'u32',
+      },
+      castrum_jwt_eddsa_sign: {
+        args: abi(['ptr', 'usize', 'ptr', 'usize', 'i64', 'i64']),
+        returns: 'cstring',
+      },
+      castrum_jwt_eddsa_verify: {
+        args: abi(['ptr', 'usize', 'ptr', 'usize', 'i64']),
+        returns: 'cstring',
       },
       castrum_ws_frame_decode_packed: {
         args: abi(['ptr', 'usize', 'ptr', 'usize']),

@@ -25,6 +25,13 @@ export function buildInstances(
   const conditionalIsNotModifiedRaw = sym.castrum_conditional_is_not_modified as Raw6
   const mediaTypeMatcherMatchesRaw = sym.castrum_media_type_matcher_matches as Raw3
   const acceptNegotiatorNegotiateRaw = sym.castrum_accept_negotiator_negotiate as RawCStr
+  const acceptNegotiatorNegotiateServerRaw = sym
+    .castrum_accept_negotiator_negotiate_server as (...a: unknown[]) => string | null
+  const ed25519GenerateKeypairRaw = sym.castrum_ed25519_generate_keypair as Raw2
+  const ed25519SignRaw = sym.castrum_ed25519_sign as Raw6
+  const ed25519VerifyRaw = sym.castrum_ed25519_verify as Raw6
+  const jwtEdDSASignSym = sym.castrum_jwt_eddsa_sign as (...a: unknown[]) => string | null
+  const jwtEdDSAVerifySym = sym.castrum_jwt_eddsa_verify as (...a: unknown[]) => string | null
   const jwtSignerSignRaw = sym.castrum_jwt_signer_sign as Raw6
   const jwtSignerVerifyRaw = sym.castrum_jwt_signer_verify as Raw6
   const templateRenderRaw = sym.castrum_template_render as Raw5
@@ -64,6 +71,13 @@ export function buildInstances(
     acceptNegotiatorNegotiate(inner, header) {
       // cstring best-supported encoding; `null` = identity (napi Option parity).
       return acceptNegotiatorNegotiateRaw(inner, header, lenOrView(header))
+    },
+    acceptNegotiatorNegotiateServer(inner, header) {
+      // Server-preference tie-breaking (RFC 7231 server semantics). The C ABI
+      // takes `header` as a `cstring` ARG, so decode the bytes to a JS string
+      // (the engine transcodes it to the call-scoped NUL-terminated buffer).
+      // `null` = identity (napi Option parity).
+      return acceptNegotiatorNegotiateServerRaw(inner, decodeUtf8(header))
     },
     jwtSignerSign(inner, claimsJson, nowSeconds) {
       // Precompiled key + ttl → compact token. 0 = invalid claims JSON (real
@@ -191,6 +205,88 @@ export function buildInstances(
       // signature / expired / malformed (napi Option parity). `now` is an i64
       // C arg → must be passed as BigInt.
       return jwtVerifySym(token, lenOrView(token), secret, lenOrView(secret), BigInt(nowSeconds))
+    },
+    ed25519GenerateKeypair() {
+      // Packed `[u32 privLen][priv PKCS#8 v1 DER][u32 pubLen][pub SPKI DER]`
+      // (100 bytes). Needed-size convention: `0` = CSPRNG failure (throw), a
+      // write larger than the buffer = the exact required size (one exact
+      // retry). Decode the packed blob into the two DER byte slices.
+      const blob = growExact(
+        (out) => Number(ed25519GenerateKeypairRaw(out, lenOrView(out))),
+        100,
+        1024,
+        'ed25519 keypair generation failed',
+      )
+      const privLen =
+        (blob[0] ?? 0) | ((blob[1] ?? 0) << 8) | ((blob[2] ?? 0) << 16) | ((blob[3] ?? 0) << 24)
+      const privateKey = blob.subarray(4, 4 + privLen)
+      const pubStart = 4 + privLen
+      const pubLen =
+        (blob[pubStart] ?? 0) |
+        ((blob[pubStart + 1] ?? 0) << 8) |
+        ((blob[pubStart + 2] ?? 0) << 16) |
+        ((blob[pubStart + 3] ?? 0) << 24)
+      return { privateKey, publicKey: blob.subarray(pubStart + 4, pubStart + 4 + pubLen) }
+    },
+    ed25519Sign(msg, privateKey) {
+      // 64-byte signature (needed-size convention: `0` = invalid private key →
+      // growExact throws).
+      return growExact(
+        (out) =>
+          Number(
+            ed25519SignRaw(
+              privateKey,
+              lenOrView(privateKey),
+              msg,
+              lenOrView(msg),
+              out,
+              lenOrView(out),
+            ),
+          ),
+        64,
+        64,
+        'ed25519 sign failed (invalid private key)',
+      )
+    },
+    ed25519Verify(msg, signature, publicKey) {
+      // u8 → boolean. C ABI arg order is (key, msg, sig).
+      return (
+        Number(
+          ed25519VerifyRaw(
+            publicKey,
+            lenOrView(publicKey),
+            msg,
+            lenOrView(msg),
+            signature,
+            lenOrView(signature),
+          ),
+        ) === 1
+      )
+    },
+    jwtEdDSASign(claimsJson, privateKey, ttl, nowSeconds) {
+      // Compact EdDSA token as a cstring (engine clone); `null` = invalid
+      // claims JSON / invalid private key (the napi `jwt_sign_eddsa` throws,
+      // so a future public consumer maps null → throw). `ttl <= 0` = no
+      // `iat`/`exp` injection; `now`/`ttl` are i64 C args → BigInt.
+      return jwtEdDSASignSym(
+        claimsJson,
+        lenOrView(claimsJson),
+        privateKey,
+        lenOrView(privateKey),
+        BigInt(ttl),
+        BigInt(nowSeconds),
+      )
+    },
+    jwtEdDSAVerify(token, publicKey, nowSeconds) {
+      // Claims JSON as a cstring; `null` = invalid signature / expired /
+      // malformed (napi Option parity).
+      return jwtEdDSAVerifySym(
+        token,
+        lenOrView(token),
+        publicKey,
+        lenOrView(publicKey),
+        BigInt(nowSeconds),
+      )
     },
     urlBuilderResolve(inner, reference) {
       // Opaque-handle resolve against a `UrlBuilder`'s PRECOMPILED base. 0 =
@@ -386,6 +482,7 @@ export function selfTestInstances(b: BunFFI): boolean {
   // covered by the per-instance JS tests.
   if (b.mediaTypeMatcherMatches(0, enc.encode('x')) !== false) return false
   if (b.acceptNegotiatorNegotiate(0, enc.encode('gzip')) !== null) return false
+  if (b.acceptNegotiatorNegotiateServer(0, enc.encode('gzip')) !== null) return false
   if (b.schemaValidatorValidate(0, enc.encode('{}')) !== false) return false
   if (b.jwtSignerVerify(0, enc.encode('a.b.c'), 0) !== null) return false
   let phase6Threw = false
@@ -443,6 +540,34 @@ export function selfTestInstances(b: BunFFI): boolean {
     return false
   }
   if (b.jwtVerify(enc.encode('tampered.token.value'), vjwtSecret, 0) !== null) {
+    return false
+  }
+
+  // Ed25519 round-trip: generate → sign → verify (and a tampered signature
+  // must be rejected). The generate wrapper also parses the packed blob, so
+  // this pins the `[u32 privLen][priv][u32 pubLen][pub]` layout.
+  const edKp = b.ed25519GenerateKeypair()
+  const edMsg = enc.encode('ed25519 bind-time self-test')
+  const edSig = b.ed25519Sign(edMsg, edKp.privateKey)
+  if (edSig.byteLength !== 64 || !b.ed25519Verify(edMsg, edSig, edKp.publicKey)) {
+    return false
+  }
+  const edTampered = edSig.slice()
+  edTampered[0] = (edTampered[0] ?? 0) ^ 0xff
+  if (b.ed25519Verify(edMsg, edTampered, edKp.publicKey)) {
+    return false
+  }
+  // EdDSA JWT round-trip on the SAME keypair (ttl=0 → no iat/exp, so verify
+  // succeeds at any `now`).
+  const edToken = b.jwtEdDSASign(enc.encode('{"sub":"ffi-self-test"}'), edKp.privateKey, 0, 0)
+  if (edToken === null || edToken.split('.').length !== 3) {
+    return false
+  }
+  const edClaims = b.jwtEdDSAVerify(enc.encode(edToken), edKp.publicKey, 0)
+  if (edClaims === null || !edClaims.includes('"sub":"ffi-self-test"')) {
+    return false
+  }
+  if (b.jwtEdDSAVerify(enc.encode('tampered.token.value'), edKp.publicKey, 0) !== null) {
     return false
   }
 

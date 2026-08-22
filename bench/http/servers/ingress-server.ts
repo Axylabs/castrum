@@ -51,13 +51,13 @@ const EMIT_REQUEST_ID_HEADER = envFlag("INGRESS_REQUEST_ID_HEADER", false);
 
 // Zero-copy pipeline-only responses (the native output slice is served via a
 // streaming body that holds the pooled buffer until consumed — safe with the
-// bounds below). Default is COPY mode: measured (2026-08-16, autocannon
-// median-of-N) that per-request `ReadableStream` construction costs ~29% RPS
-// on POST /api/users (33k zero-copy vs 42.6k copy) and ~parity on GET — the
-// small metadata envelope is cheaper to `slice()` + `new Response(bytes)` than
-// to wrap in stream machinery. INGRESS_ZERO_COPY=1 opts back in (large
-// response-payload deployments); the legacy INGRESS_UNSAFE_ZERO_COPY alias is
-// honored.
+// bounds below). Default is COPY mode: measured at the server-bound config
+// (2026-08-21, autocannon static POST /api/users, 2000 connections, pipelining
+// 1, median-of-3) that per-request `ReadableStream` construction costs ~47% RPS
+// (45.1k zero-copy vs 66.4k copy) and ~parity on GET — the small metadata
+// envelope is cheaper to `slice()` + `new Response(bytes)` than to wrap in
+// stream machinery. INGRESS_ZERO_COPY=1 opts back in (large response-payload
+// deployments); the legacy INGRESS_UNSAFE_ZERO_COPY alias is honored.
 const ZERO_COPY_ENABLED = envFlag("INGRESS_ZERO_COPY", envFlag("INGRESS_UNSAFE_ZERO_COPY", false));
 const COPY_BODY = !ZERO_COPY_ENABLED;
 // Bound zero-copy memory: at most this many buffers held by in-flight

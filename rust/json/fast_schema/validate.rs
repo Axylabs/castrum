@@ -601,8 +601,13 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
         if let Some(p) = &mut present {
             p.push(key.to_vec().into_boxed_slice());
         }
-        if let Some(&bit) = o.required.get(key) {
-            seen_required |= 1u64 << bit;
+        // `required` lookup guarded on non-empty so a schema with no `required`
+        // keyword skips hashing every member key (exact: an empty map's `get`
+        // is always None). `seen_required` stays 0 either way.
+        if !o.required.is_empty() {
+            if let Some(&bit) = o.required.get(key) {
+                seen_required |= 1u64 << bit;
+            }
         }
         c.skip_ws();
         if !c.eat(b':') {
@@ -617,8 +622,15 @@ pub(crate) fn validate_object(o: &FastObject, c: &mut Cursor, ctx: &mut Ctx, bas
         // every matching `patternProperties` schema — ALL apply conjunctively
         // (a key covered by either is not an "additional" property). `props`
         // lookup borrows (no Arc clone per member); pattern matching runs the
-        // regexes once per applicable key, inlined (no per-member Vec).
-        let prop_node = o.props.get(key);
+        // regexes once per applicable key, inlined (no per-member Vec). The
+        // lookup is guarded on non-empty so a bare `{ "type": "object" }`
+        // schema (no `properties`) skips hashing every member key (exact: an
+        // empty map's `get` is always None → falls to the `additional` branch).
+        let prop_node = if o.props.is_empty() {
+            None
+        } else {
+            o.props.get(key)
+        };
         let vstart = c.pos;
         ctx.capture_enter_key(c.data.as_ptr(), key);
         ctx.push_key(key);

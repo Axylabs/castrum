@@ -76,17 +76,22 @@ bun run bench:http:all-heavy
 bun run bench:http:ac          # all servers, 03-stress weighted mix
 bun run bench:http:stress:ac   # 03-stress mix only
 
-# Single-path static comparison (fastest, most stable signal):
-#   node bench/autocannon-stress.mjs            # dynamic 03-stress mix
-#   AC_PATH=/api/users node bench/autocannon-stress.mjs
+# Single-path static comparison (fastest, most stable signal — SERVER-BOUND
+# by default with AC_CONNECTIONS=2000; use this for ceiling comparisons):
+#   AC_PATH=/api/users AC_RUNS=3 node bench/autocannon-stress.mjs
 #   AC_PATH=/api/users AC_METHOD=POST AC_BODY='{"id":1,"name":"x"}' \
-#     AC_CONTENT_TYPE=application/json node bench/autocannon-stress.mjs
-#   AC_RUNS=3 node bench/autocannon-stress.mjs  # median-of-N (see §Single-core)
-#     — run-major interleaving: every server is measured once per round, so
-#       the median compares servers over the same load windows on a noisy host.
+#     AC_CONTENT_TYPE=application/json AC_RUNS=3 \
+#     node bench/autocannon-stress.mjs
+#   # median-of-N (see §Single-core): run-major interleaving — every server is
+#   # measured once per round, so the median compares servers over the same
+#   # load windows on a noisy host.
+#
+# The DYNAMIC 03-stress mix (default, no AC_PATH) is CLIENT-bound (~47k here —
+# autocannon's setupRequest generation is the cap, identical across servers);
+# use it only for shape/behavior validation, not ceiling comparisons.
 #
 # Multi-core scaling (SO_REUSEPORT — the way to exceed the single-core ceiling):
-#   AC_INSTANCES=4 AC_PIPELINING=10 node bench/autocannon-stress.mjs
+#   AC_INSTANCES=4 node bench/autocannon-stress.mjs
 #   (ingress/router only — they read INGRESS_REUSE_PORT=1)
 ```
 
@@ -98,7 +103,7 @@ default** (`BUN_CONFIG_MAX_HTTP_REQUESTS`, max 65,336). When a scenario's
 and the run measures the *generator*, not the server — the classic signature is
 a sub-ms `p50` with a multi-second tail and a flat RPS wall across every server.
 
-- All `bench:http:*` scripts set `BUN_CONFIG_MAX_HTTP_REQUESTS=65536` for you.
+- All `bench:http:*` scripts set `BUN_CONFIG_MAX_HTTP_REQUESTS=65535` for you.
 - `bench/http/run-bench.ts` warns if a selected scenario exceeds the effective cap.
 - For **max-throughput** server comparisons use **autocannon**
   (`bench/autocannon-stress.mjs`, run with `node`): it has no such cap, uses a
@@ -112,7 +117,7 @@ a sub-ms `p50` with a multi-second tail and a flat RPS wall across every server.
   2. `result.workers` is a count (`opts.workers`), not an array — the report no
      longer treats it as a per-worker array.
 
-### Single-core ceiling & multi-core scaling (measured 2026-08-16)
+### Single-core ceiling & multi-core scaling (measured 2026-08-21)
 
 All four servers are **single-process `Bun.serve`** (one event loop), so they
 pin at a per-core ceiling on this machine. The host is load-noisy, so use the
@@ -120,33 +125,60 @@ pin at a per-core ceiling on this machine. The host is load-noisy, so use the
 every server is visited once per round, so a single slow window affects all
 servers' run-`i` equally and the median compares servers over the same load
 windows (the old server-major order biased later servers into noisier windows).
-> **Dated snapshot (2026-08-16 ingress-RPS pass).** The host is load-noisy;
-> the newest persisted autocannon medians under `bench/results/autocannon/*/final-*.median.md`
-> supersede these numbers run-to-run. Use the median-of-N runner below for fresh
-> comparisons.
 
-Current medians (`AC_DURATION=8 AC_RUNS=3`, 500 connections, single instance):
+> **Methodology (2026-08-21 — replaces the 2026-08-16 snapshot).** Two
+> measurement traps were identified and the numbers below use the config that
+> avoids both:
+>
+> 1. **The dynamic `setupRequest` mix is CLIENT-bound, not server-bound.** The
+>    03-stress weighted mix caps every server at ~47k RPS on this host because
+>    autocannon's per-request `setupRequest` (random string generation + JSON
+>    stringify) is the bottleneck — all four servers report the identical
+>    ~47k. **Use static-path runs** (`AC_PATH=…`, `AC_METHOD=…`, `AC_BODY=…`)
+>    for ceiling comparisons; the mix only validates shape/behavior.
+> 2. **`AC_PIPELINING>1` is a client/transport artifact under GET here.**
+>    With pipelining 10, even raw Bun collapses to ~8.6k on `GET /health`
+>    (autocannon pipelining + Bun's HTTP/1.1 handling), while the same server
+>    does 52k at pipelining 1 — so pipelining does NOT expose the ceiling on
+>    this stack. The server-bound config is **`AC_PIPELINING=1` + enough
+>    connections** (≥2000 on this host) to drive the event loop.
+>
+> The server-bound snapshot below is **static-path, `AC_CONNECTIONS=2000`,
+> `AC_PIPELINING=1`, `AC_RUNS=3`** (median-of-3), single instance.
 
-- `GET /api/users?q=…` (query + cookies + CORS + metadata envelope):
-  **bun 45.2k, elysia 41.7k, ingress 51.5k, router 49.4k RPS** — ingress ~**+14%**
-  vs bun, with a tighter tail (p50 9ms / p99 16ms vs bun p50 10ms / p99 28ms).
+Current medians (static path, 2000 connections, pipelining 1, single instance):
+
+- `GET /api/users?q=testquery&page=1` (query + cookies + CORS + metadata
+  envelope): **bun 52.5k, elysia 52.4k, ingress 95.9k, router 95.8k RPS** —
+  ingress/router ~**+83% vs bun**, with a tighter tail (router p99.9 195ms vs
+  bun 800ms).
 - `POST /api/users` (JSON body, fast-path schema validation):
-  **bun 40.8k, elysia 35.1k, ingress 45.4k, router 35.1k RPS** — ingress ~**+11%**
-  vs bun. The pre-optimization ingress POST gap (≈ −24% vs bun) is closed by
-  the changes in `CHANGELOG [Unreleased]` (JS hot-path elimination + single-pass
-  body validation).
-- Per-request cost breakdown (`bun bench/cost/ingress-cost.ts` / `ingress-cost-post.ts`,
-  min-of-5): GET `run` ~826ns (native 168ns + JS ~446ns packing + decode 60ns);
-  POST `run` ~1154ns (native ~740ns — was 808ns before the single-pass — + JS).
-  The POST body read is now **synchronous for buffered bodies**: `Bun.peek` on
-  `req.bytes()` skips the deadline race + watchdog for declared-length bodies
-  (was ~600ns of race machinery per POST).
+  **bun 49.5k, elysia 49.5k, ingress 95.8k, router 93.5k RPS** — ~**+89–94%
+  vs bun**. The pre-optimization ingress POST gap (≈ −24% vs bun, 2026-08-16)
+  is long closed; the current gap is a large WIN (JS hot-path elimination +
+  single-pass body validation + copy-mode response default).
+- **Response mode matters more than any remaining pipeline cost**: copy mode
+  (default) vs zero-copy on `POST /api/users`: **66.4k vs 45.1k RPS (+47%)** —
+  per-request `ReadableStream` construction is the cost, not the native body
+  write. Both servers default to copy mode; `INGRESS_ZERO_COPY=1` opts back in
+  for large-payload deployments.
+- Per-request cost breakdown (`bun bench/cost/router-cost.ts` +
+  `router-minimal-breakdown.ts`, min-of-5): the router's minimal route `run()`
+  is ~310ns (native pruned pipeline ~115ns + response/run machinery ~150ns +
+  refresh 25ns + rid 12ns + header gather 4ns). A `syncResponder` experiment
+  that threaded a known-sync hint through `run()` was REVERTED as **slower**
+  (−6 to −94ns across 3 runs) — the per-request `assertSyncCallback` +
+  `instanceof Response` checks are already JIT-inlined and free on JSC; the
+  extra param/branch deoptimized the shared hot function. Conclusion: the
+  `run()` machinery is NOT real overhead.
 - **To exceed the single-core ceiling**, run multiple server processes on the
-  same port via SO_REUSEPORT: `AC_INSTANCES=4` (with `AC_PIPELINING` so the
-  client can drive enough in-flight requests) scaled ingress from ~45k to
-  ~69k RPS on this machine. Only ingress/router bind with `reusePort`
-  (`INGRESS_REUSE_PORT=1`); bun/elysia do not set it. For cleanest numbers run
-  autocannon on a separate host.
+  same port via SO_REUSEPORT: `AC_INSTANCES=N` (ingress/router only — they read
+  `INGRESS_REUSE_PORT=1`; bun/elysia do not set it). On this noisy host the
+  scaling signal is unreliable (4 instances: 52.8k median with one run at
+  91.9k; 8 instances: 48.5k — the load-noise band swallows the gain), so for
+  clean multi-core numbers run autocannon on a separate host. The mechanism
+  (N event loops sharing the accept queue) is the documented way to exceed the
+  single-process ceiling.
 
 ---
 

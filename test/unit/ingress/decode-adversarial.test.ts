@@ -20,6 +20,10 @@ import {
   OUT_ERROR_CODE,
   OUT_FLAGS,
   OUT_QUERY_JSON_LEN,
+  OUT_RATE_LIMIT,
+  OUT_RATE_REMAINING,
+  OUT_RATE_RESET,
+  OUT_RETRY_AFTER,
   OUT_STATUS,
   OUT_VERDICT,
 } from '../../../src/ingress/constants'
@@ -176,5 +180,42 @@ describe('adversarial layouts: both decoders degrade safely', () => {
     const fast2 = new FastIngressResult()
     fast2.refresh(buf, new Uint8Array(0), 'rid')
     expect(fast2.bodyJson()).toEqual(payload)
+  })
+
+  test('rate-window i64 (u32-halves decode) matches the raw bytes exactly', () => {
+    // `setRateWindow` (result-base.ts) reads OUT_RATE_RESET / OUT_RETRY_AFTER
+    // as two u32 halves instead of `getBigUint64` (BigInt boxing). Pin that
+    // decode on BOTH decoders with values that exercise the high word and the
+    // exact-boundary (< 2^32) case.
+    const buf = forgeBuffer(OUT_DATA_START, 0x00)
+    const dv = viewFor(buf)
+    // Valid accepted header: verdict 0, errorCode 0, status 200 → h0 = 200<<16.
+    dv.setUint32(OUT_VERDICT, 200 << 16, true)
+    dv.setUint32(OUT_FLAGS, 0, true)
+    dv.setUint32(OUT_RATE_LIMIT, 5, true) // > 0 → setRateWindow reads the window
+    dv.setUint32(OUT_RATE_REMAINING, 3, true)
+
+    const writeI64 = (offset: number, value: number): void => {
+      const hi = Math.floor(value / 4294967296)
+      const lo = value - hi * 4294967296
+      dv.setUint32(offset, lo, true)
+      dv.setUint32(offset + 4, hi, true)
+    }
+    const reset = 1_700_000_000_123 // high word nonzero (5e12-class epoch-ms)
+    const retryAfter = 42 // fits the low word only
+    writeI64(OUT_RATE_RESET, reset)
+    writeI64(OUT_RETRY_AFTER, retryAfter)
+
+    const fast = new FastIngressResult()
+    fast.refresh(buf, new Uint8Array(0), 'rid')
+    expect(fast.rateResetMs).toBe(reset)
+    expect(fast.retryAfterMs).toBe(retryAfter)
+    expect(fast.rateRemaining).toBe(3)
+
+    const baked = new BakedIngressResult()
+    baked.refresh(buf, new Uint8Array(0), viewFor(buf))
+    expect(baked.rateResetMs).toBe(reset)
+    expect(baked.retryAfterMs).toBe(retryAfter)
+    expect(baked.rateRemaining).toBe(3)
   })
 })

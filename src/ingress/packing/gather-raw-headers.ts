@@ -60,18 +60,42 @@ export function gatherRawHeadersPacked(
     return EMPTY_HEADERS_BLOCK
   }
 
+  const nonPreflight = methodKind !== METHOD_KIND.OPTIONS
+
   // CORS-only fast path: the only selected header is the (typically constant)
   // Origin, so the whole packed block is a pure function of the origin string.
   // Skip the per-request encode + scratch write by returning the cached block.
   // Preflight (OPTIONS) is excluded — it also packs ACRM/ACRH and must take
   // the general path. The MAX_SMALL_HEADER_BYTES guard mirrors the general
   // path (an oversized origin is dropped → empty block, not cached).
-  if (plan.cors && !plan.cookie && !plan.proxy && !plan.proto && methodKind !== METHOD_KIND.OPTIONS) {
+  if (plan.cors && !plan.cookie && !plan.proxy && !plan.proto && nonPreflight) {
     const origin = originValue !== undefined ? originValue : req.headers.get('origin')
     if (origin === null || origin.length > MAX_SMALL_HEADER_BYTES) {
       return EMPTY_HEADERS_BLOCK
     }
     return cachedOriginBlock(origin)
+  }
+
+  // cookie+cors fast path: when the request carries NO cookie header (the
+  // dominant API/bench case), the packed block is still origin-only, so the
+  // (typically constant) origin can reuse the cached block instead of being
+  // UTF-8 re-encoded + re-packed on every request. Byte-identical to the
+  // general path, which would visit ONLY the origin when the cookie is absent:
+  //   - cookie null + origin present → `[u16 1][origin pair]`  (cached block)
+  //   - cookie null + origin absent → `[u16 0]`               (EMPTY block)
+  //   - cookie null + origin oversized → dropped → `[u16 0]`  (EMPTY block)
+  // When a cookie IS present, fall through to the general path but hand the
+  // already-fetched value down (no second `req.headers.get('cookie')`).
+  let preFetchedCookie: string | null | undefined
+  if (plan.cors && plan.cookie && !plan.proxy && !plan.proto && nonPreflight) {
+    preFetchedCookie = req.headers.get('cookie')
+    if (preFetchedCookie === null) {
+      const origin = originValue !== undefined ? originValue : req.headers.get('origin')
+      if (origin === null || origin.length > MAX_SMALL_HEADER_BYTES) {
+        return EMPTY_HEADERS_BLOCK
+      }
+      return cachedOriginBlock(origin)
+    }
   }
 
   let [buf, view] = getHeaderBuf()
@@ -83,7 +107,7 @@ export function gatherRawHeadersPacked(
     count++
   }
 
-  forEachSelectedHeader(req, plan, methodKind, originValue, write)
+  forEachSelectedHeader(req, plan, methodKind, originValue, write, preFetchedCookie)
 
   // No selected header was actually present (e.g. a route with cookie+cors in
   // its plan but a request that sends neither) — return the shared empty block

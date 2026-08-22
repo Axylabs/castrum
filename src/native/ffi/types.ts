@@ -88,12 +88,37 @@ export interface BunFFI {
   /** Precompiled `AcceptNegotiator` → best supported encoding (opaque `inner`
    * handle); `null` = identity. */
   acceptNegotiatorNegotiate(inner: number, header: Uint8Array): string | null
+  /** Precompiled `AcceptNegotiator` → best supported encoding with SERVER-
+   * preference tie-breaking (RFC 7231 server semantics, opaque `inner` handle);
+   * `null` = identity. */
+  acceptNegotiatorNegotiateServer(inner: number, header: Uint8Array): string | null
   /** Precompiled `JwtSigner` → compact token from pre-serialized claim JSON
    * (opaque `inner` handle); throws on invalid claims / null handle. */
   jwtSignerSign(inner: number, claimsJson: Uint8Array, nowSeconds: number): Uint8Array
   /** Precompiled `JwtSigner` → claims JSON bytes (opaque `inner` handle);
    * `null` = invalid signature / expired / malformed. */
   jwtSignerVerify(inner: number, token: Uint8Array, nowSeconds: number): Uint8Array | null
+  /** Ed25519 keypair generation → `{ privateKey, publicKey }` (PKCS#8 v1 DER
+   * private + SPKI DER public bytes); throws on CSPRNG failure. */
+  ed25519GenerateKeypair(): { privateKey: Uint8Array; publicKey: Uint8Array }
+  /** Ed25519 sign → 64-byte signature; throws on invalid private key. */
+  ed25519Sign(msg: Uint8Array, privateKey: Uint8Array): Uint8Array
+  /** Ed25519 verify → whether `signature` is valid for `msg` under `publicKey`. */
+  ed25519Verify(msg: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean
+  /** EdDSA (Ed25519) JWT sign → compact token; `null` = invalid claims/private
+   * key. `ttl <= 0` = no `iat`/`exp` injection. */
+  jwtEdDSASign(
+    claimsJson: Uint8Array,
+    privateKey: Uint8Array,
+    ttl: number,
+    nowSeconds: number,
+  ): string | null
+  /** EdDSA (Ed25519) JWT verify → claims JSON string; `null` = invalid. */
+  jwtEdDSAVerify(
+    token: Uint8Array,
+    publicKey: Uint8Array,
+    nowSeconds: number,
+  ): string | null
   /** Compiled `TemplateRenderer` → UTF-8 bytes from a pre-serialized JSON
    * context (opaque `inner` handle); throws on invalid context / render error. */
   templateRender(inner: number, contextJson: Uint8Array): Uint8Array

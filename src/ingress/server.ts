@@ -11,7 +11,10 @@ import {
   readHandler,
 } from './routes'
 import type { BakedHandlerOptions } from './routes/common'
+import { nativeRouteHandler } from './routes/native'
 import { nativeResponderRoute } from './routes/responder'
+import { createNativeRoute } from './native-route'
+import type { NativeRoutePlan } from './native-route'
 import type { NativeResponder, OptimizedIngressHandler, TerminalStyle } from './types'
 
 /** Server-level default for the socket request-body cap (16 MiB). */
@@ -62,6 +65,22 @@ export interface BakedRoute {
     /** Terminal envelope style (`'castrum'` default / `'ignex'`). */
     terminalStyle?: TerminalStyle
     /** Read the body for native validation (default false — framework owns it). */
+    readBody?: boolean
+  }
+  /**
+   * A LEAN native-stack responder route: the route-wire v3 per-route stack
+   * (`createNativeRoute`) runs ONLY the plan's stages in ONE native call —
+   * no CORS/rate-limit/security/IP/metadata envelope. Wired for `methods`
+   * (default GET) by `nativeRouteHandler` (src/ingress/routes/native.ts).
+   */
+  native?: {
+    /** The route-wire v3 plan (parse/validate stages + limits). */
+    plan: NativeRoutePlan
+    /** The JS 2xx builder. */
+    handler: NativeResponder
+    /** HTTP methods to wire (default `['GET']`). */
+    methods?: ReadonlyArray<string>
+    /** Read the body for `requireJsonBody`/`validateBody` (default false). */
     readBody?: boolean
   }
   /** Overrides `maxBodyBytes` for this route's write/echo handlers. */
@@ -278,6 +297,20 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
       const responderMethods = spec.responder.methods ?? ['GET']
       for (const m of responderMethods) {
         methods[m] = responderRoute
+      }
+    }
+
+    if (spec.native) {
+      // LEAN native-stack responder route: route-wire v3 stack, no envelope.
+      // The compiled route is injected into the pure route factory (DI across
+      // the purity boundary — the compile touches the dlopen layer here).
+      const nativeRoute = nativeRouteHandler(createNativeRoute(spec.native.plan), spec.native.handler, {
+        ...routeOpts,
+        readBody: spec.native.readBody,
+      })
+      const nativeMethods = spec.native.methods ?? ['GET']
+      for (const m of nativeMethods) {
+        methods[m] = nativeRoute
       }
     }
 

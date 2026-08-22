@@ -27,9 +27,17 @@
 //   SERVER           bun|elysia|ingress|router (default: all)
 //   SCENARIO         report tag only (default: 03-stress)
 //   AC_DURATION      seconds per server run (default: 30)
-//   AC_CONNECTIONS   concurrent keep-alive sockets (default: 500)
+//   AC_CONNECTIONS   concurrent keep-alive sockets (default: 2000 — the
+//                    server-bound floor on this host for STATIC-path runs;
+//                    the old 500 default let the client cap the server at
+//                    ~41k RPS and hid the real ceiling — see docs/BENCHMARKS.md
+//                    §Single-core ceiling. The DYNAMIC setupRequest mix is
+//                    client-bound regardless (~47k here) and only validates
+//                    shape/behavior — use AC_PATH for ceiling comparisons.)
 //   AC_WORKERS       worker_threads to scale the client (default: 0 = single)
-//   AC_PIPELINING    HTTP/1.1 pipelining depth (default: 1)
+//   AC_PIPELINING    HTTP/1.1 pipelining depth (default: 1 — >1 is a
+//                    client/transport artifact under GET on this stack and
+//                    does NOT expose the server ceiling)
 //   AC_TIMEOUT       per-request timeout seconds (default: 10)
 //   AC_OUT_DIR       report dir (default: bench/results/autocannon)
 import { spawn } from "node:child_process";
@@ -51,7 +59,7 @@ const PORTS = {
 const SERVERS = Object.keys(PORTS);
 
 const DURATION = Number(process.env.AC_DURATION ?? 30);
-const CONNECTIONS = Number(process.env.AC_CONNECTIONS ?? 500);
+const CONNECTIONS = Number(process.env.AC_CONNECTIONS ?? 2000);
 const WORKERS = Number(process.env.AC_WORKERS ?? 0);
 const PIPELINING = Number(process.env.AC_PIPELINING ?? 1);
 const TIMEOUT = Number(process.env.AC_TIMEOUT ?? 10);

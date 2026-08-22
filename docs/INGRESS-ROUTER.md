@@ -38,6 +38,7 @@ wire route factories over that route's compiled handler:
 | `cookies` | GET read (cookies-style) handler |
 | `delete` | DELETE read-style handler |
 | `responder` | JS responder route (`methods`, `readBody`, `terminalStyle`) |
+| `native` | LEAN native-stack responder route: the route-wire v3 per-route stack (`createNativeRoute`) runs ONLY the plan's stages (parseQuery/parseCookies/requireJsonBody/validateBody) in ONE native call — no CORS/rate-limit/security/IP/metadata envelope. The responder builds the 2xx from the decoded snapshot. Measured ~580ns cheaper per request than the full-pipeline responder on a parseQuery+parseCookies route, and **+34% RPS at the HTTP level** on the bench server's `/api/native` vs `/api/users` (server-bound config). |
 | `raw` | Raw `Request → Response` handler served OUTSIDE the pipeline (health/metrics probes) |
 | `maxBodyBytes` / `bodyTimeoutMs` | Per-route write/echo overrides |
 

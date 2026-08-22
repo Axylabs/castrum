@@ -163,6 +163,11 @@ export interface EncodingPrefResult {
 export interface AcceptNegotiatorInstance {
   /** Best supported encoding for `header`, or null for identity. */
   negotiate(header: Uint8Array): string | null
+  /** Best supported encoding for `header` with SERVER-preference tie-breaking
+   * (RFC 7231 server semantics — the supported list's order breaks q-value
+   * ties), or null for identity. On the napi fallback this is the projected
+   * `negotiate_server_preference` method. */
+  negotiateServerPreference(header: Uint8Array): string | null
   /** Opaque handle (bun:ffi fast path) — `castrum_accept_negotiator_negotiate`. */
   innerPtr?(): bigint
 }

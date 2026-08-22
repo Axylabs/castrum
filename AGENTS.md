@@ -121,7 +121,8 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── headers/            cors.ts + hsts.ts + security.ts (baked security merge) + fast-templates.ts + baked-templates.ts (two template builders, NOT unified)
   ├── decode/             fast-result.ts + baked-result.ts (two decoders, NOT unified) + packed-sections.ts (shared section layout)
   ├── response/           terminal.ts (fast) + error-bodies.ts (pre-baked) + baked-response.ts (pre-baked response builders)
-  ├── routes/             read/head/json-write/echo/delete/options/fallback factories + common.ts + responder.ts
+  ├── routes/             read/head/json-write/echo/delete/options/fallback factories + common.ts + responder.ts + native.ts (lean route-wire v3 responder)
+  ├── native-route.ts     public createNativeRoute (route-wire v3 stack in castrum; impure boundary) + packing/route-wire.ts (PURE wire helpers)
   ├── fast.ts             thin: createIngressFast (packed-input path, handleRequestPacked) + re-exports
   ├── handlers.ts         thin: createIngressHandler (packed-input path: frame packed in
   │                       JS via IngressInputPacker + gatherRawHeadersPacked, driven by

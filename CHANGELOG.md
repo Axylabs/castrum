@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Clippy clean again**: fixed two pre-existing warnings — a `redundant_closure`
+  in the Ed25519 keypair C-ABI (`rust/ffi/jwt.rs`, now passes the fn-item directly)
+  and `too_many_arguments` on `IngressInner::handle_components` (`rust/ingress/pipeline.rs`,
+  `#[allow]` matching the existing `write_full_body_json` style).
+- **FFI transport completed — all 79 `castrum_*` C-ABI exports now bound**
+  (`src/native/ffi.ts` + `src/native/ffi/build/instances.ts`): the 6 previously
+  unbound symbols (the server-preference `castrum_accept_negotiator_negotiate_server`
+  and the 4 Ed25519 / EdDSA-JWT ops `castrum_ed25519_generate_keypair` /
+  `_sign` / `_verify` + `castrum_jwt_eddsa_sign` / `_verify`) are now in the
+  `dlopen` map with BunFFI wrappers and bind-time self-tests (Ed25519
+  generate→sign→verify round-trip, tampered-signature rejection, EdDSA JWT
+  round-trip, null-handle ABI checks). This fixes the `ffi-symbol-parity` test's
+  2 known failures and closes the "new export silently never bound" drift class
+  for these symbols. The Ed25519/EdDSA-JWT wrappers are transport-ready but the
+  PUBLIC `rust.*` surface for them is deferred to the auth-module consumer.
+- **`AcceptNegotiator.negotiateServerPreference(header)`** (RFC 7231
+  server-preference tie-breaking — supported order breaks q-ties, empty header
+  → identity): now exposed on the higher-order instance
+  (`src/rust-ffi/scalar/factories.ts`), FFI-first via
+  `castrum_accept_negotiator_negotiate_server` with the napi
+  `negotiate_server_preference` fallback. Parity pinned by
+  `test/unit/native/ffi.test.ts` + semantic tests in
+  `test/unit/rust-ffi/accept.test.ts` (tie-break by supported order vs client
+  order; empty header → null).
+- **`router-server.ts` response default aligned to copy mode** (was zero-copy):
+  the bench router inherited the legacy `INGRESS_UNSAFE_ZERO_COPY` default
+  (zero-copy ON) while `ingress-server.ts` correctly defaults to copy mode —
+  measured (autocannon static POST, 2000 connections, pipelining 1) copy mode
+  is **66.4k vs 45.1k RPS (+47%)** because per-request `ReadableStream`
+  construction dominates the small metadata envelope. Both bench servers now
+  default to copy mode; `INGRESS_ZERO_COPY=1` opts back in for large-payload
+  deployments.
+- **Public per-route native stack — `createNativeRoute` + router `native` kind**
+  (the route-wire v3 stack is now a first-class castrum surface, not just the
+  `@ignex/native` external wire): `createNativeRoute(plan)` (`src/ingress/
+  native-route.ts`) compiles a descriptor once and runs each frame in ONE
+  native call, with the pure wire helpers (`encodeRouteDescriptor` /
+  `packRouteFrame` / `decodeRouteResult` + layout constants) in
+  `src/ingress/packing/route-wire.ts`. `nativeRouteHandler` (`src/ingress/
+  routes/native.ts`) wraps it as a `RouteHandler` (400/422 verdict rejections,
+  decoded snapshot to the responder); `createIngressRouter`'s `native` route
+  spec wires it into a server. Measured (`bench/cost/native-route-vs-router.ts`):
+  ~551ns full JS-glue path vs ~1131ns router `run()` on a parseQuery+
+  parseCookies route (−580ns); and at the HTTP level on the bench server
+  (server-bound config, 2000 connections, median-of-3): `/api/native` **97.0k
+  vs `/api/users` 72.6k RPS (+34%)** with a tighter tail (p50 30ms / p99 46ms
+  vs 38/98ms). Trade-off (deliberate): the native stack does NOT do CORS, rate
+  limiting, security headers, IP trust, or the metadata envelope — routes that
+  need those stay on the full pipeline. Pinned by
+  `test/unit/ingress/native-route-public.test.ts` (9 tests) + the HTTP smoke.
+
+### Benchmarking
+
+- **Autocannon runner is now server-bound by default** (`bench/autocannon-stress.mjs`):
+  `AC_CONNECTIONS` default raised 500 → 2000 and `AC_PIPELINING` default stays 1 —
+  the old 500-connection default let the client cap the server (~41k RPS wall
+  hiding the real ceiling; the 03-stress report the pipeline previously quoted,
+  "37.5k rps / 12ms", was CLIENT-bound). Two traps documented in
+  `docs/BENCHMARKS.md` §Single-core ceiling: (1) the dynamic `setupRequest` mix
+  is client-bound at ~47k on this host for ALL servers (autocannon's per-request
+  generator is the bottleneck — identical RPS across bun/elysia/ingress/router),
+  so ceiling comparisons MUST use static-path runs (`AC_PATH=…`); (2)
+  `AC_PIPELINING>1` is a client/transport artifact under GET here (raw Bun
+  collapses 52k → 8.6k at pipelining 10), so it does not expose the ceiling.
+- **Server-bound snapshot (2026-08-21, static path, 2000 conns, pipelining 1,
+  median-of-3)**: GET `/api/users?q=…` **bun 52.5k, elysia 52.4k, ingress 95.9k,
+  router 95.8k RPS (+83% vs bun)**; POST `/api/users` **bun 49.5k, elysia 49.5k,
+  ingress 95.8k, router 93.5k RPS (+89–94% vs bun)** — the earlier "+14%"
+  snapshot was measured at 500 connections where the client could not drive
+  enough in-flight requests to expose the server ceiling.
+
+### Performance
+
+- **fast_schema object-walk: skip per-member hashing for empty `required`/`properties`**
+  (`rust/json/fast_schema/validate.rs`): the member loop no longer hashes every key
+  against the `required` map or the `properties` map when the schema declares neither
+  (exact — an empty map's `get` is always `None`, so `seen_required` and the
+  `additional`-branch behavior are unchanged). Helps the common `{ "type": "object" }`
+  and `required`-free schemas on the ingress POST path. Byte-parity pinned by the 553
+  Rust tests (incl. the fast_schema↔jsonschema parity + `fast_schema_never_panics`
+  proptest). **POST-path profiling finding** (new `bench/cost/ingress-native-decompose.ts`
+  + `ingress-schema-probe.ts`): the ~580ns native POST pipeline is already at its
+  practical floor — the fast_schema walk (~146ns on a 24B body, fast path engaged,
+  zero-DOM, SIMD `count_chars`, no-op error recording), the metadata envelope
+  (`write_full_body_json`, zero-alloc memchr escaping) and the query serializer are
+  all single-pass and allocation-free; no remaining "inefficient code" hotspot.
+- **rate-window i64 decode without BigInt boxing** (`src/ingress/decode/result-base.ts`
+  `setRateWindow`): the `OUT_RATE_RESET` / `OUT_RETRY_AFTER` epoch-ms fields are now
+  read as two u32 halves (`lo + hi * 2^32`) instead of `getBigUint64` — bit-identical
+  to the old unsigned interpretation, exact for epoch-ms (< 2^53), and ~10ns cheaper
+  per request (measured 13ns → 3ns for the two reads). Shared by BOTH decoders
+  (fast + baked). Result-decode measured 51 → 32ns on the GET cost bench. Pinned by
+  a new synthetic-buffer test in `test/unit/ingress/decode-adversarial.test.ts`
+  (values exercising the high word + exact-boundary).
+- **cookie+cors header-gather fast path** (`src/ingress/packing/gather-raw-headers.ts`):
+  when the `HeaderPlan` selects cookie + CORS (no proxy/proto, non-preflight) and the
+  request carries NO `Cookie` header (the dominant API/bench case), the packed header
+  block is still origin-only — so the constant per-deployment `Origin` now reuses the
+  cached origin block instead of being UTF-8 re-encoded + re-packed on every request.
+  Byte-identical to the general path (which would visit only the origin when the cookie
+  is absent); the already-fetched cookie is threaded into `forEachSelectedHeader`
+  (`select-headers.ts` optional `cookieValue` arg) so cookie-bearing requests don't pay a
+  double `headers.get('cookie')`. Measured (Bun 1.4, this host): the origin-present
+  gather path drops ~224ns → ~36ns (6×), and `run()` for a cookie-plan handler on a
+  cookie-less request is now within ~16ns of a no-cookie-plan handler (was ~190ns).
+  Parity pinned by `test/unit/ingress/header-packing.test.ts` (6 new cookie+cors tests)
+  and the HTTP smoke. New diagnostics: `bench/cost/ingress-gather-attr.ts`,
+  `bench/cost/ingress-cookie-ab.ts`, `bench/cost/ingress-js-breakdown.ts`.
+
 ## [0.9.1] — 2026-08-21
 
 ### Cleanup

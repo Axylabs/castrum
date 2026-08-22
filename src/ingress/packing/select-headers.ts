@@ -45,6 +45,12 @@ export const HDR_XFP = encoder.encode('x-forwarded-proto')
  *   fetched here. The same `MAX_SMALL_HEADER_BYTES` guard applies either way.
  * @param visit - Invoked once per selected header with the pre-encoded name
  *   bytes and the raw value string.
+ * @param cookieValue - When provided (non-undefined), the already-fetched
+ *   `Cookie` header value, avoiding a second `req.headers.get('cookie')`
+ *   native→JS conversion (the caller's cookie+cors fast path already fetched
+ *   it once to decide between the cached origin block and the general path).
+ *   When omitted, the cookie is fetched here — so existing callers are
+ *   byte-for-byte unchanged.
  */
 export function forEachSelectedHeader(
   req: Request,
@@ -52,11 +58,12 @@ export function forEachSelectedHeader(
   methodKind: number,
   originValue: string | null | undefined,
   visit: (name: Uint8Array, value: string) => void,
+  cookieValue?: string | null,
 ): void {
   const h = req.headers
 
   if (plan.cookie) {
-    const v = h.get('cookie')
+    const v = cookieValue !== undefined ? cookieValue : h.get('cookie')
     if (v !== null && v.length <= MAX_COOKIE_HEADER_BYTES) {
       visit(HDR_COOKIE, v)
     }

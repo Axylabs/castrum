@@ -58,4 +58,18 @@ describe('AcceptNegotiator (higher-order instance)', () => {
     // explicit gzip q=0.5 beats wildcard q=1 (most-specific reference wins).
     expect(negotiator.negotiate(encoder.encode('gzip;q=0.5, *;q=1'))).toBe('gzip')
   })
+
+  test('server-preference breaks ties by SUPPORTED order, not client order', () => {
+    // Header lists br first with q=1 and gzip second with q=1. The client
+    // negotiator picks the earliest CLIENT entry (br); the server-preference
+    // negotiator picks the earliest SUPPORTED entry (gzip).
+    expect(negotiator.negotiate(encoder.encode('br;q=1, gzip;q=1'))).toBe('br')
+    expect(negotiator.negotiateServerPreference(encoder.encode('br;q=1, gzip;q=1'))).toBe('gzip')
+  })
+
+  test('server-preference returns null (identity) on an empty header', () => {
+    // Client returns the first supported; server-preference returns identity.
+    expect(negotiator.negotiate(encoder.encode(''))).toBe('gzip')
+    expect(negotiator.negotiateServerPreference(encoder.encode(''))).toBeNull()
+  })
 })

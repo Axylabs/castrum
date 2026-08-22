@@ -37,7 +37,18 @@ const HTTPS_FIXED = true;
 const NEED_SOCKET_IP = RATE_ENABLED;
 
 const EMIT_REQUEST_ID_HEADER = envFlag("INGRESS_REQUEST_ID_HEADER", false);
-const ZERO_COPY_ENABLED = envFlag("INGRESS_ZERO_COPY", envFlag("INGRESS_UNSAFE_ZERO_COPY", true));
+
+// Zero-copy pipeline-only responses (the native output slice is served via a
+// streaming body that holds the pooled buffer until consumed — safe with the
+// bounds below). Default is COPY mode — the SAME default as ingress-server.ts:
+// measured at the server-bound config (2026-08-21, autocannon static POST
+// /api/users, 2000 connections, pipelining 1, median-of-3) that per-request
+// `ReadableStream` construction costs ~47% RPS (45.1k zero-copy vs 66.4k copy)
+// and ~parity on GET — the small metadata envelope is cheaper to `slice()` +
+// `new Response(bytes)` than to wrap in stream machinery. INGRESS_ZERO_COPY=1
+// opts back in (large response-payload deployments); the legacy
+// INGRESS_UNSAFE_ZERO_COPY alias is honored.
+const ZERO_COPY_ENABLED = envFlag("INGRESS_ZERO_COPY", envFlag("INGRESS_UNSAFE_ZERO_COPY", false));
 const COPY_BODY = !ZERO_COPY_ENABLED;
 const ZERO_COPY_MAX_IN_FLIGHT = envNumber("INGRESS_ZERO_COPY_MAX_IN_FLIGHT", 128, 1);
 const ZERO_COPY_TIMEOUT_MS = envNumber("INGRESS_ZERO_COPY_TIMEOUT_MS", 1000, 0);
@@ -160,6 +171,24 @@ const router = createIngressRouter({
     "/api/cookies": {
       read: true,
       options: { ...baseOptions, parseCookies: true, parseQuery: false },
+    },
+    "/api/native": {
+      // LEAN native-stack route (route-wire v3): parseQuery+parseCookies in
+      // ONE native call, JS builds the 2xx — the lean responder path measured
+      // ~580ns cheaper per request than the full pipeline on this route shape
+      // (bench/cost/native-route-vs-router.ts). Same wire shape (ok:true +
+      // requestId) so the load generator's shape checks pass unchanged.
+      native: {
+        plan: { parseQuery: true, parseCookies: true },
+        handler: (snap) =>
+          Response.json({
+            ok: true,
+            requestId: snap.requestId,
+            path: "/api/native",
+            query: snap.query,
+            cookies: snap.cookies,
+          }),
+      },
     },
   },
 });

@@ -113,7 +113,7 @@ async function main() {
   // (BUN_CONFIG_MAX_HTTP_REQUESTS). Any selected scenario whose maxConcurrent
   // exceeds that cap will FIFO-queue client-side and the run will measure the
   // GENERATOR (~930 RPS wall + ~15 s tail), not the server. The bench:http:*
-  // scripts set BUN_CONFIG_MAX_HTTP_REQUESTS=65536; warn when a manual run
+  // scripts set BUN_CONFIG_MAX_HTTP_REQUESTS=65535; warn when a manual run
   // doesn't.
   const fetchCap = Number(process.env.BUN_CONFIG_MAX_HTTP_REQUESTS ?? 256);
   const overCap = scenarios.filter(
@@ -124,7 +124,7 @@ async function main() {
       `scenario(s) ${overCap.join(", ")} have maxConcurrent above the Bun fetch cap ` +
       `(${fetchCap} default 256) — requests will FIFO-queue client-side and this run ` +
       `will measure the generator, not the server. Re-run with ` +
-      `BUN_CONFIG_MAX_HTTP_REQUESTS=65536 (the bench:http:* scripts do this). ` +
+      `BUN_CONFIG_MAX_HTTP_REQUESTS=65535 (the bench:http:* scripts do this). ` +
       `For max-throughput server comparisons use \`bun run bench:http:ac\` (autocannon).`;
     console.warn(`\u26a0\ufe0f  ${msg}`);
   }

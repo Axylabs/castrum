@@ -34,6 +34,10 @@ export { healthHandler, livenessHandler, readinessHandler } from './health'
 export type { IngressMetrics } from './metrics'
 // ── Observability (zero-dep): metrics, health probes ─────────────
 export { createIngressMetrics, metricsHandler } from './metrics'
+export type { NativeRoute, NativeRoutePlan } from './native-route'
+export { createNativeRoute } from './native-route'
+// ── Route-wire v3 byte contract (PURE wire helpers) ───────────────
+export * from './packing/route-wire'
 export type { IngressFastHandler, IngressFastOptions } from './options'
 export { buildTerminalResponse } from './response/terminal'
 export type { CreateIngressRouterOptions, IngressRouter, RouterRouteSpec } from './router'

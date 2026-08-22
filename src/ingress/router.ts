@@ -23,6 +23,7 @@
 
 import type { BakedIngressResult } from './decode/baked-result'
 import { type BakedIngressRuntime, createIngressHandler } from './handlers'
+import type { NativeRoutePlan } from './native-route'
 import type { IngressHandlerOptions } from './options'
 import type { PathMatch } from './path-matcher'
 import { buildPathMatcher } from './path-matcher'
@@ -60,6 +61,28 @@ export interface RouterRouteSpec {
     /** HTTP methods to wire (default `['GET']`). */
     methods?: ReadonlyArray<string>
     /** Read the body for native validation (default false — framework owns it). */
+    readBody?: boolean
+  }
+  /**
+   * A LEAN native-stack responder route: the route-wire v3 per-route stack
+   * (`createNativeRoute` over `castrum_route_*`) runs ONLY the stages in
+   * `plan` (parseQuery/parseCookies/requireJsonBody/validateBody) in ONE
+   * native call — no CORS/rate-limit/security/IP/metadata envelope. On a
+   * verdict failure the route rejects (400 non-JSON / 422 schema); on success
+   * the responder builds the 2xx from the decoded snapshot. Measured ~580ns
+   * cheaper per request than the full-pipeline responder on a
+   * parseQuery+parseCookies route (bench/cost/native-route-vs-router.ts).
+   * Wired for `methods` (default `['GET']`). When set, `read`/`write`/etc.
+   * for this route are ignored.
+   */
+  native?: {
+    /** The route-wire v3 plan (parse/validate stages + limits). */
+    plan: NativeRoutePlan
+    /** The JS 2xx builder (receives the decoded query/cookies/body snapshot). */
+    handler: NativeResponder
+    /** HTTP methods to wire (default `['GET']`). */
+    methods?: ReadonlyArray<string>
+    /** Read the body for `requireJsonBody`/`validateBody` (default false). */
     readBody?: boolean
   }
   /** Terminal envelope style for this route's responder (default: router-level
@@ -155,6 +178,21 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
     if (spec.raw) {
       // Raw handler: served directly, outside the pipeline.
       bakedRoutes[path] = { read: spec.raw as RouteHandler }
+      continue
+    }
+    if (spec.native) {
+      // LEAN native-stack responder route: the route-wire v3 stack runs ONLY
+      // the plan's stages (no full IngressInner, no CORS/rate-limit/security).
+      bakedRoutes[path] = {
+        native: {
+          plan: spec.native.plan,
+          handler: spec.native.handler,
+          methods: spec.native.methods,
+          readBody: spec.native.readBody,
+        },
+        maxBodyBytes: spec.maxBodyBytes,
+        bodyTimeoutMs: spec.bodyTimeoutMs,
+      }
       continue
     }
     // Compile a dedicated native instance for this route's options.

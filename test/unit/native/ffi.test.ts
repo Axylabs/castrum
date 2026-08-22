@@ -650,6 +650,69 @@ describe('bun:ffi fast path', () => {
     expect(Array.from(ffiAead.decrypt(nonce, ct) as Uint8Array)).toEqual(Array.from(data))
   })
 
+  // ── Ed25519 / EdDSA JWT + AcceptNegotiator server-preference (2026-08-21) ──
+
+  test('ed25519 + EdDSA JWT ffi wrappers round-trip and match napi', () => {
+    const ffi = getBunFFI()
+    if (!isBun() || ffi === null) {
+      return // napi path covered by the rest of the suite
+    }
+    const addon = getAddon() as unknown as {
+      ed25519Sign?: (msg: Uint8Array, key: Uint8Array) => Uint8Array
+      ed25519Verify?: (msg: Uint8Array, sig: Uint8Array, key: Uint8Array) => boolean
+    }
+    const msg = encoder.encode('hello ed25519')
+
+    const kp = ffi.ed25519GenerateKeypair()
+    expect(kp.privateKey.byteLength).toBe(48) // PKCS#8 v1
+    expect(kp.publicKey.byteLength).toBe(44) // SPKI
+
+    const sig = ffi.ed25519Sign(msg, kp.privateKey)
+    expect(sig.byteLength).toBe(64)
+    expect(ffi.ed25519Verify(msg, sig, kp.publicKey)).toBe(true)
+    const bad = sig.slice()
+    bad[63] = (bad[63] ?? 0) ^ 1
+    expect(ffi.ed25519Verify(msg, bad, kp.publicKey)).toBe(false)
+
+    // Cross-check sign/verify against the napi addon (raw bytes both sides).
+    if (addon.ed25519Sign && addon.ed25519Verify) {
+      expect(Array.from(addon.ed25519Sign(msg, kp.privateKey))).toEqual(Array.from(sig))
+      expect(addon.ed25519Verify(msg, sig, kp.publicKey)).toBe(true)
+    }
+
+    // EdDSA JWT round-trip (ttl=0 → no iat/exp) on the same keypair.
+    const claims = encoder.encode('{"sub":"user-1","role":"admin"}')
+    const token = ffi.jwtEdDSASign(claims, kp.privateKey, 0, 1_000_000)
+    expect(token).not.toBeNull()
+    const claimsBack = ffi.jwtEdDSAVerify(
+      encoder.encode(token as string),
+      kp.publicKey,
+      1_000_000,
+    )
+    expect(claimsBack).not.toBeNull()
+    expect((claimsBack as string).includes('"sub":"user-1"')).toBe(true)
+    expect(
+      ffi.jwtEdDSAVerify(encoder.encode('tampered.token.value'), kp.publicKey, 1_000_000),
+    ).toBeNull()
+  })
+
+  test('acceptNegotiatorNegotiateServer matches the napi server-preference method', () => {
+    if (!isBun() || getBunFFI() === null) {
+      return // napi path covered by the rest of the suite
+    }
+    const addon = getAddon()
+    const supported = ['gzip', 'identity']
+    // rust.createAcceptNegotiator returns the FFI-backed instance on Bun.
+    const inst = rust.createAcceptNegotiator(supported)
+    const napiInst = new addon.AcceptNegotiator(supported)
+    const header = encoder.encode('gzip, deflate, br')
+    const server = inst.negotiateServerPreference(header)
+    expect(server).toEqual(napiInst.negotiateServerPreference(header))
+    expect(server).toBe('gzip')
+    // The client variant must agree with the napi client method too.
+    expect(inst.negotiate(header)).toEqual(napiInst.negotiate(header))
+  })
+
   // ── Transport introspection (FFI is PRIMARY on Bun; napi is the fallback) ──
 
   test('transport()/ffiActive() reflect the resolved transport', () => {

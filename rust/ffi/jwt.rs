@@ -265,7 +265,7 @@ pub unsafe extern "C" fn castrum_ed25519_generate_keypair(
         // Needed-size convention: exact required size, no re-run.
         return packed_len;
     }
-    let result = panic_guard(|| crate::crypto::ed25519::generate_keypair(), None);
+    let result = panic_guard(crate::crypto::ed25519::generate_keypair, None);
     let Some((private_der, public_der)) = result else {
         return 0;
     };

@@ -110,8 +110,16 @@ export abstract class IngressResultBase {
    */
   protected setRateWindow(rateLimit: number, rateLimited: boolean, view: DataView): void {
     if (rateLimit > 0 || rateLimited) {
-      this.rateResetMs = Number(view.getBigUint64(OUT_RATE_RESET, true))
-      this.retryAfterMs = Number(view.getBigUint64(OUT_RETRY_AFTER, true))
+      // i64 LE read as two u32 halves (lo + hi * 2^32) instead of
+      // `getBigUint64` — avoids the per-read BigInt boxing (measured ~10ns
+      // per read on the hot path). Bit-identical to `Number(getBigUint64(..))`
+      // for the unsigned interpretation and exact for epoch-ms (< 2^53).
+      const resetLo = view.getUint32(OUT_RATE_RESET, true)
+      const resetHi = view.getUint32(OUT_RATE_RESET + 4, true)
+      this.rateResetMs = resetLo + resetHi * 4294967296
+      const retryLo = view.getUint32(OUT_RETRY_AFTER, true)
+      const retryHi = view.getUint32(OUT_RETRY_AFTER + 4, true)
+      this.retryAfterMs = retryLo + retryHi * 4294967296
     } else {
       this.rateResetMs = 0
       this.retryAfterMs = 0

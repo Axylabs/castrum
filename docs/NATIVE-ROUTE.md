@@ -39,11 +39,35 @@ first-failure-wins in stage order.
 - `castrum_route_compile` / `castrum_route_run` / `castrum_route_destroy`
   (C-ABI, needed-size convention, panic-guarded, immutable `&self` run).
 - napi `Route` class (Node / fallback path).
+- **Public castrum surface (`createNativeRoute`, `nativeRouteHandler`)**:
+  the stack is now a first-class castrum API, not just the ignex wire.
+  - `createNativeRoute(plan)` (`src/ingress/native-route.ts`) compiles a
+    route-wire v3 descriptor once and runs each frame in ONE native call —
+    `run(query, cookie, body)` / `runFrame(frame)` return the decoded verdict
+    (flags + errorCode + query/cookie pairs); `destroy()` frees the handle.
+    The pure wire helpers (`encodeRouteDescriptor`, `packRouteFrame`,
+    `decodeRouteResult`, layout constants) live in
+    `src/ingress/packing/route-wire.ts`.
+  - `nativeRouteHandler(plan, responder, opts)` (`src/ingress/routes/native.ts`)
+    wraps a compiled route as a `RouteHandler`: extracts the query substring +
+    Cookie header, runs the tiny frame, rejects 400/422 on verdict failure,
+    and hands the decoded snapshot to the responder for the 2xx.
+  - `createIngressRouter`'s `native` route spec wires it into a server (see
+    `INGRESS-ROUTER.md`). Measured: ~580ns cheaper per request than the
+    full-pipeline responder on a parseQuery+parseCookies route, and **+34%
+    RPS at the HTTP level** on the bench server's `/api/native` vs `/api/users`
+    (server-bound config, 2000 connections).
+  - Trade-off (deliberate): the native stack does NOT do CORS, rate limiting,
+    security headers, IP trust, or the castrum metadata envelope — routes that
+    need those must use the full pipeline. The lean path is for routes where
+    the framework owns the response body and only needs parse + verdict.
 
 ## Tests / parity
 
 - `rust/ingress/native_route.rs` unit tests + `rust/ffi/` C-ABI tests.
-- `test/unit/ingress/native-route.test.ts`.
+- `test/unit/ingress/native-route.test.ts` (wire round-trip + lenient parity).
+- `test/unit/ingress/native-route-public.test.ts` (public surface + router
+  `native` kind).
 - `scripts/verify-native-route.ts` + ignex's `route-wire.test.ts` /
   `packages/native/test/route.test.ts`.
 

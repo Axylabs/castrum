@@ -192,6 +192,7 @@ impl IngressInner {
     /// - `headers_packed`: packed header block (`[u16 count] {pairs}`)
     /// - `body_bytes`: the request body (empty when there is none)
     /// - `out`: receives the packed decision header followed by JSON payloads
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_components(
         &self,
         mk: MethodKind,

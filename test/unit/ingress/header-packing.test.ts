@@ -23,9 +23,10 @@ function gatherRawHeadersRef(
   req: Request,
   plan: HeaderPlan,
   methodKind: number,
+  originValue?: string | null,
 ): Array<[string, string]> {
   const headers: Array<[string, string]> = []
-  forEachSelectedHeader(req, plan, methodKind, undefined, (name, value) => {
+  forEachSelectedHeader(req, plan, methodKind, originValue, (name, value) => {
     headers.push([decoder.decode(name), value])
   })
   return headers
@@ -213,5 +214,82 @@ describe('gatherRawHeaders vs gatherRawHeadersPacked parity', () => {
     // Oversized cookie + xff dropped on the fast path too (was a 500 before).
     expect(fast.find(([n]) => n === 'cookie')).toBeUndefined()
     expect(fast.find(([n]) => n === 'x-forwarded-for')).toBeUndefined()
+  })
+})
+
+describe('cookie+cors fast path parity (no proxy/proto)', () => {
+  // The cookie+cors gather fast path (gather-raw-headers.ts) reuses the cached
+  // origin block when the request carries NO cookie — byte-identical to the
+  // general path. These tests pin that parity across every branch.
+  const COOKIE_CORS_PLAN: HeaderPlan = { cookie: true, cors: true, proxy: false, proto: false }
+
+  const mk = (headers: Record<string, string>, method = 'GET') =>
+    new Request('http://example.com/api?x=1', { method, headers })
+
+  test('no cookie + origin present → cached origin-only block (parity)', () => {
+    const req = mk({ origin: 'https://app.example.com' })
+    const raw = gatherRawHeadersRef(req, COOKIE_CORS_PLAN, METHOD_KIND.GET)
+    const packed = decodePacked(gatherRawHeadersPacked(req, COOKIE_CORS_PLAN, METHOD_KIND.GET))
+    expect(packed).toEqual(raw)
+    expect(packed).toEqual([['origin', 'https://app.example.com']])
+  })
+
+  test('no cookie + no origin → empty block (parity)', () => {
+    const req = mk({ host: 'example.com' })
+    const raw = gatherRawHeadersRef(req, COOKIE_CORS_PLAN, METHOD_KIND.GET)
+    const packed = decodePacked(gatherRawHeadersPacked(req, COOKIE_CORS_PLAN, METHOD_KIND.GET))
+    expect(packed).toEqual(raw)
+    expect(packed).toEqual([])
+  })
+
+  test('no cookie + oversized origin → dropped → empty block (parity)', () => {
+    const req = mk({ origin: `https://${String('x').repeat(2048)}.com` })
+    const raw = gatherRawHeadersRef(req, COOKIE_CORS_PLAN, METHOD_KIND.GET)
+    const packed = decodePacked(gatherRawHeadersPacked(req, COOKIE_CORS_PLAN, METHOD_KIND.GET))
+    expect(packed).toEqual(raw)
+    expect(packed).toEqual([])
+  })
+
+  test('WITH cookie → general path still packs cookie + origin (parity)', () => {
+    const req = mk({ cookie: 'session=abc123', origin: 'https://app.example.com' })
+    const raw = gatherRawHeadersRef(req, COOKIE_CORS_PLAN, METHOD_KIND.GET)
+    const packed = decodePacked(gatherRawHeadersPacked(req, COOKIE_CORS_PLAN, METHOD_KIND.GET))
+    expect(packed).toEqual(raw)
+    expect(packed).toEqual([
+      ['cookie', 'session=abc123'],
+      ['origin', 'https://app.example.com'],
+    ])
+  })
+
+  test('preflight OPTIONS takes the general path (packs ACRM/ACRH)', () => {
+    const req = mk(
+      {
+        origin: 'https://app.example.com',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+      'OPTIONS',
+    )
+    const raw = gatherRawHeadersRef(req, COOKIE_CORS_PLAN, METHOD_KIND.OPTIONS)
+    const packed = decodePacked(
+      gatherRawHeadersPacked(req, COOKIE_CORS_PLAN, METHOD_KIND.OPTIONS),
+    )
+    expect(packed).toEqual(raw)
+    expect(packed.map(([n]) => n)).toEqual([
+      'origin',
+      'access-control-request-method',
+      'access-control-request-headers',
+    ])
+  })
+
+  test('explicit originValue avoids a second headers.get on the fast path', () => {
+    const req = mk({ host: 'example.com' }) // NO origin header — only via arg
+    const originArg = 'https://app.example.com'
+    const raw = gatherRawHeadersRef(req, COOKIE_CORS_PLAN, METHOD_KIND.GET, originArg)
+    const packed = decodePacked(
+      gatherRawHeadersPacked(req, COOKIE_CORS_PLAN, METHOD_KIND.GET, originArg),
+    )
+    expect(packed).toEqual(raw)
+    expect(packed).toEqual([['origin', 'https://app.example.com']])
   })
 })

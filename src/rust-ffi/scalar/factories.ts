@@ -162,6 +162,10 @@ function ffiAcceptNegotiator(
       void keepAlive
       return ffi.acceptNegotiatorNegotiate(inner, header)
     },
+    negotiateServerPreference(header) {
+      void keepAlive
+      return ffi.acceptNegotiatorNegotiateServer(inner, header)
+    },
   }
 }
 
