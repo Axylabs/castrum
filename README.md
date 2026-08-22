@@ -168,7 +168,7 @@ isEmail([a, b, c]);               // one packed batch call
 ## Testing
 
 ```bash
-bun test                  # TypeScript unit tests (~540)
+bun test                  # TypeScript unit tests (~760)
 bun run test:rust         # Rust unit tests (cargo test)
 bun run typecheck         # TypeScript typecheck
 bun run test:node         # Node.js integration tests (run `bun run build:js` first)

@@ -19,7 +19,7 @@ use the scripts, not raw paths, so a future move only touches package.json.
   (`bench:http:smoke`) is the CI-gated wire-format guard.
 - **"Is the FFI transport faster than napi / Bun built-ins?"** →
   `bun run bench:ffi` (full comparison), `bench:ffi:load` (per-op throughput),
-  `bench:ffi:margin` (FFI-vs-napi margin, writes `bench/results/ffi-margin/`),
+  `bench:margin` (FFI-vs-napi margin, writes `bench/results/ffi-margin/`),
   `bench:ffi:workers` (multi-worker thread-safety).
 - **"How much does the ingress pipeline cost per request?"** →
   `bun run bench:ingress-cost` / `bench:ingress-cost:post` / `bench:router`.

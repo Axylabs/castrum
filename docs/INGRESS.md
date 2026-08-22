@@ -138,6 +138,9 @@ native options as `createIngressFast` (`trustProxy`, `https`,
 | `onResponse` | `(req, result, status, requestId) => void` | — | Hook invoked after a `Response` is produced (metrics/logging) |
 | `onError` | `(req, requestId, error) => void` | — | Hook invoked when the native pipeline fails (silent 500s are otherwise invisible) |
 | `structuredLog` | `boolean` | `false` | Emit one JSON line per request/error (gated by `CASTRUM_LOG_LEVEL`) |
+| `logger` | `StructuredLogger` | — | Custom structured logger (custom stream/extra fields); implies `structuredLog: true` |
+| `maxInFlight` | `number` | `0` (unlimited) | Hard cap on concurrently borrowed zero-copy output buffers (`BufferPool.maxInFlight`); exceeding it fails requests with 500 instead of allocating unbounded temporaries |
+| `zeroCopyTimeoutMs` | `number` | `0` (disabled) | Abandonment guard (ms) for zero-copy responses: unread/cancelled bodies release their pooled buffer and close the stream |
 
 Returns an `OptimizedIngressHandler`:
 

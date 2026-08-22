@@ -1,6 +1,6 @@
 # castrum Roadmap
 
-**Status**: pre-0.10.0 (v0.9.0 shipped 2026-08-11). The engine (Rust cdylib via napi-rs)
+**Status**: pre-0.10.0 (v0.9.1 shipped). The engine (Rust cdylib via napi-rs)
 is feature-complete for its surface; the roadmap is dominated by hardening,
 observability, distribution, and governance.
 

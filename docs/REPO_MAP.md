@@ -37,7 +37,7 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 | Build Rust addon (LOCAL max perf) | `bun run build:perf` | x86-64-v3 + AVX2 — **never for publish** |
 | Build Rust addon (debug) | `bun run build:debug` | |
 | Build compiled JS entry (Node) | `bun run build:js` | bundle + types → `dist/` (gitignored) |
-| TS unit tests | `bun test` | ~540 tests, `test/unit/**` |
+| TS unit tests | `bun test` | ~760 tests, `test/unit/**` |
 | Rust unit tests | `bun run test:rust` | `cargo test`, ~440 tests |
 | Node smoke tests | `bun run test:node` | explicit `.mjs` paths (Node 24 rejects dir arg) |
 | Installed-tarball e2e | `bun run verify:install` | pack → install → import from `node_modules` |
@@ -169,7 +169,7 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
                           native stack), options/time/packed, cors, proxy, ip_trust, rate_limit,
                           terminal, output.rs (single numeric layout source),
                           ingress_constants.rs (napi projection).
-  ffi/                    #[no_mangle] extern "C" exports (79 castrum_* symbols — 71 direct + 4
+  ffi/                    #[no_mangle] extern "C" exports (85 castrum_* symbols — 77 direct + 4
                           validator_c_abi! + 4 compress_to_out!; parity guarded by
                           test/unit/native/ffi-symbol-parity.test.ts) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).

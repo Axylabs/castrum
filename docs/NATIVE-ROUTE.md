@@ -68,8 +68,8 @@ first-failure-wins in stage order.
 - `test/unit/ingress/native-route.test.ts` (wire round-trip + lenient parity).
 - `test/unit/ingress/native-route-public.test.ts` (public surface + router
   `native` kind).
-- `scripts/verify-native-route.ts` + ignex's `route-wire.test.ts` /
-  `packages/native/test/route.test.ts`.
+- External parity: ignex's `route-wire.test.ts` /
+  `packages/native/test/route.test.ts` (in the `@ignex/native` repo).
 
 > **Naming note (flux → ignex)**: the external consumer was historically called
 > `@flux/native` (castrum v0.8.0, guarded by `test/compat/flux-contract.test.ts`).

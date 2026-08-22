@@ -42,7 +42,7 @@ bun run check
 1. **Make changes to Rust code** → `cargo build --release` (or `bun run build`)
 2. **Make changes to TypeScript code** → No build step needed (Bun runs TS directly)
 3. **Run Rust tests** → `cargo test` (~440 tests)
-4. **Run TypeScript tests** → `bun test` (~540 tests)
+4. **Run TypeScript tests** → `bun test` (~760 tests)
 5. **Typecheck** → `bun run typecheck`
 6. **Format + lint** → `bun run format` / `bun run lint`
 7. **Run benchmarks** → `bun run check` (CPU) / `bun run bench:http:smoke` (HTTP wire-format guard)

@@ -60,8 +60,10 @@ Everything is **synchronous** — there is no async/await in the FFI surface.
 > transport — see `rust.transport()` / `rust.ffiActive()`); Node and any
 > `CASTRUM_FFI_MODE=napi` fall back to the napi addon. Since Phase 6 the
 > compiled-once instances are NOT napi-only — their hot per-call ops route
-> through the C-ABI via opaque-`usize` handles. Still napi-only:
-> `rust.batch.*` / `rust.packed.*`, `text.*`, and the DOM `jsonParse`.
+> through the C-ABI via opaque-`usize` handles. `rust.text.*`
+> (`mimeFromExtension`, `wsAcceptKey`, `validateEmail`/`validateUuid`/…) and
+> the DOM `jsonParse` are FFI-first today; still napi-only:
+> `rust.batch.*` and `rust.packed.*`.
 
 > **Tip**: `rust` is a singleton created with sensible defaults. If you need
 > isolated state (own rayon threads, own HMAC cache), call

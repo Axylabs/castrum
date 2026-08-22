@@ -42,7 +42,7 @@ as a pre-baked pipeline, and still be usable from both runtimes.
 ### 2.1 One cdylib, two transports
 
 The addon is built with napi-rs (so Node can load it), but it *also* exports
-`extern "C"` symbols (`rust/ffi/`, **79 `castrum_*` symbols** — 71 direct + 4
+`extern "C"` symbols (`rust/ffi/`, **85 `castrum_*` symbols** — 77 direct + 4
 `validator_c_abi!` + 4 `compress_to_out!`) so Bun can
 `dlopen` it directly:
 
@@ -56,7 +56,7 @@ The addon is built with napi-rs (so Node can load it), but it *also* exports
 
 ```mermaid
 flowchart LR
-    TS["TypeScript (index.ts)"] -->|"bun:ffi · 79 C-ABI symbols · ~10–20 ns"| RUST["Rust cdylib (rust/ffi/)"]
+    TS["TypeScript (index.ts)"] -->|"bun:ffi · 85 C-ABI symbols · ~10–20 ns"| RUST["Rust cdylib (rust/ffi/)"]
     TS -.->|"NAPI fallback (Node / self-test failure)"| RUST
     RUST --> PIPELINE["8-stage ingress pipeline"]
     TS --> PACKED["Packed, length-prefixed buffers (zero-copy)"]
@@ -134,18 +134,21 @@ native or JS **once at load time** instead of per call.
 
 ### 3.3 HTTP: the pipeline holds up under load
 
-From `bench/results/*/03-stress.bench.md` (ramp to 10k concurrent, ~104 s):
+From `bench/results/*/03-stress.bench.md` (ramp to 10k concurrent, ~104 s;
+numbers below are the latest run, 2026-08-21 — re-run
+`bun run bench:http:stress` to refresh):
 
 | Server | Achieved RPS | Total requests | Unexpected errors | Shape failures |
 |--------|-------------|----------------|-------------------|----------------|
-| raw `Bun.serve` | 862.5 | 92,174 | 0 | 0 |
-| **castrum ingress** | **904.2** | **94,060** | **0** | **0** |
+| raw `Bun.serve` | 929.26 | 96,362 | 0 | 0 |
+| **castrum ingress** | **928.65** | **96,369** | **0** | **0** |
 
 Under extreme concurrency both saturate and show long tail latencies (p99 ~18 s
 on this machine) — that's the load generator over-driving the box, not a bug.
 The meaningful result is that adding the full pipeline (CORS + rate limit +
 body guard + schema + security headers + request IDs) costs **no correctness
-and no measurable throughput** versus a hand-rolled raw server.
+and no measurable throughput** versus a hand-rolled raw server (the two are at
+parity, within noise).
 
 ### 3.4 The bug that almost killed the server: C-ABI panics
 

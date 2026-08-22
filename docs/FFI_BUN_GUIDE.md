@@ -28,7 +28,9 @@ JS shim:
   in-engine … with no per-argument JavaScript shim" (`docs/runtime/ffi.mdx`,
   "Performance"). This is why the crossing is ~10–20 ns vs ~100–350 ns for a
   Node-API call, and why Bun's own bench puts `bun:ffi` at 2–6× faster than
-  Node's N-API (`bench/ffi/bun.js`, `docs/runtime/ffi.mdx`).
+  Node's N-API (upstream bench `bench/ffi/bun.js` in the Bun runtime checkout
+  `/home/adeel/poc/bun`, plus `docs/runtime/ffi.mdx`; castrum's own FFI-vs-napi
+  margin bench is `bench/ffi/ffi-margin.ts`).
 - The `#[no_mangle] extern "C"` symbols come from the **same cdylib** that
   napi-rs loads under Node — the two transports are two views of one binary.
 
@@ -307,9 +309,15 @@ that transfer directly to castrum's cdylib:
 
 ## 13. Version anchors & verification
 
-| Claim | Source (Bun 1.3.14 checkout) |
+The behavioral claims above are verified against the Rust-based Bun source
+checkout at `/home/adeel/poc/bun` (LATEST file: 1.3.14; `package.json` tracks
+the 1.4 development line). The decision matrix and ADR-0003 measure against
+the installed **Bun 1.4.0** runtime — both anchors describe the same
+Rust-based runtime family. Castrum's own measurements live in `bench/`.
+
+| Claim | Source (Bun checkout `/home/adeel/poc/bun`) |
 |---|---|
-| JIT-to-direct-native-call, 2–6× vs NAPI | `docs/runtime/ffi.mdx` → Performance; `bench/ffi/bun.js` |
+| JIT-to-direct-native-call, 2–6× vs NAPI | `docs/runtime/ffi.mdx` → Performance; `bench/ffi/bun.js` (upstream) |
 | `FFIType` numeric tags (`buffer`=20, `buffer_length`=21, `u64_fast`=16) | `src/js/bun/ffi.ts`; static asserts in `src/jsc/bindings/JSCFFIBridge.cpp` |
 | `buffer`/`buffer_length` atomic snapshot, arg-only | `packages/bun-types/ffi.d.ts`; `src/runtime/ffi/ffi_body.rs::reject_cc_unsupported_types_error` |
 | Pointers are `number`; BigInt converted to number | `docs/runtime/ffi.mdx` → Pointers |
@@ -320,7 +328,7 @@ that transfer directly to castrum's cdylib:
 **Verify after any FFI change**:
 
 ```bash
-nm -D --defined-only <addon> | grep -c castrum_   # = 79
+nm -D --defined-only <addon> | grep -c castrum_   # = 85
 bun run bench:http:smoke                           # after touching decoders/handlers
 bun test test/unit/native/ffi.test.ts            # FFI↔napi parity + self-test
 bun test test/unit/native/ffi-symbol-parity.test.ts

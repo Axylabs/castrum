@@ -57,6 +57,21 @@ whether the ffi transport is live.
 |----------|------|---------|-------------|
 | `CASTRUM_LOG_LEVEL` | string | `info` | Threshold for the built-in structured logger (`debug`/`info`/`warn`/`error`/`silent`). Enabled per handler via the `structuredLog: true` runtime option; emits one JSON line per request/error to stderr (`{ts, level, event, requestId, method, path, status, durationMs, ...}`). |
 
+## Benchmark controls (`bench/`, `src/bench/`)
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `CASTRUM_BENCH_BATCH_SIZE` | int | `64` | Fast-op batch size for the CPU bench's measurement loop (`src/bench/measure.ts`); for methodology experiments. |
+| `CASTRUM_BENCH_FFI` | bool | — | When `1`, the CPU bench treats an unavailable FFI transport as a hard failure instead of a warning (`src/bench/run.ts`). |
+| `CASTRUM_FFI_LOAD_MS` | int | `400` | Per-window duration (ms) of the `ffi-all` load-run (`bench/ffi/ffi-all.ts`). |
+| `CASTRUM_FFI_LOAD_WINDOWS` | int | `4` | Number of load windows in `ffi-all` (`bench/ffi/ffi-all.ts`). |
+
+## Publishing (`scripts/prepublish.mjs`, `publish-manual.mjs`)
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `CASTRUM_PUBLISH_ALLOW_PARTIAL` | bool | — | When `1`, `prepublishOnly` ships a tarball containing only the locally-built platforms instead of failing on the full `napi.targets` set. Set automatically by `bun run publish:manual`; **never** set it for a normal `npm publish`.
+
 ## Security guidance
 
 - **Proxy trust**: `trustProxy: true` is deprecated — it trusts EVERY hop of

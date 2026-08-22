@@ -7,6 +7,17 @@ editing code. Human-facing docs live in `README.md` and `docs/`;
 containment, self-test, dlopen lifetime) — read it before adding a `castrum_*`
 export or touching `src/native/ffi.ts`.
 
+**AI scaffolding index** (this repo):
+- `RULES.md` — the non-negotiable coding rules (bun-first, rust-core-first,
+  cstring/zero-text-encoding FFI, functional composition, docs discipline).
+- `.agents/skills/castrum-codebase-map/SKILL.md` — start here to orient.
+- `.agents/skills/castrum-rust-ffi/SKILL.md` — adding/modifying native ops.
+- `.agents/skills/castrum-benchmarking/SKILL.md` — running/reading benchmarks,
+  regenerating selection metadata.
+- `.agents/skills/castrum-ingress-pipeline/SKILL.md` — editing the ingress.
+- `docs/ai/LOCAL_DEV.md` — `bun link` workflow with the IgnEX core projects
+  (maintainers & AI only).
+
 ## What this project is
 
 `castrum` is a hybrid **Bun (TypeScript) + Rust** package. A Rust
@@ -30,7 +41,7 @@ HTTP **ingress pipeline** for Bun servers.
 | Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
 | Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/panic_safety.rs` + `rust/proptest_suite.rs`) |
-| TS unit tests | `bun test` (~540 tests, `test/unit/**`) |
+| TS unit tests | `bun test` (~760 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts) feed docs/bun-builtins-decision-matrix.md (NOT a shipped-op measurement) |
 | Proven selection | baked registry `src/shared/proven.ts` (`PROVEN_SELECTION`: native/js/bun winners) + `proven` surface (`src/rust-ffi/proven.ts`); `test/unit/contract/proven.test.ts` verifies each winner is wired (opImpl/builtins/selection.json) — NO live bench gate |
@@ -44,7 +55,7 @@ HTTP **ingress pipeline** for Bun servers.
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
 | Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
 | JSDoc coverage guard | `bun run check:jsdoc` (== `bun scripts/check-jsdoc.ts`) — fails if < 95% of `src/`+`index.ts` exported symbols lack a JSDoc block; run after adding public exports |
-| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (no `typeof Bun` outside `src/runtime/detect.ts`), PURE-module purity boundary, FFI doc count = 79, no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
+| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (no `typeof Bun` outside `src/runtime/detect.ts`), PURE-module purity boundary, FFI doc count = 85, no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
 | JS dependency audit | `bun run audit` |
 | Cargo deny audit | `bun run deny` (== `cargo deny check`) |
 | Coverage floors | `bun run test:coverage` (== `node scripts/check-coverage.mjs`) — 75% overall line floor + a 50% per-directory floor on the SHIPPED dirs (`src/ingress`, `src/shared`, `src/rust-ffi`, `src/native`, `src/loader`, `src/integration`) so one directory can't collapse while others compensate |
@@ -177,7 +188,7 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi/                `#[no_mangle] extern "C"` exports (79 castrum_* — 71 direct + 4
+  ├── ffi/                `#[no_mangle] extern "C"` exports (85 castrum_* — 77 direct + 4
                           validator_c_abi! + 4 compress_to_out! — incl. the
                           castrum_gzip_isize size probe and the per-route stack
                           castrum_route_compile/run/destroy; parity guarded by
@@ -381,8 +392,10 @@ success and `error.code` / `error.message` on errors (path 2's format).
 - **Per-route native stack (`rust/ingress/native_route.rs`)**: the LIVE external wire
   consumed by `@ignex/native`'s `createNativeRoute` (route-wire v3 — magic `ROUT`
   0x524f5554, version 3). It is NOT a resurrection of the deleted dead `rust/route.rs`;
-  it implements the now-live ignex contract (pinned by ignex `route-wire.test.ts` +
-  `scripts/verify-native-route.ts` + `packages/native/test/route.test.ts`). Rules:
+  it implements the now-live ignex contract (pinned by ignex's
+  `route-wire.test.ts` + `packages/native/test/route.test.ts` — the
+  `scripts/verify-native-route.ts` verifier lives in the ignex repo, not
+  here). Rules:
   (1) descriptor/stage/part tags + result layout must match route-wire.ts EXACTLY —
   bump `ROUTE_DESC_VERSION` on any wire change (a mismatched compiler/addon must be a
   hard reject, never a silent misparse); (2) parse is LENIENT (byte-parity with ignex's
@@ -589,7 +602,7 @@ explicit impurity boundary so the hot path can pool/globalize state:
 
 ## Testing
 
-- **TS**: `bun test` (~540). Add tests under `test/unit/<area>/` (`native/`,
+- **TS**: `bun test` (~760). Add tests under `test/unit/<area>/` (`native/`,
   `rust-ffi/`, `contract/`, `ingress/`, `shared/`, `integration/`) — see `test/README.md`.
 - **Rust**: `cargo test`. New logic ships with a `#[cfg(test)] mod tests` block in
   the SAME module file (ingress.rs, url_codec.rs, validation.rs, proxy.rs,

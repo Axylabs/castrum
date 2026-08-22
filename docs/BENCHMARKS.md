@@ -303,7 +303,7 @@ When comparing multiple frameworks, differences are expressed as:
 
 ```
 bench.ts
-  └─ Loads benchmark tasks from src/bench/tasks/ (33 tasks)
+  └─ Loads benchmark tasks from src/bench/tasks/ (34 tasks)
        ├── hashing.ts       Compare Rust fnv1a64 vs JS TextEncoder + hash
        ├── validation.ts    Compare Rust validation vs validator library
        ├── json.ts          Compare Rust sonic-rs vs JSON.parse

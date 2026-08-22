@@ -81,6 +81,7 @@
         "check:jsdoc": "bun scripts/check-jsdoc.ts",
         "check:selection": "bun scripts/select-native.ts --check",
         "check:clean": "bun scripts/check-clean.ts",
+        "gen:ai-map": "bun scripts/gen-ai-map.ts",
         "audit": "bun audit",
         "publish:manual": "node scripts/publish-manual.mjs",
         "publish:manual:dry": "node scripts/publish-manual.mjs --dry-run",

@@ -16,8 +16,10 @@
 //      `src/ingress/{decode,headers,response}/**`) must not import from
 //      `src/native/` or `src/shared/buffer-pool.ts`. A PURE module that needs
 //      the addon must take the resolved fn as a parameter instead.
-//   4. FFI symbol count — docs must not carry the stale `castrum_*` counts
-//      (75/78 symbols, 67/70 direct); the real count is 79 (71 direct + 4 + 4).
+//   4. FFI symbol count — docs must not carry stale `castrum_*` counts.
+//      Verified against `nm -D --defined-only <addon> | grep -c castrum_`
+//      (2026-08-22): 85 symbols = 77 direct extern fns + 4 validator_c_abi!
+//      + 4 compress_to_out!. Older counts (75–79 / 67–76 direct) are stale.
 //   5. No dangling doc links — markdown links to `docs/*.md` / root `*.md`
 //      must resolve to a real file.
 //   --todos — additionally fail on TODO/FIXME/HACK markers in `src/`.
@@ -124,11 +126,11 @@ const countDocs = [
   'docs/CASE_STUDY.md',
   'docs/FFI_BUN_GUIDE.md',
 ]
-const staleCount = /7[58]\s*(?:`)?castrum|6[70]\s*direct/
+const staleCount = /7[5-9]\s*(?:`)?castrum|6[7-9]\s*direct/
 for (const d of countDocs) {
   const text = readFileSync(join(ROOT, d), 'utf8')
   if (staleCount.test(text)) {
-    problems.push(`stale FFI symbol count in ${d} (should read 79 / 71 direct)`)
+    problems.push(`stale FFI symbol count in ${d} (should read 85 / 77 direct)`)
   }
 }
 
