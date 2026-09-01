@@ -251,10 +251,7 @@ pub unsafe extern "C" fn castrum_jwt_verify(
 /// # Safety
 /// `out` must be valid for writes up to `out_cap`.
 #[no_mangle]
-pub unsafe extern "C" fn castrum_ed25519_generate_keypair(
-    out: *mut u8,
-    out_cap: usize,
-) -> usize {
+pub unsafe extern "C" fn castrum_ed25519_generate_keypair(out: *mut u8, out_cap: usize) -> usize {
     if out.is_null() {
         return 0;
     }

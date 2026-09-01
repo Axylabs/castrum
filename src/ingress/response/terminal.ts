@@ -6,9 +6,9 @@
 // the pre-baked path has its own builders (see ./handlers.ts) — do not unify
 // them (see AGENTS.md).
 
+import { errorCodeName, errorMessage } from '../errors'
 import { headersForResult, type ResponseBuildContext } from '../headers/fast-templates'
 import { safeTerminalStatus } from '../status'
-import { errorCodeName, errorMessage } from '../errors'
 
 /**
  * Build a terminal response for a result, or `null` when the result is not

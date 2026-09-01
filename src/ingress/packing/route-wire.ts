@@ -112,11 +112,7 @@ export function encodeRouteDescriptor(
  * Encode a request frame: `[flags u32][qLen][query][cLen][cookie]([bLen][body])`.
  * The `flags` word currently only carries `ROUTE_FRAME_FLAG_HAS_BODY`.
  */
-export function packRouteFrame(
-  query: string,
-  cookie: string,
-  body: Uint8Array | null,
-): Uint8Array {
+export function packRouteFrame(query: string, cookie: string, body: Uint8Array | null): Uint8Array {
   const q = encoder.encode(query)
   const c = encoder.encode(cookie)
   const hasBody = body !== null && body.byteLength > 0

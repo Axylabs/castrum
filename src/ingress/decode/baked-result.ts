@@ -11,27 +11,27 @@
 // via ./result-base.ts.
 
 import {
-  OUT_VERDICT,
-  OUT_FLAGS,
-  OUT_RATE_LIMIT,
-  OUT_RATE_REMAINING,
-  OUT_COOKIES_JSON_LEN,
-  OUT_QUERY_JSON_LEN,
-  OUT_HEADER_VARIANT,
-  OUT_BODY_JSON_LEN,
-  OUT_DATA_START,
+  ERR_CODE_INTERNAL as ERROR_CODE_INTERNAL,
+  FLAG_BODY_TRUNCATED,
   FLAG_BODY_VALID_JSON,
-  FLAG_SCHEMA_VALID,
   FLAG_CORS_ALLOWED,
   FLAG_IS_PREFLIGHT,
   FLAG_RATE_LIMITED,
+  FLAG_SCHEMA_VALID,
   FLAG_TRUSTED_PROXY,
-  FLAG_BODY_TRUNCATED,
   HV_JSON,
-  ERR_CODE_INTERNAL as ERROR_CODE_INTERNAL,
+  OUT_BODY_JSON_LEN,
+  OUT_COOKIES_JSON_LEN,
+  OUT_DATA_START,
+  OUT_FLAGS,
+  OUT_HEADER_VARIANT,
+  OUT_QUERY_JSON_LEN,
+  OUT_RATE_LIMIT,
+  OUT_RATE_REMAINING,
+  OUT_VERDICT,
 } from '../constants'
-import { sectionLayout } from './packed-sections'
 import { isValidResponseStatus } from '../status'
+import { sectionLayout } from './packed-sections'
 import { IngressResultBase } from './result-base'
 
 /** Zero-alloc, reusable result decoder for the pre-baked handler path. */

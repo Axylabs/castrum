@@ -41,9 +41,12 @@ static GLOBAL: MiMalloc = MiMalloc;
 //              pipeline, options/time/packed submodules, cors, proxy,
 //              ip_trust, rate_limit, terminal, output (single numeric layout
 //              source), ingress_constants (napi projection of output).
+//   metrics/   sharded counters/gauges/histograms registry + Prometheus
+//              render: registry (pure core) + api (napi MetricsRegistry
+//              class); C-ABI exports live in ffi/metrics.rs.
 //   ffi/       the C-ABI surface for bun:ffi, split by domain: util (shared
 //              helpers), hashing, validators, crypto, jwt, http, payload,
-//              json, rate_limit, ingress, route, probe (bench-only).
+//              json, rate_limit, ingress, route, metrics, probe (bench-only).
 //
 // Hot-path napi APIs (do not remove): ingress::handle_request_packed,
 // ingress::handle_request_full_sync{,_into}, util::init_thread_pool,
@@ -53,6 +56,7 @@ pub mod ffi;
 pub mod http;
 pub mod ingress;
 pub mod json;
+pub mod metrics;
 pub mod payload;
 pub mod selection;
 pub mod util;

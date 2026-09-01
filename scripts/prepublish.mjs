@@ -19,7 +19,7 @@
 // publish:manual), in which case it ships only the platforms that are present
 // and warns instead of failing.
 
-import { copyFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 

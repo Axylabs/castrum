@@ -7,18 +7,18 @@
 // context to the app's own handler. `handleRequest` is a fetch-compatible
 // convenience that serves the terminal response or a rendered OK response.
 
+import { readBodyWithLimit } from '../ingress/body'
+import type { BakedIngressResult } from '../ingress/decode/baked-result'
 import {
-  createIngressHandler,
   type BakedIngressRuntime,
+  createIngressHandler,
   type OptimizedIngressHandler,
 } from '../ingress/handlers'
-import type { BakedContext } from '../ingress/types'
 import type { IngressHandlerOptions } from '../ingress/options'
-import { readBodyWithLimit } from '../ingress/body'
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_BODY_TIMEOUT_MS } from '../ingress/shared'
-import { generateRequestId } from '../shared/request-id'
+import { DEFAULT_BODY_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES } from '../ingress/shared'
+import type { BakedContext } from '../ingress/types'
 import { decoder } from '../shared/bytes'
-import type { BakedIngressResult } from '../ingress/decode/baked-result'
+import { generateRequestId } from '../shared/request-id'
 
 /** Readonly snapshot of the ingress decision, safe after `run()` returns. */
 export interface PipelineResult {

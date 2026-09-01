@@ -48,6 +48,7 @@ HTTP **ingress pipeline** for Bun servers.
 | Startup / first-call benchmark | `bun run bench:startup` |
 | FFI transport benches | `bun run bench:ffi` / `bench:ffi:load` / `bench:ffi:public` / `bench:ffi:workers` / `bench:margin` (`bench/ffi/`) |
 | Ingress cost benches | `bun run bench:ingress-cost` / `bench:ingress-cost:post` / `bench:router` (`bench/cost/`) |
+| New-op JS-vs-Rust cost | `bun run bench:newops` (`bench/cost/rust-vs-js-new-ops.ts`: metrics registry / hexValidateBatch / regexEscape vs their shipped JS baselines) |
 | Load-phase bench | `bun run bench:load` |
 | Autocannon stress | `bun run bench:http:ac` (with `AC_*` env: `AC_DURATION`, `AC_PATH`, `AC_METHOD`, `AC_BODY`, `AC_CONTENT_TYPE`, `AC_CONNECTIONS`, `AC_WORKERS`, `AC_INSTANCES`, `AC_PIPELINING`, `SERVER`) |
 | Native batch parity check | `bun run verify:native:batch` |
@@ -55,7 +56,7 @@ HTTP **ingress pipeline** for Bun servers.
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
 | Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
 | JSDoc coverage guard | `bun run check:jsdoc` (== `bun scripts/check-jsdoc.ts`) — fails if < 95% of `src/`+`index.ts` exported symbols lack a JSDoc block; run after adding public exports |
-| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (no `typeof Bun` outside `src/runtime/detect.ts`), PURE-module purity boundary, FFI doc count = 85, no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
+| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (no `typeof Bun` outside `src/runtime/detect.ts`), PURE-module purity boundary, FFI doc count = 109, no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
 | JS dependency audit | `bun run audit` |
 | Cargo deny audit | `bun run deny` (== `cargo deny check`) |
 | Coverage floors | `bun run test:coverage` (== `node scripts/check-coverage.mjs`) — 75% overall line floor + a 50% per-directory floor on the SHIPPED dirs (`src/ingress`, `src/shared`, `src/rust-ffi`, `src/native`, `src/loader`, `src/integration`) so one directory can't collapse while others compensate |
@@ -188,8 +189,8 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi/                `#[no_mangle] extern "C"` exports (85 castrum_* — 77 direct + 4
-                          validator_c_abi! + 4 compress_to_out! — incl. the
+  ├── ffi/                `#[no_mangle] extern "C"` exports (109 castrum_* — 97 direct + 4
+                          validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out! — incl. the
                           castrum_gzip_isize size probe and the per-route stack
                           castrum_route_compile/run/destroy; parity guarded by
                           test/unit/native/ffi-symbol-parity.test.ts) for Bun's `bun:ffi`
@@ -348,8 +349,11 @@ success and `error.code` / `error.message` on errors (path 2's format).
   `CASTRUM_FFI_MODE=napi`). The TS surface types `Uint8Array | string`. Normalize with
   `toBytes` / `toText` (`src/shared/bytes.ts`); `encoder.encode` / `decoder.decode` accept
   the union. The `*Into`/pooled variants always return bytes. `TextEncoder`/`TextDecoder`
-  must only appear in the Node-fallback branches of `src/shared/codec.ts` — do not reintroduce
-  them on the Bun path. See `docs/API.md` §Runtime return-type divergence.
+  live ONLY in the codec seam (`src/runtime/codec.ts`, re-exported by
+  `src/shared/codec.ts`) — never scatter them across call sites. On Bun, encode uses a
+  shared native `TextEncoder` singleton (~3x faster than the old ArrayBufferSink path on
+  Bun 1.4) and decode uses `CString`; do not reintroduce per-call encoders. See
+  `docs/API.md` §Runtime return-type divergence.
 - **Addon loader** (`src/native/loader.ts`): resolves the `.node` from multiple roots so
   it works from BOTH the source layout (`src/native/…`) and the bundled layout
   (`dist/…`). Honor `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`. A
@@ -389,6 +393,16 @@ success and `error.code` / `error.message` on errors (path 2's format).
   - Every new `castrum_*` export: `panic_guard` (catch_unwind) on fallible cores,
     null-check pointers + opaque handles, bind-time self-test, `u64_fast` byte counts,
     add to the dlopen map + `ffi/types.ts` + parity test.
+- **ABI changes are atomic (see `docs/FFI_BUN_GUIDE.md` §14)**: a signature/arity
+  change must land in Rust + the dlopen map + the JS wrapper + self-test vectors
+  as ONE unit, and `bun run build` MUST run before anything binds — a stale
+  `.node` next to fresh JS segfaults the process (no runtime ABI validation;
+  the parity test checks symbol NAMES, not arities). Debugging rule: use
+  `CASTRUM_FFI_MODE=ffi` so a failed bind throws instead of silently falling
+  back to napi; treat `SIGSEGV at tiny addresses` after touching FFI files as
+  "rebuild + re-sync both sides first", not an engine bug. Also note bun
+  canary auto-updates can swap the runtime mid-session — check `bun --version`
+  before comparing benchmark runs.
 - **Per-route native stack (`rust/ingress/native_route.rs`)**: the LIVE external wire
   consumed by `@ignex/native`'s `createNativeRoute` (route-wire v3 — magic `ROUT`
   0x524f5554, version 3). It is NOT a resurrection of the deleted dead `rust/route.rs`;

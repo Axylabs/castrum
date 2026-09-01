@@ -271,9 +271,7 @@ describe('cookie+cors fast path parity (no proxy/proto)', () => {
       'OPTIONS',
     )
     const raw = gatherRawHeadersRef(req, COOKIE_CORS_PLAN, METHOD_KIND.OPTIONS)
-    const packed = decodePacked(
-      gatherRawHeadersPacked(req, COOKIE_CORS_PLAN, METHOD_KIND.OPTIONS),
-    )
+    const packed = decodePacked(gatherRawHeadersPacked(req, COOKIE_CORS_PLAN, METHOD_KIND.OPTIONS))
     expect(packed).toEqual(raw)
     expect(packed.map(([n]) => n)).toEqual([
       'origin',

@@ -17,9 +17,7 @@ use crate::util::packed::PackedIter;
 use crate::util::validation::{
     validate_email_bytes, validate_ipv4_bytes, validate_ipv6_bytes, validate_uuid_bytes,
 };
-use crate::util::{
-    count_batch, should_parallelize, sum_batch_i64, total_bytes, unpack,
-};
+use crate::util::{count_batch, should_parallelize, sum_batch_i64, total_bytes, unpack};
 
 // ── Internal helpers (serial zero-alloc + direct-write variants) ──
 

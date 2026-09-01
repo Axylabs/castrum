@@ -4,8 +4,8 @@ import { checksumValue } from './checksum'
 import { nowMs } from './now'
 import type {
   BenchResult,
-  ConcurrentBenchTask,
   ConcurrentBenchResult,
+  ConcurrentBenchTask,
   StressBenchResult,
 } from './types'
 

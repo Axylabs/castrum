@@ -9,15 +9,15 @@
 // a different wire format — do not unify them (see AGENTS.md).
 
 import {
-  HV_COUNT,
-  HV_CORS_SIMPLE,
   HV_CORS_PREFLIGHT,
+  HV_CORS_SIMPLE,
+  HV_COUNT,
   HV_RATE_ACTIVE,
   HV_RATE_LIMITED,
 } from '../constants'
+import { secondsFromMs } from '../shared'
 import { buildCorsStaticStrings, type CorsOptions, type CorsStaticStrings } from './cors'
 import { buildHstsValue, buildSecurityPairs, type SecurityHeadersOptions } from './hsts'
-import { secondsFromMs } from '../shared'
 
 /** A single precomputed header-variant template. */
 export interface HeaderTemplate {

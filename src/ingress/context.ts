@@ -1,10 +1,10 @@
 // src/ingress/context.ts — Result snapshotting + synthetic/error context
 // builders for the async ingress API.
 
+import { ERR_CODE_INTERNAL, ERR_CODE_RATE_LIMITED, HV_CORS_SIMPLE, HV_JSON } from './constants'
 import type { ResponseBuildContext } from './headers/fast-templates'
 import { buildTerminalResponse } from './response/terminal'
-import { ERR_CODE_INTERNAL, ERR_CODE_RATE_LIMITED, HV_JSON, HV_CORS_SIMPLE } from './constants'
-import type { IngressOptions, IngressResult, IngressContext } from './types'
+import type { IngressContext, IngressOptions, IngressResult } from './types'
 
 const EMPTY_BODY = new Uint8Array(0)
 

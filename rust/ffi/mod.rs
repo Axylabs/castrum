@@ -36,6 +36,7 @@
 //!   - `payload.rs` — ws accept key + frames, gzip/brotli, sse
 //!   - `json.rs` — json patch, packed json token stream, schema validator
 //!   - `rate_limit.rs` — rate limiter checks
+//!   - `metrics.rs` — metrics registry (`castrum_metrics_*`, caller-owned handles)
 //!   - `ingress.rs` — ingress pipeline + layout constants
 //!   - `route.rs` — per-route native stack (`castrum_route_*`)
 //!   - `tests.rs` — C-ABI unit tests
@@ -46,6 +47,7 @@ mod http;
 mod ingress;
 mod json;
 mod jwt;
+mod metrics;
 mod payload;
 mod probe;
 mod rate_limit;
@@ -60,4 +62,7 @@ mod tests;
 // (`use super::*`) keeps working unchanged. The `#[no_mangle]` link symbols are
 // independent of Rust visibility, so nothing in non-test code needs them.
 #[cfg(test)]
-pub(crate) use self::{crypto::*, hashing::*, http::*, ingress::*, json::*, jwt::*, payload::*, rate_limit::*, route::*, util::*, validators::*};
+pub(crate) use self::{
+    crypto::*, hashing::*, http::*, ingress::*, json::*, jwt::*, metrics::*, payload::*,
+    rate_limit::*, route::*, util::*, validators::*,
+};

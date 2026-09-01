@@ -1,7 +1,7 @@
 // src/ingress/routes/options.ts — Pre-baked OPTIONS handler (CORS preflight).
 
 import type { OptimizedIngressHandler } from '../types'
-import { buildSuccessInit, resolveIp, type BakedHandlerOptions } from './common'
+import { type BakedHandlerOptions, buildSuccessInit, resolveIp } from './common'
 
 /**
  * Pre-baked OPTIONS handler: serves the native pipeline's CORS preflight

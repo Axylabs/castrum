@@ -13,12 +13,12 @@
 // checks) — exactly the pattern these helpers exist for.
 
 import {
-  loader,
   type LoaderBulk,
   type LoaderBulkArgs,
   type LoaderOpArgs,
   type LoaderOpName,
   type LoaderScalar,
+  loader,
 } from '../loader'
 import type { SchemaValidator } from '../shared/packed'
 

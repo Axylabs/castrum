@@ -29,14 +29,23 @@ export interface BunFFI {
   /** RFC 3986 percent-encode into `output`; returns bytes written. */
   urlEncodeInto(input: Uint8Array, output: Uint8Array): number
 
-  // ── Validators (u8 → boolean) — `cstring` ARG ────────────────────
-  // The input crosses as a `cstring` ARG: the engine transcodes the JS string
+  // ── Validators (u8 → boolean) ─────────────────────────────────────
+  // String forms cross as a `cstring` ARG: the engine transcodes the JS string
   // to a call-scoped NUL-terminated UTF-8 buffer in-engine, so the JS side does
-  // ZERO `encoder.encode` work and Rust borrows via `CStr::from_ptr`.
+  // ZERO encode work and Rust borrows via `CStr::from_ptr`. Byte forms are the
+  // `(ptr,len)` siblings — zero transcode when the caller already holds bytes.
   validateEmail(input: string): boolean
   validateUuid(input: string): boolean
   validateIpv4(input: string): boolean
   validateIpv6(input: string): boolean
+  /** Byte-input sibling of {@link validateEmail} (`(ptr,len)` — no decode). */
+  validateEmailBytes(input: Uint8Array): boolean
+  /** Byte-input sibling of {@link validateUuid} (`(ptr,len)` — no decode). */
+  validateUuidBytes(input: Uint8Array): boolean
+  /** Byte-input sibling of {@link validateIpv4} (`(ptr,len)` — no decode). */
+  validateIpv4Bytes(input: Uint8Array): boolean
+  /** Byte-input sibling of {@link validateIpv6} (`(ptr,len)` — no decode). */
+  validateIpv6Bytes(input: Uint8Array): boolean
   /** Sum of `id` fields across a JSON array → bigint (throws on non-array input). */
   jsonSumIds(input: Uint8Array): bigint
 
@@ -114,11 +123,7 @@ export interface BunFFI {
     nowSeconds: number,
   ): string | null
   /** EdDSA (Ed25519) JWT verify → claims JSON string; `null` = invalid. */
-  jwtEdDSAVerify(
-    token: Uint8Array,
-    publicKey: Uint8Array,
-    nowSeconds: number,
-  ): string | null
+  jwtEdDSAVerify(token: Uint8Array, publicKey: Uint8Array, nowSeconds: number): string | null
   /** Compiled `TemplateRenderer` → UTF-8 bytes from a pre-serialized JSON
    * context (opaque `inner` handle); throws on invalid context / render error. */
   templateRender(inner: number, contextJson: Uint8Array): Uint8Array
@@ -308,7 +313,10 @@ export interface BunFFI {
   /**
    * Encode one SSE event → bytes (fresh buffer). event/id null = line omitted
    * (a present-but-empty string emits the line, matching napi `Option`).
-   * FFI sibling of the napi `sse_encode_event` — kills the napi crossing.
+   * NOTE: event/id stay `(ptr,len)` byte args — a cstring-ARG conversion was
+   * attempted and reverted (2026-08-23); see docs/FFI_BUN_GUIDE.md §14 before
+   * touching this signature.
+   * FFI sibling of the napi `sse_encode_event`.
    */
   sseEncodeEvent(
     event: string | null,
@@ -388,6 +396,98 @@ export interface BunFFI {
   routeRun(handle: number, frame: Uint8Array, output: Uint8Array): number
   /** Destroy a compiled route handle (frees the native `Box<NativeRoute>`). */
   routeDestroy(handle: number): void
+
+  // ── Metrics registry (`castrum_metrics_*`) ─────────────────────────
+  /** Create an empty metrics registry → a caller-owned opaque handle. */
+  metricsCreate(): number
+  /**
+   * Declare a counter family → its `u32` series id (`0xFFFFFFFF` = error).
+   * `name` and `labelKeys` are `cstring` ARGs; label keys are
+   * `\u001f`-separated (empty string = no labels).
+   */
+  metricsCounter(handle: number, name: string, labelKeys: string): number
+  /** Declare a gauge family → its series id. Same ABI as {@link metricsCounter}. */
+  metricsGauge(handle: number, name: string, labelKeys: string): number
+  /**
+   * Declare a histogram family → its series id. `bucketsCsv` is a
+   * comma-separated finite positive list (empty string = default buckets).
+   */
+  metricsHistogram(handle: number, name: string, labelKeys: string, bucketsCsv: string): number
+  /**
+   * Counter/gauge `+= amount`, or histogram observe `amount`. `values` is the
+   * packed `\u001f`-separated label values. Returns true on success.
+   */
+  metricsRecord(handle: number, series: number, values: Uint8Array, amount: number): boolean
+  /** Gauge assignment (`= value`). Returns true on success. */
+  metricsGaugeSet(handle: number, series: number, values: Uint8Array, value: number): boolean
+  /**
+   * Zero-encode sibling of {@link metricsRecord}: `values` is the JOINED
+   * `\u001f`-separated JS string — the engine transcodes it in-engine.
+   */
+  metricsRecordStr(handle: number, series: number, values: string, amount: number): boolean
+  /** Zero-encode sibling of {@link metricsGaugeSet} (joined string values). */
+  metricsGaugeSetStr(handle: number, series: number, values: string, value: number): boolean
+  /**
+   * Render the Prometheus text format into `output`; returns bytes written
+   * (`0` = null handle / error; `> output.length` = exact required size).
+   */
+  metricsRender(handle: number, output: Uint8Array): number
+  /**
+   * Dump the packed v1 series snapshot into `output`; returns bytes written
+   * (`0` = null handle / error; `> output.length` = exact required size).
+   */
+  metricsSnapshot(handle: number, output: Uint8Array): number
+  /** Destroy a registry handle (frees the native `Box<MetricsRegistry>`). */
+  metricsDestroy(handle: number): void
+  /**
+   * Record a BATCH of events in one crossing. Packed layout:
+   * `[u32 n]{[u32 series][u32 valsLen][vals][f64 amount]}`; returns true when
+   * all entries applied.
+   */
+  metricsRecordBatch(handle: number, packed: Uint8Array): boolean
+  /**
+   * Fused wire-level validation: RAW query string → JSON → draft-07 validate
+   * against the compiled schema (`inner` from `SchemaValidator.innerPtr()`).
+   */
+  queryValidate(inner: number, qs: string): boolean
+  /** Fused cookie-header variant of {@link queryValidate}. */
+  cookieValidate(inner: number, header: string): boolean
+  /**
+   * Seal a session envelope natively: builds
+   * `{"id":"…","data":<dataJson>,"exp":exp}` and HMAC-signs it →
+   * `payload.<hex>` token string (`null` = failure).
+   */
+  sessionSeal(id: string, dataJson: string, expSecs: number, secret: string): string | null
+  /**
+   * Open a sealed session token: verify + extract in one crossing into
+   * `output` as `[u8 ok][i64 exp][u32 idLen][id][u32 dataLen][dataJson]`.
+   * Returns bytes written (`0` = bad signature / error; `> output.length` =
+   * exact required size).
+   */
+  sessionOpen(token: string, secret: string, output: Uint8Array): number
+
+  // ── Batch fixed-width hex validation / RegExp escaping ─────────────
+  /**
+   * Validate NEWLINE-separated lines as fixed-width hex into `output`
+   * (one verdict byte per line); returns bytes written (`0` = bad width /
+   * error; `> output.length` = exact required size).
+   */
+  hexValidateBatchInto(input: Uint8Array, width: number, output: Uint8Array): number
+  /**
+   * String-input sibling of {@link hexValidateBatchInto}: the NEWLINE-
+   * separated ids cross as a `cstring` ARG (engine-transcoded — no encode).
+   */
+  hexValidateBatchStr(ids: string, width: number, output: Uint8Array): number
+  /**
+   * Escape JS-RegExp metacharacters into `output`; returns bytes written
+   * (`0` = error; `> output.length` = exact required size).
+   */
+  regexEscapeInto(input: Uint8Array, output: Uint8Array): number
+  /**
+   * Zero-copy text sibling of {@link regexEscapeInto}: cstring ARG in,
+   * cstring return out (engine-cloned — zero JS decode). `null` = failure.
+   */
+  regexEscapeStr(input: string): string | null
 }
 
 /**
@@ -411,6 +511,8 @@ export interface RateLimiterVerdict {
   resetMs: number
 }
 
+/** Raw 0-arg C-ABI symbol signature (`castrum_metrics_create`). */
+export type Raw0 = () => number | bigint
 /** Raw 2-arg C-ABI symbol signature (`(ptr,len)` pairs → scalar result). */
 export type Raw2 = (a: unknown, b: unknown) => number | bigint
 /** Raw 3-arg C-ABI symbol signature. */

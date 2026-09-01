@@ -14,15 +14,15 @@
 // `handlers.ts`/`server.ts`; the byte wire helpers it uses are the PURE
 // `src/ingress/packing/route-wire.ts`.
 
-import { getBunFFI } from '../native/ffi'
 import { getAddon } from '../native'
+import { getBunFFI } from '../native/ffi'
 import type { BunFFI } from '../native/ffi/types'
 import {
-  ROUTE_PART,
-  ROUTE_STAGE,
   decodeRouteResult,
   encodeRouteDescriptor,
   packRouteFrame,
+  ROUTE_PART,
+  ROUTE_STAGE,
   type RouteStageTag,
   type RouteWireLimits,
   type RouteWireResult,
@@ -168,9 +168,13 @@ function compileFfi(bunFFI: BunFFI, descriptor: Uint8Array): number {
 }
 
 /** Compile through the napi `Route` class (Node / fallback transport). */
-function compileNapi(descriptor: Uint8Array): { run: (frame: Uint8Array, out: Uint8Array) => number } | null {
+function compileNapi(
+  descriptor: Uint8Array,
+): { run: (frame: Uint8Array, out: Uint8Array) => number } | null {
   const addon = getAddon()
-  const Route = (addon as { Route?: new (d: Uint8Array) => { run: (f: Uint8Array, o: Uint8Array) => number } }).Route
+  const Route = (
+    addon as { Route?: new (d: Uint8Array) => { run: (f: Uint8Array, o: Uint8Array) => number } }
+  ).Route
   if (typeof Route !== 'function') {
     return null // addon without the route stack (pre-rebuild) — caller falls back
   }

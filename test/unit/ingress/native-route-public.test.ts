@@ -11,12 +11,12 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
-  ROUTE_FLAG,
   createIngressRouter,
   createNativeRoute,
   encodeRouteDescriptor,
-  packRouteFrame,
   type NativeRoutePlan,
+  packRouteFrame,
+  ROUTE_FLAG,
 } from '../../../src/ingress'
 
 const enc = new TextEncoder()
@@ -126,7 +126,12 @@ describe('router native route kind (lean responder)', () => {
         native: {
           plan: { parseQuery: true, parseCookies: true },
           handler: (snap) =>
-            Response.json({ ok: true, requestId: snap.requestId, query: snap.query, cookies: snap.cookies }),
+            Response.json({
+              ok: true,
+              requestId: snap.requestId,
+              query: snap.query,
+              cookies: snap.cookies,
+            }),
         },
       },
     },
@@ -137,7 +142,12 @@ describe('router native route kind (lean responder)', () => {
       new Request('http://localhost:0/api/native?page=2', { headers: { cookie: 'sid=v' } }),
     )
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { ok: boolean; requestId: string; query: Record<string, string>; cookies: Record<string, string> }
+    const body = (await res.json()) as {
+      ok: boolean
+      requestId: string
+      query: Record<string, string>
+      cookies: Record<string, string>
+    }
     expect(body.ok).toBe(true)
     expect(typeof body.requestId).toBe('string')
     expect(body.query).toEqual({ page: '2' })

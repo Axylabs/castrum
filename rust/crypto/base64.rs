@@ -86,7 +86,9 @@ pub fn base64url_encode_bytes(data: &[u8]) -> Vec<u8> {
 #[inline]
 pub fn base64url_decode_bytes(data: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(data).ok()?;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text).ok()
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .ok()
 }
 
 // ── hex ──────────────────────────────────────────────────────────

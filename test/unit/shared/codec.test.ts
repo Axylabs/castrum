@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { decodeUtf8, encodeUtf8, encodeUtf8Into } from '../../../src/shared/codec'
+import { decodeUtf8, decodeUtf8Range, encodeUtf8, encodeUtf8Into } from '../../../src/shared/codec'
 
 describe('encodeUtf8', () => {
   test('encodes ASCII', () => {
@@ -95,5 +95,32 @@ describe('encodeUtf8Into', () => {
     const out = new Uint8Array(s.length * 2)
     const w = encodeUtf8Into(s, out)
     expect(w).toBe(encodeUtf8(s).byteLength)
+  })
+})
+
+describe('decodeUtf8Range', () => {
+  const E = (s: string): Uint8Array => encodeUtf8(s)
+
+  test('decodes an ASCII range via the latin1 fast path', () => {
+    const bytes = E('\x00multipart/form-data\x00charset')
+    expect(decodeUtf8Range(bytes, 1, 20)).toBe('multipart/form-data')
+    expect(decodeUtf8Range(bytes, 21, 28)).toBe('charset')
+  })
+
+  test('falls back to real UTF-8 decoding for multi-byte ranges', () => {
+    const s = 'héllo→世界'
+    const bytes = new Uint8Array(4 + E(s).byteLength + 2)
+    bytes.set(E(s), 4)
+    expect(decodeUtf8Range(bytes, 4, 4 + E(s).byteLength)).toBe(s)
+  })
+
+  test('handles mixed ASCII + multi-byte in one range', () => {
+    const mixed = 'a=é=b'
+    const bytes = E(`prefix${mixed}suffix`)
+    expect(decodeUtf8Range(bytes, 6, 6 + E(mixed).byteLength)).toBe(mixed)
+  })
+
+  test('empty range → empty string', () => {
+    expect(decodeUtf8Range(E('abc'), 1, 1)).toBe('')
   })
 })

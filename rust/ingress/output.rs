@@ -260,11 +260,26 @@ mod tests {
 
     #[test]
     fn output_compute_header_variant_bits() {
-        assert_eq!(compute_header_variant(false, false, false, false, true), HV_JSON);
-        assert_eq!(compute_header_variant(true, false, false, false, true), HV_JSON | HV_CORS_SIMPLE);
-        assert_eq!(compute_header_variant(false, true, false, false, true), HV_JSON | HV_CORS_PREFLIGHT);
-        assert_eq!(compute_header_variant(true, false, true, false, true), HV_JSON | HV_CORS_SIMPLE | HV_RATE_ACTIVE);
-        assert_eq!(compute_header_variant(false, false, true, true, true), HV_JSON | HV_RATE_ACTIVE | HV_RATE_LIMITED);
+        assert_eq!(
+            compute_header_variant(false, false, false, false, true),
+            HV_JSON
+        );
+        assert_eq!(
+            compute_header_variant(true, false, false, false, true),
+            HV_JSON | HV_CORS_SIMPLE
+        );
+        assert_eq!(
+            compute_header_variant(false, true, false, false, true),
+            HV_JSON | HV_CORS_PREFLIGHT
+        );
+        assert_eq!(
+            compute_header_variant(true, false, true, false, true),
+            HV_JSON | HV_CORS_SIMPLE | HV_RATE_ACTIVE
+        );
+        assert_eq!(
+            compute_header_variant(false, false, true, true, true),
+            HV_JSON | HV_RATE_ACTIVE | HV_RATE_LIMITED
+        );
     }
 
     #[test]
@@ -288,34 +303,71 @@ mod tests {
 
         assert_eq!(out[OUT_VERDICT], 0);
         assert_eq!(out[OUT_ERROR_CODE], 3);
-        assert_eq!(u16::from_le_bytes([out[OUT_STATUS], out[OUT_STATUS + 1]]), 200);
         assert_eq!(
-            u32::from_le_bytes([out[OUT_FLAGS], out[OUT_FLAGS + 1], out[OUT_FLAGS + 2], out[OUT_FLAGS + 3]]),
+            u16::from_le_bytes([out[OUT_STATUS], out[OUT_STATUS + 1]]),
+            200
+        );
+        assert_eq!(
+            u32::from_le_bytes([
+                out[OUT_FLAGS],
+                out[OUT_FLAGS + 1],
+                out[OUT_FLAGS + 2],
+                out[OUT_FLAGS + 3]
+            ]),
             0x1F
         );
         assert_eq!(
-            u32::from_le_bytes([out[OUT_RATE_LIMIT], out[OUT_RATE_LIMIT + 1], out[OUT_RATE_LIMIT + 2], out[OUT_RATE_LIMIT + 3]]),
+            u32::from_le_bytes([
+                out[OUT_RATE_LIMIT],
+                out[OUT_RATE_LIMIT + 1],
+                out[OUT_RATE_LIMIT + 2],
+                out[OUT_RATE_LIMIT + 3]
+            ]),
             100
         );
         assert_eq!(
-            u32::from_le_bytes([out[OUT_RATE_REMAINING], out[OUT_RATE_REMAINING + 1], out[OUT_RATE_REMAINING + 2], out[OUT_RATE_REMAINING + 3]]),
+            u32::from_le_bytes([
+                out[OUT_RATE_REMAINING],
+                out[OUT_RATE_REMAINING + 1],
+                out[OUT_RATE_REMAINING + 2],
+                out[OUT_RATE_REMAINING + 3]
+            ]),
             50
         );
         let reset = u64::from_le_bytes(out[OUT_RATE_RESET..OUT_RATE_RESET + 8].try_into().unwrap());
         assert_eq!(reset, 123_456);
-        let retry = u64::from_le_bytes(out[OUT_RETRY_AFTER..OUT_RETRY_AFTER + 8].try_into().unwrap());
+        let retry = u64::from_le_bytes(
+            out[OUT_RETRY_AFTER..OUT_RETRY_AFTER + 8]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(retry, 5);
         assert_eq!(
-            u32::from_le_bytes([out[OUT_COOKIES_JSON_LEN], out[OUT_COOKIES_JSON_LEN + 1], out[OUT_COOKIES_JSON_LEN + 2], out[OUT_COOKIES_JSON_LEN + 3]]),
+            u32::from_le_bytes([
+                out[OUT_COOKIES_JSON_LEN],
+                out[OUT_COOKIES_JSON_LEN + 1],
+                out[OUT_COOKIES_JSON_LEN + 2],
+                out[OUT_COOKIES_JSON_LEN + 3]
+            ]),
             10
         );
         assert_eq!(
-            u32::from_le_bytes([out[OUT_QUERY_JSON_LEN], out[OUT_QUERY_JSON_LEN + 1], out[OUT_QUERY_JSON_LEN + 2], out[OUT_QUERY_JSON_LEN + 3]]),
+            u32::from_le_bytes([
+                out[OUT_QUERY_JSON_LEN],
+                out[OUT_QUERY_JSON_LEN + 1],
+                out[OUT_QUERY_JSON_LEN + 2],
+                out[OUT_QUERY_JSON_LEN + 3]
+            ]),
             20
         );
         assert_eq!(out[OUT_HEADER_VARIANT], HV_JSON | HV_RATE_ACTIVE);
         assert_eq!(
-            u32::from_le_bytes([out[OUT_BODY_JSON_LEN], out[OUT_BODY_JSON_LEN + 1], out[OUT_BODY_JSON_LEN + 2], out[OUT_BODY_JSON_LEN + 3]]),
+            u32::from_le_bytes([
+                out[OUT_BODY_JSON_LEN],
+                out[OUT_BODY_JSON_LEN + 1],
+                out[OUT_BODY_JSON_LEN + 2],
+                out[OUT_BODY_JSON_LEN + 3]
+            ]),
             30
         );
 

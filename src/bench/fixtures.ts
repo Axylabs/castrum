@@ -1,9 +1,9 @@
 // src/bench/fixtures.ts — shared CPU-bench fixtures (byte payloads, schema docs).
 
-import { nativeHmacSha256 } from '../baseline/tasks/hmac'
-import { nativeJwtSign } from '../baseline/tasks/jwt'
 import { nativeAeadEncrypt } from '../baseline/tasks/aead'
 import { nativeBrotliCompress, nativeGzipCompress } from '../baseline/tasks/compress'
+import { nativeHmacSha256 } from '../baseline/tasks/hmac'
+import { nativeJwtSign } from '../baseline/tasks/jwt'
 import { jsonRowsBytes } from '../data/json-rows'
 import { encoder } from '../shared/bytes'
 

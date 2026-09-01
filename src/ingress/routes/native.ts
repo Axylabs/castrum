@@ -23,6 +23,7 @@ import { decoder } from '../../shared/bytes'
 import { generateRequestId } from '../../shared/request-id'
 import { readBodyWithLimit } from '../body'
 import type { NativeRoute } from '../native-route'
+import type { RouteWireResult } from '../packing/route-wire'
 import type { RouteHandler } from '../server'
 import { DEFAULT_BODY_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES } from '../shared'
 import type { NativeRequestContext, NativeResponder } from '../types'
@@ -97,7 +98,7 @@ export function nativeRouteHandler(
     const queryStr = qIndex >= 0 ? url.slice(qIndex + 1) : ''
     const cookieStr = req.headers.get('cookie') ?? ''
 
-    let result
+    let result: RouteWireResult
     try {
       result = route.run(queryStr, cookieStr, body)
     } catch {

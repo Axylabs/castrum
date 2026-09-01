@@ -5,9 +5,13 @@
 # after a newer stable is verified against the full test suite
 # (`cargo test`, `cargo clippy -- -D warnings`, `bun run check:proven`).
 #
+# 1.98.0 (2026-08-18): full `cargo test` + `cargo clippy --all-targets -D
+# warnings` green; clippy's new chunks_exact_to_as_chunks lint adopted in the
+# two hot-path is_ascii() helpers (typed [u8;8] chunks, no per-chunk try_from).
+#
 # Note: the local Arch system toolchain (not rustup-managed) ignores this file;
 # it primarily pins the CI `dtolnay/rust-toolchain` and rustup-managed builds.
 [toolchain]
-channel = "1.97.1"
+channel = "1.98.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

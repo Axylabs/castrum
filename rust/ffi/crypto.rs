@@ -174,12 +174,8 @@ pub unsafe extern "C" fn castrum_sign_cookie_into(
     }
     let v = slice::from_raw_parts(value, vlen);
     let key = hmac_key_cached(slice::from_raw_parts(secret, slen));
-    crate::crypto::cookie_sign::sign_cookie_into(
-        v,
-        &key,
-        slice::from_raw_parts_mut(out, out_cap),
-    )
-    .unwrap_or_default()
+    crate::crypto::cookie_sign::sign_cookie_into(v, &key, slice::from_raw_parts_mut(out, out_cap))
+        .unwrap_or_default()
 }
 
 /// Verify a signed cookie → the value without its signature, returned as a
@@ -235,18 +231,14 @@ pub unsafe extern "C" fn castrum_verify_cookie_into(
     if out_cap < slen {
         // Compute the actual needed length without writing (a full verify is
         // wasted if we're just sizing; the caller retries at most once).
-        let dot = s.iter().rposition(|&b| b == b'.').map_or(0, |i| i);
+        let dot = s.iter().rposition(|&b| b == b'.').unwrap_or(0);
         if dot != 0 {
             return dot;
         }
         return slen;
     }
-    crate::crypto::cookie_sign::verify_cookie_into(
-        s,
-        &key,
-        slice::from_raw_parts_mut(out, out_cap),
-    )
-    .unwrap_or_default()
+    crate::crypto::cookie_sign::verify_cookie_into(s, &key, slice::from_raw_parts_mut(out, out_cap))
+        .unwrap_or_default()
 }
 
 /// CSRF token (`<64-hex(rnd)>.<64-hex(sig)>`, 129 bytes) returned as a
@@ -629,4 +621,88 @@ pub unsafe extern "C" fn castrum_random_token_into(
     let o = slice::from_raw_parts_mut(out, out_len);
     crate::util::bytes::hex_encode(&bytes, o);
     out_len
+}
+
+// ── Session envelope (fused JSON + HMAC) ────────────────────────────
+
+/// Seal a session envelope NATIVELY: build
+/// `{"id":"…","data":<data_json>,"exp":exp}` and HMAC-sign it into the
+/// `payload.<64-hex>` cookie token — ONE crossing replaces the JS
+/// `signCookie(JSON.stringify(envelope))` pair. `null` = empty id/secret /
+/// panic. `data_json` is embedded verbatim (caller passes valid JSON).
+///
+/// # Safety
+/// All four args must be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_session_seal(
+    id: *const std::os::raw::c_char,
+    data_json: *const std::os::raw::c_char,
+    exp_secs: i64,
+    secret: *const std::os::raw::c_char,
+) -> *const std::os::raw::c_char {
+    if id.is_null() || data_json.is_null() || secret.is_null() {
+        return std::ptr::null();
+    }
+    let id_b = std::ffi::CStr::from_ptr(id).to_bytes();
+    let data_b = std::ffi::CStr::from_ptr(data_json).to_bytes();
+    let sec_b = std::ffi::CStr::from_ptr(secret).to_bytes();
+    let sealed = super::util::panic_guard(
+        || crate::crypto::session::seal_core(id_b, data_b, exp_secs, sec_b),
+        None,
+    );
+    let Some(tok) = sealed else {
+        return std::ptr::null();
+    };
+    super::util::cstring_return(tok.len(), move |buf| {
+        if buf.len() < tok.len() {
+            return None;
+        }
+        buf[..tok.len()].copy_from_slice(&tok);
+        Some(tok.len())
+    })
+}
+
+/// Open a sealed session token: verify the HMAC and extract the envelope in
+/// ONE crossing. Packed output: `[u8 ok=1][i64 exp][u32 idLen][id][u32
+/// dataLen][dataJson]`. Needed-size convention (`w > out_cap` = exact size);
+/// `0` = bad signature / malformed / too-small-with-error semantics per the
+/// caller contract below.
+///
+/// # Safety
+/// `token`/`secret` valid NUL-terminated C strings; `out` for writes up to
+/// `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_session_open(
+    token: *const std::os::raw::c_char,
+    secret: *const std::os::raw::c_char,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if token.is_null() || secret.is_null() || out.is_null() {
+        return 0;
+    }
+    let tok = std::ffi::CStr::from_ptr(token).to_bytes();
+    let sec = std::ffi::CStr::from_ptr(secret).to_bytes();
+    let opened = panic_guard(|| crate::crypto::session::open_core(tok, sec), None);
+    let Some((exp, id, data)) = opened else {
+        return 0;
+    };
+    // Layout size: 1 + 8 + 4+id + 4+data
+    let need = 1 + 8 + 4 + id.len() + 4 + data.len();
+    if need > out_cap {
+        return need;
+    }
+    let o = slice::from_raw_parts_mut(out, need);
+    o[0] = 1;
+    o[1..9].copy_from_slice(&exp.to_le_bytes());
+    let id_len = id.len() as u32;
+    o[9..13].copy_from_slice(&id_len.to_le_bytes());
+    let mut p = 13usize;
+    o[p..p + id.len()].copy_from_slice(&id);
+    p += id.len();
+    let d_len = data.len() as u32;
+    o[p..p + 4].copy_from_slice(&d_len.to_le_bytes());
+    p += 4;
+    o[p..p + data.len()].copy_from_slice(&data);
+    need
 }

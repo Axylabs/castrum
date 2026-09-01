@@ -389,7 +389,10 @@ mod tests {
         }
 
         let denied = rl.check_key(key, 105);
-        assert!(!denied.allowed, "6th request within window should be denied");
+        assert!(
+            !denied.allowed,
+            "6th request within window should be denied"
+        );
         assert_eq!(denied.remaining, 0);
     }
 
@@ -445,7 +448,10 @@ mod tests {
         let rl = KeyedRateLimiter::new(1, 1000, None);
         assert!(rl.check_key(1, 0).allowed);
         assert!(!rl.check_key(1, 1).allowed);
-        assert!(rl.check_key(2, 1).allowed, "different key should have its own bucket");
+        assert!(
+            rl.check_key(2, 1).allowed,
+            "different key should have its own bucket"
+        );
     }
 
     #[test]
@@ -463,13 +469,22 @@ mod tests {
 
         let a = super::shared_limiter(100, 60_000, None).unwrap();
         let b = super::shared_limiter(100, 60_000, None).unwrap();
-        assert!(Arc::ptr_eq(&a, &b), "identical config must share one process-wide limiter");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "identical config must share one process-wide limiter"
+        );
 
         let c = super::shared_limiter(100, 60_000, Some(10_000)).unwrap();
-        assert!(!Arc::ptr_eq(&a, &c), "different max_entries must not share a limiter");
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "different max_entries must not share a limiter"
+        );
 
         let d = super::shared_limiter(200, 60_000, None).unwrap();
-        assert!(!Arc::ptr_eq(&a, &d), "different limit must not share a limiter");
+        assert!(
+            !Arc::ptr_eq(&a, &d),
+            "different limit must not share a limiter"
+        );
     }
 
     #[test]
@@ -515,6 +530,9 @@ mod tests {
 
         assert!(a.check_key(key, 0).allowed);
         assert!(b.check_key(key, 1).allowed, "shared budget consumed by a");
-        assert!(!a.check_key(key, 2).allowed, "budget must be exhausted across both instances");
+        assert!(
+            !a.check_key(key, 2).allowed,
+            "budget must be exhausted across both instances"
+        );
     }
 }

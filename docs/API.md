@@ -38,7 +38,7 @@ runtimes, and binary ops (`gzip*`, `brotli*`, `aead*`, `pbkdf2Sha256`,
 | `proven`, `PROVEN_SELECTION`, `provenImpl`, `provenStatus`, `isProven`, `provenSurface`, `provenSummary` | The full `rust.*` surface + the baked (pure-data) proven-selection registry of benchmark winners (`native` / `js` / `bun`). |
 | `opImpl`, `isNativeOp`, `opDecision` | Native-vs-JS selection hints (benchmark-driven). |
 | `loader`, `createLoader` | Higher-order loader over the batch surface. |
-| `encoder`, `decoder` | Codec-backed UTF-8 helpers (Bun: `Bun.ArrayBufferSink` / `CString`; Node: `TextEncoder`/`TextDecoder`). `encode`/`decode` accept the `Uint8Array | string` union and normalize. |
+| `encoder`, `decoder` | Codec-backed UTF-8 helpers (shared native `TextEncoder` / Bun: `CString`; Node: `TextEncoder`/`TextDecoder`). `encode`/`decode` accept the `Uint8Array | string` union and normalize. |
 | `uuidv7()` | UUIDv7 — `Bun.randomUUIDv7` on Bun, `crypto.randomUUID` on Node. |
 | `AdaptiveEstimate`, `AdaptiveEstimateOptions` | Bounded EWMA adaptive-estimate utility. |
 | `createMetrics`, `DEFAULT_BUCKETS` | Zero-dependency metrics registry (counters/gauges/histograms + Prometheus text). |

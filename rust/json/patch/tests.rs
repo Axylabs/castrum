@@ -3,11 +3,11 @@
 // Covers the op semantics in `ops.rs`, the size guards + batch orchestration
 // in `engine.rs`, and the napi surface in `api.rs`.
 
+use super::engine::apply_json_patch_bytes_limited;
 use super::{
     apply_json_patch_bytes, json_patch, json_patch_batch_packed, run_json_patch_batch,
     JsonPatchError,
 };
-use super::engine::apply_json_patch_bytes_limited;
 use crate::util::unpack;
 use napi::bindgen_prelude::*;
 use serde_json::Value;
@@ -425,8 +425,7 @@ fn batch_parallel_path_order_preserving() {
     let mut patches = Vec::with_capacity(n);
     for i in 0..n {
         docs.push(format!("{{\"i\":{i}}}").into_bytes());
-        patches
-            .push(format!("[{{\"op\":\"add\",\"path\":\"/k\",\"value\":{i}}}]").into_bytes());
+        patches.push(format!("[{{\"op\":\"add\",\"path\":\"/k\",\"value\":{i}}}]").into_bytes());
     }
     let doc_refs: Vec<&[u8]> = docs.iter().map(|d| d.as_slice()).collect();
     let patch_refs: Vec<&[u8]> = patches.iter().map(|p| p.as_slice()).collect();
@@ -451,8 +450,7 @@ fn batch_parallel_path_fail_index_deterministic() {
     let mut patches = Vec::with_capacity(n);
     for i in 0..n {
         docs.push(format!("{{\"i\":{i}}}").into_bytes());
-        patches
-            .push(format!("[{{\"op\":\"add\",\"path\":\"/k\",\"value\":{i}}}]").into_bytes());
+        patches.push(format!("[{{\"op\":\"add\",\"path\":\"/k\",\"value\":{i}}}]").into_bytes());
     }
     let bad_index = n / 2;
     docs[bad_index] = b"not-json".to_vec();

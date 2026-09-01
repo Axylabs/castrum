@@ -2,8 +2,8 @@
 // ETag uses the crc-32 baseline (matches Rust crc32fast → byte parity);
 // HTTP-date uses Date.toUTCString() (IMF-fixdate-compatible). Bench-local only.
 
-import { encoder } from '../shared/bytes'
 import { nativeCrc32 } from '../baseline/tasks/hashing'
+import { encoder } from '../shared/bytes'
 
 /** Generate a strong/weak ETag from the JS crc32 baseline. */
 export function nativeEtag(data: Uint8Array, weak = false): Uint8Array {

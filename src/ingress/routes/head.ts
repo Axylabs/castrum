@@ -1,8 +1,8 @@
 // src/ingress/routes/head.ts — Pre-baked HEAD read handler.
 
-import type { BakedContext, OptimizedIngressHandler } from '../types'
 import type { BakedIngressResult } from '../decode/baked-result'
-import { buildSuccessInit, runBaked, type BakedHandlerOptions } from './common'
+import type { BakedContext, OptimizedIngressHandler } from '../types'
+import { type BakedHandlerOptions, buildSuccessInit, runBaked } from './common'
 
 /**
  * Pre-baked HEAD read handler: headers only, no body.

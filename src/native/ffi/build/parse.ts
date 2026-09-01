@@ -11,12 +11,29 @@ import { decodeUtf8, encodeUtf8 } from '../../../shared/codec'
 import { EMPTY_VIEW, SELFTEST_HEX } from '../constants'
 import type { BunFFI, Raw3, Raw4, Raw6, Raw7, Raw10 } from '../types'
 import type { BuildCtx } from './util'
-import { flag, growExact } from './util'
+import { allocOut, flag, growExact } from './util'
 
 /**
  * Build the parser/wire-format methods of the BunFFI surface. `ctx` is
  * destructured so the method bodies read exactly as the original `build()`.
  */
+
+// ── SSE event/id encode memo ────────────────────────────────────────────────
+// SSE streams repeat the same event NAME constantly ('message'/'update') and
+// often repeat ids; re-encoding them per event is pure waste (~60ns each).
+// One memo slot each: a `===` hit returns the cached bytes, a miss re-encodes.
+// Per-Worker module state (single-threaded event loop), same safety model as
+// the pooled scratches in BuildCtx.
+const sseMemoEvent = { str: null as string | null, bytes: EMPTY_VIEW }
+const sseMemoId = { str: null as string | null, bytes: EMPTY_VIEW }
+function sseMemoEncode(slot: { str: string | null; bytes: Uint8Array }, s: string): Uint8Array {
+  if (s === slot.str) return slot.bytes
+  const bytes = encodeUtf8(s)
+  slot.str = s
+  slot.bytes = bytes
+  return bytes
+}
+
 export function buildParse(
   sym: Record<string, (...a: unknown[]) => unknown>,
   ctx: BuildCtx,
@@ -67,8 +84,9 @@ export function buildParse(
       return w
     },
     wsFrameEncode(opcode, payload, mask, fin) {
-      // Header (max 10) + payload + mask key (4).
-      const out = new Uint8Array(payload.length + 14)
+      // Header (max 10) + payload + mask key (4). allocOut skips the zeroing
+      // (the native write fills [0,w) and only that slice escapes).
+      const out = allocOut(payload.length + 14)
       const w = Number(
         wsFrameEncode(
           opcode,
@@ -182,15 +200,24 @@ export function buildParse(
     parseMediaType(input) {
       // Packed verdict: [u32 mediaTypeLen][mediaType][u32 charsetLen
       // (0xFFFFFFFF = none)][charset][u32 boundaryLen][boundary]
-      // [u32 paramCount]{[u32 keyLen][key][u32 valLen][val]}. 0 = invalid media
-      // type (real error → growExact throws); w > output.length = exact needed
-      // size (one exact retry).
-      return growExact(
-        (out) => Number(parseMediaTypeSym(input, lenOrView(input), out, lenOrView(out))),
-        Math.min(input.length + 64, 64 * 1024),
-        1024 * 1024,
-        'media type parse: invalid media type or output buffer too small',
-      )
+      // [u32 paramCount]{[u32 keyLen][key][u32 valLen][val]}.
+      // POOLED SCRATCH: the only consumer (the scalar `unpackMediaType`)
+      // decodes the verdict synchronously into a JS object before the next
+      // call, so the packed bytes never need to outlive this call — no
+      // growExact fresh-buffer per request. 0 = invalid media type (throw).
+      // 2x + 128 covers the worst-case packed expansion (every byte becomes a
+      // param key/value length prefix); a still-too-small write falls back to
+      // ONE exact-size buffer (needed-size convention).
+      let out = scratchFor(input.length * 2 + 128)
+      let w = Number(parseMediaTypeSym(input, lenOrView(input), out, lenOrView(out)))
+      if (w > out.length) {
+        out = new Uint8Array(w)
+        w = Number(parseMediaTypeSym(input, lenOrView(input), out, lenOrView(out)))
+      }
+      if (w === 0 || w > out.length) {
+        throw new Error('media type parse: invalid media type or output buffer too small')
+      }
+      return out.subarray(0, w)
     },
     parseHttpDate(input) {
       // Packed [u8 ok][i64 secs LE] (9 B) / 1 B (ok=0). A too-small buffer is
@@ -207,13 +234,18 @@ export function buildParse(
     },
     parseAcceptEncoding(input) {
       // Packed: [u32 count]{[u32 encLen][enc][f32 q][u32 order]} (empty header →
-      // count 0, 4 bytes). 0 = too small (real error → growExact throws).
-      return growExact(
-        (out) => Number(parseAcceptEncodingSym(input, lenOrView(input), out, lenOrView(out))),
-        Math.min(input.length + 64, 64 * 1024),
-        1024 * 1024,
-        'accept encoding parse: output buffer too small',
-      )
+      // count 0, 4 bytes). POOLED SCRATCH: consumed synchronously by the scalar
+      // `unpackAcceptEncoding` — never escapes as raw bytes. 0 = too small.
+      let out = scratchFor(input.length * 2 + 128)
+      let w = Number(parseAcceptEncodingSym(input, lenOrView(input), out, lenOrView(out)))
+      if (w > out.length) {
+        out = new Uint8Array(w)
+        w = Number(parseAcceptEncodingSym(input, lenOrView(input), out, lenOrView(out)))
+      }
+      if (w === 0 || w > out.length) {
+        throw new Error('accept encoding parse: output buffer too small')
+      }
+      return out.subarray(0, w)
     },
     urlEncodeQuery(input) {
       // Packed pairs `[u32 count]{[u32 keyLen][key][u32 valLen][val]}` (the JS
@@ -255,8 +287,12 @@ export function buildParse(
       // non-null (flag bits 1/2/4 = present) so a present-but-empty string is
       // distinct from absent (napi Option parity). growExact with the needed-size
       // convention; `data.length + 64` covers the common single-line case.
-      const ev = event === null ? EMPTY_VIEW : encodeUtf8(event)
-      const idv = id === null ? EMPTY_VIEW : encodeUtf8(id)
+      // NOTE (2026-08-24): cstring-ARG variants were once blamed for JIT
+      // crashes here — docs/FFI_BUN_GUIDE.md §14 traced every report to
+      // dev-loop ABI desync, not bun:ffi. The memo captures the win without
+      // an ABI change anyway.
+      const ev = event === null ? EMPTY_VIEW : sseMemoEncode(sseMemoEvent, event)
+      const idv = id === null ? EMPTY_VIEW : sseMemoEncode(sseMemoId, id)
       const flags = (event === null ? 0 : 1) | (id === null ? 0 : 2) | (retry === null ? 0 : 4)
       return growExact(
         (out) =>
@@ -283,8 +319,8 @@ export function buildParse(
       // Pooled sibling — caller-owned output buffer (sized ≥ `data.length + 64`
       // for the common single-line case). Needed-size convention: w > output.length
       // = exact required size → throw; w === 0 = real error (invalid UTF-8).
-      const ev = event === null ? EMPTY_VIEW : encodeUtf8(event)
-      const idv = id === null ? EMPTY_VIEW : encodeUtf8(id)
+      const ev = event === null ? EMPTY_VIEW : sseMemoEncode(sseMemoEvent, event)
+      const idv = id === null ? EMPTY_VIEW : sseMemoEncode(sseMemoId, id)
       const flags = (event === null ? 0 : 1) | (id === null ? 0 : 2) | (retry === null ? 0 : 4)
       const w = Number(
         sseEncodeIntoRaw(

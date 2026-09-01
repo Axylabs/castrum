@@ -59,8 +59,7 @@ Never assume — measure before and after a hot-path change.
 
 `CASTRUM_BENCH_BATCH_SIZE`, `CASTRUM_BENCH_FFI`, `HTTP_NO_SHAPE`,
 `SERVER`, `SCENARIO`, `AC_*`. Results land under `bench/results/`
-(gitignored): `cpu/`, per-server HTTP dirs, `ffi-margin/`, `router/`,
-`startup/`, `autocannon/`.
+(gitignored): `cpu/`, per-server HTTP dirs, `ffi-margin/`, `router/`,`startup/`, `autocannon/`.
 
 ## Reporting
 
@@ -68,3 +67,8 @@ Never quote a number without the machine + config that produced it. The
 measured ceilings in `docs/BENCHMARKS.md` and `docs/bun-builtins-decision-matrix.md`
 (name the Bun runtime version — 1.4.0) are the reference points; a change that
 moves a shipped-op decision needs a re-run of both.
+
+**Runtime pin**: canary installs auto-update and can swap the runtime
+MID-SESSION (observed 2026-08-23: 1.4.0 → 1.4.1 between two bench runs).
+Record `bun --version` at the start AND end of every measurement session;
+if it changed, discard cross-version comparisons.

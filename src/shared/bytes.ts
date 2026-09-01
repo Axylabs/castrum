@@ -4,10 +4,11 @@ import { decodeUtf8, encodeUtf8, encodeUtf8Into } from './codec'
 
 /**
  * Shared UTF-8 encoder (encode / encodeInto), backed by the runtime-native
- * codec (`src/shared/codec.ts`): on Bun the work is done by Bun's native
- * transfer machinery (`Bun.ArrayBufferSink` / a zero-copy `Buffer` view
- * write); under Node it falls back to `TextEncoder`. Reusing a single object
- * avoids allocation overhead in hot paths.
+ * codec (`src/shared/codec.ts`): a shared native `TextEncoder` singleton on
+ * both runtimes (on Bun 1.4 the engine-native implementation measures ~3x
+ * faster than the old `Bun.ArrayBufferSink` path) plus a zero-copy `Buffer`
+ * view write for `encodeInto`. Reusing a single object avoids allocation
+ * overhead in hot paths.
  *
  * `encode` accepts the string-or-bytes union the text-returning `rust.*` ops
  * surface (Bun returns strings, Node returns bytes) and normalizes to bytes —

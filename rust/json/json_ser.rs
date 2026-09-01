@@ -8,26 +8,18 @@ use crate::util::bytes::{cookie_pairs, HEX_LOWER as JSON_HEX_LOWER};
 ///
 /// Equivalent to `bytes.iter().all(|&b| b < 0x80)` but skips the per-byte
 /// loop for the bulk of the buffer (one u64 high-bit test per 8 bytes).
+/// `as_chunks` types each chunk as `[u8; 8]`, so the word conversion cannot
+/// panic and the bounds check elides on the hot path.
 #[inline(always)]
 fn is_ascii(bytes: &[u8]) -> bool {
-    let mut chunks = bytes.chunks_exact(8);
-    for chunk in &mut chunks {
-        // `chunks_exact` guarantees 8-byte chunks, but never panic on the hot
-        // path if that invariant is ever violated — fall back to a byte scan.
-        let Ok(word) = <[u8; 8]>::try_from(chunk) else {
-            return bytes.iter().all(|&b| b < 0x80);
-        };
-        let w = u64::from_le_bytes(word);
+    let (chunks, remainder) = bytes.as_chunks::<8>();
+    for word in chunks {
+        let w = u64::from_le_bytes(*word);
         if (w & 0x8080_8080_8080_8080) != 0 {
             return false;
         }
     }
-    for &b in chunks.remainder() {
-        if b >= 0x80 {
-            return false;
-        }
-    }
-    true
+    remainder.iter().all(|&b| b < 0x80)
 }
 
 /// Determine whether bytes are valid UTF-8 (cached via a bit check).
@@ -751,7 +743,10 @@ mod tests {
             let mut out = vec![0u8; len];
             let mut pos = 0usize;
             write_json_escaped(&mut out, &mut pos, input);
-            assert_eq!(pos, len, "must write exactly json_escaped_len bytes: {input:?}");
+            assert_eq!(
+                pos, len,
+                "must write exactly json_escaped_len bytes: {input:?}"
+            );
         }
     }
 
@@ -765,18 +760,15 @@ mod tests {
             // a\rb"c → a \\r b \"
             (
                 b"a\rb\"c",
-                &[b'a', b'\\', b'r', b'b', b'\\', b'"', b'c'], // \r → \\r, " → \"
+                b"a\\rb\\\"c", // \r → \\r, " → \"
             ),
             // a\tb\\c → a \t b \ \
             (
                 b"a\tb\\c",
-                &[b'a', b'\\', b't', b'b', b'\\', b'\\', b'c'], // \t → \\t, \ → \\
+                b"a\\tb\\\\c", // \t → \\t, \ → \\
             ),
             // 0x01 before \n → \u0001 then \n
-            (
-                &[b'a', 0x01, b'b', b'\n', b'c'],
-                &[b'a', b'\\', b'u', b'0', b'0', b'0', b'1', b'b', b'\\', b'n', b'c'],
-            ),
+            (b"a\x01b\nc", b"a\\u0001b\\nc"),
         ];
 
         for (input, expected) in cases {
@@ -785,7 +777,11 @@ mod tests {
             let mut pos = 0usize;
             write_json_escaped(&mut out, &mut pos, input);
             assert_eq!(pos, len, "accounting must be exact for {input:?}");
-            assert_eq!(&out[..pos], *expected, "output must be valid JSON for {input:?}");
+            assert_eq!(
+                &out[..pos],
+                *expected,
+                "output must be valid JSON for {input:?}"
+            );
         }
     }
 
@@ -821,7 +817,10 @@ mod tests {
     fn cookie_json_into_slice_small_buffer_errors() {
         let mut out = vec![0u8; 8];
         let res = cookie_json_into_slice(b"a=1; b=2; c=3; d=4", &mut out, 100);
-        assert!(res.is_err(), "truncation must surface as an error, not silent data loss");
+        assert!(
+            res.is_err(),
+            "truncation must surface as an error, not silent data loss"
+        );
     }
 
     #[test]
@@ -859,10 +858,16 @@ mod tests {
                     let mut ref_out = vec![0u8; 512];
                     let ref_written =
                         packed_pairs_to_json_into_slice(packed, &mut ref_out, 100).unwrap();
-                    assert_eq!(&direct_out[..*written], &ref_out[..ref_written], "query={raw:?}");
+                    assert_eq!(
+                        &direct_out[..*written],
+                        &ref_out[..ref_written],
+                        "query={raw:?}"
+                    );
                 }
                 (Err(_), Err(QueryJsonError::Malformed)) => {} // both reject malformed %XX
-                (other, _) => panic!("mismatched outcome for query={raw:?}: {other:?} vs {direct:?}"),
+                (other, _) => {
+                    panic!("mismatched outcome for query={raw:?}: {other:?} vs {direct:?}")
+                }
             }
         }
 

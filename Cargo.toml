@@ -113,6 +113,12 @@ proptest = "1"
 default = ["fast-email"]
 fast-email = ["dep:fast_chemail"]
 
+# Codify the CI clippy gate (`cargo clippy --all-targets -- -D warnings`) so a
+# bare local `cargo clippy` fails on the same lints — no flag drift between
+# laptop and CI. Clippy-only lints: normal `cargo build`/`test` are unaffected.
+[lints.clippy]
+all = "deny"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

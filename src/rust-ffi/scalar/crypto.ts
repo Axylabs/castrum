@@ -10,8 +10,8 @@
 
 import type { PasswordHashOptions } from '../../native'
 import { encoder } from '../../shared/bytes'
-import { writeInto } from '../into'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
+import { writeInto } from '../into'
 
 /** Auth / crypto scalar methods (`Pick<RustScalar, ...>`). */
 export function buildCrypto(ctx: RustClientContext) {

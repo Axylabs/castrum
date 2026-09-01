@@ -55,12 +55,8 @@ pub unsafe extern "C" fn castrum_etag_into(
         return needed;
     }
     let crc = crc32fast::hash(slice::from_raw_parts(data, len));
-    crate::http::etag::etag_from_crc32_into(
-        crc,
-        weak != 0,
-        slice::from_raw_parts_mut(out, needed),
-    )
-    .unwrap_or_default()
+    crate::http::etag::etag_from_crc32_into(crc, weak != 0, slice::from_raw_parts_mut(out, needed))
+        .unwrap_or_default()
 }
 
 /// Evaluate `ConditionalRequest::is_not_modified` against the precompiled state
@@ -230,11 +226,7 @@ pub unsafe extern "C" fn castrum_accept_negotiator_negotiate_server(
 /// # Safety
 /// `out` must be valid for writes of up to `out_cap` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn castrum_http_date_into(
-    secs: f64,
-    out: *mut u8,
-    out_cap: usize,
-) -> usize {
+pub unsafe extern "C" fn castrum_http_date_into(secs: f64, out: *mut u8, out_cap: usize) -> usize {
     if out.is_null() {
         return 0;
     }

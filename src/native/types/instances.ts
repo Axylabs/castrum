@@ -57,6 +57,40 @@ export interface RouteInstance {
   destroy?(): void
 }
 
+/**
+ * The native `MetricsRegistry` class instance — sharded counters / gauges /
+ * histograms with a Prometheus text-format render. Series are declared once
+ * (`counter`/`gauge`/`histogram` return a reusable id); per-event updates
+ * take the id + the label values for that event.
+ */
+export interface MetricsRegistryInstance {
+  /** Declare a counter family → its series id (idempotent per shape). */
+  counter(name: string, labelKeys?: string[]): number
+  /** Declare a gauge family → its series id (idempotent per shape). */
+  gauge(name: string, labelKeys?: string[]): number
+  /**
+   * Declare a histogram family → its series id. Omitted/empty `buckets`
+   * selects the default latency buckets.
+   */
+  histogram(name: string, labelKeys?: string[], buckets?: number[]): number
+  /** Counter/gauge `+= amount`, or histogram observe `amount`. */
+  record(series: number, values?: string[], amount?: number): void
+  /** Gauge assignment (`= value`). */
+  gaugeSet(series: number, values: string[] | undefined, value: number): void
+  /** Render the Prometheus text exposition format (deterministic order). */
+  render(): string
+  /**
+   * Packed v1 series snapshot bytes (families then series — see the Rust
+   * registry docs). bun:ffi-backed wrappers only; napi exposes
+   * `MetricsRegistry.snapshot()` directly.
+   */
+  snapshot?(): Uint8Array
+  /** Number of live series (tests / introspection; napi transport only). */
+  seriesCount?(): number
+  /** Free the native handle (bun:ffi-backed wrappers only). */
+  destroy?(): void
+}
+
 /** A single JSON Schema validation error (fast path + DOM fallback). */
 export interface SchemaError {
   /** RFC 6901 JSON pointer to the failing instance value ("" = root). */

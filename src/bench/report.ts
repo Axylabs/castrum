@@ -1,15 +1,15 @@
 // src/bench/report.ts — CPU-bench report writer (machine-readable JSON + markdown).
 
 import { mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { resolveEnvVar } from '../shared/env'
 import type {
   BenchResult,
   ComparisonReport,
   ConcurrentBenchResult,
   StressBenchResult,
 } from './types'
-import { resolveEnvVar } from '../shared/env'
 
 export function printResults(results: BenchResult[]): void {
   console.table(

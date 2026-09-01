@@ -9,8 +9,8 @@
 // (bun:ffi first, napi fallback) — no inline `isBun()` / `getBunFFI()`.
 
 import { toBytes } from '../../shared/bytes'
-import { writeInto } from '../into'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
+import { writeInto } from '../into'
 import { asBigInt, asNumber } from '../options'
 
 /** Hashing scalar methods (`Pick<RustScalar, ...>`). */

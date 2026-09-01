@@ -18,8 +18,9 @@
 //      the addon must take the resolved fn as a parameter instead.
 //   4. FFI symbol count — docs must not carry stale `castrum_*` counts.
 //      Verified against `nm -D --defined-only <addon> | grep -c castrum_`
-//      (2026-08-22): 85 symbols = 77 direct extern fns + 4 validator_c_abi!
-//      + 4 compress_to_out!. Older counts (75–79 / 67–76 direct) are stale.
+//      (2026-08-24): 109 symbols = 97 direct extern fns + 4 validator_c_abi!
+//      + 4 validator_bytes_c_abi! + 4 compress_to_out!. Older counts
+//      (75–85 / 67–77 direct) are stale.
 //   5. No dangling doc links — markdown links to `docs/*.md` / root `*.md`
 //      must resolve to a real file.
 //   --todos — additionally fail on TODO/FIXME/HACK markers in `src/`.
@@ -84,7 +85,9 @@ for (const f of shipped) {
   if (f === 'runtime/detect.ts') continue
   const text = readFileSync(join(ROOT, 'src', f), 'utf8')
   if (runtimeCheck.test(text)) {
-    problems.push(`runtime seam violation in ${f}: direct \`typeof Bun\` check — use src/runtime/detect.ts`)
+    problems.push(
+      `runtime seam violation in ${f}: direct \`typeof Bun\` check — use src/runtime/detect.ts`,
+    )
   }
 }
 
@@ -126,11 +129,12 @@ const countDocs = [
   'docs/CASE_STUDY.md',
   'docs/FFI_BUN_GUIDE.md',
 ]
-const staleCount = /7[5-9]\s*(?:`)?castrum|6[7-9]\s*direct/
+const staleCount =
+  /(?:7[5-9]|8[0-9]|9[0-9]|10[0-8])\s*(?:`)?castrum|(?:6[7-9]|7[0-9]|8[0-9]|9[0-6])\s*direct/
 for (const d of countDocs) {
   const text = readFileSync(join(ROOT, d), 'utf8')
   if (staleCount.test(text)) {
-    problems.push(`stale FFI symbol count in ${d} (should read 85 / 77 direct)`)
+    problems.push(`stale FFI symbol count in ${d} (should read 109 / 97 direct)`)
   }
 }
 
@@ -143,7 +147,8 @@ for (const f of mdFiles) {
   linkRe.lastIndex = 0
   for (let m = linkRe.exec(text); m !== null; m = linkRe.exec(text)) {
     const raw = m[1].split('#')[0].split('?')[0].trim()
-    if (raw === '' || raw.startsWith('http') || raw.startsWith('mailto:') || raw.startsWith('#')) continue
+    if (raw === '' || raw.startsWith('http') || raw.startsWith('mailto:') || raw.startsWith('#'))
+      continue
     const resolved = rel(join(dirname(f), raw))
     if (!existsSync(join(ROOT, resolved))) {
       problems.push(`dangling link in ${f}: ${m[1]}`)

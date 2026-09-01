@@ -43,6 +43,19 @@ export interface BuildCtx {
 export const flag = (v?: boolean): number => (v ? 1 : 0)
 
 /**
+ * Output-buffer allocation for the FFI wrappers. The native write fills
+ * `[0, w)` and only `subarray(0, w)` escapes, so zero-initialization is pure
+ * waste: `Buffer.allocUnsafe` skips it (measured ~2x at 4 KB, ~3.4x at 16 KB
+ * on Bun 1.4; small sizes stay on the plain constructor where it is faster).
+ */
+export function allocOut(n: number): Uint8Array {
+  if (n >= 512 && typeof Buffer !== 'undefined' && typeof Buffer.allocUnsafe === 'function') {
+    return Buffer.allocUnsafe(n)
+  }
+  return new Uint8Array(n)
+}
+
+/**
  * Write with the C ABI's "needed" convention. The C side returns the EXACT
  * total bytes the result requires: `0` = real error (throw immediately — no
  * re-run, no grow-to-max allocation storm on invalid input), `w > out.length`
@@ -59,7 +72,7 @@ export function growExact(
 ): Uint8Array {
   let cap = Math.min(Math.max(initial, 16), max)
   for (;;) {
-    const out = new Uint8Array(cap)
+    const out = allocOut(cap)
     const w = Number(write(out))
     if (w === 0) throw new Error(error)
     if (w <= out.length) return out.subarray(0, w)

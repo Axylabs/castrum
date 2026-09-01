@@ -2,8 +2,8 @@
 
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
-import { rawHmacSha256 } from '../raw-native'
 import type { BenchFixtures } from '../fixtures'
+import { rawHmacSha256 } from '../raw-native'
 import type { BenchTask } from '../types'
 
 export function hmacTasks(f: BenchFixtures): BenchTask[] {

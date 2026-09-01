@@ -50,9 +50,7 @@ export function resolveRayonThreads(explicit?: number): number {
     return Math.max(1, Math.min(cores, Math.floor(explicit)))
   }
 
-  const envThreads = Number(
-    resolveEnvVar('CASTRUM_RAYON_THREADS'),
-  )
+  const envThreads = Number(resolveEnvVar('CASTRUM_RAYON_THREADS'))
 
   if (Number.isFinite(envThreads) && envThreads > 0) {
     return Math.max(1, Math.min(cores, Math.floor(envThreads)))

@@ -7,16 +7,23 @@
 // the safety net. New C-ABI symbols MUST be added to the self-test for their
 // domain: each check lives in the same `ffi/build/` file where the method is
 // bound (`selfTestCodecs` / `selfTestCompress` / `selfTestParse` /
-// `selfTestInstances`), and this entry point ANDs them together so any single
-// failure disables the whole layer.
+// `selfTestInstances` / `selfTestMetrics`), and this entry point ANDs them
+// together so any single failure disables the whole layer.
 
 import { selfTestCodecs } from './build/codecs'
 import { selfTestCompress } from './build/compress'
 import { selfTestInstances } from './build/instances'
+import { selfTestMetrics } from './build/metrics'
 import { selfTestParse } from './build/parse'
 import type { BunFFI } from './types'
 
 /** Verify every bound function against known-good results; false disables ffi. */
 export function selfTest(b: BunFFI): boolean {
-  return selfTestCodecs(b) && selfTestCompress(b) && selfTestParse(b) && selfTestInstances(b)
+  return (
+    selfTestCodecs(b) &&
+    selfTestCompress(b) &&
+    selfTestParse(b) &&
+    selfTestInstances(b) &&
+    selfTestMetrics(b)
+  )
 }

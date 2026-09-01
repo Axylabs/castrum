@@ -114,15 +114,16 @@ mod tests {
 
     #[test]
     fn cookie_parse_expires_value_with_commas() {
-        let packed = cookie_parse_packed_vec(
-            b"session=abc; expires=Wed, 21 Oct 2015 07:28:00 GMT",
-        )
-        .unwrap();
+        let packed =
+            cookie_parse_packed_vec(b"session=abc; expires=Wed, 21 Oct 2015 07:28:00 GMT").unwrap();
         let pairs = decode_packed_pairs(&packed);
         assert_eq!(pairs.len(), 2);
         assert_eq!(
             pairs[1],
-            (b"expires".to_vec(), b"Wed, 21 Oct 2015 07:28:00 GMT".to_vec())
+            (
+                b"expires".to_vec(),
+                b"Wed, 21 Oct 2015 07:28:00 GMT".to_vec()
+            )
         );
     }
 

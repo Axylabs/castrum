@@ -12,9 +12,10 @@ import { runtimeCodec } from '../runtime/codec'
 /**
  * Encode a string to UTF-8 bytes.
  *
- * On Bun this uses `Bun.ArrayBufferSink` (native UTF-8 writing — no
- * `TextEncoder`). Under Node it falls back to the standard `TextEncoder`.
- * The implementation is selected once at load via the runtime adapter.
+ * Both runtimes use a shared native `TextEncoder` singleton (on Bun 1.4 the
+ * engine-native implementation measures ~3x faster than the previous
+ * `Bun.ArrayBufferSink` start/write/flush path). The implementation is
+ * selected once at load via the runtime adapter.
  *
  * @param s - The string to encode to UTF-8 bytes.
  * @returns A fresh `Uint8Array` of the UTF-8 encoding of `s`.
@@ -63,6 +64,20 @@ export const encodeUtf8Into: (s: string, dest: Uint8Array, offset?: number) => n
  * ```
  */
 export const decodeUtf8: (bytes: Uint8Array) => string = runtimeCodec.decodeUtf8
+
+/**
+ * Decode the byte RANGE `[start, end)` of `bytes` to a string (replacement
+ * mode on invalid). Zero-copy ranged decode for packed-wire unpackers — no
+ * per-field `subarray` view. ASCII ranges take a latin1 fast path (~2x on
+ * Bun); multi-byte ranges fall back to real UTF-8 decoding of that range.
+ *
+ * @param bytes - The backing byte buffer.
+ * @param start - Range start (inclusive, relative to the VIEW).
+ * @param end - Range end (exclusive, relative to the VIEW).
+ * @returns The decoded string.
+ */
+export const decodeUtf8Range: (bytes: Uint8Array, start: number, end: number) => string =
+  runtimeCodec.decodeUtf8Range
 
 /**
  * Decode UTF-8 bytes to a string, throwing on invalid UTF-8.

@@ -15,6 +15,7 @@ import { buildHashing } from './hashing'
 import { buildHttp } from './http'
 import { buildJson } from './json'
 import { buildPayload } from './payload'
+import { buildValidation } from './validation'
 
 export type { RustScalar } from './interface'
 
@@ -26,6 +27,7 @@ export function buildScalar(ctx: RustClientContext): import('./interface').RustS
     ...buildHttp(ctx),
     ...buildCrypto(ctx),
     ...buildPayload(ctx),
+    ...buildValidation(ctx),
     ...buildFactories(ctx),
   }
 }

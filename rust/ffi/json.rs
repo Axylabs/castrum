@@ -219,9 +219,11 @@ impl<'de> serde::de::Visitor<'de> for JsonPackedVisitor<'_> {
     where
         E: serde::de::Error,
     {
-        self.out
-            .tree
-            .push(if v { JSON_PACKED_TRUE } else { JSON_PACKED_FALSE });
+        self.out.tree.push(if v {
+            JSON_PACKED_TRUE
+        } else {
+            JSON_PACKED_FALSE
+        });
         Ok(())
     }
 
@@ -313,7 +315,9 @@ impl<'de> serde::de::Visitor<'de> for JsonPackedVisitor<'_> {
         A: serde::de::SeqAccess<'de>,
     {
         self.out.tree.push(JSON_PACKED_ARRAY_START);
-        while let Some(()) = seq.next_element_seed(JsonPackedSeed { out: &mut *self.out })? {}
+        while let Some(()) = seq.next_element_seed(JsonPackedSeed {
+            out: &mut *self.out,
+        })? {}
         self.out.tree.push(JSON_PACKED_ARRAY_END);
         Ok(())
     }
@@ -324,8 +328,12 @@ impl<'de> serde::de::Visitor<'de> for JsonPackedVisitor<'_> {
         A: serde::de::MapAccess<'de>,
     {
         self.out.tree.push(JSON_PACKED_OBJECT_START);
-        while let Some(()) = map.next_key_seed(JsonPackedKeySeed { out: &mut *self.out })? {
-            map.next_value_seed(JsonPackedSeed { out: &mut *self.out })?;
+        while let Some(()) = map.next_key_seed(JsonPackedKeySeed {
+            out: &mut *self.out,
+        })? {
+            map.next_value_seed(JsonPackedSeed {
+                out: &mut *self.out,
+            })?;
         }
         self.out.tree.push(JSON_PACKED_OBJECT_END);
         Ok(())
@@ -365,8 +373,10 @@ pub unsafe extern "C" fn castrum_json_parse_packed(
         return 0;
     }
     let input = slice::from_raw_parts(data, len);
-    let Some(emitter) = panic_guard(|| sonic_rs::from_slice::<JsonPackedEmitter>(input).ok(), None)
-    else {
+    let Some(emitter) = panic_guard(
+        || sonic_rs::from_slice::<JsonPackedEmitter>(input).ok(),
+        None,
+    ) else {
         return 0;
     };
     // Write the packed [u32 stringsLen][table][u32 treeLen][tree] directly
@@ -453,4 +463,55 @@ pub unsafe extern "C" fn castrum_template_render(
     }
     slice::from_raw_parts_mut(out, rendered.len()).copy_from_slice(&rendered);
     rendered.len()
+}
+
+/// Fused wire-level validation: RAW query string → JSON → draft-07 validate
+/// against the compiled schema, ONE call. Returns 1 = valid.
+///
+/// # Safety
+/// `inner` must be a live `SchemaValidator` pointer from `inner_ptr()`;
+/// `qs` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_query_validate(
+    inner: usize,
+    qs: *const std::os::raw::c_char,
+) -> u8 {
+    if inner == 0 || qs.is_null() {
+        return 0;
+    }
+    let q = std::ffi::CStr::from_ptr(qs).to_bytes();
+    panic_guard(
+        || {
+            crate::json::json_schema::schema_validate_query_core(
+                inner as *const crate::json::json_schema::SchemaValidator,
+                q,
+            )
+        },
+        false,
+    ) as u8
+}
+
+/// Fused cookie-header variant of [`castrum_query_validate`] (trim +
+/// DQUOTE-unwrap values, NO percent-decode). Returns 1 = valid.
+///
+/// # Safety
+/// See [`castrum_query_validate`].
+#[no_mangle]
+pub unsafe extern "C" fn castrum_cookie_validate(
+    inner: usize,
+    header: *const std::os::raw::c_char,
+) -> u8 {
+    if inner == 0 || header.is_null() {
+        return 0;
+    }
+    let h = std::ffi::CStr::from_ptr(header).to_bytes();
+    panic_guard(
+        || {
+            crate::json::json_schema::schema_validate_cookie_core(
+                inner as *const crate::json::json_schema::SchemaValidator,
+                h,
+            )
+        },
+        false,
+    ) as u8
 }

@@ -12,10 +12,10 @@
 import type { EncodingPrefResult, MediaTypeResult } from '../../native'
 import type { BunFFI } from '../../native/ffi'
 import { decoder } from '../../shared/bytes'
-import { decodeUtf8Fatal } from '../../shared/codec'
+import { decodeUtf8Fatal, decodeUtf8Range } from '../../shared/codec'
 import { packPairs } from '../../shared/packed'
-import { writeInto } from '../into'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
+import { writeInto } from '../into'
 
 // Mirror napi `url_decode`'s UTF-8 validation (rust/http/url_codec.rs): only
 // validate when a high byte is present (the ASCII fast path skips it — same as
@@ -60,23 +60,25 @@ function u32LE(b: Uint8Array, off: number): number {
  * napi `HashMap` (which keeps every param including charset/boundary).
  */
 function unpackMediaType(packed: Uint8Array): MediaTypeResult {
+  // Ranged decode straight off the (pooled) packed buffer — no per-field
+  // subarray views. ASCII fields take the latin1 fast path.
   let off = 0
   const mtLen = u32LE(packed, off)
   off += 4
-  const mediaType = decoder.decode(packed.subarray(off, off + mtLen))
+  const mediaType = decodeUtf8Range(packed, off, off + mtLen)
   off += mtLen
   let charset: string | null = null
   const csLen = u32LE(packed, off)
   off += 4
   if (csLen !== 0xffffffff) {
-    charset = decoder.decode(packed.subarray(off, off + csLen))
+    charset = decodeUtf8Range(packed, off, off + csLen)
     off += csLen
   }
   let boundary: string | null = null
   const bLen = u32LE(packed, off)
   off += 4
   if (bLen !== 0xffffffff) {
-    boundary = decoder.decode(packed.subarray(off, off + bLen))
+    boundary = decodeUtf8Range(packed, off, off + bLen)
     off += bLen
   }
   const count = u32LE(packed, off)
@@ -85,11 +87,11 @@ function unpackMediaType(packed: Uint8Array): MediaTypeResult {
   for (let i = 0; i < count; i++) {
     const kLen = u32LE(packed, off)
     off += 4
-    const key = decoder.decode(packed.subarray(off, off + kLen))
+    const key = decodeUtf8Range(packed, off, off + kLen)
     off += kLen
     const vLen = u32LE(packed, off)
     off += 4
-    const val = decoder.decode(packed.subarray(off, off + vLen))
+    const val = decodeUtf8Range(packed, off, off + vLen)
     off += vLen
     params[key] = val
   }
@@ -97,18 +99,22 @@ function unpackMediaType(packed: Uint8Array): MediaTypeResult {
 }
 
 /** Unpack the `castrum_parse_accept_encoding` verdict (f32 q-values) into the
- * napi-shaped array. Layout: `[u32 count]{[u32 encLen][enc][f32 q][u32 order]}`. */
+ * napi-shaped array. Layout: `[u32 count]{[u32 encLen][enc][f32 q][u32 order]}`.
+ * Ranged decode off the pooled buffer + shared f32 bit-reinterpret views —
+ * no per-field subarrays, no per-call DataView. */
+const f32Bits = new Float32Array(1)
+const f32BitsU32 = new Uint32Array(f32Bits.buffer)
 function unpackAcceptEncoding(packed: Uint8Array): EncodingPrefResult[] {
   const count = u32LE(packed, 0)
   let off = 4
   const out: EncodingPrefResult[] = []
-  const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength)
   for (let i = 0; i < count; i++) {
     const encLen = u32LE(packed, off)
     off += 4
-    const encoding = decoder.decode(packed.subarray(off, off + encLen))
+    const encoding = decodeUtf8Range(packed, off, off + encLen)
     off += encLen
-    const q = view.getFloat32(off, true)
+    f32BitsU32[0] = u32LE(packed, off)
+    const q: number = f32Bits[0] ?? 0
     off += 4
     const order = u32LE(packed, off)
     off += 4

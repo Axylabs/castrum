@@ -1,8 +1,8 @@
 // src/ingress/routes/fallback.ts — Pre-baked fallback handler.
 
-import type { BakedContext, OptimizedIngressHandler } from '../types'
 import type { BakedIngressResult } from '../decode/baked-result'
-import { runBaked, type BakedHandlerOptions } from './common'
+import type { BakedContext, OptimizedIngressHandler } from '../types'
+import { type BakedHandlerOptions, runBaked } from './common'
 
 /**
  * Pre-baked fallback handler: 404 for unmatched routes / OPTIONS.

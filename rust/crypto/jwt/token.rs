@@ -32,7 +32,9 @@ static JWT_HEADER_B64: OnceLock<Vec<u8>> = OnceLock::new();
 pub fn jwt_header_b64() -> &'static [u8] {
     JWT_HEADER_B64.get_or_init(|| {
         let header = serde_json::json!({ "alg": "HS256", "typ": "JWT" });
-        base64url_encode_bytes(&serde_json::to_vec(&header).expect("constant JWT header serializes"))
+        base64url_encode_bytes(
+            &serde_json::to_vec(&header).expect("constant JWT header serializes"),
+        )
     })
 }
 
@@ -43,7 +45,9 @@ static EDDSA_HEADER_B64: OnceLock<Vec<u8>> = OnceLock::new();
 pub fn eddsa_header_b64() -> &'static [u8] {
     EDDSA_HEADER_B64.get_or_init(|| {
         let header = serde_json::json!({ "alg": "EdDSA", "typ": "JWT" });
-        base64url_encode_bytes(&serde_json::to_vec(&header).expect("constant JWT header serializes"))
+        base64url_encode_bytes(
+            &serde_json::to_vec(&header).expect("constant JWT header serializes"),
+        )
     })
 }
 
@@ -207,7 +211,9 @@ pub fn inject_and_payload_b64_sonic(
     now_seconds: i64,
 ) -> Result<Vec<u8>> {
     inject_ttl_claims(claims, ttl_seconds, now_seconds);
-    Ok(base64url_encode_bytes(&sonic_rs::to_vec(claims).map_err(napi_err)?))
+    Ok(base64url_encode_bytes(
+        &sonic_rs::to_vec(claims).map_err(napi_err)?,
+    ))
 }
 
 fn napi_err(e: impl std::fmt::Display) -> Error {

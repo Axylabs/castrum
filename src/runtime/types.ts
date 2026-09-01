@@ -31,6 +31,13 @@ export interface Utf8Codec {
   decodeUtf8(bytes: Uint8Array): string
   /** Decode UTF-8 bytes to a string, throwing on invalid UTF-8. */
   decodeUtf8Fatal(bytes: Uint8Array): string
+  /**
+   * Decode the byte RANGE `[start, end)` of `bytes` to a string (replacement
+   * mode on invalid). Zero-copy ranged decode for packed-wire unpackers —
+   * avoids the per-field `subarray` view allocation. ASCII-only ranges take
+   * a latin1 fast path (~2x on Bun); multi-byte ranges fall back to UTF-8.
+   */
+  decodeUtf8Range(bytes: Uint8Array, start: number, end: number): string
 }
 
 /** UUIDv7 generation (Bun built-in vs crypto.randomUUID on Node). */

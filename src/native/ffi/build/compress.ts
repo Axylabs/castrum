@@ -29,7 +29,7 @@ export function buildCompress(
   sym: Record<string, (...a: unknown[]) => unknown>,
   ctx: BuildCtx,
 ): Partial<BunFFI> {
-  const { lenOrView } = ctx
+  const { lenOrView, scratchFor } = ctx
 
   const gzipCompress = sym.castrum_gzip_compress as Raw5
   const gzipDecompress = sym.castrum_gzip_decompress as Raw5
@@ -40,15 +40,19 @@ export function buildCompress(
 
   return {
     jsonPatch(doc, patch) {
-      return decodeUtf8(
-        growExact(
-          (out) =>
-            Number(jsonPatch(doc, lenOrView(doc), patch, lenOrView(patch), out, lenOrView(out))),
-          Math.min(Math.max(doc.length, patch.length) + 16, 64 * 1024),
-          MAX_JSON_PATCH_OUTPUT,
-          'json patch: output buffer too small or patch inapplicable',
-        ),
-      )
+      // Pooled scratch — the patched doc is decoded to an immutable string
+      // synchronously (same call-scope contract as the cstring returns), so
+      // the bytes never need a fresh buffer. One exact retry on miss.
+      let out = scratchFor(Math.min(Math.max(doc.length, patch.length) + 16, 64 * 1024))
+      let w = Number(jsonPatch(doc, lenOrView(doc), patch, lenOrView(patch), out, lenOrView(out)))
+      if (w > out.length && w <= MAX_JSON_PATCH_OUTPUT) {
+        out = new Uint8Array(w)
+        w = Number(jsonPatch(doc, lenOrView(doc), patch, lenOrView(patch), out, lenOrView(out)))
+      }
+      if (w === 0 || w > out.length) {
+        throw new Error('json patch: output buffer too small or patch inapplicable')
+      }
+      return decodeUtf8(out.subarray(0, w))
     },
     gzipCompress(data, level = 6) {
       // The C ABI streams the compressed output directly into `out` (no internal

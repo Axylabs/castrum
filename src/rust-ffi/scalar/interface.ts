@@ -19,6 +19,7 @@ import type {
   MediaTypeMatcherInstance,
   MediaTypeParserInstance,
   MediaTypeResult,
+  MetricsRegistryInstance,
   MultipartPart,
   PasswordHashOptions,
   RateLimiterInstance,
@@ -67,6 +68,18 @@ export interface RustScalar {
   validateUuid(input: Uint8Array): boolean
   validateIpv4(input: Uint8Array): boolean
   validateIpv6(input: Uint8Array): boolean
+  /**
+   * Batch fixed-width hex validation: NEWLINE-separated lines in → one
+   * verdict byte (1/0) per line. One native call replaces per-item
+   * `/^[0-9a-f]{width}$/` regex loops (ObjectIds = width 24). Accepts bytes,
+   * a joined string, or an array of id strings (joined internally).
+   */
+  hexValidateBatch(input: Uint8Array | readonly string[], width: number): Uint8Array
+  /**
+   * Escape JS-RegExp metacharacters so `new RegExp(escaped, flags)` matches
+   * the input literally — the safe literal-substring-search primitive.
+   */
+  regexEscape(input: Uint8Array | string): string
   wsAcceptKey(key: Uint8Array): Uint8Array | string
   wsAcceptKeyInto(key: Uint8Array, output: Uint8Array): number
 
@@ -212,6 +225,13 @@ export interface RustScalar {
     windowMs: number,
     maxEntries?: number | null,
   ): RateLimiterInstance
+  /**
+   * Create a sharded metrics registry (counters / gauges / histograms +
+   * Prometheus render). Fully C-ABI-backed on Bun (caller-owned native
+   * handle); the napi class on Node. Call `destroy()` on ffi-backed
+   * registries at shutdown.
+   */
+  createMetricsRegistry(): MetricsRegistryInstance
   initThreadPool(rayonThreads?: number): void
   rayonNumThreads(): number
 

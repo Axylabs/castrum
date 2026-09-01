@@ -684,11 +684,7 @@ describe('bun:ffi fast path', () => {
     const claims = encoder.encode('{"sub":"user-1","role":"admin"}')
     const token = ffi.jwtEdDSASign(claims, kp.privateKey, 0, 1_000_000)
     expect(token).not.toBeNull()
-    const claimsBack = ffi.jwtEdDSAVerify(
-      encoder.encode(token as string),
-      kp.publicKey,
-      1_000_000,
-    )
+    const claimsBack = ffi.jwtEdDSAVerify(encoder.encode(token as string), kp.publicKey, 1_000_000)
     expect(claimsBack).not.toBeNull()
     expect((claimsBack as string).includes('"sub":"user-1"')).toBe(true)
     expect(

@@ -403,4 +403,5 @@ mod tests {
     fn hex_encode_panics_on_undersized() {
         let mut out = [0u8; 4];
         super::hex_encode(b"abcd", &mut out);
-    }}
+    }
+}

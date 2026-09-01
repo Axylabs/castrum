@@ -24,3 +24,4 @@ pub mod hmac_sha256;
 pub mod jwt;
 pub mod pbkdf2;
 pub mod random_token;
+pub mod session;

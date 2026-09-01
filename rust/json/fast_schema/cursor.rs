@@ -218,21 +218,14 @@ impl<'a> Cursor<'a> {
 /// True when every byte is ASCII (< 0x80), checked word-at-a-time.
 #[inline]
 fn is_ascii(bytes: &[u8]) -> bool {
-    let mut chunks = bytes.chunks_exact(8);
-    for chunk in &mut chunks {
-        // SAFETY-free: chunks_exact guarantees exactly 8 bytes here.
-        let w =
-            u64::from_le_bytes(<[u8; 8]>::try_from(chunk).expect("chunks_exact yields 8 bytes"));
+    let (chunks, remainder) = bytes.as_chunks::<8>();
+    for word in chunks {
+        let w = u64::from_le_bytes(*word);
         if (w & 0x8080_8080_8080_8080) != 0 {
             return false;
         }
     }
-    for &b in chunks.remainder() {
-        if b >= 0x80 {
-            return false;
-        }
-    }
-    true
+    remainder.iter().all(|&b| b < 0x80)
 }
 
 /// Count Unicode scalar values (JSON Schema string length) in a raw JSON

@@ -27,6 +27,42 @@ pub(crate) unsafe fn schema_validator_validate_core(p: *const SchemaValidator, d
     this.validate_doc(doc)
 }
 
+/// Fused wire-level validation: parse a RAW query string into JSON (the same
+/// `query_to_json_into_slice` the ingress hot path uses — `+`/`%XX` decoded,
+/// duplicate keys last-wins) and draft-07-validate it against the compiled
+/// schema in ONE call. `false` = malformed query OR schema violation; callers
+/// fall back to the detailed path for exact errors on failure.
+///
+/// # Safety
+/// `p` must be a valid `*const SchemaValidator` from `inner_ptr`, alive for
+/// the call.
+pub(crate) unsafe fn schema_validate_query_core(p: *const SchemaValidator, qs: &[u8]) -> bool {
+    let this = &*p;
+    // json_ser's JSON writers need headroom beyond the input length (escape
+    // expansion + per-pair overhead); queries are tiny so this is cheap.
+    let cap = qs.len() * 12 + 256;
+    let mut json = vec![0u8; cap];
+    match crate::json::json_ser::query_to_json_into_slice(qs, &mut json, 512) {
+        Ok(w) => this.validate_doc(&json[..w]),
+        Err(_) => false,
+    }
+}
+
+/// Fused cookie-header variant: parse (trim + DQUOTE-unwrap, NO percent-decode
+/// — cookie semantics) into JSON and validate. Same verdict contract.
+///
+/// # Safety
+/// See [`schema_validate_query_core`].
+pub(crate) unsafe fn schema_validate_cookie_core(p: *const SchemaValidator, header: &[u8]) -> bool {
+    let this = &*p;
+    let cap = header.len() * 12 + 256;
+    let mut json = vec![0u8; cap];
+    match crate::json::json_ser::cookie_json_into_slice(header, &mut json, 128) {
+        Ok(w) => this.validate_doc(&json[..w]),
+        Err(_) => false,
+    }
+}
+
 /// Total payload bytes in a packed buffer (`[u32 count] {[u32 len][bytes]}`),
 /// computed in O(1) from the buffer length + header count. Used only as the
 /// rayon-parallelism heuristic input, so trailing bytes just over-count harmlessly.

@@ -19,10 +19,10 @@
 // the loader never pays a conversion cost on the hot path. This module is the
 // single source of truth for what the loader can dispatch.
 
+import type { PasswordHashOptions } from '../native'
 import { rust } from '../rust-ffi'
 import { addon } from '../rust-ffi/addon'
 import { decoder } from '../shared/bytes'
-import type { PasswordHashOptions } from '../native'
 import type { SchemaValidator } from '../shared/packed'
 
 /** Empty bytes sentinel for skip-on-error scalar parity (e.g. AEAD decrypt). */

@@ -8,7 +8,7 @@
 // live benchmark audit and no `@deprecated` JSDoc machinery (the old
 // `check:proven` / `check:annotate` friction, intentionally not re-added).
 
-import { rust, type RustClient } from './client'
+import { type RustClient, rust } from './client'
 
 /** The full `rust.*` surface — identical to `rust`; the proven wiring is baked (see {@link ../shared/proven}). */
 export type ProvenClient = RustClient
@@ -16,13 +16,13 @@ export type ProvenClient = RustClient
 /** The full `rust.*` surface, exposed for audit. Same object as `rust`. */
 export const proven: ProvenClient = rust
 
+export type { ProvenEntry, ProvenImpl, ProvenStatus } from '../shared/proven'
 export {
-  PROVEN_SELECTION,
   isProven,
+  PROVEN_SELECTION,
   provenEntry,
   provenImpl,
   provenStatus,
   provenSummary,
   provenSurface,
 } from '../shared/proven'
-export type { ProvenEntry, ProvenImpl, ProvenStatus } from '../shared/proven'

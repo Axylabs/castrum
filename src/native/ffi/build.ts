@@ -14,6 +14,7 @@
 import { buildCodecs } from './build/codecs'
 import { buildCompress } from './build/compress'
 import { buildInstances } from './build/instances'
+import { buildMetrics } from './build/metrics'
 import { buildParse } from './build/parse'
 import type { BuildCtx } from './build/util'
 import type { BunFFI } from './types'
@@ -90,5 +91,6 @@ export function build(
     ...buildCompress(sym, ctx),
     ...buildParse(sym, ctx),
     ...buildInstances(sym, ctx),
+    ...buildMetrics(sym, ctx),
   } as BunFFI
 }

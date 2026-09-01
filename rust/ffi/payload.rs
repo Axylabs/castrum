@@ -258,21 +258,14 @@ pub unsafe extern "C" fn castrum_sse_encode_into(
                 None
             };
             match crate::payload::sse::encode_event_into_slice(
-                event_opt,
-                data_bytes,
-                id_opt,
-                retry_opt,
-                output,
+                event_opt, data_bytes, id_opt, retry_opt, output,
             ) {
                 Ok(w) => Some(w),
                 // Too-small buffer: return the exact required size so the JS
                 // wrapper allocates ONCE and retries (needed-size convention);
                 // 0 stays a real error (invalid UTF-8 in event/id above).
                 Err(_) => Some(crate::payload::sse::encode_event_size(
-                    event_opt,
-                    data_bytes,
-                    id_opt,
-                    retry_opt,
+                    event_opt, data_bytes, id_opt, retry_opt,
                 )),
             }
         },

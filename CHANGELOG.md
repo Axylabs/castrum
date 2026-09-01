@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] — 2026-08-24
+
+### Changed
+
+- **Full-surface FFI wrapper optimization sweep** (driven by
+  `bench:margin`'s native-vs-ffi loss breakdown across all 103 symbols):
+  - `growExact` + every allocating wrapper output now allocates via a
+    size-gated `Buffer.allocUnsafe` helper (`allocOut`) — skips zeroing on
+    buffers ≥512 B (~2× at 4 KB, ~3.4× at 16 KB; gzip/brotli/jsonParsePacked/
+    multipart/sse/ws-frame/parsers).
+  - `parseMediaType` / `parseAcceptEncoding`: packed verdicts are decoded
+    synchronously, so they now run from POOLED scratch (no fresh buffer per
+    request) and unpack through the new `decodeUtf8Range` — ASCII ranges take
+    a latin1 fast path ~2× the CString decode. Public op: **2.6µs → ~1.6µs**.
+  - `jsonPatch`: pooled scratch + one exact retry (**~2.0µs → ~1.7µs**).
+  - `sseEncodeEvent`/`Into`: memoized event/id encodings (SSE streams repeat
+    event names constantly) — repeated-name events drop ~696ns → ~584ns
+    without an ABI change (the old "cstring args crash the JIT trampoline"
+    comment was a misdiagnosis per docs/FFI_BUN_GUIDE.md §14; noted in-code).
+  - BUN_WINS delegation table re-validated against Bun 1.4.1-canary: all 9
+    built-in delegations still win (crc32/xxh3/urlEncode/urlDecode/base64/
+    hex/httpDate/hmac/gzip); randomToken correctly stays native. No flips.
+  - `raw-native.ts` accessors (the CPU bench's `rust:` measurement paths)
+    rewritten onto pooled `*Into` variants, eliminating encode→decode→encode
+    string round-trips for urlEncode/hexEncode/base64Encode/httpDate/
+    randomToken/hmacSha256.
+
+### Added
+
+- **`bun run bench:newops`** (`bench/cost/rust-vs-js-new-ops.ts`): three-way
+  A/B/C op cost — pure-JS (raw Bun) vs Rust-via-napi vs Rust-via-bun:ffi —
+  with the measured ffi crossing floor (~9ns via a no-op symbol) as the
+  reference line.
+- **Zero-copy `_str` C-ABI siblings** (cstring ARGs / cstring return, the
+  Bun 1.4 in-engine transcode path): `castrum_metrics_record_str`,
+  `castrum_metrics_gauge_set_str`, `castrum_regex_escape_str`
+  (cstring→cstring: zero JS encode AND decode), and
+  `castrum_hex_validate_batch_str`. The public wrappers now ride them:
+  `registry.record` drops from ~0.34µs to **~190ns/event** (5× vs the shipped
+  JS label-key build), `regexEscape(str)` from ~2.7µs to **~670ns** (now
+  faster than the JS replace-chain). Symbol count 99 → 103.
+- **Metrics registry** (`rust/metrics/` + `castrum_metrics_*` C-ABI + napi
+  `MetricsRegistry` class): sharded counters / gauges / histograms with a
+  deterministic Prometheus text render. Series are declared once (idempotent
+  `u32` ids), label values cross packed `\x1f`-separated on the hot path, and
+  the public surface is `rust.createMetricsRegistry()` — fully bun:ffi-backed
+  under Bun (caller-owned handle), napi class on Node. Replaces per-event
+  label-key building (entries sort + regex escape + join + Map) measured at
+  ~0.9µs/event in JS with a 0.33–0.39µs native call (2.4–2.8×; 5.5× with
+  pre-packed values). Bind-time self-tested, ffi↔napi render parity pinned by
+  `test/unit/rust-ffi/metrics.test.ts`.
+- **`rust.hexValidateBatch(input, width)`**: batch fixed-width hex validation
+  (NEWLINE-separated lines → one verdict byte per line). Core: uniform-stride
+  fast path (`<width hex>\n` repeated — the same-length ObjectId shape) with
+  a memchr-split fallback for deviating layouts, pinned byte-equal by tests.
+  Beats the per-item `/^[0-9a-f]{24}$/i` regex loop when bytes are already
+  available (~1.2–1.5×); for small `string[]` inputs the join+transcode
+  dominates — plain JS stays competitive there (documented in JSDoc).
+- **`rust.regexEscape(input)`** (JS-RegExp metacharacter escaping,
+  MDN escapeRegExp set): the safe literal-substring-search primitive for
+  untrusted query needles. On short strings the FFI crossing dominates
+  (JS replace-chain wins) — shipped for correctness/single-source semantics;
+  pairs with future fused validate+escape ops.
+
 ## [Unreleased]
 
 ### Changed

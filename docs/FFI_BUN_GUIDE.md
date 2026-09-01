@@ -99,13 +99,22 @@ the matching shape and nothing else:
    (no copy). **Benchmark-gated** (`bench:margin` `cstringArg` scenario):
    ~40–52 ns/call vs ~209–233 ns for `encodeUtf8` + `(ptr,len)` — a ~76–82% win,
    including non-ASCII inputs. It is a LOSS for BYTE inputs (decode + re-encode)
-   — keep `(ptr,len)` there. **Verified `bun:ffi` facts**: JS `null` → NULL
-   pointer, and JS `''` (empty string) → NULL too — a present-but-empty value is
-   indistinguishable from absent through a `cstring` arg (so SSE's `Option`
-   event/id semantics stay on `(ptr,len)`). Adopted by: the validators
-   (`castrum_validate_*`), `castrum_ws_accept_key`, `castrum_mime_from_extension`,
+   — keep `(ptr,len)` there (the validators ship BOTH shapes:
+   `castrum_validate_*` for strings, `castrum_validate_*_bytes` for bytes).
+   **Verified `bun:ffi` facts**: JS `null` → NULL pointer, and JS `''` (empty
+   string) → NULL too — a present-but-empty value is indistinguishable from
+   absent through a `cstring` arg UNLESS a presence flag crosses alongside it.
+   Adopted by: the validators (`castrum_validate_*`),
+   `castrum_ws_accept_key`, `castrum_mime_from_extension`,
    `castrum_password_verify_bcrypt` (phc), `castrum_rate_limiter_check` (key),
    and `castrum_ingress_handle_components` (url/ip).
+
+   > **CASE STUDY — a conversion we REVERTED (2026-08-23)**: SSE's event/id
+   > were converted to `cstring` ARGs (+ presence flags) and shipped briefly,
+   > then reverted. The conversion itself was sound; what failed was the dev
+   > loop — see §14. Every "bun:ffi is broken" signal during that episode
+   > traced back to a mismatched addon↔JS state, never to the engine. Do not
+   > cite this as an engine bug.
 
 Opaque instance handles are passed as a **bare `usize`** (`inner: usize`), and
 must be null-checked at the top of the function (return the `0` sentinel) —
@@ -328,8 +337,82 @@ Rust-based runtime family. Castrum's own measurements live in `bench/`.
 **Verify after any FFI change**:
 
 ```bash
-nm -D --defined-only <addon> | grep -c castrum_   # = 85
+nm -D --defined-only <addon> | grep -c castrum_   # = 109
 bun run bench:http:smoke                           # after touching decoders/handlers
 bun test test/unit/native/ffi.test.ts            # FFI↔napi parity + self-test
 bun test test/unit/native/ffi-symbol-parity.test.ts
 ```
+
+---
+
+## 14. Changing an existing symbol's ABI — the desync hazard (post-mortem 2026-08-23)
+
+Adding or re-signing a `castrum_*` symbol means touching **Rust and the JS
+dlopen map in lockstep**. `bun:ffi` performs ZERO runtime validation of the
+declared ABI: if the addon on disk and `src/native/ffi.ts` disagree — arity,
+arg order, or arg type — the call still crosses, the callee reads your scalar
+as a pointer (or vice versa), and the process **segfaults**. This is not a
+Bun bug; it is inherent to raw FFI, and it is why the bind-time self-test is
+mandatory.
+
+### The 2026-08-23 incident (recorded so nobody repeats it)
+
+Converting `castrum_sse_encode_into`'s event/id to `cstring` args triggered
+repeated SIGSEGVs that looked like an engine bug ("crash at address 0x5/0x6",
+flaky across runs, "raw bindings pass but the package crashes"). After a full
+root-cause pass, **every** crash traced to a development-loop desync — never
+to bun:ffi itself:
+
+1. **Half-updated trees**: rebuilding the Rust side while the JS map (or a
+   scratch probe) still declared the old signature — e.g. after `git stash`
+   / `git checkout` of one side. The callee then dereferenced a small integer
+   argument as a pointer: crash addresses literally equalled values passed in
+   earlier calls (`0x5`, `0x6`).
+2. **Probe methodology bugs**: shell probes treated ANY non-zero exit as a
+   crash — including clean `TypeError: Symbol "<key>" not found` failures
+   from a misnamed dlopen-map key. Several "crashes" were exit-code-1
+   TypeErrors.
+3. **A mid-session runtime auto-update** (Bun canary replaced under us),
+   invalidating comparisons across runs.
+
+The minimal C-dylib control experiment bound every suspect signature shape
+(`cstring` leading/middle/trailing, mixed with `buffer`/`buffer_length`,
+`u64_fast` returns) against trivial exports: all marshaled correctly on Bun
+1.4.0/1.4.1 canaries. **No engine bug exists to report.**
+
+### Rules for any ABI change (signature, arg order, or type)
+
+1. **Treat Rust signature + JS dlopen-map entry + JS wrapper as ONE commit.**
+   Never run anything that binds (`bun test`, benches, `import castrum`)
+   between editing one side and the other.
+2. **Rebuild before you bind**: after ANY `rust/ffi/**` edit (including
+   reverting one via git), run `bun run build` before running tests. A stale
+   `castrum.*.node` next to fresh JS is a guaranteed segfault, not an error.
+3. **Fail loudly while debugging**: use `CASTRUM_FFI_MODE=ffi`. In `auto`
+   mode a failed bind/self-test silently falls back to napi — which masks
+   breakage as mysterious slowness or wrong-path results instead of an error.
+4. **Know the failure signatures**:
+   - `SIGSEGV at a tiny address (0x5–0xB)` right after a binding → almost
+     always an ABI mismatch; check `git status rust/ src/native/ffi.ts` and
+     rebuild before theorizing about the engine.
+   - `Symbol "<name>" not found` at dlopen → key/name drift (parity test's
+     domain).
+   - ffi silently off → self-test returned false; run with
+     `CASTRUM_FFI_MODE=ffi` to get the throw instead of the fallback.
+5. **Known guard gap**: `test/unit/native/ffi-symbol-parity.test.ts` checks
+   symbol NAMES (rust exports ⊆ dlopen map ⊆ self-test), NOT arities/types.
+   Arity drift surfaces only at call time — as a crash. When changing a
+   signature, update BOTH sides plus the self-test vectors in the same edit,
+   and let `bun test test/unit/native/ffi.test.ts` (FFI↔napi parity) catch
+   value divergence.
+6. **Probe discipline when investigating**: distinguish crash from failure
+   explicitly (exit code 139 + `Segmentation fault` line vs exit 1 +
+   stderr), verify `bun --version` before AND after long sessions (canary
+   auto-updates invalidate comparisons), and test hypotheses against a
+   minimal dylib before blaming the engine.
+7. **No repo-wide auto-fixers mid-investigation**: `bun run lint:fix`
+   rewrites import order across ~90 files; in this codebase import ORDER
+   carries side-effect semantics (eager-dlopen contract). Scope formatters
+   to your changed files, and treat mass diffs appearing during a debug
+   session as a variable to eliminate (revert them) before drawing
+   conclusions.

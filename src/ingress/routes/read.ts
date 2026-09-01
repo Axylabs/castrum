@@ -1,8 +1,8 @@
 // src/ingress/routes/read.ts — Pre-baked GET read handler.
 
-import type { BakedContext, OptimizedIngressHandler } from '../types'
 import type { BakedIngressResult } from '../decode/baked-result'
-import { buildSuccessInit, runBaked, type BakedHandlerOptions } from './common'
+import type { BakedContext, OptimizedIngressHandler } from '../types'
+import { type BakedHandlerOptions, buildSuccessInit, runBaked } from './common'
 
 /**
  * Pre-baked GET read handler: returns the ingress body JSON on success.

@@ -155,8 +155,7 @@ fn jwt_signer_instance_roundtrips_and_injects_claims() {
     let token = signer.sign(claims.clone(), now).unwrap();
 
     // ttl injected iat/exp at construction time.
-    let verified_payload =
-        verify_token_with_key(&token, &signer.key, now).expect("token verifies");
+    let verified_payload = verify_token_with_key(&token, &signer.key, now).expect("token verifies");
     let verified: sonic_rs::Value = sonic_rs::from_slice(&verified_payload).unwrap();
     assert_eq!(verified["sub"], "123");
     assert_eq!(verified["iat"], now);
@@ -193,8 +192,7 @@ fn jwt_sign_bytes_matches_value_sign_and_verifies() {
     )
     .unwrap();
     let claims: serde_json::Value = serde_json::from_slice(&claims_json).unwrap();
-    let from_value =
-        jwt_sign(claims, Uint8Array::new(SECRET.to_vec()), None, 1_000_000).unwrap();
+    let from_value = jwt_sign(claims, Uint8Array::new(SECRET.to_vec()), None, 1_000_000).unwrap();
     let claims_from_bytes: sonic_rs::Value = sonic_rs::from_slice(
         &b64url_decode(split_token(&from_bytes).unwrap().payload_b64).unwrap(),
     )
@@ -275,8 +273,7 @@ fn eddsa_injects_ttl_and_enforces_time_claims() {
 
     let token = sign_eddsa(&claims_json, &private_der, Some(3600), 1_000_000).unwrap();
     let v: sonic_rs::Value =
-        sonic_rs::from_slice(&verify_token_eddsa(&token, &public_der, 1_000_000).unwrap())
-            .unwrap();
+        sonic_rs::from_slice(&verify_token_eddsa(&token, &public_der, 1_000_000).unwrap()).unwrap();
     assert_eq!(v["iat"], 1_000_000);
     assert_eq!(v["exp"], 1_000_000 + 3600);
 

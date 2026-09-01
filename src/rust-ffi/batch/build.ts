@@ -82,8 +82,7 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
       via(ctx, 'signCookieBatchPacked', unpackByteResults, [secret])(items),
     verifyCookie: (items, secret) =>
       via(ctx, 'verifyCookieBatchPacked', unpackBitset, [secret])(items),
-    csrfVerify: (items, secret) =>
-      via(ctx, 'csrfVerifyBatchPacked', unpackBitset, [secret])(items),
+    csrfVerify: (items, secret) => via(ctx, 'csrfVerifyBatchPacked', unpackBitset, [secret])(items),
     httpParseRequest: via(ctx, 'httpParseRequestBatchPacked', unpackByteResults),
     fnv1a64: via(ctx, 'fnv1A64BatchPacked', unpackU64ArrayAsBigInt),
     etag: (items, weak) => via(ctx, 'etagBatchPacked', unpackByteResults, [weak ?? null])(items),
@@ -96,13 +95,18 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
       via(ctx, 'base64EncodeBatchPacked', unpackByteResults, [true, false])(items),
     base64UrlDecode: (items) =>
       via(ctx, 'base64DecodeBatchPacked', unpackByteResults, [true, false])(items),
-    jsonPatch: (docs, patches) => via2(ctx, 'jsonPatchBatchPacked', unpackByteResults)(docs, patches),
+    jsonPatch: (docs, patches) =>
+      via2(ctx, 'jsonPatchBatchPacked', unpackByteResults)(docs, patches),
     hexEncode: via(ctx, 'hexEncodeBatchPacked', unpackByteResults),
     hexDecode: via(ctx, 'hexDecodeBatchPacked', unpackByteResults),
     base64Encode: (items, urlSafe, padding) =>
-      via(ctx, 'base64EncodeBatchPacked', unpackByteResults, [urlSafe ?? null, padding ?? null])(items),
+      via(ctx, 'base64EncodeBatchPacked', unpackByteResults, [urlSafe ?? null, padding ?? null])(
+        items,
+      ),
     base64Decode: (items, urlSafe, padding) =>
-      via(ctx, 'base64DecodeBatchPacked', unpackByteResults, [urlSafe ?? null, padding ?? null])(items),
+      via(ctx, 'base64DecodeBatchPacked', unpackByteResults, [urlSafe ?? null, padding ?? null])(
+        items,
+      ),
     schemaValidate(validator, items) {
       return schemaValidateBatch(validator, items)
     },
@@ -131,7 +135,8 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
     hmacSha256Verify: (items, sigs, key) =>
       via2(ctx, 'hmacSha256VerifyBatchPacked', unpackBitset, [key])(items, sigs),
     // ── Two-list ──
-    passwordVerify: (items, phcs) => via2(ctx, 'passwordVerifyBatchPacked', unpackBitset)(items, phcs),
+    passwordVerify: (items, phcs) =>
+      via2(ctx, 'passwordVerifyBatchPacked', unpackBitset)(items, phcs),
     urlResolve: (bases, references) =>
       via2(ctx, 'urlResolveBatchPacked', unpackByteResults)(bases, references),
     templateRender: (source, contexts) =>
@@ -143,9 +148,11 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
         nowSeconds ?? Math.floor(Date.now() / 1000),
       ])(items),
     sseEncode: (items, event, id, retry) =>
-      via(ctx, 'sseEncodeBatchPacked', unpackByteResults, [event ?? null, id ?? null, retry ?? null])(
-        items,
-      ),
+      via(ctx, 'sseEncodeBatchPacked', unpackByteResults, [
+        event ?? null,
+        id ?? null,
+        retry ?? null,
+      ])(items),
     wsFrameEncode: (items, opcode, mask, fin) =>
       via(ctx, 'wsFrameEncodeBatchPacked', unpackByteResults, [opcode, mask, fin])(items),
     wsFrameDecode: via(ctx, 'wsFrameDecodeBatchPacked', unpackByteResults),

@@ -2,8 +2,8 @@
 
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
-import { rawCrc32 } from '../raw-native'
 import type { BenchFixtures } from '../fixtures'
+import { rawCrc32 } from '../raw-native'
 import type { BenchTask } from '../types'
 
 export function hashingTasks(f: BenchFixtures): BenchTask[] {

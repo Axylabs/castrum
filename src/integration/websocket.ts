@@ -1,8 +1,8 @@
 // src/integration/websocket.ts — WebSocket upgrade handshake helper.
 
-import { isBun } from '../shared/runtime'
 import { rust } from '../rust-ffi'
-/** Options for `createWebSocketUpgrade` (supported subprotocols). */export interface WebSocketUpgradeOptions {
+import { isBun } from '../shared/runtime'
+/** Options for `createWebSocketUpgrade` (supported subprotocols). */ export interface WebSocketUpgradeOptions {
   /** Subprotocols this server supports; the first client-requested match wins. */
   protocols?: ReadonlyArray<string>
 }

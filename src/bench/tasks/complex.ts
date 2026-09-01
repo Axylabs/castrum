@@ -2,10 +2,12 @@
 
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
+
 // Public `rustBatch` alias removed in 0.8.0 — bench-local shorthand.
 const rustBatch = rust.batch
-import { rawUrlDecode, rawUrlEncode } from '../raw-native'
+
 import type { ComplexFixtures } from '../fixtures'
+import { rawUrlDecode, rawUrlEncode } from '../raw-native'
 import type { BenchTask } from '../types'
 
 export function complexTasks(c: ComplexFixtures): BenchTask[] {

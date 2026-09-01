@@ -59,6 +59,16 @@ condensed version.
   `ffi/build/*.ts`) gates the whole transport: failure → napi fallback
   (`auto`) or throw (`ffi`).
 
+## Modifying an EXISTING symbol's ABI (vs adding one)
+
+A signature/arity/type change is ATOMIC across `rust/ffi/**` + the
+`src/native/ffi.ts` dlopen map + the JS wrapper + self-test vectors, and
+`bun run build` must run before anything binds — a stale `.node` segfaults
+the process (no runtime ABI validation; the parity test checks names only).
+Full post-mortem + failure signatures: `docs/FFI_BUN_GUIDE.md` §14.
+Debug with `CASTRUM_FFI_MODE=ffi` so bind failures throw instead of silently
+falling back to napi.
+
 ## Gates to run before done
 
 ```bash

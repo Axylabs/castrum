@@ -60,7 +60,10 @@ fn route_compile_run_destroy_c_abi() {
     assert_eq!(w, 8 + 34 + 14, "exact result size (query+cookie sections)");
 
     let flags = u32::from_le_bytes(out[0..4].try_into().unwrap());
-    assert_ne!(flags & crate::ingress::native_route::ROUTE_RESULT_FLAG_OK, 0);
+    assert_ne!(
+        flags & crate::ingress::native_route::ROUTE_RESULT_FLAG_OK,
+        0
+    );
     assert_ne!(
         flags & crate::ingress::native_route::ROUTE_RESULT_FLAG_QUERY_VALID,
         0
@@ -91,7 +94,11 @@ fn route_run_needed_size_convention() {
     let mut big = vec![0u8; needed];
     let w = unsafe { castrum_route_run(handle, f.as_ptr(), f.len(), big.as_mut_ptr(), big.len()) };
     assert_eq!(w, needed);
-    assert_eq!(&small[..], &[0u8; 8], "nothing written to the too-small buffer");
+    assert_eq!(
+        &small[..],
+        &[0u8; 8],
+        "nothing written to the too-small buffer"
+    );
     unsafe { castrum_route_destroy(handle) };
 }
 
@@ -140,9 +147,15 @@ fn ingress_layout_c_abi_matches_output_source() {
     assert_eq!(l.err_rate_limited, output::ERR_CODE_RATE_LIMITED as u32);
     assert_eq!(l.err_body_too_large, output::ERR_CODE_BODY_TOO_LARGE as u32);
     assert_eq!(l.err_invalid_json, output::ERR_CODE_INVALID_JSON as u32);
-    assert_eq!(l.err_schema_validation, output::ERR_CODE_SCHEMA_VALIDATION as u32);
+    assert_eq!(
+        l.err_schema_validation,
+        output::ERR_CODE_SCHEMA_VALIDATION as u32
+    );
     assert_eq!(l.err_bad_request, output::ERR_CODE_BAD_REQUEST as u32);
-    assert_eq!(l.err_request_too_large, output::ERR_CODE_REQUEST_TOO_LARGE as u32);
+    assert_eq!(
+        l.err_request_too_large,
+        output::ERR_CODE_REQUEST_TOO_LARGE as u32
+    );
     assert_eq!(l.err_internal, output::ERR_CODE_INTERNAL as u32);
 }
 
@@ -284,7 +297,10 @@ fn url_decode_c_abi() {
 fn validators_c_abi() {
     // Values mirror the core `#[cfg(test)]` vectors in rust/util/validation.rs.
     assert_eq!(unsafe { castrum_validate_email(c"a@b.com".as_ptr()) }, 1);
-    assert_eq!(unsafe { castrum_validate_email(c"not-an-email".as_ptr()) }, 0);
+    assert_eq!(
+        unsafe { castrum_validate_email(c"not-an-email".as_ptr()) },
+        0
+    );
     assert_eq!(
         unsafe { castrum_validate_uuid(c"550e8400-e29b-41d4-a716-446655440000".as_ptr()) },
         1
@@ -396,7 +412,9 @@ fn json_f64_normalize(v: serde_json::Value) -> serde_json::Value {
             serde_json::Value::Array(a.into_iter().map(json_f64_normalize).collect())
         }
         serde_json::Value::Object(m) => serde_json::Value::Object(
-            m.into_iter().map(|(k, v)| (k, json_f64_normalize(v))).collect(),
+            m.into_iter()
+                .map(|(k, v)| (k, json_f64_normalize(v)))
+                .collect(),
         ),
         other => other,
     }
@@ -407,9 +425,8 @@ fn json_parse_packed_c_abi() {
     // Valid JSON → packed token stream that round-trips exactly.
     let doc = br#"{"a":1,"b":[true,null,"x"],"c":{"d":2.5}}"#;
     let mut out = [0u8; 512];
-    let w = unsafe {
-        castrum_json_parse_packed(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len())
-    };
+    let w =
+        unsafe { castrum_json_parse_packed(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len()) };
     assert!(w > 0 && w <= out.len());
     let parsed = json_f64_normalize(decode_packed(&out[..w]));
     let expected: serde_json::Value =
@@ -418,17 +435,16 @@ fn json_parse_packed_c_abi() {
 
     // Too-small output → exact required size, no write past cap.
     let mut tiny = [0u8; 4];
-    let w2 =
-        unsafe { castrum_json_parse_packed(doc.as_ptr(), doc.len(), tiny.as_mut_ptr(), tiny.len()) };
+    let w2 = unsafe {
+        castrum_json_parse_packed(doc.as_ptr(), doc.len(), tiny.as_mut_ptr(), tiny.len())
+    };
     assert!(w2 > 4);
 
     // Invalid JSON → 0 (real error, JS growExact throws).
     let w3 = unsafe { castrum_json_parse_packed(b"nope".as_ptr(), 4, out.as_mut_ptr(), out.len()) };
     assert_eq!(w3, 0);
     // Null pointers → 0, never UB.
-    let w4 = unsafe {
-        castrum_json_parse_packed(std::ptr::null(), 0, out.as_mut_ptr(), out.len())
-    };
+    let w4 = unsafe { castrum_json_parse_packed(std::ptr::null(), 0, out.as_mut_ptr(), out.len()) };
     assert_eq!(w4, 0);
 }
 
@@ -438,9 +454,8 @@ fn json_parse_packed_dedup_strings() {
     // the JS side decodes each unique string a single time.
     let doc = br#"[{"k":"v","n":"v"},{"k":"w","n":"v"}]"#;
     let mut out = [0u8; 512];
-    let w = unsafe {
-        castrum_json_parse_packed(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len())
-    };
+    let w =
+        unsafe { castrum_json_parse_packed(doc.as_ptr(), doc.len(), out.as_mut_ptr(), out.len()) };
     assert!(w > 0 && w <= out.len());
     // keys k,n + values v,w = 4 unique strings (not 10 raw occurrences).
     let str_count = u32::from_le_bytes(out[..4].try_into().unwrap());
@@ -504,9 +519,7 @@ fn parse_media_type_c_abi_packed() {
 
     // Too-small output → exact required size.
     let small_cap = 1usize;
-    let w = unsafe {
-        castrum_parse_media_type(ct.as_ptr(), ct.len(), out.as_mut_ptr(), small_cap)
-    };
+    let w = unsafe { castrum_parse_media_type(ct.as_ptr(), ct.len(), out.as_mut_ptr(), small_cap) };
     assert!(w > small_cap);
 }
 
@@ -514,12 +527,14 @@ fn parse_media_type_c_abi_packed() {
 fn parse_http_date_c_abi_packed() {
     let date = b"Sun, 06 Nov 1994 08:49:37 GMT";
     let mut out = [0u8; 9];
-    let w = unsafe {
-        castrum_parse_http_date(date.as_ptr(), date.len(), out.as_mut_ptr(), out.len())
-    };
+    let w =
+        unsafe { castrum_parse_http_date(date.as_ptr(), date.len(), out.as_mut_ptr(), out.len()) };
     assert_eq!(w, 9);
     assert_eq!(out[0], 1);
-    assert_eq!(i64::from_le_bytes(out[1..9].try_into().unwrap()), 784_111_777);
+    assert_eq!(
+        i64::from_le_bytes(out[1..9].try_into().unwrap()),
+        784_111_777
+    );
 
     // Malformed → ok=0, 1 byte.
     let w = unsafe { castrum_parse_http_date(b"nope".as_ptr(), 4, out.as_mut_ptr(), out.len()) };
@@ -611,7 +626,8 @@ fn url_builder_resolve_c_abi() {
     assert!(w > 0 && w <= out.len());
     assert_eq!(&out[..w], b"http://a/b/c/g");
     // Null handle → 0 (never dereferences freed state).
-    let w = unsafe { castrum_url_builder_resolve(0, b"g".as_ptr(), 1, out.as_mut_ptr(), out.len()) };
+    let w =
+        unsafe { castrum_url_builder_resolve(0, b"g".as_ptr(), 1, out.as_mut_ptr(), out.len()) };
     assert_eq!(w, 0);
     // Non-UTF-8 reference → 0 (napi parity: throws).
     let bad = [0xffu8, 0xfe];
@@ -627,8 +643,9 @@ fn url_builder_resolve_c_abi() {
 #[test]
 fn media_type_matcher_matches_c_abi() {
     use napi::bindgen_prelude::Uint8Array;
-    let m = crate::http::media_type::MediaTypeMatcher::new(Uint8Array::new(b"application/*".to_vec()))
-        .unwrap();
+    let m =
+        crate::http::media_type::MediaTypeMatcher::new(Uint8Array::new(b"application/*".to_vec()))
+            .unwrap();
     let inner = m.inner_ptr() as usize;
     let f = |a: &[u8]| unsafe { castrum_media_type_matcher_matches(inner, a.as_ptr(), a.len()) };
     assert_eq!(f(b"application/json"), 1);
@@ -688,23 +705,46 @@ fn jwt_signer_sign_verify_c_abi() {
     let mut out = [0u8; 512];
     let mut vout = [0u8; 512];
     let w = unsafe {
-        castrum_jwt_signer_sign(inner, claims.as_ptr(), claims.len(), 0, out.as_mut_ptr(), out.len())
+        castrum_jwt_signer_sign(
+            inner,
+            claims.as_ptr(),
+            claims.len(),
+            0,
+            out.as_mut_ptr(),
+            out.len(),
+        )
     };
     assert!(w > 0 && w <= out.len());
     let token = &out[..w];
     assert_eq!(token.iter().filter(|&&b| b == b'.').count(), 2);
     // Verify round-trip → claims JSON.
     let vw = unsafe {
-        castrum_jwt_signer_verify(inner, token.as_ptr(), token.len(), 0, vout.as_mut_ptr(), vout.len())
+        castrum_jwt_signer_verify(
+            inner,
+            token.as_ptr(),
+            token.len(),
+            0,
+            vout.as_mut_ptr(),
+            vout.len(),
+        )
     };
     assert!(vw > 0);
-    assert!(String::from_utf8(vout[..vw].to_vec()).unwrap().contains("\"sub\":\"user-1\""));
+    assert!(String::from_utf8(vout[..vw].to_vec())
+        .unwrap()
+        .contains("\"sub\":\"user-1\""));
     // Tampered → 0 (invalid).
     let mut bad = token.to_vec();
     let last = bad.len() - 1;
     bad[last] ^= 0x01;
     let bw = unsafe {
-        castrum_jwt_signer_verify(inner, bad.as_ptr(), bad.len(), 0, vout.as_mut_ptr(), vout.len())
+        castrum_jwt_signer_verify(
+            inner,
+            bad.as_ptr(),
+            bad.len(),
+            0,
+            vout.as_mut_ptr(),
+            vout.len(),
+        )
     };
     assert_eq!(bw, 0);
     // Invalid claims JSON → 0; null handle → 0.
@@ -713,15 +753,22 @@ fn jwt_signer_sign_verify_c_abi() {
     };
     assert_eq!(w, 0);
     let w = unsafe {
-        castrum_jwt_signer_sign(0, claims.as_ptr(), claims.len(), 0, out.as_mut_ptr(), out.len())
+        castrum_jwt_signer_sign(
+            0,
+            claims.as_ptr(),
+            claims.len(),
+            0,
+            out.as_mut_ptr(),
+            out.len(),
+        )
     };
     assert_eq!(w, 0);
 }
 
 #[test]
 fn template_render_c_abi() {
-    let t = crate::payload::template::TemplateRenderer::new("Hello {{ name }}!".to_string())
-        .unwrap();
+    let t =
+        crate::payload::template::TemplateRenderer::new("Hello {{ name }}!".to_string()).unwrap();
     let inner = t.inner_ptr() as usize;
     let ctx = b"{\"name\":\"world\"}";
     let mut out = [0u8; 128];
@@ -731,20 +778,21 @@ fn template_render_c_abi() {
     assert!(w > 0);
     assert_eq!(&out[..w], b"Hello world!");
     // Invalid context JSON → 0; null handle → 0.
-    let w = unsafe {
-        castrum_template_render(inner, b"nope".as_ptr(), 4, out.as_mut_ptr(), out.len())
-    };
+    let w =
+        unsafe { castrum_template_render(inner, b"nope".as_ptr(), 4, out.as_mut_ptr(), out.len()) };
     assert_eq!(w, 0);
-    let w = unsafe { castrum_template_render(0, ctx.as_ptr(), ctx.len(), out.as_mut_ptr(), out.len()) };
+    let w =
+        unsafe { castrum_template_render(0, ctx.as_ptr(), ctx.len(), out.as_mut_ptr(), out.len()) };
     assert_eq!(w, 0);
 }
 
 #[test]
 fn schema_validator_validate_c_abi() {
     use napi::bindgen_prelude::Uint8Array;
-    let schema = b"{\"type\":\"object\",\"required\":[\"a\"],\"properties\":{\"a\":{\"type\":\"number\"}}}";
-    let v = crate::json::json_schema::SchemaValidator::new(Uint8Array::new(schema.to_vec()))
-        .unwrap();
+    let schema =
+        b"{\"type\":\"object\",\"required\":[\"a\"],\"properties\":{\"a\":{\"type\":\"number\"}}}";
+    let v =
+        crate::json::json_schema::SchemaValidator::new(Uint8Array::new(schema.to_vec())).unwrap();
     let inner = v.inner_ptr() as usize;
     let f = |d: &[u8]| unsafe { castrum_schema_validator_validate(inner, d.as_ptr(), d.len()) };
     assert_eq!(f(b"{\"a\":1}"), 1);
@@ -774,7 +822,7 @@ fn rate_limiter_check_c_abi() {
     };
     assert_eq!(w, 13);
     assert_eq!(out[0], 0); // blocked (3/2)
-    // Pre-hashed check_key shares the SAME budget.
+                           // Pre-hashed check_key shares the SAME budget.
     let hashed = crate::crypto::hashing::fast_hash_bytes(key.to_bytes());
     let w = unsafe {
         castrum_rate_limiter_check_key(inner, hashed as i64, now, out.as_mut_ptr(), out.len())
@@ -782,7 +830,8 @@ fn rate_limiter_check_c_abi() {
     assert_eq!(w, 13);
     assert_eq!(out[0], 0);
     // Null handle → 0; too-small → exact needed size.
-    let w = unsafe { castrum_rate_limiter_check(0, key.as_ptr(), now, out.as_mut_ptr(), out.len()) };
+    let w =
+        unsafe { castrum_rate_limiter_check(0, key.as_ptr(), now, out.as_mut_ptr(), out.len()) };
     assert_eq!(w, 0);
     let w = unsafe { castrum_rate_limiter_check(inner, key.as_ptr(), now, out.as_mut_ptr(), 1) };
     assert_eq!(w, 13);
@@ -797,7 +846,10 @@ fn mime_from_extension_c_abi() {
     // Unknown extension → application/octet-stream (never null).
     let s = unsafe { castrum_mime_from_extension(c"nope".as_ptr()) };
     assert!(!s.is_null());
-    assert_eq!(unsafe { cstr_bytes(s) }.unwrap(), b"application/octet-stream");
+    assert_eq!(
+        unsafe { cstr_bytes(s) }.unwrap(),
+        b"application/octet-stream"
+    );
 }
 
 #[test]
@@ -827,7 +879,9 @@ fn conditional_is_not_modified_c_abi() {
     assert_eq!(f(0, None, None), 0);
     // Null handle → 0 (never dereferences freed state).
     assert_eq!(
-        unsafe { castrum_conditional_is_not_modified(0, std::ptr::null(), 0, std::ptr::null(), 0, 0) },
+        unsafe {
+            castrum_conditional_is_not_modified(0, std::ptr::null(), 0, std::ptr::null(), 0, 0)
+        },
         0
     );
 }
@@ -891,7 +945,10 @@ fn random_token_into_c_abi() {
         unsafe { castrum_random_token_into(u32::MAX, out.as_mut_ptr(), out.len()) },
         0
     );
-    assert_eq!(unsafe { castrum_random_token_into(16, std::ptr::null_mut(), 0) }, 0);
+    assert_eq!(
+        unsafe { castrum_random_token_into(16, std::ptr::null_mut(), 0) },
+        0
+    );
 }
 
 #[test]
@@ -901,9 +958,8 @@ fn cstring_into_variants_match_cstring() {
     let key = b"dGhlIHNhbXBsZSBub25jZQ==";
     let key_c = c"dGhlIHNhbXBsZSBub25jZQ==";
     let mut out = [0u8; 28];
-    let w = unsafe {
-        castrum_ws_accept_key_into(key.as_ptr(), key.len(), out.as_mut_ptr(), out.len())
-    };
+    let w =
+        unsafe { castrum_ws_accept_key_into(key.as_ptr(), key.len(), out.as_mut_ptr(), out.len()) };
     assert_eq!(w, 28);
     let cstr_result = unsafe { cstr_bytes(castrum_ws_accept_key(key_c.as_ptr())) }.unwrap();
     assert_eq!(&out[..], &cstr_result[..]);
@@ -921,7 +977,13 @@ fn cstring_into_variants_match_cstring() {
     for weak in [0u8, 1u8] {
         let mut eout = [0u8; 16];
         let ew = unsafe {
-            castrum_etag_into(data.as_ptr(), data.len(), weak, eout.as_mut_ptr(), eout.len())
+            castrum_etag_into(
+                data.as_ptr(),
+                data.len(),
+                weak,
+                eout.as_mut_ptr(),
+                eout.len(),
+            )
         };
         let expect = if weak != 0 { 12 } else { 10 };
         assert_eq!(ew, expect);
@@ -999,7 +1061,12 @@ fn cstring_into_variants_match_cstring() {
     let mut csmall = [0u8; 8];
     assert_eq!(
         unsafe {
-            castrum_csrf_token_into(secret.as_ptr(), secret.len(), csmall.as_mut_ptr(), csmall.len())
+            castrum_csrf_token_into(
+                secret.as_ptr(),
+                secret.len(),
+                csmall.as_mut_ptr(),
+                csmall.len(),
+            )
         },
         129
     );
@@ -1101,9 +1168,8 @@ fn hmac_c_abi() {
 fn sign_verify_cookie_c_abi() {
     let value = b"session=abc";
     let secret = b"secret-key";
-    let signed = unsafe {
-        castrum_sign_cookie(value.as_ptr(), value.len(), secret.as_ptr(), secret.len())
-    };
+    let signed =
+        unsafe { castrum_sign_cookie(value.as_ptr(), value.len(), secret.as_ptr(), secret.len()) };
     assert!(!signed.is_null());
     let signed_bytes = unsafe { cstr_bytes(signed) }.unwrap();
     assert!(signed_bytes.len() > value.len());
@@ -1154,7 +1220,12 @@ fn csrf_c_abi() {
     assert_eq!(ok, 1);
     // Wrong secret → 0.
     let bad = unsafe {
-        castrum_csrf_verify(token_bytes.as_ptr(), token_bytes.len(), b"other".as_ptr(), 5)
+        castrum_csrf_verify(
+            token_bytes.as_ptr(),
+            token_bytes.len(),
+            b"other".as_ptr(),
+            5,
+        )
     };
     assert_eq!(bad, 0);
 }
@@ -1350,13 +1421,25 @@ fn gzip_brotli_c_abi_roundtrip() {
     assert!(cw > 0 && cw < data.len());
     let mut decomp = [0u8; 1024];
     let dw = unsafe {
-        castrum_gzip_decompress(comp.as_ptr(), cw, 1024 * 1024, decomp.as_mut_ptr(), decomp.len())
+        castrum_gzip_decompress(
+            comp.as_ptr(),
+            cw,
+            1024 * 1024,
+            decomp.as_mut_ptr(),
+            decomp.len(),
+        )
     };
     assert_eq!(&decomp[..dw], data);
 
     let mut bcomp = [0u8; 2048];
     let bw = unsafe {
-        castrum_brotli_compress(data.as_ptr(), data.len(), 5, bcomp.as_mut_ptr(), bcomp.len())
+        castrum_brotli_compress(
+            data.as_ptr(),
+            data.len(),
+            5,
+            bcomp.as_mut_ptr(),
+            bcomp.len(),
+        )
     };
     assert!(bw > 0);
     let mut bdecomp = [0u8; 1024];
@@ -1406,7 +1489,13 @@ fn needed_size_convention_c_abi() {
     // Allocating exactly `needed` succeeds in one retry.
     let mut exact = vec![0u8; needed];
     let w = unsafe {
-        castrum_gzip_compress(data.as_ptr(), data.len(), 6, exact.as_mut_ptr(), exact.len())
+        castrum_gzip_compress(
+            data.as_ptr(),
+            data.len(),
+            6,
+            exact.as_mut_ptr(),
+            exact.len(),
+        )
     };
     assert_eq!(w, needed);
     // Invalid input → 0 (a REAL error, not "too small").
@@ -1525,12 +1614,7 @@ fn packed_parsers_c_abi() {
     let cookie = b"sid=abc123; theme=dark";
     let mut cout = [0u8; 256];
     let cw = unsafe {
-        castrum_cookie_parse_packed(
-            cookie.as_ptr(),
-            cookie.len(),
-            cout.as_mut_ptr(),
-            cout.len(),
-        )
+        castrum_cookie_parse_packed(cookie.as_ptr(), cookie.len(), cout.as_mut_ptr(), cout.len())
     };
     assert!(cw > 0);
 }
@@ -1642,18 +1726,16 @@ fn ws_frame_decode_packed_c_abi() {
         )
     };
     let mut out = [0u8; 64];
-    let w = unsafe {
-        castrum_ws_frame_decode_packed(frame.as_ptr(), fw, out.as_mut_ptr(), out.len())
-    };
+    let w =
+        unsafe { castrum_ws_frame_decode_packed(frame.as_ptr(), fw, out.as_mut_ptr(), out.len()) };
     assert_eq!(w, 6 + payload.len());
     assert_eq!(out[0], 1); // fin
     assert_eq!(out[1], 1); // opcode text
     assert_eq!(u32::from_le_bytes(out[2..6].try_into().unwrap()), 5);
     assert_eq!(&out[6..w], payload);
     // Truncated frame → 0.
-    let bad = unsafe {
-        castrum_ws_frame_decode_packed(b"\x80".as_ptr(), 1, out.as_mut_ptr(), out.len())
-    };
+    let bad =
+        unsafe { castrum_ws_frame_decode_packed(b"\x80".as_ptr(), 1, out.as_mut_ptr(), out.len()) };
     assert_eq!(bad, 0);
 }
 
@@ -1675,7 +1757,10 @@ fn jwt_sign_bytes_c_abi() {
     let token = unsafe { cstr_bytes(signed) }.unwrap();
     // Compact JWT: header.payload.sig → exactly two dots.
     assert_eq!(token.iter().filter(|&&b| b == b'.').count(), 2);
-    assert!(crate::crypto::jwt::verify_signature_with_key(&token, &hmac_key(secret)));
+    assert!(crate::crypto::jwt::verify_signature_with_key(
+        &token,
+        &hmac_key(secret)
+    ));
 
     // ttl <= 0 → no iat/exp injection (still signs).
     let s0 = unsafe {
@@ -1972,5 +2057,277 @@ fn ingress_handle_packed_input_overlap_c_abi() {
         )
     };
     assert!(w > 0, "pipeline should succeed despite input/out overlap");
-    assert_eq!(unsafe { *out_ptr }, 0, "verdict (ok) must land at out start");
+    assert_eq!(
+        unsafe { *out_ptr },
+        0,
+        "verdict (ok) must land at out start"
+    );
+}
+
+// ── Metrics registry C-ABI (castrum_metrics_*) ─────────────────
+
+#[test]
+fn metrics_registry_c_abi_counter_gauge_histogram() {
+    let h = castrum_metrics_create();
+    assert_ne!(h, 0);
+    let counter = unsafe {
+        castrum_metrics_counter(
+            h,
+            c"ct_requests_total".as_ptr(),
+            c"route\x1fstatus".as_ptr(),
+        )
+    };
+    assert_eq!(counter, 0, "first declared family gets id 0");
+    let gauge = unsafe { castrum_metrics_gauge(h, c"ct_queue_depth".as_ptr(), c"q".as_ptr()) };
+    assert_eq!(gauge, 1);
+    let hist = unsafe {
+        castrum_metrics_histogram(h, c"ct_latency".as_ptr(), c"".as_ptr(), c"0.1,0.5".as_ptr())
+    };
+    assert_eq!(hist, 2);
+
+    // record: two counter hits + one gauge set + one histogram observe
+    let vals = b"/a\x1f200";
+    assert_eq!(
+        unsafe { castrum_metrics_record(h, counter, vals.as_ptr(), vals.len(), 2.0) },
+        1
+    );
+    let q = b"jobs";
+    assert_eq!(
+        unsafe { castrum_metrics_gauge_set(h, gauge, q.as_ptr(), q.len(), 4.5) },
+        1
+    );
+    assert_eq!(
+        unsafe { castrum_metrics_record(h, hist, b"".as_ptr(), 0, 0.25) },
+        1
+    );
+
+    // render (needed-size convention: probe with a 1-byte buffer)
+    let mut probe = [0u8; 1];
+    let cap = unsafe { castrum_metrics_render(h, probe.as_mut_ptr(), 1) };
+    assert!(cap > 1, "render must report its needed size");
+    let mut out = vec![0u8; cap];
+    let written = unsafe { castrum_metrics_render(h, out.as_mut_ptr(), out.len()) };
+    assert_eq!(written, cap);
+    let text = String::from_utf8(out[..written].to_vec()).expect("utf8");
+    assert!(text.contains("ct_requests_total{route=\"/a\",status=\"200\"} 2\n"));
+    assert!(text.contains("ct_queue_depth{q=\"jobs\"} 4.5\n"));
+    assert!(text.contains("ct_latency_bucket{le=\"0.1\"} 0\n"));
+    assert!(text.contains("ct_latency_bucket{le=\"0.5\"} 1\n"));
+    assert!(text.contains("ct_latency_count 1\n"));
+
+    // arity mismatch → record fails safely
+    assert_eq!(
+        unsafe { castrum_metrics_record(h, counter, b"/a".as_ptr(), 3, 1.0) },
+        0
+    );
+    // unknown series → 0
+    assert_eq!(
+        unsafe { castrum_metrics_record(h, 999, b"".as_ptr(), 0, 1.0) },
+        0
+    );
+    // declare error sentinel on an invalid name
+    assert_eq!(
+        unsafe { castrum_metrics_counter(h, c"9 bad".as_ptr(), c"".as_ptr()) },
+        u32::MAX
+    );
+
+    unsafe { castrum_metrics_destroy(h) };
+}
+
+#[test]
+fn metrics_c_abi_null_handle_is_safe() {
+    assert_eq!(
+        unsafe { castrum_metrics_record(0, 0, b"".as_ptr(), 0, 1.0) },
+        0
+    );
+    assert_eq!(
+        unsafe { castrum_metrics_gauge_set(0, 0, b"".as_ptr(), 0, 1.0) },
+        0
+    );
+    assert_eq!(
+        unsafe { castrum_metrics_render(0, std::ptr::null_mut(), 0) },
+        0
+    );
+    assert_eq!(
+        unsafe { castrum_metrics_counter(0, c"x".as_ptr(), c"".as_ptr()) },
+        u32::MAX
+    );
+    unsafe { castrum_metrics_destroy(0) }; // no-op
+}
+
+// ── Batch hex validation C-ABI ─────────────────────────────────
+
+#[test]
+fn hex_validate_batch_c_abi_needed_size_convention() {
+    let input = b"507f1f77bcf86cd799439011\nzz\n";
+    // too-small buffer → exact required size
+    let mut tiny = [0u8; 1];
+    let needed = unsafe {
+        castrum_hex_validate_batch(input.as_ptr(), input.len(), 24, tiny.as_mut_ptr(), 1)
+    };
+    assert_eq!(needed, 2);
+    let mut out = [0u8; 2];
+    let written =
+        unsafe { castrum_hex_validate_batch(input.as_ptr(), input.len(), 24, out.as_mut_ptr(), 2) };
+    assert_eq!(written, 2);
+    assert_eq!(out, [1, 0]);
+    // bad width → real error (0)
+    assert_eq!(
+        unsafe { castrum_hex_validate_batch(input.as_ptr(), input.len(), 0, out.as_mut_ptr(), 2) },
+        0
+    );
+}
+
+#[test]
+fn regex_escape_c_abi_needed_size_convention() {
+    let input = b"a.c(x)*";
+    // exact needed size first call writes directly
+    let mut out = [0u8; 32];
+    let written =
+        unsafe { castrum_regex_escape(input.as_ptr(), input.len(), out.as_mut_ptr(), 32) };
+    assert_eq!(written, 11); // 7 chars + 4 backslashes (. ( ) * \\)
+    assert_eq!(&out[..written], br#"a\.c\(x\)\*"#);
+    // too-small buffer → the exact required size
+    let mut small = [0u8; 4];
+    assert_eq!(
+        unsafe { castrum_regex_escape(input.as_ptr(), input.len(), small.as_mut_ptr(), 4) },
+        11
+    );
+}
+
+// ── Zero-copy `_str` siblings (cstring args / cstring return) ──
+
+#[test]
+fn metrics_str_variants_match_packed_path() {
+    let h = castrum_metrics_create();
+    assert_ne!(h, 0);
+    let c = unsafe {
+        castrum_metrics_counter(h, c"str_requests".as_ptr(), c"route\x1fstatus".as_ptr())
+    };
+    assert_eq!(c, 0);
+    // cstring-joined values behave identically to the packed (ptr,len) path.
+    assert_eq!(
+        unsafe { castrum_metrics_record_str(h, c, c"/a\x1f200".as_ptr(), 2.0) },
+        1
+    );
+    assert_eq!(
+        unsafe { castrum_metrics_record(h, c, b"/a\x1f200".as_ptr(), 6, 1.0) },
+        1
+    );
+    let mut probe = [0u8; 1];
+    let cap = unsafe { castrum_metrics_render(h, probe.as_mut_ptr(), 1) };
+    let mut out = vec![0u8; cap];
+    let w = unsafe { castrum_metrics_render(h, out.as_mut_ptr(), cap) };
+    let text = String::from_utf8_lossy(&out[..w]).into_owned();
+    assert!(text.contains("str_requests{route=\"/a\",status=\"200\"} 3\n"));
+    // arity mismatch still fails safely through the str path
+    assert_eq!(
+        unsafe { castrum_metrics_record_str(h, c, c"/a".as_ptr(), 1.0) },
+        0
+    );
+    // gauge_set_str assigns
+    let g = unsafe { castrum_metrics_gauge(h, c"str_depth".as_ptr(), c"".as_ptr()) };
+    assert_eq!(
+        unsafe { castrum_metrics_gauge_set_str(h, g, c"".as_ptr(), 7.5) },
+        1
+    );
+    unsafe { castrum_metrics_destroy(h) };
+}
+
+#[test]
+fn regex_escape_str_c_abi_matches_bytes_path() {
+    let s = c"a.c(x)*[y]";
+    let p = unsafe { castrum_regex_escape_str(s.as_ptr()) };
+    assert!(!p.is_null());
+    let via_str = unsafe { cstr_bytes(p).expect("cstring return") };
+    let input = b"a.c(x)*[y]";
+    let mut expected = Vec::new();
+    crate::util::text::regex_escape_into(input, &mut expected);
+    assert_eq!(via_str, expected);
+}
+
+#[test]
+fn hex_validate_batch_str_matches_bytes_path() {
+    let ids = c"507f1f77bcf86cd799439011\nzz";
+    let mut out = [0u8; 4];
+    let w =
+        unsafe { castrum_hex_validate_batch_str(ids.as_ptr(), 24, out.as_mut_ptr(), out.len()) };
+    assert_eq!(w, 2);
+    assert_eq!(out[..2], [1, 0]);
+}
+
+// ── Wire-validate / session / batch C-ABI ──────────────────────
+
+#[test]
+fn wire_validate_and_session_c_abi() {
+    // SchemaValidator instance for query/cookie validation
+    // Query/cookie JSON forms carry STRING values (percent-decoded text), so
+    // the fixture schema models them as strings.
+    let schema_json = c"{\"type\":\"object\",\"properties\":{\"route\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"}},\"required\":[\"route\"]}";
+    let inst = crate::json::json_schema::SchemaValidator::new(
+        napi::bindgen_prelude::Uint8Array::new(schema_json.to_bytes().to_vec()),
+    )
+    .expect("compile");
+    let inner = inst.inner_ptr() as usize;
+
+    // query: valid → 1 ; violating → 0
+    assert_eq!(
+        unsafe { castrum_query_validate(inner, c"route=/a&status=200".as_ptr()) },
+        1
+    );
+    assert_eq!(
+        unsafe { castrum_query_validate(inner, c"status=notanumber".as_ptr()) },
+        0
+    );
+    // null inner → 0
+    assert_eq!(unsafe { castrum_query_validate(0, c"a=1".as_ptr()) }, 0);
+
+    // cookie: valid route cookie → 1
+    assert_eq!(
+        unsafe { castrum_cookie_validate(inner, c"route=/a".as_ptr()) },
+        1
+    );
+
+    // session seal/open round trip through the C ABI
+    let token = unsafe {
+        castrum_session_seal(
+            c"sess-9".as_ptr(),
+            c"{\"n\":1}".as_ptr(),
+            1_234_567,
+            c"sekrit".as_ptr(),
+        )
+    };
+    assert!(!token.is_null());
+    // open with grow-once
+    let mut buf = [0u8; 256];
+    let w = unsafe { castrum_session_open(token, c"sekrit".as_ptr(), buf.as_mut_ptr(), buf.len()) };
+    assert!(w > 13);
+    assert_eq!(buf[0], 1);
+    // bad signature → 0
+    assert_eq!(
+        unsafe { castrum_session_open(token, c"wrong".as_ptr(), buf.as_mut_ptr(), buf.len()) },
+        0
+    );
+}
+
+#[test]
+fn metrics_record_batch_c_abi() {
+    let h = castrum_metrics_create();
+    let c = unsafe { castrum_metrics_counter(h, c"batch_total".as_ptr(), c"k".as_ptr()) };
+    // packed: 1 entry, vals "v", amount 4
+    let mut b = Vec::new();
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&c.to_le_bytes());
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(b"v");
+    b.extend_from_slice(&4f64.to_le_bytes());
+    assert_eq!(
+        unsafe { castrum_metrics_record_batch(h, b.as_ptr(), b.len()) },
+        1
+    );
+    let mut out = [0u8; 128];
+    let w = unsafe { castrum_metrics_render(h, out.as_mut_ptr(), out.len()) };
+    let text = String::from_utf8_lossy(&out[..w]).into_owned();
+    assert!(text.contains("batch_total{k=\"v\"} 4"));
+    unsafe { castrum_metrics_destroy(h) };
 }

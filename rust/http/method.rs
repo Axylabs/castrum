@@ -121,27 +121,57 @@ mod tests {
     #[test]
     fn method_from_bytes_ignore_case_upper() {
         assert_eq!(MethodKind::from_bytes_ignore_case(b"GET"), MethodKind::Get);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"HEAD"), MethodKind::Head);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"POST"), MethodKind::Post);
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"HEAD"),
+            MethodKind::Head
+        );
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"POST"),
+            MethodKind::Post
+        );
         assert_eq!(MethodKind::from_bytes_ignore_case(b"PUT"), MethodKind::Put);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"PATCH"), MethodKind::Patch);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"DELETE"), MethodKind::Delete);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"OPTIONS"), MethodKind::Options);
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"PATCH"),
+            MethodKind::Patch
+        );
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"DELETE"),
+            MethodKind::Delete
+        );
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"OPTIONS"),
+            MethodKind::Options
+        );
     }
 
     #[test]
     fn method_from_bytes_ignore_case_lower() {
         assert_eq!(MethodKind::from_bytes_ignore_case(b"get"), MethodKind::Get);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"post"), MethodKind::Post);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"options"), MethodKind::Options);
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"post"),
+            MethodKind::Post
+        );
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"options"),
+            MethodKind::Options
+        );
     }
 
     #[test]
     fn method_from_bytes_ignore_case_unknown() {
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"FETCH"), MethodKind::Other);
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"FETCH"),
+            MethodKind::Other
+        );
         assert_eq!(MethodKind::from_bytes_ignore_case(b""), MethodKind::Other);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"GETX"), MethodKind::Other);
-        assert_eq!(MethodKind::from_bytes_ignore_case(b"POSTING"), MethodKind::Other);
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"GETX"),
+            MethodKind::Other
+        );
+        assert_eq!(
+            MethodKind::from_bytes_ignore_case(b"POSTING"),
+            MethodKind::Other
+        );
     }
 
     #[test]

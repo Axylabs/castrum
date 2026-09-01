@@ -19,5 +19,5 @@ mod core;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use self::core::*;
 pub use self::api::*;
+pub(crate) use self::core::*;

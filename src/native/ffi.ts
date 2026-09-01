@@ -206,10 +206,17 @@ function bind(): BunFFI | null {
       castrum_url_decode: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: U64_FAST },
       // String-input validators: `cstring` ARG (the engine transcodes the JS
       // string in-engine — no JS-side encode; Rust borrows via CStr::from_ptr).
+      // The `_bytes` siblings take a `(ptr,len)` pair — zero transcode when
+      // the caller already holds bytes (a cstring arg would force a decode +
+      // engine re-encode; docs/FFI_BUN_GUIDE.md §3 shape 4).
       castrum_validate_email: { args: ['cstring'], returns: 'u8' },
       castrum_validate_uuid: { args: ['cstring'], returns: 'u8' },
       castrum_validate_ipv4: { args: ['cstring'], returns: 'u8' },
       castrum_validate_ipv6: { args: ['cstring'], returns: 'u8' },
+      castrum_validate_email_bytes: { args: inputAbi, returns: 'u8' },
+      castrum_validate_uuid_bytes: { args: inputAbi, returns: 'u8' },
+      castrum_validate_ipv4_bytes: { args: inputAbi, returns: 'u8' },
+      castrum_validate_ipv6_bytes: { args: inputAbi, returns: 'u8' },
       castrum_json_sum_ids: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: U64_FAST },
       castrum_hmac_sha256_verify: {
         args: abi(['ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize']),
@@ -357,6 +364,11 @@ function bind(): BunFFI | null {
       },
       castrum_http_date_into: { args: ['f64', ...abi(['ptr', 'usize'])], returns: U64_FAST },
       castrum_sse_encode_into: {
+        // event/id stay `(ptr,len)` byte args. A cstring-ARG conversion was
+        // tried (2026-08-23) and reverted: the win was unproven once the
+        // codec encode path got faster, and ABI-desync segfaults during the
+        // experiment were misread as an engine bug — see docs/FFI_BUN_GUIDE.md
+        // §14 before touching this signature.
         args: abi(['ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize', 'u8', 'u32', 'ptr', 'usize']),
         returns: U64_FAST,
       },
@@ -467,9 +479,83 @@ function bind(): BunFFI | null {
         returns: U64_FAST,
       },
       castrum_route_destroy: { args: ['usize'], returns: 'void' },
+      // ── Batch fixed-width hex validation (ObjectId-shaped ids, etc.) ──
+      // NEWLINE-separated lines in; one verdict byte (1/0) per line out.
+      castrum_hex_validate_batch: {
+        args: abi(['ptr', 'usize', 'u32', 'ptr', 'usize']),
+        returns: U64_FAST,
+      },
+      // ── JS-RegExp metacharacter escaping (needed-size convention) ──
+      castrum_regex_escape: { args: abi(['ptr', 'usize', 'ptr', 'usize']), returns: U64_FAST },
+      // ── Metrics registry (`castrum_metrics_*`) ──────────────────────
+      // Caller-owned handle (route-stack ownership model): create returns a
+      // Box<Registry> as usize; declare fns take name/label-keys as cstring
+      // ARGS (label keys `\x1f`-separated) and return the u32 series id
+      // (0xFFFFFFFF = error); record/set cross the packed label VALUES as a
+      // `(ptr,len)` pair + the amount as f64.
+      castrum_metrics_create: { args: [], returns: U64_FAST },
+      castrum_metrics_counter: { args: ['usize', 'cstring', 'cstring'], returns: 'u32' },
+      castrum_metrics_gauge: { args: ['usize', 'cstring', 'cstring'], returns: 'u32' },
+      castrum_metrics_histogram: {
+        args: ['usize', 'cstring', 'cstring', 'cstring'],
+        returns: 'u32',
+      },
+      castrum_metrics_record: {
+        args: abi(['usize', 'u32', 'ptr', 'usize', 'f64']),
+        returns: 'u8',
+      },
+      castrum_metrics_gauge_set: {
+        args: abi(['usize', 'u32', 'ptr', 'usize', 'f64']),
+        returns: 'u8',
+      },
+      // Zero-encode siblings: the joined label values cross as ONE `cstring`
+      // ARG — the engine transcodes the JS string in-engine (no TextEncoder).
+      castrum_metrics_record_str: {
+        args: ['usize', 'u32', 'cstring', 'f64'],
+        returns: 'u8',
+      },
+      castrum_metrics_gauge_set_str: {
+        args: ['usize', 'u32', 'cstring', 'f64'],
+        returns: 'u8',
+      },
+      // Zero-copy text escape: cstring ARG in, cstring return out — the JS
+      // side does zero encode AND zero decode (engine clones at return).
+      castrum_regex_escape_str: { args: ['cstring'], returns: 'cstring' },
+      // String-input batch hex validation: `ids.join('\n')` crosses as a
+      // cstring ARG.
+      castrum_hex_validate_batch_str: {
+        args: abi(['cstring', 'u32', 'ptr', 'usize']),
+        returns: U64_FAST,
+      },
+      castrum_metrics_render: { args: abi(['usize', 'ptr', 'usize']), returns: U64_FAST },
+      castrum_metrics_snapshot: { args: abi(['usize', 'ptr', 'usize']), returns: U64_FAST },
+      castrum_metrics_record_batch: {
+        args: abi(['usize', 'ptr', 'usize']),
+        returns: 'u8',
+      },
+      // Fused wire-level validation: RAW query/cookie → JSON → draft-07 gate.
+      // `inner` is the SchemaValidator inner handle; strings cross as cstring
+      // ARGs (engine-transcoded).
+      castrum_query_validate: { args: ['usize', 'cstring'], returns: 'u8' },
+      castrum_cookie_validate: { args: ['usize', 'cstring'], returns: 'u8' },
+      // Fused session envelope: seal builds+signs; open verifies + extracts.
+      castrum_session_seal: {
+        args: ['cstring', 'cstring', 'i64', 'cstring'],
+        returns: 'cstring',
+      },
+      castrum_session_open: {
+        args: abi(['cstring', 'cstring', 'ptr', 'usize']),
+        returns: U64_FAST,
+      },
+      castrum_metrics_destroy: { args: ['usize'], returns: 'void' },
     })
 
-    const bindings = build(symbols as Record<string, (...a: unknown[]) => unknown>, useBufferLength)
+    // (`as unknown as`: the zero-arg `castrum_metrics_create` infers
+    // `(...args: never[])`, which can't overlap `(...a: unknown[])` directly.)
+    const bindings = build(
+      symbols as unknown as Record<string, (...a: unknown[]) => unknown>,
+      useBufferLength,
+    )
     if (!selfTest(bindings)) {
       if (mode === 'ffi') {
         throw new Error(

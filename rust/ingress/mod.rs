@@ -37,10 +37,10 @@ pub(crate) mod proxy;
 pub(crate) mod rate_limit;
 pub(crate) mod terminal;
 
-pub use self::api::Ingress;
-pub(crate) use self::api::IngressInner;
 #[cfg(test)]
 pub(crate) use self::api::clamp_output_size;
+pub use self::api::Ingress;
+pub(crate) use self::api::IngressInner;
 pub(crate) use self::native_route::NativeRoute;
 pub(crate) use self::options::{IngressOptions, Limits};
 #[cfg(test)]

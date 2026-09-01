@@ -120,6 +120,9 @@ mod tests {
         let first = super::init_thread_pool(Some(2));
         let second = super::init_thread_pool(Some(2));
         assert!(first.is_ok(), "first init must succeed (got {first:?})");
-        assert!(second.is_ok(), "second init must be a no-op, not an error (got {second:?})");
+        assert!(
+            second.is_ok(),
+            "second init must be a no-op, not an error (got {second:?})"
+        );
     }
 }

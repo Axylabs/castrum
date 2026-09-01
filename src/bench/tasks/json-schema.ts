@@ -4,8 +4,8 @@
 // both single-document and batch validation.
 
 import { rust } from '../../rust-ffi'
-import { nativeJsonSchemaValidate, nativeJsonSchemaValidateBatch } from '../schema-baseline'
 import type { BenchFixtures } from '../fixtures'
+import { nativeJsonSchemaValidate, nativeJsonSchemaValidateBatch } from '../schema-baseline'
 import type { BenchTask } from '../types'
 
 export function jsonSchemaTasks(f: BenchFixtures): BenchTask[] {

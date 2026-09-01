@@ -16,6 +16,7 @@ import type {
   JwtSignerInstance,
   MediaTypeMatcherInstance,
   MediaTypeParserInstance,
+  MetricsRegistryInstance,
   PasswordHashOptions,
   RateLimiterInstance,
   SchemaValidatorInstance,
@@ -329,6 +330,71 @@ function ffiFormParser(ffi: BunFFI): FormParserInstance {
   }
 }
 
+/**
+ * Caller-owned-handle `MetricsRegistry`: on Bun the whole surface runs through
+ * the C-ABI (`castrum_metrics_*`) with a native handle — no napi instance is
+ * involved at all (the route-stack ownership model). Label values cross as a
+ * JOINED `\u001f` string via the cstring-ARG `_str` symbols: the engine
+ * transcodes them in-engine, so the per-event JS cost is just
+ * `values.join('\u001f')` — ZERO TextEncoder work (Bun 1.4 zero-copy text).
+ */
+function ffiMetricsRegistry(ffi: BunFFI): MetricsRegistryInstance {
+  const handle = ffi.metricsCreate()
+  return {
+    counter(name, labelKeys) {
+      return ffi.metricsCounter(handle, name, (labelKeys ?? []).join('\u001f'))
+    },
+    gauge(name, labelKeys) {
+      return ffi.metricsGauge(handle, name, (labelKeys ?? []).join('\u001f'))
+    },
+    histogram(name, labelKeys, buckets) {
+      return ffi.metricsHistogram(
+        handle,
+        name,
+        (labelKeys ?? []).join('\u001f'),
+        (buckets ?? []).join(','),
+      )
+    },
+    record(series, values, amount) {
+      const joined = (values ?? []).join('\u001f')
+      if (!ffi.metricsRecordStr(handle, series, joined, amount ?? 1)) {
+        throw new Error('metrics record: unknown series / arity mismatch / invalid amount')
+      }
+    },
+    gaugeSet(series, values, value) {
+      const joined = (values ?? []).join('\u001f')
+      if (!ffi.metricsGaugeSetStr(handle, series, joined, value)) {
+        throw new Error('metrics gauge set: unknown series / arity mismatch')
+      }
+    },
+    render() {
+      // Probe large enough for typical registries (one native pass), then
+      // grow exactly once if ever exceeded (needed-size convention).
+      let out = new Uint8Array(8192)
+      let w = ffi.metricsRender(handle, out)
+      if (w > out.length) {
+        out = new Uint8Array(w)
+        w = ffi.metricsRender(handle, out)
+      }
+      return decodeUtf8(out.subarray(0, w))
+    },
+    destroy() {
+      ffi.metricsDestroy(handle)
+    },
+    snapshot() {
+      // Packed v1 dump — decoded by consumers (the @ignex/native metrics
+      // wrapper); probe large, grow exactly once.
+      let out = new Uint8Array(4096)
+      let w = ffi.metricsSnapshot(handle, out)
+      if (w > out.length) {
+        out = new Uint8Array(w)
+        w = ffi.metricsSnapshot(handle, out)
+      }
+      return out.subarray(0, w)
+    },
+  }
+}
+
 /** Compiled-once factory + runtime-control methods (`Pick<RustScalar, ...>`). */
 export function buildFactories(ctx: RustClientContext) {
   const { transport } = ctx.runtime
@@ -449,6 +515,13 @@ export function buildFactories(ctx: RustClientContext) {
         return ffiRateLimiter(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
       }
       return new addon.RateLimiter(limit, windowMs, maxEntries ?? undefined)
+    },
+    createMetricsRegistry(): MetricsRegistryInstance {
+      // Fully C-ABI-backed on Bun (native handle owned by the wrapper — no
+      // napi instance involved); napi class on Node / fallback.
+      const ffi = transport.ffi
+      if (ffi) return ffiMetricsRegistry(ffi)
+      return new addon.MetricsRegistry()
     },
     initThreadPool(threads?: number): void {
       // Explicit user call also establishes the pool state locally.

@@ -37,6 +37,7 @@ export type {
   HmacSignerInstance,
   MediaTypeParserInstance,
   MediaTypeResult,
+  MetricsRegistryInstance,
   MultipartPart,
   PasswordHashOptions,
   SchemaError,
@@ -46,20 +47,20 @@ export type {
   WsFrame,
 } from '../native'
 export type { SchemaValidator } from '../shared/packed'
-export type { RustBatch } from './batch'
-export type { RustClient } from './client'
-export { createRust, rust } from './client'
-export { proven } from './proven'
+export type { ProvenEntry, ProvenImpl, ProvenStatus } from '../shared/proven'
 export {
-  PROVEN_SELECTION,
   isProven,
+  PROVEN_SELECTION,
   provenEntry,
   provenImpl,
   provenStatus,
   provenSummary,
   provenSurface,
 } from '../shared/proven'
-export type { ProvenEntry, ProvenImpl, ProvenStatus } from '../shared/proven'
+export type { RustBatch } from './batch'
+export type { RustClient } from './client'
+export { createRust, rust } from './client'
 export type { RustOptions } from './options'
 export type { RustPacked } from './packed'
+export { proven } from './proven'
 export type { RustText } from './text'

@@ -6,8 +6,8 @@
 // higher-order / compiled-once pattern.
 
 import { rust } from '../../rust-ffi'
-import { nativeFormParseBatchLen, nativeFormParsePacked } from '../form-baseline'
 import type { BenchFixtures } from '../fixtures'
+import { nativeFormParseBatchLen, nativeFormParsePacked } from '../form-baseline'
 import type { BenchTask } from '../types'
 
 export function formTasks(f: BenchFixtures): BenchTask[] {

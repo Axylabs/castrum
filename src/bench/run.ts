@@ -1,12 +1,14 @@
 // src/bench/run.ts — CPU-bench orchestrator: tasks → measure → report.
 
-import { runCorrectnessChecks, runComplexCorrectnessChecks } from './checks'
+import { getBunFFI } from '../native/ffi'
+import { isBun } from '../shared/runtime'
+import { runComplexCorrectnessChecks, runCorrectnessChecks } from './checks'
 import { comparisonReports } from './comparisons'
-import { createFixtures, createComplexFixtures } from './fixtures'
+import { createComplexFixtures, createFixtures } from './fixtures'
 import { bench, benchConcurrent, benchStress } from './measure'
 import {
-  printResults,
   printConcurrentResults,
+  printResults,
   printStressResults,
   printSummary,
   writeCpuReport,
@@ -18,8 +20,6 @@ import {
   createStressTasks,
 } from './tasks'
 import { runLoaderAsyncBenchmarks, writeLoaderReport } from './tasks/loader'
-import { getBunFFI } from '../native/ffi'
-import { isBun } from '../shared/runtime'
 
 export async function runBenchmark(): Promise<void> {
   // ── Transport guard (FFI is PRIMARY on Bun) ─────────────────────

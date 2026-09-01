@@ -9,7 +9,7 @@ import { decodeUtf8, encodeUtf8 } from '../../../shared/codec'
 import { SELFTEST_HEX, SELFTEST_JSON } from '../constants'
 import type { BunFFI, Raw3, Raw4, Raw5, Raw6, Raw8, Raw9, Raw10, RawCStr } from '../types'
 import type { BuildCtx } from './util'
-import { argon2PhcLength, cstr, flag, growExact, writeOrThrow } from './util'
+import { allocOut, argon2PhcLength, cstr, flag, growExact, writeOrThrow } from './util'
 
 /**
  * Build the codec/crypto/auth methods of the BunFFI surface. `ctx` is
@@ -34,7 +34,17 @@ export function buildCodecs(
   const validateUuid = sym.castrum_validate_uuid as (...a: unknown[]) => number | bigint
   const validateIpv4 = sym.castrum_validate_ipv4 as (...a: unknown[]) => number | bigint
   const validateIpv6 = sym.castrum_validate_ipv6 as (...a: unknown[]) => number | bigint
+  const validateEmailBytes = sym.castrum_validate_email_bytes as (
+    ...a: unknown[]
+  ) => number | bigint
+  const validateUuidBytes = sym.castrum_validate_uuid_bytes as (...a: unknown[]) => number | bigint
+  const validateIpv4Bytes = sym.castrum_validate_ipv4_bytes as (...a: unknown[]) => number | bigint
+  const validateIpv6Bytes = sym.castrum_validate_ipv6_bytes as (...a: unknown[]) => number | bigint
   const jsonSumRaw = sym.castrum_json_sum_ids as Raw4
+  const hexBatchRaw = sym.castrum_hex_validate_batch as Raw5
+  const hexBatchStrRaw = sym.castrum_hex_validate_batch_str as Raw4
+  const regexEscapeRaw = sym.castrum_regex_escape as Raw4
+  const regexEscapeStrRaw = sym.castrum_regex_escape_str as RawCStr
   const hmacVerify = sym.castrum_hmac_sha256_verify as Raw6
   const csrfVerify = sym.castrum_csrf_verify as Raw4
   const passwordVerify = sym.castrum_password_verify as Raw4
@@ -176,6 +186,41 @@ export function buildCodecs(
     validateUuid: (input) => Number(validateUuid(input)) === 1,
     validateIpv4: (input) => Number(validateIpv4(input)) === 1,
     validateIpv6: (input) => Number(validateIpv6(input)) === 1,
+    // Byte-input validators: `(ptr,len)` — zero transcode (no CString decode
+    // + engine re-encode like the cstring-ARG string forms above).
+    validateEmailBytes: (input) => Number(oneArg(validateEmailBytes, input)) === 1,
+    validateUuidBytes: (input) => Number(oneArg(validateUuidBytes, input)) === 1,
+    validateIpv4Bytes: (input) => Number(oneArg(validateIpv4Bytes, input)) === 1,
+    validateIpv6Bytes: (input) => Number(oneArg(validateIpv6Bytes, input)) === 1,
+    hexValidateBatchInto(input, width, output) {
+      // Batch fixed-width hex validation: NEWLINE-separated lines in; one
+      // verdict byte (1/0) per line out. Needed-size convention: `0` = bad
+      // width / null pointers (real error → throw); `> output.length` = the
+      // exact required size (caller grows once and retries). Width is
+      // validated here so an empty input can't mask it.
+      if (width === 0 || width > 4096) {
+        throw new Error('hex validate batch: width must be 1..=4096')
+      }
+      const w = Number(hexBatchRaw(input, lenOrView(input), width >>> 0, output, lenOrView(output)))
+      return w
+    },
+    regexEscapeInto(input, output) {
+      const w = Number(regexEscapeRaw(input, lenOrView(input), output, lenOrView(output)))
+      if (w === 0) {
+        throw new Error('regex escape: output buffer too small')
+      }
+      return w
+    },
+    // Zero-copy text path: cstring ARG in (engine-transcoded), cstring return
+    // out (engine-cloned) — the JS side does zero encode AND zero decode.
+    regexEscapeStr: (input) => regexEscapeStrRaw(input),
+    hexValidateBatchStr(ids, width, output) {
+      if (width === 0 || width > 4096) {
+        throw new Error('hex validate batch: width must be 1..=4096')
+      }
+      const w = Number(hexBatchStrRaw(ids, width >>> 0, output, lenOrView(output)))
+      return w
+    },
     jsonSumIds: (input) => {
       // Packed [u8 ok][i64 sum LE] output (9 B): ok=1 → valid array (the sum
       // may be 0); ok=0 → invalid input. Bytes written: 9/1/0 (0 = real error).
@@ -202,19 +247,19 @@ export function buildCodecs(
       Number(passwordVerifyBcrypt(password, lenOrView(password), phc)) === 1,
 
     hexDecode(input) {
-      const out = new Uint8Array(Math.floor(input.length / 2))
+      const out = allocOut(Math.floor(input.length / 2))
       const w = hexDecodeInto(input, out)
       return out.subarray(0, w)
     },
     hexDecodeInto,
     urlDecode(input) {
-      const out = new Uint8Array(input.length)
+      const out = allocOut(input.length)
       const w = urlDecodeInto(input, out)
       return out.subarray(0, w)
     },
     urlDecodeInto,
     base64Decode(input, urlSafe, padding) {
-      const out = new Uint8Array(Math.ceil((input.length * 3) / 4))
+      const out = allocOut(Math.ceil((input.length * 3) / 4))
       const w = base64DecodeInto(input, out, urlSafe, padding)
       return out.subarray(0, w)
     },
@@ -398,7 +443,7 @@ export function buildCodecs(
     },
     passwordHashBcrypt(password, cost) {
       // `$2b$CC$` + 22 salt chars + 31 hash chars = 60 chars.
-      const out = new Uint8Array(64)
+      const out = allocOut(64)
       const w = Number(passwordHashBcrypt(password, lenOrView(password), cost, out, lenOrView(out)))
       if (w === 0) {
         throw new Error('password hash bcrypt: output buffer too small')
@@ -409,7 +454,7 @@ export function buildCodecs(
       // Rust clamps dkLen to [1, 1MiB] (PBKDF2_MIN_LEN/MAX_LEN) AFTER sizing its
       // own buffer — so pre-clamp here so dkLen 0 still yields a 1-byte result.
       const dk = Math.min(Math.max(dkLen, 1), 1024 * 1024)
-      const out = new Uint8Array(dk)
+      const out = allocOut(dk)
       const w = Number(
         pbkdf2(
           password,
@@ -429,7 +474,7 @@ export function buildCodecs(
     },
     aeadEncrypt(key, nonce, plaintext, algorithm = 0) {
       // ciphertext + 16-byte auth tag.
-      const out = new Uint8Array(plaintext.length + 16)
+      const out = allocOut(plaintext.length + 16)
       const w = Number(
         aeadEncrypt(
           key,
@@ -472,7 +517,7 @@ export function buildCodecs(
       return w
     },
     aeadDecrypt(key, nonce, ciphertext, algorithm = 0) {
-      const out = new Uint8Array(ciphertext.length)
+      const out = allocOut(ciphertext.length)
       const w = Number(
         aeadDecrypt(
           key,
@@ -534,6 +579,17 @@ export function selfTestCodecs(b: BunFFI): boolean {
   ) {
     return false
   }
+  // Byte-input validator siblings: `(ptr,len)` parity with the string forms.
+  if (
+    !b.validateEmailBytes(enc.encode('a@b.com')) ||
+    !b.validateUuidBytes(enc.encode('550e8400-e29b-41d4-a716-446655440000')) ||
+    !b.validateIpv4Bytes(enc.encode('192.168.0.1')) ||
+    !b.validateIpv6Bytes(enc.encode('2001:db8::1')) ||
+    b.validateEmailBytes(enc.encode('not-an-email')) ||
+    b.validateIpv6Bytes(enc.encode('999'))
+  ) {
+    return false
+  }
   // Packed `[u8 ok][i64 sum LE]` ABI: legit zero-sum is ok, invalid input throws.
   if (b.jsonSumIds(enc.encode(`[{"id":1},{"id":2}]`)) !== 3n) return false
   if (b.jsonSumIds(enc.encode(`[{"id":0},{"id":0}]`)) !== 0n) return false
@@ -544,6 +600,46 @@ export function selfTestCodecs(b: BunFFI): boolean {
     sumInvalidThrew = true
   }
   if (!sumInvalidThrew) return false
+
+  // Batch fixed-width hex validation (needed-size convention + verdicts).
+  {
+    const ids = enc.encode('507f1f77bcf86cd799439011\nzz\n507F1F77BCF86CD799439012')
+    const tiny = new Uint8Array(2)
+    const needed = b.hexValidateBatchInto(ids, 24, tiny)
+    if (needed !== 3) return false // exact required size on a too-small buffer
+    const out = new Uint8Array(needed)
+    if (b.hexValidateBatchInto(ids, 24, out) !== 3) return false
+    if (out[0] !== 1 || out[1] !== 0 || out[2] !== 1) return false
+    let widthThrew = false
+    try {
+      b.hexValidateBatchInto(ids, 0, new Uint8Array(3))
+    } catch {
+      widthThrew = true
+    }
+    if (!widthThrew) return false
+  }
+
+  // RegExp escaping: metachars get backslashes; plain text is untouched.
+  {
+    const out = new Uint8Array(64)
+    const w = b.regexEscapeInto(enc.encode('a.c(x)'), out)
+    if (w !== 9 || dec.decode(out.subarray(0, w)) !== 'a\\.c\\(x\\)') return false
+    const plain = new Uint8Array(16)
+    const wp = b.regexEscapeInto(enc.encode('hello'), plain)
+    if (wp !== 5 || dec.decode(plain.subarray(0, wp)) !== 'hello') return false
+    // too-small buffer reports the exact required size
+    if (b.regexEscapeInto(enc.encode('a.b'), new Uint8Array(2)) !== 4) return false
+    // zero-copy str sibling must produce the identical escaped string
+    if (b.regexEscapeStr('a.c(x)') !== 'a\\.c\\(x\\)') return false
+    if (b.regexEscapeStr('plain text') !== 'plain text') return false
+  }
+
+  // String-input batch hex validation (cstring ARG sibling).
+  {
+    const out = new Uint8Array(8)
+    const w = b.hexValidateBatchStr('507f1f77bcf86cd799439011\nzz', 24, out)
+    if (w !== 2 || out[0] !== 1 || out[1] !== 0) return false
+  }
 
   // HMAC RFC 4231 test case 1 (0x0b × 20 key, "Hi There" data).
   const hmacKey = new Uint8Array(20).fill(0x0b)

@@ -8,7 +8,7 @@
 // builder (./fast-templates.ts) with a different wire format (x-ratelimit-*) —
 // do not unify them (see AGENTS.md).
 
-import { HV_JSON, HV_CORS_SIMPLE, HV_CORS_PREFLIGHT, HV_RATE_ACTIVE } from '../constants'
+import { HV_CORS_PREFLIGHT, HV_CORS_SIMPLE, HV_JSON, HV_RATE_ACTIVE } from '../constants'
 
 /** Inputs needed to build the pre-baked header templates. */
 export interface BakedTemplateParams {

@@ -10,8 +10,8 @@
 
 import type { MultipartPart, WsFrame } from '../../native'
 import { decoder } from '../../shared/bytes'
-import { writeInto } from '../into'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
+import { writeInto } from '../into'
 
 /** Read an unsigned little-endian u32 at `off`. */
 function u32LE(b: Uint8Array, off: number): number {
@@ -102,7 +102,11 @@ export function buildPayload(ctx: RustClientContext) {
       // it via the `_into` core; keeps the 64 MiB decompression-bomb cap).
       const f = ffi()
       if (f) return f.gzipDecompressInto(data, output, maxDecompressed ?? undefined)
-      return writeInto('gzip decompress', output, addon.gzipDecompress(data, maxDecompressed ?? null))
+      return writeInto(
+        'gzip decompress',
+        output,
+        addon.gzipDecompress(data, maxDecompressed ?? null),
+      )
     },
     brotliCompress(data: Uint8Array, quality?: number | null): Uint8Array {
       const f = ffi()
@@ -127,7 +131,11 @@ export function buildPayload(ctx: RustClientContext) {
       // Pooled sibling — caller-owned output buffer (keeps the 64 MiB cap).
       const f = ffi()
       if (f) return f.brotliDecompressInto(data, output, maxDecompressed ?? undefined)
-      return writeInto('brotli decompress', output, addon.brotliDecompress(data, maxDecompressed ?? null))
+      return writeInto(
+        'brotli decompress',
+        output,
+        addon.brotliDecompress(data, maxDecompressed ?? null),
+      )
     },
     multipartParse(body: Uint8Array, boundary: Uint8Array): MultipartPart[] {
       // FFI-first: packed parts (castrum_multipart_parse_packed) → unpack to

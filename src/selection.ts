@@ -18,8 +18,8 @@
 // live wiring, so it can't drift.
 
 import { getAddon, lazyAddon } from './native'
-import { provenImpl } from './shared/proven'
 import { runtimeNative } from './runtime/native'
+import { provenImpl } from './shared/proven'
 
 /** Recommended implementation for an operation. */
 export type OpImpl = 'native' | 'js'

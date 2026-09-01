@@ -6,7 +6,8 @@
 //   - batch/          packed aggregate batch helpers (core.rs routing + api.rs napi)
 //   - batch_core.rs   generic rayon-parallel batch helpers
 //   - threadpool.rs   rayon global pool init + parallelism heuristics
-//   - validation.rs   email / UUID / IPv4 / IPv6 validators
+//   - validation.rs   email / UUID / IPv4 / IPv6 + batch fixed-width hex validators
+//   - text.rs         text utilities (JS-RegExp metacharacter escaping)
 //
 // The `pub use` re-exports below keep existing `crate::util::*` call sites and
 // the napi JS exports (`initThreadPool` / `rayonNumThreads`) working
@@ -16,6 +17,7 @@ pub mod batch;
 pub mod batch_core;
 pub mod bytes;
 pub mod packed;
+pub mod text;
 pub mod threadpool;
 pub mod validation;
 

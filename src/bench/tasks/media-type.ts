@@ -5,8 +5,8 @@
 
 import { rust } from '../../rust-ffi'
 import { decoder } from '../../shared/bytes'
-import { nativeParseMediaType } from '../media-type-baseline'
 import type { BenchFixtures } from '../fixtures'
+import { nativeParseMediaType } from '../media-type-baseline'
 import type { BenchTask } from '../types'
 
 export function mediaTypeTasks(f: BenchFixtures): BenchTask[] {

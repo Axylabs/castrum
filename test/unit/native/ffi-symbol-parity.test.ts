@@ -39,10 +39,13 @@ function rustExports(src: string): Set<string> {
     const name = m[1]
     if (name) names.add(name)
   }
-  // ...plus macro-generated exports (compress_to_out!, validator_c_abi!). The
-  // invocation is formatted multi-line in rust/ffi/ (name on its own line
-  // after the macro + `(`), so allow whitespace/newlines before the name.
-  for (const m of src.matchAll(/(?:compress_to_out|validator_c_abi)!\s*\(\s*(castrum_\w+)/g)) {
+  // ...plus macro-generated exports (compress_to_out!, validator_c_abi!,
+  // validator_bytes_c_abi!). The invocation is formatted multi-line in
+  // rust/ffi/ (name on its own line after the macro + `(`), so allow
+  // whitespace/newlines before the name.
+  for (const m of src.matchAll(
+    /(?:compress_to_out|validator_c_abi|validator_bytes_c_abi)!\s*\(\s*(castrum_\w+)/g,
+  )) {
     const name = m[1]
     if (name) names.add(name)
   }

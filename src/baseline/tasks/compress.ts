@@ -3,9 +3,9 @@
 import {
   brotliCompressSync,
   brotliDecompressSync,
-  constants as zlibConstants,
   gunzipSync,
   gzipSync,
+  constants as zlibConstants,
 } from 'node:zlib'
 
 export function nativeGzipCompress(data: Uint8Array, level?: number | null): Uint8Array {

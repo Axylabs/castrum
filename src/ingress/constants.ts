@@ -11,7 +11,7 @@
 // they cannot drift.
 
 import { getAddon } from '../native'
-import { getBunFFI, type BunFFI } from '../native/ffi'
+import { type BunFFI, getBunFFI } from '../native/ffi'
 
 // Transport: bun:ffi is PRIMARY on Bun, so the layout is read through the
 // C-ABI blob WITHOUT dlopening the napi addon. Node — or forced

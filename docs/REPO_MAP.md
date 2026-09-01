@@ -169,8 +169,8 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
                           native stack), options/time/packed, cors, proxy, ip_trust, rate_limit,
                           terminal, output.rs (single numeric layout source),
                           ingress_constants.rs (napi projection).
-  ffi/                    #[no_mangle] extern "C" exports (85 castrum_* symbols — 77 direct + 4
-                          validator_c_abi! + 4 compress_to_out!; parity guarded by
+  ffi/                    #[no_mangle] extern "C" exports (109 castrum_* symbols — 97 direct + 4
+                          validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out!; parity guarded by
                           test/unit/native/ffi-symbol-parity.test.ts) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).
                           mod.rs (module map) + util.rs (panic_guard / HMAC cache / cstring helpers)

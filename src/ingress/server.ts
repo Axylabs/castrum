@@ -1,6 +1,8 @@
 // src/ingress/server.ts — Bun.serve builder over pre-baked route handlers.
 
 import { isBun } from '../shared/runtime'
+import type { NativeRoutePlan } from './native-route'
+import { createNativeRoute } from './native-route'
 import {
   deleteHandler,
   echoHandler,
@@ -13,8 +15,6 @@ import {
 import type { BakedHandlerOptions } from './routes/common'
 import { nativeRouteHandler } from './routes/native'
 import { nativeResponderRoute } from './routes/responder'
-import { createNativeRoute } from './native-route'
-import type { NativeRoutePlan } from './native-route'
 import type { NativeResponder, OptimizedIngressHandler, TerminalStyle } from './types'
 
 /** Server-level default for the socket request-body cap (16 MiB). */
@@ -304,10 +304,14 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
       // LEAN native-stack responder route: route-wire v3 stack, no envelope.
       // The compiled route is injected into the pure route factory (DI across
       // the purity boundary — the compile touches the dlopen layer here).
-      const nativeRoute = nativeRouteHandler(createNativeRoute(spec.native.plan), spec.native.handler, {
-        ...routeOpts,
-        readBody: spec.native.readBody,
-      })
+      const nativeRoute = nativeRouteHandler(
+        createNativeRoute(spec.native.plan),
+        spec.native.handler,
+        {
+          ...routeOpts,
+          readBody: spec.native.readBody,
+        },
+      )
       const nativeMethods = spec.native.methods ?? ['GET']
       for (const m of nativeMethods) {
         methods[m] = nativeRoute

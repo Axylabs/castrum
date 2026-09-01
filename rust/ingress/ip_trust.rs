@@ -243,7 +243,8 @@ mod tests {
 
     #[test]
     fn ip_trust_single_ip_network() {
-        let mode = ProxyTrustMode::from_config(true, Some(vec!["192.168.1.1".to_string()])).unwrap();
+        let mode =
+            ProxyTrustMode::from_config(true, Some(vec!["192.168.1.1".to_string()])).unwrap();
         assert!(mode.is_trusted("192.168.1.1".parse().unwrap()));
         assert!(!mode.is_trusted("192.168.1.2".parse().unwrap()));
     }
@@ -257,7 +258,8 @@ mod tests {
     #[test]
     fn ip_trust_resolves_socket_ip_when_not_trusting_proxy() {
         let mode = ProxyTrustMode::from_config(false, None).unwrap();
-        let (resolved, peer_trusted) = resolve_client_ip(&mode, b"203.0.113.5", Some(b"6.6.6.6"), None);
+        let (resolved, peer_trusted) =
+            resolve_client_ip(&mode, b"203.0.113.5", Some(b"6.6.6.6"), None);
         assert!(!peer_trusted);
         // Socket IP must win; XFF must be ignored.
         match resolved {
@@ -270,7 +272,8 @@ mod tests {
     fn ip_trust_untrusted_socket_ignores_xff() {
         // Socket is NOT in the trusted networks -> XFF cannot spoof the client IP.
         let mode = ProxyTrustMode::from_config(true, Some(vec!["10.0.0.0/8".to_string()])).unwrap();
-        let (resolved, peer_trusted) = resolve_client_ip(&mode, b"203.0.113.9", Some(b"6.6.6.6"), None);
+        let (resolved, peer_trusted) =
+            resolve_client_ip(&mode, b"203.0.113.9", Some(b"6.6.6.6"), None);
         assert!(!peer_trusted);
         match resolved {
             super::ResolvedIp::V4(o) => assert_eq!(o, [203, 0, 113, 9]),

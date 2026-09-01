@@ -25,6 +25,7 @@ import type {
   MediaTypeMatcherInstance,
   MediaTypeParserInstance,
   MediaTypeResult,
+  MetricsRegistryInstance,
   MultipartPart,
   PasswordHashOptions,
   RateLimiterInstance,
@@ -145,6 +146,10 @@ export interface NativeAddon {
   validateUuid(input: Uint8Array): boolean
   validateIpv4(input: Uint8Array): boolean
   validateIpv6(input: Uint8Array): boolean
+  /** Batch fixed-width hex validation → one verdict byte per newline-separated line. */
+  hexValidateBatch(input: Uint8Array, width: number): Uint8Array
+  /** Escape JS-RegExp metacharacters so a pattern matches the input literally. */
+  regexEscape(input: string): string
 
   wsAcceptKey(key: Uint8Array): Uint8Array
   wsAcceptKeyBatchPacked(input: Uint8Array): Uint8Array
@@ -244,6 +249,12 @@ export interface NativeAddon {
     windowMs: number,
     maxEntries?: number | null,
   ) => RateLimiterInstance
+  /**
+   * Sharded counters / gauges / histograms registry with a Prometheus
+   * text-format render (the napi fallback transport for the `castrum_metrics_*`
+   * C-ABI surface).
+   */
+  MetricsRegistry: new () => MetricsRegistryInstance
 
   wsFrameEncode(opcode: number, payload: Uint8Array, mask: boolean, fin: boolean): Uint8Array
   wsFrameDecode(data: Uint8Array): WsFrame | null

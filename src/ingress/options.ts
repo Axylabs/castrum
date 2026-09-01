@@ -78,9 +78,9 @@ export interface IngressFastHandler {
  */
 export type IngressHandlerOptions = Omit<IngressFastOptions, 'onError'>
 
+import type { FastIngressResult } from './decode/fast-result'
 import type { CorsOptions } from './headers/cors'
 import type { SecurityHeadersOptions } from './headers/hsts'
-import type { FastIngressResult } from './decode/fast-result'
 
 const KNOWN_INGRESS_OPTION_KEYS: ReadonlySet<string> = new Set([
   'trustProxy',

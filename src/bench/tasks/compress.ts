@@ -2,8 +2,8 @@
 
 import * as native from '../../baseline'
 import { rust } from '../../rust-ffi'
-import { rawGzipCompress } from '../raw-native'
 import type { BenchFixtures } from '../fixtures'
+import { rawGzipCompress } from '../raw-native'
 import type { BenchTask } from '../types'
 
 export function compressTasks(f: BenchFixtures): BenchTask[] {

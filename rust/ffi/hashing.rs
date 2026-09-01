@@ -193,3 +193,93 @@ pub unsafe extern "C" fn castrum_json_sum_ids(
         Err(_) => 1, // too-small buffer → exact required size
     }
 }
+
+/// Escape JS-RegExp metacharacters (`\ . * + ? ^ $ { } | ( ) [ ]`) in
+/// `data[0..len]` into `out[0..out_cap]` — the "match untrusted input
+/// literally" utility. Needed-size convention: `0` = null pointers (real
+/// error); `w > out_cap` = exact required size; else bytes written.
+///
+/// # Safety
+/// `data` must be valid for reads of `len` bytes; `out` for writes up to
+/// `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_regex_escape(
+    data: *const u8,
+    len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if data.is_null() || out.is_null() {
+        return 0;
+    }
+    let input = slice::from_raw_parts(data, len);
+    let needed = crate::util::text::regex_escape_len(input);
+    if needed > out_cap {
+        return needed;
+    }
+    crate::util::text::regex_escape_write(input, slice::from_raw_parts_mut(out, out_cap));
+    needed
+}
+
+/// String-input / string-return sibling of [`castrum_regex_escape`]: the
+/// engine transcodes the JS string to a call-scoped NUL-terminated UTF-8
+/// buffer on the way in (ZERO JS-side encode) and clones the escaped result
+/// out of the per-thread `CSTR_BUF` on the way out (ZERO JS-side decode).
+/// This is the full Bun-1.4 zero-copy text path — the whole call is the FFI
+/// crossing + the escape itself. Input containing NUL is escaped only up to
+/// the NUL (text needles never contain one). `null` = panic guard fallback.
+///
+/// # Safety
+/// `input` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_regex_escape_str(
+    input: *const std::os::raw::c_char,
+) -> *const std::os::raw::c_char {
+    if input.is_null() {
+        return std::ptr::null();
+    }
+    let bytes = std::ffi::CStr::from_ptr(input).to_bytes();
+    let needed = crate::util::text::regex_escape_len(bytes);
+    super::util::panic_guard(
+        || {
+            // Escaping a valid UTF-8 slice cannot fail — always Some(written).
+            super::util::cstring_return(needed, |buf| {
+                Some(crate::util::text::regex_escape_write(bytes, buf))
+            })
+        },
+        std::ptr::null(),
+    )
+}
+
+/// String-input sibling of [`crate::ffi::validators::castrum_hex_validate_batch`]:
+/// the NEWLINE-separated ids cross as ONE `cstring` ARG (the engine
+/// transcodes the JS `ids.join('\n')` in-engine — zero JS-side encode for the
+/// common "array of id strings" caller). Needed-size convention as usual.
+///
+/// # Safety
+/// `ids` must be a valid NUL-terminated C string; `out` for writes up to
+/// `out_cap`.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_hex_validate_batch_str(
+    ids: *const std::os::raw::c_char,
+    width: u32,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if ids.is_null() || out.is_null() {
+        return 0;
+    }
+    let input = std::ffi::CStr::from_ptr(ids).to_bytes();
+    let needed = crate::util::validation::hex_batch_count(input);
+    if needed > out_cap {
+        return needed;
+    }
+    let mut buf = Vec::with_capacity(needed);
+    match crate::util::validation::hex_batch_valid_into(input, width as usize, &mut buf) {
+        Ok(()) if buf.len() <= out_cap => {
+            slice::from_raw_parts_mut(out, buf.len()).copy_from_slice(&buf);
+            buf.len()
+        }
+        _ => 0,
+    }
+}

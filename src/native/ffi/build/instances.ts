@@ -8,7 +8,7 @@
 
 import { decodeUtf8, encodeUtf8 } from '../../../shared/codec'
 import { EMPTY_VIEW } from '../constants'
-import type { BunFFI, Raw2, Raw3, Raw5, Raw6, Raw7, Raw8, Raw12, RawCStr } from '../types'
+import type { BunFFI, Raw2, Raw3, Raw4, Raw5, Raw6, Raw7, Raw8, Raw12, RawCStr } from '../types'
 import type { BuildCtx } from './util'
 import { cstr, growExact, unpackRateCheck } from './util'
 
@@ -25,8 +25,9 @@ export function buildInstances(
   const conditionalIsNotModifiedRaw = sym.castrum_conditional_is_not_modified as Raw6
   const mediaTypeMatcherMatchesRaw = sym.castrum_media_type_matcher_matches as Raw3
   const acceptNegotiatorNegotiateRaw = sym.castrum_accept_negotiator_negotiate as RawCStr
-  const acceptNegotiatorNegotiateServerRaw = sym
-    .castrum_accept_negotiator_negotiate_server as (...a: unknown[]) => string | null
+  const acceptNegotiatorNegotiateServerRaw = sym.castrum_accept_negotiator_negotiate_server as (
+    ...a: unknown[]
+  ) => string | null
   const ed25519GenerateKeypairRaw = sym.castrum_ed25519_generate_keypair as Raw2
   const ed25519SignRaw = sym.castrum_ed25519_sign as Raw6
   const ed25519VerifyRaw = sym.castrum_ed25519_verify as Raw6
@@ -36,6 +37,10 @@ export function buildInstances(
   const jwtSignerVerifyRaw = sym.castrum_jwt_signer_verify as Raw6
   const templateRenderRaw = sym.castrum_template_render as Raw5
   const schemaValidatorValidateRaw = sym.castrum_schema_validator_validate as Raw3
+  const queryValidateSym = sym.castrum_query_validate as (...a: unknown[]) => number | bigint
+  const cookieValidateSym = sym.castrum_cookie_validate as (...a: unknown[]) => number | bigint
+  const sessionSealSym = sym.castrum_session_seal as (...a: unknown[]) => string | null
+  const sessionOpenSym = sym.castrum_session_open as Raw4
   const rateLimiterCheckRaw = sym.castrum_rate_limiter_check as Raw5
   const rateLimiterCheckKeyRaw = sym.castrum_rate_limiter_check_key as Raw5
   const jwtSignBytes = sym.castrum_jwt_sign_bytes as RawCStr
@@ -137,6 +142,22 @@ export function buildInstances(
     },
     schemaValidatorValidate(inner, doc) {
       return Number(schemaValidatorValidateRaw(inner, doc, lenOrView(doc))) === 1
+    },
+    queryValidate(inner, qs) {
+      // `qs` is a cstring ARG — engine-transcoded (zero JS encode).
+      return Number(queryValidateSym(inner, qs)) === 1
+    },
+    cookieValidate(inner, header) {
+      return Number(cookieValidateSym(inner, header)) === 1
+    },
+    sessionSeal(id, dataJson, expSecs, secret) {
+      // exp is an i64 C arg → BigInt.
+      return sessionSealSym(id, dataJson, BigInt(expSecs), secret)
+    },
+    sessionOpen(token, secret, output) {
+      // Needed-size convention; 0 = bad signature / malformed.
+      const w = Number(sessionOpenSym(token, secret, output, lenOrView(output)))
+      return w
     },
     rateLimiterCheck(inner, key, nowMs) {
       // Packed [u8 allowed][u32 remaining LE][i64 reset_ms LE] (13 bytes).
@@ -583,6 +604,22 @@ export function selfTestInstances(b: BunFFI): boolean {
   if (!urlBuilderThrew) {
     return false
   }
+  // Wire-validate: null inner (0) → false (ABI exercise); real parity lives
+  // in ffi.test.ts with a live compiled instance.
+  if (b.queryValidate(0, 'route=/a') !== false) return false
+  if (b.cookieValidate(0, 'route=/a') !== false) return false
+
+  // Session seal/open round trip through the C ABI.
+  {
+    const tok = b.sessionSeal('sess-9', '{"n":1}', 1234567, 'sekrit')
+    if (tok === null || !tok.includes('.') || !tok.startsWith('{"id":"sess-9"')) return false
+    const out = new Uint8Array(256)
+    const w = b.sessionOpen(tok, 'sekrit', out)
+    if (w <= 13 || out[0] !== 1) return false
+    // bad signature → 0
+    if (b.sessionOpen(tok, 'wrong', out) !== 0) return false
+  }
+
   // rateLimiterCheckKey: null (0) handle → throw (ABI exercise).
   let rlKeyThrew = false
   try {

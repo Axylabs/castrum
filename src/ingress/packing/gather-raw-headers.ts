@@ -9,8 +9,8 @@
 import type { HeaderPlan } from '../shared'
 import { METHOD_KIND } from '../shared'
 import { writeHeaderPair } from './header-packing'
-import { forEachSelectedHeader, HDR_ORIGIN } from './select-headers'
 import { getHeaderBuf, MAX_SMALL_HEADER_BYTES } from './scratch'
+import { forEachSelectedHeader, HDR_ORIGIN } from './select-headers'
 
 // Shared per-header size guards (single source of truth in scratch.ts).
 // Re-exported for back-compat with imports that referenced them here.

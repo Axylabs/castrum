@@ -8,22 +8,22 @@
 //   - sseResponse      → server-sent-events response framed on the fast path
 
 export {
+  runMany,
+  runOne,
+  validateCount,
+  validateMany,
+} from './batch'
+export {
+  type CreatePipelineOptions,
   createPipeline,
   type IngressPipeline,
-  type PipelineResult,
   type PipelineContext,
+  type PipelineResult,
   type PreprocessOutcome,
-  type CreatePipelineOptions,
 } from './pipeline'
+export { type SseEvent, sseResponse } from './streaming'
 export {
   createWebSocketUpgrade,
   type WebSocketUpgradeOptions,
   type WebSocketUpgradeResult,
 } from './websocket'
-export { sseResponse, type SseEvent } from './streaming'
-export {
-  validateMany,
-  validateCount,
-  runMany,
-  runOne,
-} from './batch'

@@ -27,11 +27,7 @@
 import { rust } from '../rust-ffi'
 import { encoder, viewForArrayBuffer } from '../shared/bytes'
 import type { SchemaValidator } from '../shared/packed'
-import {
-  createLruCache,
-  createTickCoalescer,
-  type LoadRequest,
-} from './batch'
+import { createLruCache, createTickCoalescer, type LoadRequest } from './batch'
 import { createCostModel, nowNs } from './cost'
 import {
   fnvBatchKeysInto,

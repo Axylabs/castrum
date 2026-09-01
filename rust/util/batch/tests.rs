@@ -89,8 +89,7 @@ fn base64_decode_batch_roundtrips() {
 #[test]
 fn base64_encode_batch_urlsafe_no_pad() {
     let data = pack_items(&[b"\xfb"]);
-    let out =
-        base64_encode_batch_packed(Uint8Array::new(data), Some(true), Some(false)).unwrap();
+    let out = base64_encode_batch_packed(Uint8Array::new(data), Some(true), Some(false)).unwrap();
     let results = unpack_results(out.as_ref());
     assert_eq!(results[0], b"-w");
 }
@@ -199,7 +198,8 @@ fn bitset_into_matches_allocating() {
 
     let allocating = run_bitset_batch(&packed, |x| x.len() == 1, 64).unwrap();
     let mut out = vec![0u8; allocating.len()];
-    let written = crate::util::write_bitset_batch_into(&packed, &mut out, |x| x.len() == 1).unwrap();
+    let written =
+        crate::util::write_bitset_batch_into(&packed, &mut out, |x| x.len() == 1).unwrap();
     assert_eq!(written, allocating.len());
     assert_eq!(&out[..written], &allocating[..]);
 }
@@ -238,8 +238,7 @@ fn sum_into_matches_allocating() {
 fn u32_into_matches_expected_layout() {
     let packed = pack_items(&[b"a", b"bb", b"ccc"]);
     let mut out = vec![0u8; 4 + 3 * 4];
-    let written =
-        crate::util::write_u32_batch_into(&packed, &mut out, |x| x.len() as u32).unwrap();
+    let written = crate::util::write_u32_batch_into(&packed, &mut out, |x| x.len() as u32).unwrap();
     assert_eq!(written, 4 + 3 * 4);
     assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), 3);
     for (i, x) in [&b"a"[..], b"bb", b"ccc"].iter().enumerate() {
@@ -293,15 +292,21 @@ fn read_u32(buf: &[u8], off: usize) -> u32 {
 
 fn read_i64(buf: &[u8], off: usize) -> i64 {
     i64::from_le_bytes([
-        buf[off], buf[off + 1], buf[off + 2], buf[off + 3],
-        buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7],
+        buf[off],
+        buf[off + 1],
+        buf[off + 2],
+        buf[off + 3],
+        buf[off + 4],
+        buf[off + 5],
+        buf[off + 6],
+        buf[off + 7],
     ])
 }
 
 #[test]
 fn fnv1a64_batch_matches_scalar() {
-    let out = fnv1a64_batch_packed(Uint8Array::new(pack_slices(&[b"foobar", b"", b"castrum"])))
-        .unwrap();
+    let out =
+        fnv1a64_batch_packed(Uint8Array::new(pack_slices(&[b"foobar", b"", b"castrum"]))).unwrap();
     let out = out.as_ref();
     assert_eq!(read_u32(out, 0), 3);
     assert_eq!(read_i64(out, 4), 0x8594_4171_f739_67e8u64 as i64);
@@ -359,10 +364,11 @@ fn url_decode_batch_matches_scalar() {
     assert_eq!(&out[8..8 + len0], b"a b");
 
     // Strict bytes decode (no UTF-8 validation): %C3%A9 → the two raw bytes.
-    let out = crate::http::url_codec::url_decode_bytes_batch_packed(Uint8Array::new(pack_slices(&[
-        b"%C3%A9",
-    ])))
-    .unwrap();
+    let out =
+        crate::http::url_codec::url_decode_bytes_batch_packed(Uint8Array::new(pack_slices(&[
+            b"%C3%A9",
+        ])))
+        .unwrap();
     let out = out.as_ref();
     let len0 = read_u32(out, 4) as usize;
     assert_eq!(&out[8..8 + len0], &[0xc3, 0xa9]);
@@ -394,10 +400,11 @@ fn mime_from_extension_batch_matches_scalar() {
 fn ws_accept_key_batch_matches_rfc6455() {
     // Expected vector mirrors the repo's existing scalar test in
     // rust/payload/websocket.rs (rfc6455_accept_key_vector).
-    let out = crate::payload::websocket::ws_accept_key_batch_packed(Uint8Array::new(pack_slices(&[
-        b"dGhlIHNhbXBsZSBub25jZQ==",
-    ])))
-    .unwrap();
+    let out =
+        crate::payload::websocket::ws_accept_key_batch_packed(Uint8Array::new(pack_slices(&[
+            b"dGhlIHNhbXBsZSBub25jZQ==",
+        ])))
+        .unwrap();
     let out = out.as_ref();
     let len0 = read_u32(out, 4) as usize;
     assert_eq!(&out[8..8 + len0], b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");

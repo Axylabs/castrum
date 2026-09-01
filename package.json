@@ -104,6 +104,7 @@
         "bench:startup": "bun run bench/startup.ts",
         "bench:load": "bun run bench/http/load-phase.ts",
         "bench:ffi": "bun run bench/ffi/ffi-all.ts",
+    "bench:newops": "bun bench/cost/rust-vs-js-new-ops.ts",
         "bench:ffi:load": "bun run bench/ffi/ffi-load.ts",
         "bench:ffi:public": "bun run bench/ffi/ffi-public.ts",
         "bench:ffi:workers": "bun run bench/ffi/ffi-workers.ts",
