@@ -34,6 +34,12 @@ bun install
 bun run build        # compile the Rust addon (release)
 ```
 
+> **Cross-platform install**: prebuilt addons ship for linux (x64/arm64,
+> glibc + musl), macOS (x64/arm64), and Windows (x64 msvc) — built by CI on
+> every push/PR and published on a `v*` tag. When no prebuilt matches your
+> platform, the package `postinstall` hook compiles the addon from source in
+> your `node_modules` (`cargo build --release`, needs a Rust toolchain).
+
 ### 2. Start a server
 
 ```ts

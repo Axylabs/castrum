@@ -40,6 +40,7 @@ HTTP **ingress pipeline** for Bun servers.
 | Build compiled JS entry (Node) | `bun run build:js` (bundle + types → `dist/`) |
 | Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
+| Postinstall fallback build | `node scripts/postinstall.mjs` (runs as package.json `postinstall`; no-op when a prebuilt `.node` exists for the host, else `cargo build --release` from the shipped `rust/` source — see `docs/ENVIRONMENT.md`) |
 | Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/panic_safety.rs` + `rust/proptest_suite.rs`) |
 | TS unit tests | `bun test` (~760 tests, `test/unit/**`) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
@@ -95,6 +96,19 @@ HTTP **ingress pipeline** for Bun servers.
   `--increment`, HEAD must sit on the exact `v<version>` tag (`--allow-dirty` to
   tolerate an uncommitted tree). `bun run publish:manual:dry` (`--dry-run`) prints
   the plan without changing anything.
+- **Cross-compatible source-build fallback (`scripts/postinstall.mjs`)**: the
+  tarball ships the `rust/` source + `Cargo.toml`/`Cargo.lock`/`build.rs`/
+  `rust-toolchain.toml` AND `scripts/postinstall.mjs` (all added to package.json
+  `files`), and the package.json `postinstall` hook compiles the addon from
+  source in a consumer's `node_modules` when no prebuilt `.node` exists for the
+  host (exotic platform/libc or a partial tarball). It is a fast no-op when a
+  prebuilt is present, honors `CI`/`CASTRUM_SKIP_BUILD`/`CASTRUM_REQUIRE_BUILD`,
+  and never depends on the `@napi-rs/cli` (plain `cargo build --release` +
+  `napi_build::setup()` in build.rs). Unit-tested in
+  `test/unit/native/postinstall.test.ts`. Keep the artifact-name mapping in
+  `napiArtifactCandidates` in lockstep with `src/native/loader.ts`, and re-add
+  any new Rust build inputs (new crates still come from crates.io, but a new
+  checked-in source file must be under `rust/` to be shipped).
 
 ## Layout (quick map)
 

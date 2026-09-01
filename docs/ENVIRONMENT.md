@@ -72,6 +72,22 @@ whether the ffi transport is live.
 |----------|------|---------|-------------|
 | `CASTRUM_PUBLISH_ALLOW_PARTIAL` | bool | — | When `1`, `prepublishOnly` ships a tarball containing only the locally-built platforms instead of failing on the full `napi.targets` set. Set automatically by `bun run publish:manual`; **never** set it for a normal `npm publish`.
 
+## Postinstall fallback build (`scripts/postinstall.mjs`)
+
+The package ships prebuilt addons for every `napi.targets` platform (built by
+the CI "build" job on push/PR and staged into the tarball on a `v*` tag push).
+`postinstall` is a fast no-op when a matching prebuilt is present. When none
+ships for the host (an exotic platform / libc, or a partial tarball), it
+compiles the addon **from source** in the consumer's `node_modules` via
+`cargo build --release` (needs a Rust toolchain + crates.io access).
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `CASTRUM_SKIP_BUILD` | (presence) | — | Skip the source-build fallback entirely (warn and continue). Use when a Rust toolchain is intentionally unavailable; the runtime loader will then fail with a clear "build it" error if the addon is needed. |
+| `CASTRUM_REQUIRE_BUILD` | (presence) | — | Turn every postinstall "warn and skip" (missing toolchain, build failure, missing cdylib) into a hard install failure — for environments that must guarantee a loadable addon. |
+| `npm_config_build_from_source` | bool | — | Set by `npm install --build-from-source`; forces a rebuild even when a prebuilt artifact is present. |
+| `CI` | bool | — | GitHub Actions (and other CI) set this; the postinstall skips the fallback build because CI builds the addon explicitly (`bun run build`). |
+
 ## Security guidance
 
 - **Proxy trust**: `trustProxy: true` is deprecated — it trusts EVERY hop of

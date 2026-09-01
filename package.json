@@ -48,11 +48,18 @@
         "docs",
         "README.md",
         "*.node",
+        "scripts/postinstall.mjs",
+        "rust",
+        "Cargo.toml",
+        "Cargo.lock",
+        "build.rs",
+        "rust-toolchain.toml",
         "!src/bench",
         "!src/baseline",
         "!src/data"
     ],
     "scripts": {
+        "postinstall": "node scripts/postinstall.mjs",
         "build": "napi build --release --platform",
         "build:perf": "bash scripts/build-perf.sh",
         "build:v3": "bash scripts/build-v3.sh",
