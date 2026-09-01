@@ -1,6 +1,6 @@
 {
     "name": "castrum",
-    "version": "0.9.3",
+    "version": "0.9.4",
     "private": false,
     "description": "Enterprise-grade Bun + Rust runtime: Rust-accelerated FFI primitives, a production-grade HTTP ingress pipeline, validation, hashing, and JSON processing with benchmark-grade performance.",
     "type": "module",
