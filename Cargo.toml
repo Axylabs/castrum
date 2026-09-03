@@ -79,7 +79,7 @@ rustc-hash = "2"
 # lookahead/backrefs); fraction::BigFraction is the SAME exact-rational type used
 # for `multipleOf` divisibility. Both are already transitive deps, so no new
 # downloads — but they become direct deps so fast_schema can use them.
-fancy-regex = "0.18"
+fancy-regex = "0.19"
 fraction = "0.15"
 # Exact cross-type number equality for enum/const/uniqueItems (same semantics
 # jsonschema uses via jsonschema-value's cmp::equal). Already transitive.
