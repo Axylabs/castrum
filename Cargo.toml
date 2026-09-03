@@ -70,7 +70,7 @@ core_affinity = "0.8"
 parking_lot = "0.12"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 ipnet = "2"
-lru = "0.12"
+lru = "0.16"
 # Zero-cost hashing for fast_schema object-key lookups (default SipHash is slow
 # on short keys). Already a transitive dep, so no new download.
 rustc-hash = "2"
