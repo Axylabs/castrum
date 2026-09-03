@@ -49,10 +49,9 @@ export function readinessHandler(check?: () => boolean | Promise<boolean>) {
       return ok
         ? jsonResponse(200, { status: 'ready' })
         : jsonResponse(503, { status: 'not_ready' })
-    } catch (err) {
+    } catch (_err) {
       return jsonResponse(503, {
         status: 'not_ready',
-        error: err instanceof Error ? err.message : String(err),
       })
     }
   }
