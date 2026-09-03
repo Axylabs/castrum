@@ -238,7 +238,7 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: bash scripts/build-v3.sh
       - name: Upload addon artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: addon-${{ matrix.target }}
           path: ${{ env.BINARY_NAME }}.*.node
