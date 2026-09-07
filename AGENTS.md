@@ -79,22 +79,22 @@ HTTP **ingress pipeline** for Bun servers.
   platform `.node` is present. Push a `v*` tag instead: `.github/workflows/ci.yml`
   builds + uploads each platform artifact, then the `publish` job downloads them
   into `./artifacts`, stages them, and runs `npm publish --access public`
-  (requires the `NPM_TOKEN` secret). Bump `version` in package.json (and
-  Cargo.toml) and add a CHANGELOG entry before tagging. The ONLY local-publish
-  exception is `bun run publish:manual`, which sets `CASTRUM_PUBLISH_ALLOW_PARTIAL=1`
-  to ship a single-platform tarball.
+  (requires the `NPM_TOKEN` secret). Releases use the shared canonical flow:
+  `bun run release` (`scripts/release.ts` + `.release.json`) bumps `version` in
+  package.json AND syncs `Cargo.toml` / `Cargo.lock` / `CHANGELOG.md`, runs the
+  verify gate, and commits + tags `v<version>` — CI then builds + publishes every
+  platform. The ONLY local-publish exception is `bun run release:manual`, which
+  sets `CASTRUM_PUBLISH_ALLOW_PARTIAL=1` to ship a single-platform tarball.
 - **Simple manual publish (no CI / GitHub dependency):**
-  `bun run publish:manual` (`scripts/publish-manual.mjs`) — bumps the version via
-  `bun pm version` (`--increment <patch|minor|major|...>`, syncing
-  `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`), creates + pushes the `v<version>` git
-  tag (and the current branch), builds the host addon (`bun run build`), and runs
-  `npm publish --access public`. It sets `CASTRUM_PUBLISH_ALLOW_PARTIAL=1` for the
+  `bun run release:manual` (alias of `bun run release --publish`) — the same
+  canonical flow (`scripts/release.ts` + `.release.json`, syncing
+  `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`), but it ALSO builds the host addon
+  (`bun run build`) and runs a local `npm publish`. The `.release.json`
+  `publish.command` sets `CASTRUM_PUBLISH_ALLOW_PARTIAL=1` for the
   publish, so `prepublishOnly` ships ONLY the platforms built locally (currently the
   host platform) instead of failing on missing `napi.targets`. Full multi-platform
   tarballs still come from CI on a v* tag push. Prereqs: npm logged in (or
-  `NPM_TOKEN` exported); a clean tree when using `--increment`. Without
-  `--increment`, HEAD must sit on the exact `v<version>` tag (`--allow-dirty` to
-  tolerate an uncommitted tree). `bun run publish:manual:dry` (`--dry-run`) prints
+  `NPM_TOKEN` exported). `bun run release:dry` (`--dry-run`) prints
   the plan without changing anything.
 - **Cross-compatible source-build fallback (`scripts/postinstall.mjs`)**: the
   tarball ships the `rust/` source + `Cargo.toml`/`Cargo.lock`/`build.rs`/

@@ -1,0 +1,35 @@
+{
+  "product": "castrum",
+  "type": "single",
+  "verify": [
+    "bun run typecheck",
+    "bun run typecheck:test",
+    "bun run lint:ci",
+    "bun test",
+    "bun run check:version"
+  ],
+  "versionFiles": [
+    {
+      "type": "regex",
+      "file": "Cargo.toml",
+      "pattern": "(\\[package\\][^\\[]*?version\\s*=\\s*\")[^\"]+(\")",
+      "sub": "$1__VERSION__$2"
+    },
+    {
+      "type": "regex",
+      "file": "Cargo.lock",
+      "pattern": "(name\\s*=\\s*\"castrum\"\\nversion\\s*=\\s*\")[^\"]+(\")",
+      "sub": "$1__VERSION__$2"
+    },
+    {
+      "type": "changelog",
+      "file": "CHANGELOG.md",
+      "unreleased": "## [Unreleased]"
+    }
+  ],
+  "publish": {
+    "strategy": "ci",
+    "manager": "npm",
+    "command": "bun run build && CASTRUM_PUBLISH_ALLOW_PARTIAL=1 npm publish --access {access} --tag {distTag}"
+  }
+}

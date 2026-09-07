@@ -187,17 +187,19 @@ For coverage floors, the typecheck/test configs, and the full test matrix, see
 ## Publishing
 
 The package ships **all platform addons in a single tarball**. Push a `v*` tag
-and CI builds + publishes every platform to npm; or use `bun run publish:manual`
+and CI builds + publishes every platform to npm; or use `bun run release:manual`
 for a quick single-platform release:
 
 ```bash
-bun run publish:manual -- --increment minor  # bump + tag + build + publish
-bun run publish:manual:dry                   # print the plan, change nothing
+bun run release minor          # bump + verify + commit + tag (CI publishes)
+bun run release:manual         # same, but also builds + publishes locally
+bun run release:dry            # print the plan, change nothing
 ```
 
-Run `bun run check:version` before tagging (it verifies `package.json`,
-`Cargo.toml`, and `CHANGELOG.md` agree). See [`docs/REPO_MAP.md`](./docs/REPO_MAP.md)
-§6 for the full flow.
+`bun run release` uses the shared canonical flow (`scripts/release.ts` +
+`.release.json`), syncing `package.json`, `Cargo.toml`, `Cargo.lock`, and
+`CHANGELOG.md`. Run `bun run check:version` before tagging (it verifies they
+agree). See [`docs/REPO_MAP.md`](./docs/REPO_MAP.md) §6 for the full flow.
 
 ## Documentation
 

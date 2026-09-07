@@ -16,14 +16,14 @@
 // `npm publish`; this script stages those files into the package root before
 // verifying. Locally, `npm publish` without all artifacts will fail with
 // instructions — unless CASTRUM_PUBLISH_ALLOW_PARTIAL=1 is set (bun run
-// publish:manual), in which case it ships only the platforms that are present
+// release:manual), in which case it ships only the platforms that are present
 // and warns instead of failing.
 
 import { copyFileSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Set by `bun run publish:manual` to allow a single-platform local publish.
+// Set by `bun run release:manual` to allow a single-platform local publish.
 const allowPartial = process.env.CASTRUM_PUBLISH_ALLOW_PARTIAL === '1'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -97,7 +97,7 @@ for (const target of targets) {
 
 if (missing.length > 0) {
   if (allowPartial) {
-    // Local manual publish (bun run publish:manual): ship only what's built.
+    // Local manual publish (bun run release:manual): ship only what's built.
     const present = targets.filter((t) => !missing.some((m) => m.startsWith(t)))
     console.warn(
       'prepublish: WARNING — publishing with MISSING platform addon(s):\n' +
@@ -119,7 +119,7 @@ if (missing.length > 0) {
         'workflow artifacts; the CI "publish" job downloads them into ./artifacts\n' +
         'and this script stages + verifies them before publishing.\n' +
         '  - Build only the current platform locally:  bun run build\n' +
-        '  - Simple single-platform local publish:   bun run publish:manual\n' +
+        '  - Simple single-platform local publish:   bun run release:manual\n' +
         '  - Full multi-platform publish: push a v* tag and let the workflow do it.',
     )
     process.exit(1)

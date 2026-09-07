@@ -66,11 +66,11 @@ whether the ffi transport is live.
 | `CASTRUM_FFI_LOAD_MS` | int | `400` | Per-window duration (ms) of the `ffi-all` load-run (`bench/ffi/ffi-all.ts`). |
 | `CASTRUM_FFI_LOAD_WINDOWS` | int | `4` | Number of load windows in `ffi-all` (`bench/ffi/ffi-all.ts`). |
 
-## Publishing (`scripts/prepublish.mjs`, `publish-manual.mjs`)
+## Publishing (`scripts/prepublish.mjs`, canonical `scripts/release.ts`)
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `CASTRUM_PUBLISH_ALLOW_PARTIAL` | bool | — | When `1`, `prepublishOnly` ships a tarball containing only the locally-built platforms instead of failing on the full `napi.targets` set. Set automatically by `bun run publish:manual`; **never** set it for a normal `npm publish`.
+| `CASTRUM_PUBLISH_ALLOW_PARTIAL` | bool | — | When `1`, `prepublishOnly` ships a tarball containing only the locally-built platforms instead of failing on the full `napi.targets` set. Set automatically by `bun run release:manual` (the local-publish path of the canonical release flow); **never** set it for a normal `npm publish`.
 
 ## Postinstall fallback build (`scripts/postinstall.mjs`)
 

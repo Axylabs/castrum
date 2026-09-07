@@ -53,7 +53,7 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 | Version consistency | `bun run check:version` | package.json ↔ Cargo.toml ↔ CHANGELOG |
 | JS dependency audit | `bun run audit` | `bun audit` (reports advisories) |
 | Cargo deny audit | `bun run deny` | `cargo deny check` |
-| Publish (manual, single-platform) | `bun run publish:manual[:dry]` | see §6 |
+| Publish (canonical) | `bun run release[:dry]` / `release:manual` | see §6 |
 
 ---
 
@@ -285,7 +285,7 @@ consumed.
 - **Multi-platform (recommended)**: push a `v*` tag → `.github/workflows/ci.yml`
   builds each platform addon, the `publish` job downloads them into
   `./artifacts`, stages them, and runs `npm publish` (needs `NPM_TOKEN`).
-- **Manual single-platform**: `bun run publish:manual --increment minor`
+- **Manual single-platform**: `bun run release:manual`
   (syncs package.json ↔ Cargo.toml ↔ CHANGELOG, tags, builds, publishes with
   `CASTRUM_PUBLISH_ALLOW_PARTIAL=1`). `--dry-run` plans only.
 - `prepublishOnly` runs `build:js` + `scripts/prepublish.mjs` (stages
