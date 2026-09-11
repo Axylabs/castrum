@@ -89,7 +89,16 @@ HTTP **ingress pipeline** for Bun servers.
   `NPM_TOKEN`**, which holds an `NPM_TOKEN` secret; npm prefers OIDC and falls
   back to that token, so either path ships a release. `repository.url` in
   package.json MUST match the GitHub repo or the OIDC exchange is rejected and
-  npm reports a misleading `ENEEDAUTH`. Releases use the shared canonical flow:
+  npm reports a misleading `ENEEDAUTH`. **Unattended releases need the trusted
+  publisher to allow direct publish**: connections created after 2026-09-03
+  default to `npm stage publish` only, and npm then STAGES a plain
+  `npm publish` instead of failing — the job exits 0 and logs
+  `+ castrum@<version>`, but the version stays invisible (registry
+  `/castrum/<version>` → 404, `latest` unchanged) until a maintainer approves
+  it with 2FA (`npm stage approve <stage-id>`, or the Staged Packages tab on
+  npmjs.com). Existing connections cannot be edited — delete and recreate the
+  connection with *direct publish* allowed to publish unattended. Always verify
+  a release on the REGISTRY, not by the job conclusion. Releases use the shared canonical flow:
   `bun run release` (`scripts/release.ts` + `.release.json`) bumps `version` in
   package.json AND syncs `Cargo.toml` / `Cargo.lock` / `CHANGELOG.md`, runs the
   verify gate, and commits + tags `v<version>` — CI then builds + publishes every

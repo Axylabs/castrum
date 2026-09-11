@@ -408,6 +408,12 @@ jobs:
       # `--provenance` makes the OIDC attestation mandatory (it does not replace
       # auth): without it a broken OIDC exchange is invisible, because npm just
       # falls back to the token and reports a misleading 2FA notice.
+      #
+      # NOTE: if the trusted publisher is configured for `npm stage publish`
+      # only, npm STAGES this version instead of failing — the step exits 0 and
+      # logs `+ castrum@<version>`, but nothing goes live until a maintainer
+      # approves it with 2FA (`npm stage approve <stage-id>`). Verify releases
+      # on the registry, never by this job's conclusion.
       - name: Publish to npm (OIDC trusted publishing, token fallback)
         run: npm publish --access public --provenance
         env:
