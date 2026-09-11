@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] — 2026-09-11
+
 ### Added
 
 - **Off-thread task runtime ("castrum Tasks") — Bun-first `await`able native
