@@ -72,6 +72,16 @@ Rules (see `docs/FFI_BUN_GUIDE.md` for the full contract):
   pass as `usize`/number.
 - String ARGS come in as `*const c_char` (bun:ffi `cstring`); use
   `CStr::from_ptr(header).to_bytes()`.
+  
+  **NUL caveat**: the engine's transcode is NUL-terminated, so an embedded
+  `U+0000` TRUNCATES the value before Rust sees it. Only bind a `cstring` ARG
+  for developer-supplied config or input that cannot contain a NUL. If the op is
+  reachable from user input and answers with a verdict (validate/gate) or a
+  byte-exact value, provide a `*_bytes` sibling taking `(ptr,len)` (preferred —
+  exact length, no transcode, and measured faster for byte-shaped callers) or
+  guard the string form with `hasNul` (`src/shared/bytes.ts`).
+  See `docs/FFI_BUN_GUIDE.md` §6.1; regressions are caught by
+  `test/unit/native/cstring-nul.test.ts`.
 - String RETURNS use `cstring_return` (per-thread `CSTR_BUF`, cloned at call
   time — never return a pointer into JS-owned memory).
 - **Variable-size outputs**: return the EXACT required byte count on a

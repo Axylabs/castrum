@@ -1,7 +1,7 @@
 [package]
 name = "castrum"
 # Keep in sync with package.json "version" (single source of truth: the npm package).
-version = "0.9.4"
+version = "0.9.5"
 edition = "2021"
 
 [lib]
@@ -92,7 +92,11 @@ argon2 = "0.5"
 bcrypt = "0.16"
 # PBKDF2-HMAC-SHA256 (RustCrypto) — pure-Rust KDF.
 pbkdf2 = "0.12"
-sha2 = "0.11"
+# sha2 is consumed ONLY by pbkdf2 (digest 0.10). Do NOT bump to 0.11: that
+# moves `Sha256` to digest 0.11 while pbkdf2 0.12 still requires digest 0.10,
+# so `pbkdf2_hmac::<Sha256>` stops compiling (E0277 CoreProxy). Revisit only
+# together with a pbkdf2 release that depends on digest 0.11.
+sha2 = "0.10"
 # HTML templating (fast, safe, no eval).
 minijinja = "2"
 # gzip via the memory-safe zlib-rs backend (pure Rust, no C).

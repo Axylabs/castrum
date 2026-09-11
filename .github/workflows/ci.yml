@@ -86,9 +86,9 @@ jobs:
       fail-fast: false
       matrix:
         # Bun-version matrix: catches runtime regressions across supported Bun
-        # releases. `1.4.0` matches the local dev toolchain; `latest` tracks the
+        # releases. `1.4.2` matches the local dev toolchain; `latest` tracks the
         # current release channel.
-        bun: ['1.4.0', 'latest']
+        bun: ['1.4.2', 'latest']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

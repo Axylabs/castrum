@@ -1,6 +1,6 @@
 {
     "name": "castrum",
-    "version": "0.9.4",
+    "version": "0.9.5",
     "private": false,
     "description": "Enterprise-grade Bun + Rust runtime: Rust-accelerated FFI primitives, a production-grade HTTP ingress pipeline, validation, hashing, and JSON processing with benchmark-grade performance.",
     "type": "module",
@@ -118,6 +118,7 @@
         "bench:ffi:workers": "bun run bench/ffi/ffi-workers.ts",
         "bench:margin": "bun run bench/ffi/ffi-margin.ts",
         "bench:router": "bun run bench/cost/router-cost.ts",
+        "bench:task": "bun run bench/cost/task-offload.ts",
         "bench:ingress-cost": "bun run bench/cost/ingress-cost.ts",
         "bench:ingress-cost:post": "bun run bench/cost/ingress-cost-post.ts",
         "verify:native:batch": "bun run scripts/verify-native-batch.ts"

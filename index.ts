@@ -20,6 +20,11 @@ export * from './src/integration'
 // dispatch single items, packed batches, and load() coalescing. See README.
 export * from './src/loader'
 export * from './src/rust-ffi'
+// Off-thread native task runtime ("castrum Tasks"): submit a CPU-bound native
+// op to the Rust pool and `await` it without ever blocking the JS thread.
+// Bun-only offload today; Node runs the op synchronously. See
+// docs/RND-CONCURRENCY.md.
+export * from './src/task'
 export type { OpDecision, OpImpl } from './src/selection'
 // Native-vs-JS selection (OWNED HERE, not by consumers): `opImpl(op)` is the
 // benchmark-driven recommendation for which operations should use the Rust

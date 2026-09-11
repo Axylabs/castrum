@@ -7,7 +7,10 @@
 
 ## Methodology
 
-- **Runtime**: Bun **1.4.0** (the primary target).
+- **Runtime**: Bun **1.4.0** (the measurement anchor for the rows below; the
+  local toolchain has since moved to **1.4.2**, and these TIMING rows have not
+  been re-measured — only re-verified for parity, which
+  `test/unit/contract/delegation.test.ts` does on every run).
 - **Addon**: castrum **release** build (`bun run build`, baseline CPU — the
   shipped profile).
 - **Driver**: `bun run check` (CPU benchmark → `bench/results/cpu/latest.json`).

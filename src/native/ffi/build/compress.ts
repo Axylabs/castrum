@@ -117,6 +117,14 @@ export function buildCompress(
       }
       return w
     },
+    /**
+     * gzip ISIZE probe → uncompressed size for a single-member stream, or `0`
+     * when unknown. Used to PRE-SIZE a destination buffer for the zero-copy
+     * task path (one pass, no intermediate buffer, no retry in the common case).
+     */
+    gzipIsize(data) {
+      return Number(gzipIsize(data, lenOrView(data)))
+    },
     brotliCompress(data, quality = 5) {
       // Same cap rationale as gzipCompress (streaming core); growExact for
       // incompressible data.

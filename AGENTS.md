@@ -50,6 +50,7 @@ HTTP **ingress pipeline** for Bun servers.
 | FFI transport benches | `bun run bench:ffi` / `bench:ffi:load` / `bench:ffi:public` / `bench:ffi:workers` / `bench:margin` (`bench/ffi/`) |
 | Ingress cost benches | `bun run bench:ingress-cost` / `bench:ingress-cost:post` / `bench:router` (`bench/cost/`) |
 | New-op JS-vs-Rust cost | `bun run bench:newops` (`bench/cost/rust-vs-js-new-ops.ts`: metrics registry / hexValidateBatch / regexEscape vs their shipped JS baselines) |
+| Off-thread task cost | `bun run bench:task` (`bench/cost/task-offload.ts`: sync FFI vs the off-thread task runtime — duration AND event-loop stall; see `docs/RND-CONCURRENCY.md`) |
 | Load-phase bench | `bun run bench:load` |
 | Autocannon stress | `bun run bench:http:ac` (with `AC_*` env: `AC_DURATION`, `AC_PATH`, `AC_METHOD`, `AC_BODY`, `AC_CONTENT_TYPE`, `AC_CONNECTIONS`, `AC_WORKERS`, `AC_INSTANCES`, `AC_PIPELINING`, `SERVER`) |
 | Native batch parity check | `bun run verify:native:batch` |
@@ -168,6 +169,14 @@ src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + a
                           shared first-use caches) + text.ts + batch/ (types.ts interface + build.ts impl + index.ts barrel) +
                           packed.ts + scalar/ (interface + hashing/json/http/crypto/payload/factories builders) + client.ts +
                           proven.ts + index.ts barrel
+src/task/                 off-thread task runtime ("castrum Tasks", Bun-first): op.ts (pure op ids + packed-arg
+                          encoders) + runtime.ts (process-wide singleton: submit → native pool → batched doorbell
+                          → drained completion → promise; AbortSignal; ZERO-COPY both ways — submitInto writes
+                          results into a JS-owned Buffer, submitSlice reads a large payload in place) +
+                          index.ts barrel. Ops: gzipDecompress/brotliDecompress (+Into), gzipCompress, pbkdf2Sha256,
+                          argon2Verify. Rust core is rust/task/.
+                          Node falls back to the sync `rust.*` op (napi AsyncTask is the M2 milestone).
+                          See docs/RND-CONCURRENCY.md; measure with `bun run bench:task`.
 src/shared/request-id.ts  shared zero-alloc request ID generator (both ingress paths) — aliased buffer hazard documented
 src/shared/metrics.ts     zero-dep metrics registry (counters/gauges/histograms + Prometheus render)
 src/shared/trace.ts       W3C traceparent/span-id helpers (tracing correlation)
@@ -203,7 +212,7 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi/                `#[no_mangle] extern "C"` exports (109 castrum_* — 97 direct + 4
+  ├── ffi/                `#[no_mangle] extern "C"` exports (119 castrum_* — 107 direct + 4
                           validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out! — incl. the
                           castrum_gzip_isize size probe and the per-route stack
                           castrum_route_compile/run/destroy; parity guarded by
@@ -224,6 +233,16 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   ├── batch/         aggregate packed batch napi APIs (api.rs + core.rs + tests.rs)
   │   ├── threadpool.rs   rayon global pool init + parallelism heuristic
   │   └── validation.rs   email / UUID / IPv4 / IPv6 validators
+  ├── task/               OFF-THREAD TASK RUNTIME ("castrum Tasks", Bun-first): mod.rs
+  │                       (submit_op / submit_op_into / submit_slice_op + re-exports) + runtime.rs
+  │                       (condvar pool, N = cores−1, CASTRUM_TASK_THREADS, deliberately separate
+  │                       from rayon; batch dequeue + bounded spin-then-park + optional core
+  │                       pinning CASTRUM_TASK_PIN_CORES) + completion.rs (result ring + BATCHED
+  │                       thread-safe doorbell) + ops.rs (op dispatch over a header+payload
+  │                       split, cancel, catch_unwind containment, `_into` ops writing into a
+  │                       caller slice, slice ops reading the payload in place) + tests.rs.
+  │                       C-ABI lives in ffi/task.rs (10 castrum_task_* symbols).
+  │                       See docs/RND-CONCURRENCY.md; bench: `bun run bench:task`.
   ├── http/               HTTP WIRE FORMATS & PARSING
   │   ├── headers.rs      zero-alloc packed-header parser (HeaderRefs)
   │   ├── method.rs       HTTP method classification
@@ -387,7 +406,7 @@ success and `error.code` / `error.message` on errors (path 2's format).
   never a hard publish requirement. When you touch the loader, run
   `bun run bench:startup` + the loader unit tests
   (`test/unit/native/loader.test.ts`).
-- **Bun FFI behavior (learned from Bun 1.3.14 — see `docs/FFI_BUN_GUIDE.md`)**:
+- **Bun FFI behavior (learned from Bun 1.3.14, re-verified on 1.4.2 — see `docs/FFI_BUN_GUIDE.md`)**:
   - Hot `bun:ffi` call sites JIT through DFG/FTL into direct native calls (~10–20ns);
     keep `extern "C"` signatures scalar + `(ptr,len)` — no struct-by-value (not
     supported by `bun:ffi`), no variadics, no callbacks in hot paths.
@@ -400,6 +419,15 @@ success and `error.code` / `error.message` on errors (path 2's format).
     (`U64_FAST` in ffi.ts); opaque handles pass as `usize`/number (`Number(innerPtr())` once).
   - `cstring` returns are cloned at call time (NULL → null) — per-thread reused
     `CSTR_BUF` is safe; never return a pointer into JS-owned/argument memory.
+  - `cstring` ARGS are transcoded in-engine (zero JS encode) BUT the buffer is
+    NUL-TERMINATED, so an embedded `U+0000` TRUNCATES the value. Only bind one for
+    developer config / NUL-free input; where an op is reachable from user input and
+    answers with a verdict or a byte-exact value, add a `*_bytes` sibling
+    (`buffer`/`buffer_length` — also measured 2.2–3.2× faster) or guard with
+    `hasNul` (`src/shared/bytes.ts`). Skipping this shipped two bugs:
+    `validateEmail('a@b.com\0<script>')` → `true`, `regexEscape('abc\0def')` →
+    `'abc'`. Pin any new case in `test/unit/native/cstring-nul.test.ts`; full
+    contract in `docs/FFI_BUN_GUIDE.md` §6.1 (+ audit log §11.2).
   - Never `close()` a dlopen'd library while bound symbols are live (Bun leaks by
     design; dlclose-on-GC is unsound). `getBunFFI()` binds once and holds forever.
   - Symbols are shared across Worker threads → thread-local caches only

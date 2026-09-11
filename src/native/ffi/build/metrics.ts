@@ -9,6 +9,18 @@
 import { decodeUtf8, encodeUtf8 } from '../../../shared/codec'
 import type { BunFFI, Raw0, Raw3, Raw4, Raw5 } from '../types'
 import type { BuildCtx } from './util'
+import { hasNul } from './util'
+
+/**
+ * Declare-time NUL guard: a metric NAME or label-key set containing `U+0000`
+ * would be truncated by the `cstring` arg, silently colliding two series. This
+ * runs once at declaration, so failing fast costs nothing on the hot path.
+ */
+function throwIfNul(value: string, what: string): void {
+  if (hasNul(value)) {
+    throw new Error(`metrics: ${what} must not contain a NUL character (U+0000)`)
+  }
+}
 
 /**
  * Sentinel returned by the declare fns (`u32::MAX`) on invalid input — fits
@@ -59,12 +71,18 @@ export function buildMetrics(
       return h
     },
     metricsCounter(handle, name, labelKeys) {
+      throwIfNul(name, 'counter name')
+      throwIfNul(labelKeys, 'counter label keys')
       return declareOrThrow(metricsCounterRaw(handle, name, labelKeys), `counter "${name}"`)
     },
     metricsGauge(handle, name, labelKeys) {
+      throwIfNul(name, 'gauge name')
+      throwIfNul(labelKeys, 'gauge label keys')
       return declareOrThrow(metricsGaugeRaw(handle, name, labelKeys), `gauge "${name}"`)
     },
     metricsHistogram(handle, name, labelKeys, bucketsCsv) {
+      throwIfNul(name, 'histogram name')
+      throwIfNul(labelKeys, 'histogram label keys')
       return declareOrThrow(
         metricsHistogramRaw(handle, name, labelKeys, bucketsCsv),
         `histogram "${name}"`,
@@ -79,9 +97,14 @@ export function buildMetrics(
     },
     metricsRecordStr(handle, series, values, amount) {
       // `values` is the JOINED `\x1f` string — engine-transcoded (zero encode).
+      // Label values come from user data, so a NUL would truncate the join and
+      // silently record the WRONG series (the native side rejects a NUL value,
+      // but only if it ever sees it). Fail loudly and say why.
+      throwIfNul(values, 'label values')
       return Number(metricsRecordStrRaw(handle, series, values, amount)) === 1
     },
     metricsGaugeSetStr(handle, series, values, value) {
+      throwIfNul(values, 'label values')
       return Number(metricsGaugeSetStrRaw(handle, series, values, value)) === 1
     },
     metricsRender(handle, output) {

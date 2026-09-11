@@ -5,6 +5,157 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Off-thread task runtime ("castrum Tasks") — Bun-first `await`able native
+  work that never blocks the event loop.** `rust/task/` (condvar pool of
+  `cores−1` threads, deliberately separate from the rayon batch pool; result ring
+  with a BATCHED thread-safe doorbell; op dispatch, cancellation, and per-task
+  `catch_unwind` containment) + `rust/ffi/task.rs` (10 `castrum_task_*` C-ABI
+  symbols) + `src/task/` (`createTaskRuntime()` — process-wide singleton;
+  `AbortSignal`, needed-size packed drain, zero-copy in both directions).
+  Measured (`bun run bench:task`, Bun 1.4.2): 300 k-round PBKDF2 stalls the loop
+  **2.1 ms** off-thread vs **29.7 ms** synchronously, and 8-way concurrent PBKDF2
+  completes in **30.7 ms** vs **241.2 ms** sequential (7.9×). FFI symbol parity +
+  bind-time self-test extended. Design, Bun 1.4.2 best practices, and the
+  measured limits: `docs/RND-CONCURRENCY.md`.
+- **Task ops beyond gzip/pbkdf2: `argon2Verify`, `brotliDecompress`, `gzipCompress`.**
+  Each is one `match` arm reusing the existing pure Rust core
+  (`verify_password`, `brotli_decompress_into`, `gzip_compress_bytes`), so the
+  offload surface now covers all three stall shapes: tens-to-hundreds of ms of
+  CPU for a one-bit answer (argon2), a large result (brotli), and a large input
+  (gzip). Measured off-thread vs synchronous: argon2 verify **2.1 ms vs 31.6 ms**
+  stall, gzip compress **2.1 ms vs 5.7 ms**, brotli decompress **2.4 ms vs
+  14.0 ms**. `tasks.stats()` gained `tooSmallRetries` so the needed-size retry is
+  observable. 5 new Rust + 4 new TS tests.
+- **Zero-copy task output for large results.** When an op can report its output
+  size up front (`castrum_gzip_isize`), `tasks.gzipDecompress` now allocates the
+  destination in JS (`Buffer.allocUnsafe`) and the pool thread writes into it via
+  `castrum_task_submit_out` — the result is never copied out of the completion
+  ring, and no ownership is transferred (so no deallocator, unlike the
+  `toArrayBuffer` handoff that segfaults Bun 1.4.2 — see
+  `docs/RND-CONCURRENCY.md` §7a). A 24 MiB decompression went from
+  **29.2 ms / 11.9 ms event-loop stall to 11.4 ms / 2.1 ms**. Ops without a size
+  probe (brotli) guess a capacity and land the exact size through the needed-size
+  retry.
+- **Zero-copy task INPUT for large arguments** (`castrum_task_submit_slice`).
+  Only the small op header is copied; the payload is read in place on the pool
+  thread, and the runtime holds it for the task's whole lifetime so the GC cannot
+  free it under a running worker. See the `gzipCompress` fix below for why this
+  was not optional.
+
+### Fixed
+
+- **String validators could be fooled into reporting an invalid value as
+  valid.** `validateEmail` / `validateUuid` / `validateIpv4` / `validateIpv6`
+  decoded their byte input into a JS string and passed it to a `cstring` ARG —
+  and `bun:ffi` transcodes a `cstring` ARG into a NUL-**terminated** buffer, so
+  an embedded `U+0000` truncated the value native-side:
+
+  ```js
+  rust.validateEmail(bytes('a@b.com\0<script>alert(1)</script>'))  // was: true
+  ```
+
+  The byte-input validators now cross as a `buffer`/`buffer_length` pair (an
+  atomic ptr+len snapshot, no transcode), which is both correct and **faster**:
+  measured through the public API over 400k calls on Bun 1.4.2, email 236 → 110
+  ns, uuid 153 → 50 ns, ipv4 118 → 37 ns. The same truncation cut `regexEscape`
+  output to the prefix (`'abc\0def'` → `'abc'`); it now routes to the `(ptr,len)`
+  sibling for the byte-exact result. `mimeFromExtension` no longer resolves a
+  NUL-suffixed extension as its prefix (a Content-Type chosen from truncated
+  input), and `wsAcceptKey` no longer computes the accept value for a prefix of
+  the key — both keep the fast `cstring` path and divert only the NUL case,
+  since routing every call through bytes measured ~4% SLOWER through the real
+  call path. Metric names, label keys and label values now fail loudly on a NUL
+  instead of silently recording a truncated series. The `cstring`-ARG contract,
+  its two failure modes and the rule that prevents them are in
+  `docs/FFI_BUN_GUIDE.md` §6.1 + §11.1, pinned by
+  `test/unit/native/cstring-nul.test.ts` (11 tests).
+- **Offloading `gzipCompress` of a large buffer was WORSE than not offloading
+  it.** The payload was packed into the args blob, copying the whole input on the
+  JS thread: 24 MiB measured **18.6 ms wall / 11.7 ms event-loop stall** against
+  5.6 ms for the synchronous `Bun.gzipSync` — a net loss on both axes. Task opens
+  now take a **header + payload-pointer** form, copying only the header:
+  **7.3 ms / 2.1 ms**. Pinned by a regression test that fails if the payload ever
+  goes back through a copy.
+- **A partial/partial-but-stale native addon no longer disables the whole
+  `bun:ffi` transport.** Binding now walks every candidate path
+  (`getAddonPathCandidates()` — v3 SIMD variant first on v3-capable linux/x64,
+  then baseline, then the env override) instead of committing to the first one
+  the loader resolved, and reports the tried paths when `CASTRUM_FFI_MODE=ffi`.
+  Previously a stale `castrum.linux-x64-v3-gnu.node` missing a newly added
+  `castrum_*` symbol made `dlopen` fail, which silently fell back to napi for
+  every call — the task runtime then ran synchronously with no error.
+
+### Changed
+
+- **Task runtime hot-path efficiency.** The drain loop no longer boxes a BigInt
+  per completion (`getBigUint64`) or allocates a `DataView` and a body copy per
+  completion (ids and lengths are read as two `u32`s at an offset; a zero-copy
+  completion's body is never materialized), and the synchronous copy path reuses
+  one growable args buffer instead of allocating per task. The per-task figure is
+  now measured best-of-5 (a single run is noisy enough to mislead): **~2.8 µs/task**
+  for 2 000 overlapped tasks. Secrets are deliberately excluded from the shared
+  args buffer.
+- **`tasks.stats()` now reports drain-side counters** (`completed`, `drains`,
+  `maxBatch`) alongside `threads`/`pending`/`inflight`, so the doorbell's
+  amortization is observable instead of assumed. Measured on the 2 000-task worst
+  case: **~30 drain rounds for ~10 000 completions (≈300/round, max batch 2 000)** —
+  drain overhead is ~0.1 µs/task, i.e. the remaining per-task cost is the JS
+  submit/promise floor, not the RTT. Pinned by a test.
+- **Task pool scheduling tuned for bursts** (`rust/task/`): batch dequeue under a
+  single lock acquisition (guarded by queue depth so one greedy worker cannot
+  starve its idle peers), bounded spin-then-park before the condvar wait (no
+  futex syscall for a job that arrives while a worker is still spinning),
+  optional per-worker CPU pinning via `CASTRUM_TASK_PIN_CORES`, a pre-sized
+  completion ring, and a one-call drain (no separate size probe FFI call).
+  8-way concurrent PBKDF2 improved from 60.7 ms to 30.6 ms after the fairness
+  guard. See `docs/RND-CONCURRENCY.md` §7b and `docs/ENVIRONMENT.md`.
+
+## [0.9.5] — 2026-09-11
+
+### Fixed
+
+- **Form / percent decoding now matches JS `decodeURIComponent` semantics —
+  the packed query parser no longer fails on malformed input.**
+  `util::bytes::decode_form_component_into` treated a malformed `%XX`
+  (truncated, non-hex, dangling `%`) as an ERROR, so `castrum_query_parse_packed`
+  / `form_parse_packed` returned 0 and a JS caller saw a thrown
+  `query: parse failed` — a 500 for attacker-supplied input — and it emitted
+  escape sequences decoding to invalid UTF-8 lossily instead of rejecting them.
+  Both behaviours diverge from what a JS caller does, and a differential fuzz
+  against the JS fallback threw on **17,496 of 20,011** malformed inputs.
+  The decoder now implements the JS contract exactly, PER COMPONENT:
+  no `%`/`+` → verbatim; otherwise `+` → space and `%XX` → byte; a malformed
+  escape or a result that is not valid UTF-8 → the WHOLE component returned
+  RAW (`+` included, because JS's `catch` returns the string before the
+  replace). Validity is `simdutf8::basic::from_utf8` — the same rejection set
+  as `decodeURIComponent` (overlongs, surrogate halves, > U+10FFFF) — and it is
+  only paid when a high byte actually reaches the output. Verified with
+  400,520 differential comparisons against the JS fallback (query + form,
+  truncation windows + random escapes): 0 throws, 0 mismatches.
+- **The native ingress pipeline no longer answers 400 where the JS path
+  answers 200.** The query → JSON writer used a strict arm, so a malformed
+  escape produced a 400 verdict; it now shares the lenient decoder, so
+  `/api?q=%E2%9C` yields `{"q":"%E2%9C"}` (the raw component) instead of a
+  rejection. `QueryJsonError::Malformed` had no other producer and is gone.
+
+### Changed
+
+- **One decoder, no drift.** `decode_form_component_into` is now the single
+  place form decoding happens — the packed `query`/`form` parsers, the
+  query → JSON writer and the native route stack all route through it (the
+  route stack's private `decode_segment_scratch` and its local `hex_val`
+  duplicate are deleted, replaced by a shared `decode_form_component_scratch`).
+  This is what let the two implementations disagree in the first place.
+- **The "needed size" pass can no longer disagree with the writer.**
+  `decode_form_component_len` mirrors the raw fallback (and over-reports only
+  where the result could be invalid UTF-8, which is safe for a grow-and-retry
+  caller); previously it reported the decoded length while the writer could
+  fail, so a caller could loop on the same too-small size.
+
 ## [0.9.4] — 2026-08-24
 
 ### Changed

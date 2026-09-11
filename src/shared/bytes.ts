@@ -134,3 +134,22 @@ export function toPlainBuffer(bytes: Uint8Array): Uint8Array {
   copy.set(bytes)
   return copy
 }
+
+/**
+ * Does this string contain a NUL (`U+0000`)?
+ *
+ * `bun:ffi` transcodes a JS string passed to a `cstring` ARG into a
+ * NUL-TERMINATED UTF-8 buffer, so an embedded NUL SILENTLY TRUNCATES the value
+ * natively (Bun's docs describe the transcode; the truncation is the C
+ * convention it inherits). That is fine for developer-supplied config, and a
+ * real bug wherever the callee answers with a VERDICT (a truncated prefix
+ * passes where the full input fails) or where the exact bytes ARE the result.
+ *
+ * Cheap: one `indexOf` scan, ~4 ns for typical inputs.
+ *
+ * @param s - The string to check.
+ * @returns `true` when a NUL is present.
+ */
+export function hasNul(s: string): boolean {
+  return s.indexOf('\u0000') !== -1
+}
