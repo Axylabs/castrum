@@ -149,7 +149,10 @@
     "validator": "^13.15.35"
   },
   "overrides": {
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "dts-bundle-generator": {
+      "typescript": "5.9.3"
+    }
   },
   "engines": {
     "bun": ">=1.1.0",

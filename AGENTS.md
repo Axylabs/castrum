@@ -521,6 +521,20 @@ success and `error.code` / `error.message` on errors (path 2's format).
 - **`tsconfig.json`** sets `noUncheckedIndexedAccess: true`. Indexed access on
   `Record<string, Uint8Array>` (e.g. `ERROR_BODIES.internal`) is
   `Uint8Array | undefined` — `handlers.ts` uses `!` where the key is guaranteed.
+- **`typescript` stays on 7.x (native compiler) + a SCOPED `5.9.3` for
+  `dts-bundle-generator`**: `build:js:types` uses `dts-bundle-generator` (9.5.1,
+  latest), which needs the pre-7 JS compiler API (`ts.sys`, `createProgram`).
+  TypeScript 7's package root exports only `{ version }`, so a flat install
+  throws `Cannot read properties of undefined (reading 'getCurrentDirectory')`.
+  The fix is the NESTED override
+  (`"overrides": { "dts-bundle-generator": { "typescript": "5.9.3" } }`):
+  typecheck / `bunx tsc` keep running on 7 while the bundler resolves its own
+  nested 5.9.3. Do NOT collapse it into a flat `"typescript"` override (that
+  downgrades the project compiler) and do NOT delete it when bumping TypeScript.
+  After any dependency change, `bun install` must run with a clean
+  `node_modules` (a leftover pnpm-isolated tree keeps a nested `typescript`
+  symlink at the old version and keeps failing even after the override is
+  restored).
 - **`bench/` IS typechecked by `tsc`** (in tsconfig `include`). `test/` is not —
   validate test files with the editor language server, and run
   `bun run bench:http:smoke` to confirm the servers still pass load checks.
