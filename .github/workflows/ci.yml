@@ -385,8 +385,26 @@ jobs:
           path: ./
           format: spdx-json
           artifact-name: castrum-sbom.spdx.json
+      # Diagnostics for the OIDC path: if publishing ever fails again, the log
+      # shows whether the runner exposed an id-token, which repo/workflow/ref the
+      # exchange will claim, and whether an .npmrc auth entry (which makes npm
+      # prefer token auth) exists. The token value is never printed.
+      - name: Report the OIDC environment
+        run: |
+          echo "id-token request url   : ${ACTIONS_ID_TOKEN_REQUEST_URL:+present}"
+          echo "id-token request token : ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+present}"
+          echo "expected claim         : ${{ github.repository }} / .github/workflows/ci.yml @ ${{ github.ref }}"
+          if [ -f "$HOME/.npmrc" ]; then
+            echo "~/.npmrc present:"
+            sed 's/_authToken=.*/_authToken=<redacted>/' "$HOME/.npmrc"
+          else
+            echo "no ~/.npmrc (good: nothing to make npm prefer token auth)"
+          fi
+      # `--provenance` makes the OIDC path MANDATORY: without it npm silently
+      # falls back to token auth and reports a bare ENEEDAUTH when the trusted
+      # publisher is missing or mismatched, which hides the real cause.
       - name: Publish to npm (OIDC trusted publishing)
-        run: npm publish --access public
+        run: npm publish --access public --provenance
       # SLSA3 provenance: records the repo/commit that produced this release so
       # consumers can verify the artifact's supply chain.
       - name: Attest build provenance
