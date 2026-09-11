@@ -80,13 +80,16 @@ HTTP **ingress pipeline** for Bun servers.
   platform `.node` is present. Push a `v*` tag instead: `.github/workflows/ci.yml`
   builds + uploads each platform artifact, then the `publish` job downloads them
   into `./artifacts`, stages them, and runs `npm publish --access public`.
-  **No npm secret is involved**: the publish job uses npm Trusted Publishing
-  (OIDC) — it needs `id-token: write` (present) and npm >= 11.5.2 (the job
-  installs `npm@latest` and asserts the version), and the package must list
-  `Axylabs/castrum` + `.github/workflows/ci.yml` as its Trusted Publisher on
-  npmjs.com (Package → Settings → Trusted Publisher). If that npm-side config is
-  missing the publish fails with an OIDC/authentication error — add the trusted
-  publisher rather than a token. Releases use the shared canonical flow:
+  **Auth**: npm Trusted Publishing (OIDC) is preferred — it needs `id-token:
+  write` (present), npm >= 11.5.2 (the job installs `npm@latest` and asserts the
+  version) and the package to list `Axylabs/castrum` +
+  `.github/workflows/ci.yml` (+ environment `NPM_TOKEN` if npm's "Environment
+  name" is set) as its Trusted Publisher on npmjs.com (Package → Settings →
+  Trusted Publisher). The publish job also targets the GitHub **environment
+  `NPM_TOKEN`**, which holds an `NPM_TOKEN` secret; npm prefers OIDC and falls
+  back to that token, so either path ships a release. `repository.url` in
+  package.json MUST match the GitHub repo or the OIDC exchange is rejected and
+  npm reports a misleading `ENEEDAUTH`. Releases use the shared canonical flow:
   `bun run release` (`scripts/release.ts` + `.release.json`) bumps `version` in
   package.json AND syncs `Cargo.toml` / `Cargo.lock` / `CHANGELOG.md`, runs the
   verify gate, and commits + tags `v<version>` — CI then builds + publishes every

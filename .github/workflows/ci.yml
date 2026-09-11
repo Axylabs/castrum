@@ -342,6 +342,11 @@ jobs:
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest
+    # The credential lives in an ENVIRONMENT (environment secrets are only
+    # visible to jobs that target them). The name must match the "Environment
+    # name" configured in npm's trusted-publisher settings, otherwise the OIDC
+    # claims do not line up and npm silently falls back to token auth.
+    environment: NPM_TOKEN
     # A tag must not ship past typecheck, unit/smoke tests, the wire-format
     # guard, or the Node compat suite — require all quality gates.
     needs: [build, typescript, node]
@@ -358,15 +363,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # No registry token and no `registry-url`: `npm publish` authenticates with
-      # an OIDC token, which npm exchanges for a short-lived credential when the
-      # package lists this repo + workflow file as a Trusted Publisher on
-      # npmjs.com (Package -> Settings -> Trusted Publisher -> GitHub Actions:
-      # Axylabs/castrum, .github/workflows/ci.yml). This needs npm >= 11.5.2,
-      # which is why the npm CLI is upgraded and asserted below.
+      # No registry token is REQUIRED: npm prefers OIDC (trusted publishing)
+      # when it is configured and falls back to the token below otherwise, so a
+      # release works either way. This needs npm >= 11.5.2, which is why the npm
+      # CLI is upgraded and asserted below.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+          # Writes ~/.npmrc with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`.
+          registry-url: https://registry.npmjs.org
       - name: Ensure npm supports OIDC trusted publishing (>= 11.5.2)
         run: |
           npm install -g npm@latest
@@ -395,16 +400,18 @@ jobs:
           echo "id-token request token : ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+present}"
           echo "expected claim         : ${{ github.repository }} / .github/workflows/ci.yml @ ${{ github.ref }}"
           if [ -f "$HOME/.npmrc" ]; then
-            echo "~/.npmrc present:"
+            echo "~/.npmrc present (token fallback wired):"
             sed 's/_authToken=.*/_authToken=<redacted>/' "$HOME/.npmrc"
           else
-            echo "no ~/.npmrc (good: nothing to make npm prefer token auth)"
+            echo "no ~/.npmrc"
           fi
-      # `--provenance` makes the OIDC path MANDATORY: without it npm silently
-      # falls back to token auth and reports a bare ENEEDAUTH when the trusted
-      # publisher is missing or mismatched, which hides the real cause.
-      - name: Publish to npm (OIDC trusted publishing)
+      # `--provenance` makes the OIDC attestation mandatory (it does not replace
+      # auth): without it a broken OIDC exchange is invisible, because npm just
+      # falls back to the token and reports a misleading 2FA notice.
+      - name: Publish to npm (OIDC trusted publishing, token fallback)
         run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       # SLSA3 provenance: records the repo/commit that produced this release so
       # consumers can verify the artifact's supply chain.
       - name: Attest build provenance
