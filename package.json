@@ -23,11 +23,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Axylabs/flux-rs.git"
+    "url": "git+https://github.com/Axylabs/castrum.git"
   },
-  "homepage": "https://github.com/Axylabs/flux-rs#readme",
+  "homepage": "https://github.com/Axylabs/castrum#readme",
   "bugs": {
-    "url": "https://github.com/Axylabs/flux-rs/issues"
+    "url": "https://github.com/Axylabs/castrum/issues"
   },
   "publishConfig": {
     "access": "public"
