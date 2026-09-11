@@ -87,7 +87,11 @@ fn submit_runs_off_thread_and_drains() {
     let _g = LOCK.lock();
     completion::clear();
     let payload = b"hello castrum tasks".repeat(64);
-    assert!(super::submit_op(OP_GZIP_DECOMPRESS, gzip_args(&payload), 0x1001));
+    assert!(super::submit_op(
+        OP_GZIP_DECOMPRESS,
+        gzip_args(&payload),
+        0x1001
+    ));
     let (status, body) = wait_for(0x1001);
     assert_eq!(status, STATUS_OK);
     assert_eq!(body, payload);

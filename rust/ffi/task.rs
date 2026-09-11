@@ -51,10 +51,7 @@ pub unsafe extern "C" fn castrum_task_drain(out: *mut u8, out_cap: usize) -> usi
     if out.is_null() {
         return 0;
     }
-    panic_guard(
-        || task::drain(slice::from_raw_parts_mut(out, out_cap)),
-        0,
-    )
+    panic_guard(|| task::drain(slice::from_raw_parts_mut(out, out_cap)), 0)
 }
 
 /// Completions waiting to be drained.

@@ -70,7 +70,9 @@ core_affinity = "0.8"
 parking_lot = "0.12"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 ipnet = "2"
-lru = "0.16"
+# 0.18.2+ carries the RUSTSEC-2026-0253 fix (0.16.x is affected); keep this
+# requirement at or above the fixed release so `cargo deny` / OSV stay green.
+lru = "0.18.2"
 # Zero-cost hashing for fast_schema object-key lookups (default SipHash is slow
 # on short keys). Already a transitive dep, so no new download.
 rustc-hash = "2"

@@ -152,7 +152,11 @@
     "typescript": "7.0.2",
     "dts-bundle-generator": {
       "typescript": "5.9.3"
-    }
+    },
+    "@napi-rs/cli": {
+      "typescript": "6.0.3"
+    },
+    "hyperid": "^4.0.0"
   },
   "engines": {
     "bun": ">=1.1.0",

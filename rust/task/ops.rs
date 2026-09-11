@@ -71,17 +71,11 @@ static CANCELLED: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
 /// Mark a task id cancelled. Returns `true` the first time, `false` if the id
 /// was already marked (or unknown — the task may have finished).
 pub fn mark_cancelled(id: u64) -> bool {
-    CANCELLED
-        .lock()
-        .get_or_insert_with(HashSet::new)
-        .insert(id)
+    CANCELLED.lock().get_or_insert_with(HashSet::new).insert(id)
 }
 
 fn is_cancelled(id: u64) -> bool {
-    CANCELLED
-        .lock()
-        .as_ref()
-        .is_some_and(|s| s.contains(&id))
+    CANCELLED.lock().as_ref().is_some_and(|s| s.contains(&id))
 }
 
 fn clear_cancelled(id: u64) {
@@ -115,7 +109,13 @@ pub fn execute_guarded(op: u32, args: &[u8], id: u64) {
 /// # Safety
 /// `data`/`data_len` must describe a readable region that stays alive and
 /// unmodified until the completion for `id` is drained.
-pub unsafe fn execute_slice_guarded(op: u32, hdr: &[u8], data: *const u8, data_len: usize, id: u64) {
+pub unsafe fn execute_slice_guarded(
+    op: u32,
+    hdr: &[u8],
+    data: *const u8,
+    data_len: usize,
+    id: u64,
+) {
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let data: &[u8] = if data.is_null() {
             &[]
@@ -202,7 +202,10 @@ fn run_into(
         },
         OP_BROTLI_DECOMPRESS_INTO => match cap_of(hdr) {
             Some(max) => stream_result(brotli_decompress_into(data, max, out), "brotli decompress"),
-            None => Err((STATUS_ERROR, b"brotli.decompress: header too short".to_vec())),
+            None => Err((
+                STATUS_ERROR,
+                b"brotli.decompress: header too short".to_vec(),
+            )),
         },
         _ => Err((STATUS_UNSUPPORTED, Vec::new())),
     }
@@ -273,9 +276,7 @@ fn run_op(op: u32, hdr: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
             None => Err("brotli.decompress: header too short".to_string()),
         },
         OP_GZIP_COMPRESS => match hdr_u32(hdr, 0) {
-            Some(level) => {
-                gzip_compress_bytes(data, level.min(9)).map_err(|e| e.to_string())
-            }
+            Some(level) => gzip_compress_bytes(data, level.min(9)).map_err(|e| e.to_string()),
             None => Err("gzip.compress: header too short".to_string()),
         },
         OP_ARGON2_VERIFY => {
@@ -410,7 +411,8 @@ mod tests {
         let compressed = run_packed(OP_GZIP_COMPRESS, &args).unwrap();
         assert!(compressed.len() < payload.len());
         assert_eq!(
-            crate::payload::compress::gzip_decompress_bytes(&compressed, payload.len() + 1).unwrap(),
+            crate::payload::compress::gzip_decompress_bytes(&compressed, payload.len() + 1)
+                .unwrap(),
             payload
         );
     }
@@ -428,7 +430,10 @@ mod tests {
         let mut tiny = [0u8; 16];
         match run_into_packed(OP_BROTLI_DECOMPRESS_INTO, &args, &mut tiny) {
             Err((STATUS_TOO_SMALL, body)) => {
-                assert_eq!(u64::from_le_bytes(body.try_into().unwrap()), payload.len() as u64);
+                assert_eq!(
+                    u64::from_le_bytes(body.try_into().unwrap()),
+                    payload.len() as u64
+                );
             }
             Ok(w) => panic!("expected TooSmall, got Ok({w})"),
             Err((s, _)) => panic!("expected TooSmall, got status {s}"),
