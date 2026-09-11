@@ -48,7 +48,7 @@ jobs:
       - name: Format
         run: cargo fmt --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Unit tests
         run: cargo test
       # Release profile (`panic=unwind`, `overflow-checks=true`) is never hit by
@@ -110,7 +110,7 @@ jobs:
       - name: Build native addon (host)
         run: bun run build:debug
       - name: Unit tests
-        run: bun test
+        run: bun run test
       # Coverage floor (scripts/check-coverage.mjs): fails if overall line
       # coverage drops below the configured minimum. Safety net, not a target.
       - name: Coverage floor
@@ -271,9 +271,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      # dtolnay/rust-toolchain encodes the toolchain in the REF (`@stable`,
+      # `@nightly`, `@1.98.0`), so a SHA-pinned ref MUST pass it explicitly.
+      # It must be the channel rust-toolchain.toml names, because cargo resolves
+      # THAT toolchain inside the repo: installing `stable` (+ its targets)
+      # leaves every cross target with no std, i.e. "can't find crate for core".
+      - name: Read the pinned Rust channel (rust-toolchain.toml)
+        id: rust-channel
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
         with:
-          toolchain: stable
+          toolchain: ${{ steps.rust-channel.outputs.channel }}
           targets: ${{ matrix.target }}
       # cargo-zigbuild (the `-x` flag) needs zig on PATH plus the subcommand.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2

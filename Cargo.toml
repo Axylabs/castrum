@@ -20,6 +20,7 @@ path = "rust/lib.rs"
 [[bin]]
 name = "native-bench"
 path = "rust/src/bin/native-bench.rs"
+required-features = ["native-bench"]
 
 [dependencies]
 napi = { version = "3", features = ["napi10", "serde-json"] }
@@ -121,6 +122,13 @@ proptest = "1"
 [features]
 default = ["fast-email"]
 fast-email = ["dep:fast_chemail"]
+# Diagnostic-only gate for the `native-bench` binary (see the [[bin]] below):
+# without this feature the bin is not a default target, so `napi build` — and
+# therefore every shipped cross-compiled artifact — never links it. The napi
+# cross toolchains cannot resolve the aws-lc-sys C symbols an executable needs
+# (`undefined reference to __isoc23_sscanf`), while a cdylib tolerates them.
+# Run it with: cargo run --release --features native-bench --bin native-bench
+native-bench = []
 
 # Codify the CI clippy gate (`cargo clippy --all-targets -- -D warnings`) so a
 # bare local `cargo clippy` fails on the same lints — no flag drift between
