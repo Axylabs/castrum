@@ -89,7 +89,7 @@ num-cmp = "0.1"
 # argon2id password hashing (password-hash/rand features are default-on).
 argon2 = "0.5"
 # bcrypt password hashing (pure-Rust, Blowfish-based).
-bcrypt = "0.16"
+bcrypt = "0.19"
 # PBKDF2-HMAC-SHA256 (RustCrypto) — pure-Rust KDF.
 pbkdf2 = "0.12"
 # sha2 is consumed ONLY by pbkdf2 (digest 0.10). Do NOT bump to 0.11: that
