@@ -8,9 +8,3 @@ rules:
   cache-poisoning:
     ignore:
       - ci.yml
-  unpinned-uses:
-    ignore:
-      # `napi-rs/napi-rs-action@v2`: the referenced repository does not exist
-      # on GitHub (404), so it cannot be pinned to a commit SHA. Resolve the
-      # action's canonical location first, then remove this ignore.
-      - ci.yml:246
