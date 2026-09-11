@@ -42,7 +42,7 @@ HTTP **ingress pipeline** for Bun servers.
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
 | Postinstall fallback build | `node scripts/postinstall.mjs` (runs as package.json `postinstall`; no-op when a prebuilt `.node` exists for the host, else `cargo build --release` from the shipped `rust/` source — see `docs/ENVIRONMENT.md`) |
 | Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/panic_safety.rs` + `rust/proptest_suite.rs`) |
-| TS unit tests | `bun test` (~760 tests, `test/unit/**`) |
+| TS unit tests | `bun test test/unit test/property test/compat` (~804 tests; the `test` script passes those paths explicitly) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts) feed docs/bun-builtins-decision-matrix.md (NOT a shipped-op measurement) |
 | Proven selection | baked registry `src/shared/proven.ts` (`PROVEN_SELECTION`: native/js/bun winners) + `proven` surface (`src/rust-ffi/proven.ts`); `test/unit/contract/proven.test.ts` verifies each winner is wired (opImpl/builtins/selection.json) — NO live bench gate |
@@ -672,8 +672,13 @@ explicit impurity boundary so the hot path can pool/globalize state:
 
 ## Testing
 
-- **TS**: `bun test` (~760). Add tests under `test/unit/<area>/` (`native/`,
+- **TS**: `bun test test/unit test/property test/compat` (~804). Add tests under
+  `test/unit/<area>/` (`native/`,
   `rust-ffi/`, `contract/`, `ingress/`, `shared/`, `integration/`) — see `test/README.md`.
+  The paths are explicit because `test/integration/*.test.mjs` are `node --test`
+  suites that import the compiled `dist/index.js` (only built by `build:js`), so a
+  bare `bun test` would fail to load them anywhere `dist/` is absent (e.g. the CI
+  `typescript` job). They are covered by `bun run test:node` instead.
 - **Rust**: `cargo test`. New logic ships with a `#[cfg(test)] mod tests` block in
   the SAME module file (ingress.rs, url_codec.rs, validation.rs, proxy.rs,
   hmac_sha256.rs already do). Cross-module suites live in `rust/panic_safety.rs` +

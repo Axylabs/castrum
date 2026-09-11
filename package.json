@@ -69,7 +69,7 @@
     "build:js:types": "dts-bundle-generator -o dist/index.d.ts index.ts",
     "bench": "bun run build && bun bench.ts",
     "check": "bun bench.ts",
-    "test": "bun test",
+    "test": "bun test test/unit test/property test/compat",
     "test:all": "bun test && bun run typecheck && bun run typecheck:test && bun run lint:ci && bun run check:clean && cargo test --lib",
     "test:coverage": "node scripts/check-coverage.mjs",
     "setup": "bun install && bun run build",

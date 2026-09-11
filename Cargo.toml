@@ -3,6 +3,9 @@ name = "castrum"
 # Keep in sync with package.json "version" (single source of truth: the npm package).
 version = "0.9.6"
 edition = "2021"
+# Keep in sync with package.json "license" (cargo-deny rejects a crate with no
+# license expression).
+license = "MIT"
 
 [lib]
 name = "castrum"

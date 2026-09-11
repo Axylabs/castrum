@@ -30,7 +30,15 @@ const SHIPPED_DIRS = new Set([
   'src/integration',
 ])
 
-const { stdout, stderr, status } = spawnSync('bun', ['test', '--coverage'], { encoding: 'utf8' })
+const { stdout, stderr, status } = spawnSync(
+  'bun',
+  // Explicit paths, mirroring package.json's `test` script: `test/integration`
+  // holds `node --test` suites that import the compiled dist/ entry (built by
+  // `build:js`, which this job does not run), so bare `bun test` would try to
+  // load them and fail.
+  ['test', '--coverage', 'test/unit', 'test/property', 'test/compat'],
+  { encoding: 'utf8' },
+)
 
 // bun writes the coverage table to stderr when stdout is not a TTY (as in
 // this script / CI), so parse the combined output.
