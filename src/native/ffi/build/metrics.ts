@@ -159,23 +159,19 @@ export function selfTestMetrics(b: BunFFI): boolean {
       return false
     }
 
-    console.error('CK: counter')
     const gauge = b.metricsGauge(handle, 'ct_selftest_depth', 'q')
     if (gauge === METRICS_DECLARE_ERR) return false
     if (!b.metricsGaugeSet(handle, gauge, encodeUtf8('jobs'), 4)) return false
     if (!b.metricsGaugeSetStr(handle, gauge, 'io', 6)) return false
 
-    console.error('CK: gauge')
     const hist = b.metricsHistogram(handle, 'ct_selftest_latency', '', '0.1,0.5')
     if (hist === METRICS_DECLARE_ERR) return false
     if (!b.metricsRecord(handle, hist, EMPTY, 0.25)) return false
     if (b.metricsRecord(handle, hist, EMPTY, -1)) return false // negatives rejected
 
-    console.error('CK: hist')
     // Arity mismatch must fail safely.
     if (b.metricsRecord(handle, counter, encodeUtf8('/a'), 1)) return false
 
-    console.error('CK: arity')
     // Render: probe with a small buffer → exact required size; then render.
     const probe = new Uint8Array(16)
     const needed = b.metricsRender(handle, probe)
@@ -195,7 +191,6 @@ export function selfTestMetrics(b: BunFFI): boolean {
       return false
     }
 
-    console.error('CK: render')
     // Snapshot: packed dump starts with version=1 + familyCount>=3.
     {
       const probe2 = new Uint8Array(16)
@@ -208,7 +203,6 @@ export function selfTestMetrics(b: BunFFI): boolean {
       if (sv.getUint32(4, true) < 3) return false
     }
 
-    console.error('CK: snapshot')
     // Batch: two entries in ONE crossing.
     {
       const c2 = b.metricsCounter(handle, 'ct_selftest_batch', 'k')
@@ -229,7 +223,6 @@ export function selfTestMetrics(b: BunFFI): boolean {
       }
     }
 
-    console.error('CK: batch')
     // A null handle must throw on declare (never dereference freed state).
     try {
       b.metricsCounter(0, 'ct_selftest_x', '')
