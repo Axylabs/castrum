@@ -349,20 +349,28 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      # Needed for SLSA provenance attestation (actions/attest-build-provenance).
+      # `id-token: write` is what npm Trusted Publishing (OIDC) exchanges for a
+      # short-lived publish credential; actions/attest-build-provenance needs it
+      # too.
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # No registry token and no `registry-url`: `npm publish` authenticates with
+      # an OIDC token, which npm exchanges for a short-lived credential when the
+      # package lists this repo + workflow file as a Trusted Publisher on
+      # npmjs.com (Package -> Settings -> Trusted Publisher -> GitHub Actions:
+      # Axylabs/castrum, .github/workflows/ci.yml). This needs npm >= 11.5.2,
+      # which is why the npm CLI is upgraded and asserted below.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
-          # Writes ~/.npmrc with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
-          # so `npm publish` can authenticate. npm does not read NPM_TOKEN on its
-          # own — without this the publish step fails with ENEEDAUTH.
-          registry-url: https://registry.npmjs.org
+          node-version: 24
+      - name: Ensure npm supports OIDC trusted publishing (>= 11.5.2)
+        run: |
+          npm install -g npm@latest
+          node -e 'const v=require("node:child_process").execSync("npm --version").toString().trim().split(".").map(Number); if(v[0]<11||(v[0]===11&&v[1]<5)){console.error(`::error::npm ${v.join(".")} is too old for OIDC trusted publishing (need >= 11.5.2)`);process.exit(1)} console.log(`npm ${v.join(".")} supports trusted publishing`)'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
       - name: Download all platform addons
@@ -377,21 +385,8 @@ jobs:
           path: ./
           format: spdx-json
           artifact-name: castrum-sbom.spdx.json
-      # Fail fast with an actionable message instead of npm's bare ENEEDAUTH
-      # (which is what an unset NPM_TOKEN produces, since `.npmrc` gets an empty
-      # _authToken). `secrets` is not available in `if:`, so check it in-script.
-      - name: Verify npm credentials are configured
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "::error::NPM_TOKEN is not set. Add an npm granular/automation token with publish rights for 'castrum' under Settings -> Secrets and variables -> Actions, or configure npm Trusted Publishing for Axylabs/castrum + .github/workflows/ci.yml."
-            exit 1
-          fi
-      - name: Publish to npm
+      - name: Publish to npm (OIDC trusted publishing)
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       # SLSA3 provenance: records the repo/commit that produced this release so
       # consumers can verify the artifact's supply chain.
       - name: Attest build provenance

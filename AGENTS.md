@@ -79,8 +79,14 @@ HTTP **ingress pipeline** for Bun servers.
   tarball, and `prepublishOnly` (`node scripts/prepublish.mjs`) fails unless every
   platform `.node` is present. Push a `v*` tag instead: `.github/workflows/ci.yml`
   builds + uploads each platform artifact, then the `publish` job downloads them
-  into `./artifacts`, stages them, and runs `npm publish --access public`
-  (requires the `NPM_TOKEN` secret). Releases use the shared canonical flow:
+  into `./artifacts`, stages them, and runs `npm publish --access public`.
+  **No npm secret is involved**: the publish job uses npm Trusted Publishing
+  (OIDC) — it needs `id-token: write` (present) and npm >= 11.5.2 (the job
+  installs `npm@latest` and asserts the version), and the package must list
+  `Axylabs/castrum` + `.github/workflows/ci.yml` as its Trusted Publisher on
+  npmjs.com (Package → Settings → Trusted Publisher). If that npm-side config is
+  missing the publish fails with an OIDC/authentication error — add the trusted
+  publisher rather than a token. Releases use the shared canonical flow:
   `bun run release` (`scripts/release.ts` + `.release.json`) bumps `version` in
   package.json AND syncs `Cargo.toml` / `Cargo.lock` / `CHANGELOG.md`, runs the
   verify gate, and commits + tags `v<version>` — CI then builds + publishes every
@@ -94,8 +100,8 @@ HTTP **ingress pipeline** for Bun servers.
   `publish.command` sets `CASTRUM_PUBLISH_ALLOW_PARTIAL=1` for the
   publish, so `prepublishOnly` ships ONLY the platforms built locally (currently the
   host platform) instead of failing on missing `napi.targets`. Full multi-platform
-  tarballs still come from CI on a v* tag push. Prereqs: npm logged in (or
-  `NPM_TOKEN` exported). `bun run release:dry` (`--dry-run`) prints
+  tarballs still come from CI on a v* tag push. Prereqs: npm logged in
+  (`npm login`). `bun run release:dry` (`--dry-run`) prints
   the plan without changing anything.
 - **Cross-compatible source-build fallback (`scripts/postinstall.mjs`)**: the
   tarball ships the `rust/` source + `Cargo.toml`/`Cargo.lock`/`build.rs`/
@@ -521,20 +527,46 @@ success and `error.code` / `error.message` on errors (path 2's format).
 - **`tsconfig.json`** sets `noUncheckedIndexedAccess: true`. Indexed access on
   `Record<string, Uint8Array>` (e.g. `ERROR_BODIES.internal`) is
   `Uint8Array | undefined` — `handlers.ts` uses `!` where the key is guaranteed.
-- **`typescript` stays on 7.x (native compiler) + a SCOPED `5.9.3` for
-  `dts-bundle-generator`**: `build:js:types` uses `dts-bundle-generator` (9.5.1,
-  latest), which needs the pre-7 JS compiler API (`ts.sys`, `createProgram`).
-  TypeScript 7's package root exports only `{ version }`, so a flat install
-  throws `Cannot read properties of undefined (reading 'getCurrentDirectory')`.
-  The fix is the NESTED override
-  (`"overrides": { "dts-bundle-generator": { "typescript": "5.9.3" } }`):
-  typecheck / `bunx tsc` keep running on 7 while the bundler resolves its own
-  nested 5.9.3. Do NOT collapse it into a flat `"typescript"` override (that
-  downgrades the project compiler) and do NOT delete it when bumping TypeScript.
+- **`typescript` stays on 7.x (native compiler) + SCOPED older compilers for
+  the two tools that drive the TS JS API**: `build:js:types` uses
+  `dts-bundle-generator` (9.5.1, latest) and `napi build`'s post-build `.d.ts`
+  step uses `@napi-rs/cli` — both need the pre-7 API (`ts.sys`, `ts.ScriptTarget`,
+  `createProgram`). TypeScript 7's package root exports only `{ version }`, so a
+  flat install throws `Cannot read properties of undefined (reading
+  'getCurrentDirectory')` (bundler) or `... (reading 'ESNext')` (napi build, which
+  breaks every build-matrix job). The fix is the NESTED overrides:
+  `"overrides": { "dts-bundle-generator": { "typescript": "5.9.3" },
+  "@napi-rs/cli": { "typescript": "6.0.3" } }` — typecheck / `bunx tsc` keep
+  running on 7 while each tool resolves its own compiler. Do NOT collapse them
+  into a flat `"typescript"` override (that downgrades the project compiler) and
+  do NOT delete them when bumping TypeScript.
   After any dependency change, `bun install` must run with a clean
   `node_modules` (a leftover pnpm-isolated tree keeps a nested `typescript`
   symlink at the old version and keeps failing even after the override is
   restored).
+- **CI cross builds (`build` matrix) — three load-bearing rules**:
+  1. The Rust toolchain comes from `rust-toolchain.toml`: the workflow reads the
+     channel out of that file and passes it to `dtolnay/rust-toolchain`. A
+     SHA-pinned ref cannot encode the toolchain, and `targets:` must be installed
+     for the toolchain cargo actually resolves inside the repo — installing
+     `stable` (+ its targets) leaves every non-host target with no std
+     (`can't find crate for core`).
+  2. Linux **gnu** targets build with the host/distro compilers — never
+     `--use-napi-cross`: its prebuilt toolchain is gcc 4.8.5 / glibc 2.17, which
+     cannot compile aws-lc-sys (needs C11 `stdatomic.h` and modern `-march`
+     values) or libmimalloc-sys (`-Wdate-time`), and its ancient linker leaves
+     the host-compiled C objects' `__isoc23_*` symbols unresolved. The
+     `aarch64-unknown-linux-gnu` entry installs `gcc-aarch64-linux-gnu` and
+     points `cc`/CMake/cargo at it via `CC_`/`CXX_`/`AR_<triple>` +
+     `CARGO_TARGET_<TRIPLE>_LINKER`. **musl** targets use cargo-zigbuild
+     (`-x` + `mlugg/setup-zig` + `taiki-e/install-action`).
+  3. The diagnostic `native-bench` bin is gated behind the opt-in
+     `native-bench` feature (`required-features`) so `napi build` never links it:
+     an executable must resolve the aws-lc-sys C symbols that a cdylib may leave
+     undefined. Run it with
+     `cargo run --release --features native-bench --bin native-bench` (the
+     `ffi-margin` bench does), and note the `rust` job lints with
+     `--all-features` so the gated code still gets compiled.
 - **`bench/` IS typechecked by `tsc`** (in tsconfig `include`). `test/` is not —
   validate test files with the editor language server, and run
   `bun run bench:http:smoke` to confirm the servers still pass load checks.
