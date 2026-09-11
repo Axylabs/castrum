@@ -16,3 +16,4 @@ index.d.ts
 .npmrc
 # CI publish staging dir (prepublish.mjs downloads platform addons here)
 artifacts
+castrum.linux-x64-v3-gnu.node

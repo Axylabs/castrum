@@ -10,7 +10,9 @@ benchmarks actually showed, and the lessons that generalise to any
 All figures below come from the reports in `bench/results/` (generated on a
 release addon, baseline CPU, Bun 1.4.0). They're **representative**, not
 advertised as universal — re-run `bun run check` / `bun run bench:http` on your
-own hardware before trusting them for your numbers.
+own hardware before trusting them for your numbers. (The local toolchain is now
+Bun 1.4.2; the figures below still carry their 1.4.0 measurement date, and the
+newer `bench:task` / `bench:ffi:margin` rows name 1.4.2.)
 
 ---
 
@@ -42,7 +44,7 @@ as a pre-baked pipeline, and still be usable from both runtimes.
 ### 2.1 One cdylib, two transports
 
 The addon is built with napi-rs (so Node can load it), but it *also* exports
-`extern "C"` symbols (`rust/ffi/`, **109 `castrum_*` symbols** — 97 direct + 4
+`extern "C"` symbols (`rust/ffi/`, **119 `castrum_*` symbols** — 107 direct + 4
 `validator_c_abi!` + 4 `validator_bytes_c_abi!` + 4 `compress_to_out!`) so Bun can
 `dlopen` it directly:
 

@@ -9,6 +9,18 @@
 import { decodeUtf8, encodeUtf8 } from '../../../shared/codec'
 import type { BunFFI, Raw0, Raw3, Raw4, Raw5 } from '../types'
 import type { BuildCtx } from './util'
+import { hasNul } from './util'
+
+/**
+ * Declare-time NUL guard: a metric NAME or label-key set containing `U+0000`
+ * would be truncated by the `cstring` arg, silently colliding two series. This
+ * runs once at declaration, so failing fast costs nothing on the hot path.
+ */
+function throwIfNul(value: string, what: string): void {
+  if (hasNul(value)) {
+    throw new Error(`metrics: ${what} must not contain a NUL character (U+0000)`)
+  }
+}
 
 /**
  * Sentinel returned by the declare fns (`u32::MAX`) on invalid input — fits
@@ -59,12 +71,18 @@ export function buildMetrics(
       return h
     },
     metricsCounter(handle, name, labelKeys) {
+      throwIfNul(name, 'counter name')
+      throwIfNul(labelKeys, 'counter label keys')
       return declareOrThrow(metricsCounterRaw(handle, name, labelKeys), `counter "${name}"`)
     },
     metricsGauge(handle, name, labelKeys) {
+      throwIfNul(name, 'gauge name')
+      throwIfNul(labelKeys, 'gauge label keys')
       return declareOrThrow(metricsGaugeRaw(handle, name, labelKeys), `gauge "${name}"`)
     },
     metricsHistogram(handle, name, labelKeys, bucketsCsv) {
+      throwIfNul(name, 'histogram name')
+      throwIfNul(labelKeys, 'histogram label keys')
       return declareOrThrow(
         metricsHistogramRaw(handle, name, labelKeys, bucketsCsv),
         `histogram "${name}"`,
@@ -79,9 +97,14 @@ export function buildMetrics(
     },
     metricsRecordStr(handle, series, values, amount) {
       // `values` is the JOINED `\x1f` string — engine-transcoded (zero encode).
+      // Label values come from user data, so a NUL would truncate the join and
+      // silently record the WRONG series (the native side rejects a NUL value,
+      // but only if it ever sees it). Fail loudly and say why.
+      throwIfNul(values, 'label values')
       return Number(metricsRecordStrRaw(handle, series, values, amount)) === 1
     },
     metricsGaugeSetStr(handle, series, values, value) {
+      throwIfNul(values, 'label values')
       return Number(metricsGaugeSetStrRaw(handle, series, values, value)) === 1
     },
     metricsRender(handle, output) {
@@ -136,23 +159,19 @@ export function selfTestMetrics(b: BunFFI): boolean {
       return false
     }
 
-    console.error('CK: counter')
     const gauge = b.metricsGauge(handle, 'ct_selftest_depth', 'q')
     if (gauge === METRICS_DECLARE_ERR) return false
     if (!b.metricsGaugeSet(handle, gauge, encodeUtf8('jobs'), 4)) return false
     if (!b.metricsGaugeSetStr(handle, gauge, 'io', 6)) return false
 
-    console.error('CK: gauge')
     const hist = b.metricsHistogram(handle, 'ct_selftest_latency', '', '0.1,0.5')
     if (hist === METRICS_DECLARE_ERR) return false
     if (!b.metricsRecord(handle, hist, EMPTY, 0.25)) return false
     if (b.metricsRecord(handle, hist, EMPTY, -1)) return false // negatives rejected
 
-    console.error('CK: hist')
     // Arity mismatch must fail safely.
     if (b.metricsRecord(handle, counter, encodeUtf8('/a'), 1)) return false
 
-    console.error('CK: arity')
     // Render: probe with a small buffer → exact required size; then render.
     const probe = new Uint8Array(16)
     const needed = b.metricsRender(handle, probe)
@@ -172,7 +191,6 @@ export function selfTestMetrics(b: BunFFI): boolean {
       return false
     }
 
-    console.error('CK: render')
     // Snapshot: packed dump starts with version=1 + familyCount>=3.
     {
       const probe2 = new Uint8Array(16)
@@ -185,7 +203,6 @@ export function selfTestMetrics(b: BunFFI): boolean {
       if (sv.getUint32(4, true) < 3) return false
     }
 
-    console.error('CK: snapshot')
     // Batch: two entries in ONE crossing.
     {
       const c2 = b.metricsCounter(handle, 'ct_selftest_batch', 'k')
@@ -206,7 +223,6 @@ export function selfTestMetrics(b: BunFFI): boolean {
       }
     }
 
-    console.error('CK: batch')
     // A null handle must throw on declare (never dereference freed state).
     try {
       b.metricsCounter(0, 'ct_selftest_x', '')

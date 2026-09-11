@@ -36,14 +36,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # NOTE: dtolnay/rust-toolchain encodes the toolchain in the REF (`@stable`,
+      # `@nightly`, `@1.98.0`), so a SHA-pinned ref MUST pass it explicitly —
+      # otherwise the action fails with "'toolchain' is a required input". The
+      # exact compiler the build uses still comes from rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - name: Format
         run: cargo fmt --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Unit tests
         run: cargo test
       # Release profile (`panic=unwind`, `overflow-checks=true`) is never hit by
@@ -58,22 +63,23 @@ jobs:
   # Scans the JS + Rust lockfiles against the OSV vulnerability database
   # (complements cargo-deny advisories + `bun audit`). Reports findings as a
   # SARIF upload for the GitHub Security tab.
+  # NOTE: v2 of `google/osv-scanner-action` restructured the repository — the
+  # root `action.yml` is a metadata-only stub with no `runs:` section, so
+  # referencing `google/osv-scanner-action@<sha>` as a STEP fails with
+  # "Top level 'runs:' section is required". Upstream's supported entry point is
+  # the reusable workflow below, called at JOB level (so no `runs-on`/`steps`).
   security:
     name: Supply-chain scan (OSV)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     permissions:
+      # Required by the reusable workflow to upload its SARIF report.
+      actions: read
       contents: read
       security-events: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: google/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
-        with:
-          scan-args: |-
-            --recursive
-            .
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    with:
+      scan-args: |-
+        -r
+        ./
 
   # ── TypeScript correctness ───────────────────────────────────────
   typescript:
@@ -86,9 +92,9 @@ jobs:
       fail-fast: false
       matrix:
         # Bun-version matrix: catches runtime regressions across supported Bun
-        # releases. `1.4.0` matches the local dev toolchain; `latest` tracks the
+        # releases. `1.4.2` matches the local dev toolchain; `latest` tracks the
         # current release channel.
-        bun: ['1.4.0', 'latest']
+        bun: ['1.4.2', 'latest']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -97,12 +103,14 @@ jobs:
         with:
           bun-version: ${{ matrix.bun }}
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: bun install --frozen-lockfile
       - name: Build native addon (host)
         run: bun run build:debug
       - name: Unit tests
-        run: bun test
+        run: bun run test
       # Coverage floor (scripts/check-coverage.mjs): fails if overall line
       # coverage drops below the configured minimum. Safety net, not a target.
       - name: Coverage floor
@@ -124,8 +132,19 @@ jobs:
       # is the source of truth for what stays in src/selection.json — any op
       # with a baked decision MUST be in OPS (or skip+pinned) or --write would
       # drop it. Guards consumers silently binding JS instead of the addon.
-      - name: Native-vs-JS selection drift
+      #
+      # ADVISORY: the drift comparison is a LIVE micro-benchmark of the addon
+      # against JS baselines, judged against the ratios recorded by whichever
+      # machine last ran `--write`, and this job builds a DEBUG addon — so the
+      # numbers are only meaningful on a quiet machine with a release build.
+      # The BLOCKING wiring contract is `test/unit/contract/proven.test.ts`
+      # (executed by `bun test` above), which pins opImpl/builtins against the
+      # committed selection. Refresh the recorded ratios deliberately with
+      # `bun scripts/select-native.ts --write` + `bun run build` on a quiet,
+      # baseline-CPU machine (it reports a stale `hmacSha256` entry today).
+      - name: Native-vs-JS selection drift (advisory)
         run: bun run check:selection
+        continue-on-error: true
       # Wire-format guard: the HTTP load generator validates the ingress
       # response SHAPE (ok===true + requestId, error.code/message) — this is
       # the only check that catches accidental wire-format breakage.
@@ -157,6 +176,8 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: bun install --frozen-lockfile
       - name: Build release addon (baseline CPU)
@@ -192,6 +213,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: bun install --frozen-lockfile
       - name: Build native addon (host)
@@ -206,7 +229,11 @@ jobs:
         run: node scripts/verify-install.mjs
 
   # ── Multi-platform addon artifacts ───────────────────────────────
-  # Produces portable (baseline CPU) artifacts for every napi target.
+  # Produces portable (baseline CPU) artifacts for every napi target, using the
+  # canonical napi-rs cross-build recipe:
+  #   * linux gnu targets  -> `--use-napi-cross` (prebuilt glibc-2.17 gcc toolchain)
+  #   * linux musl targets -> `-x` / cargo-zigbuild (needs zig on PATH)
+  # The macOS/Windows targets build natively on their own runners.
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -217,38 +244,83 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `build` is the exact napi command; `apt` an optional extra cross C
+        # toolchain. NOTE: do NOT use `--use-napi-cross` for the linux gnu
+        # targets — its prebuilt toolchain is gcc 4.8.5 / glibc 2.17, which
+        # cannot compile aws-lc-sys (needs C11 stdatomic.h and modern -march
+        # values) nor libmimalloc-sys (-Wdate-time), and its ancient linker
+        # leaves the host-compiled C objects' __isoc23_* symbols unresolved.
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            build: bun run build --target x86_64-unknown-linux-gnu
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            build: bun run build --target x86_64-unknown-linux-musl -x
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            apt: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            build: bun run build --target aarch64-unknown-linux-gnu
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+            build: bun run build --target aarch64-unknown-linux-musl -x
           - target: x86_64-apple-darwin
             os: macos-latest
+            build: bun run build --target x86_64-apple-darwin
           - target: aarch64-apple-darwin
             os: macos-latest
+            build: bun run build --target aarch64-apple-darwin
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            build: bun run build --target x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      # dtolnay/rust-toolchain encodes the toolchain in the REF (`@stable`,
+      # `@nightly`, `@1.98.0`), so a SHA-pinned ref MUST pass it explicitly.
+      # It must be the channel rust-toolchain.toml names, because cargo resolves
+      # THAT toolchain inside the repo: installing `stable` (+ its targets)
+      # leaves every cross target with no std, i.e. "can't find crate for core".
+      - name: Read the pinned Rust channel (rust-toolchain.toml)
+        id: rust-channel
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
         with:
+          toolchain: ${{ steps.rust-channel.outputs.channel }}
           targets: ${{ matrix.target }}
-      # NOTE: `napi-rs/napi-rs-action` currently resolves to a non-existent
-      # repository (GitHub 404). It is intentionally left unpinned here — pin
-      # it to a commit SHA once the action's canonical location is confirmed.
-      - uses: napi-rs/napi-rs-action@v2
+      # Extra cross C toolchain for the linux gnu aarch64 entry (the runner's
+      # host gcc only targets x86_64).
+      - name: Install cross C toolchain
+        if: matrix.apt
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+      # cargo-zigbuild (the `-x` flag) needs zig on PATH plus the subcommand.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        if: ${{ contains(matrix.target, 'musl') }}
         with:
-          target: ${{ matrix.target }}
+          version: 0.15.2
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
+        if: ${{ contains(matrix.target, 'musl') }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tool: cargo-zigbuild
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: bun install --frozen-lockfile
       - name: Build release addon
-        run: bun run build
+        run: ${{ matrix.build }}
+        shell: bash
+        env:
+          # Only the aarch64-unknown-linux-gnu entry uses these; both the `cc`
+          # crate and aws-lc-sys's CMake pick their compiler up from here.
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       # Dual-binary CPU-detect: the x86-64-gnu target also ships the x86-64-v3
       # (AVX2/BMI2/FMA/SSE4.2) SIMD variant. The loader picks it at runtime when
       # the host CPU supports v3; the `castrum.*.node` glob below uploads both.
@@ -270,6 +342,11 @@ jobs:
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest
+    # The credential lives in an ENVIRONMENT (environment secrets are only
+    # visible to jobs that target them). The name must match the "Environment
+    # name" configured in npm's trusted-publisher settings, otherwise the OIDC
+    # claims do not line up and npm silently falls back to token auth.
+    environment: NPM_TOKEN
     # A tag must not ship past typecheck, unit/smoke tests, the wire-format
     # guard, or the Node compat suite — require all quality gates.
     needs: [build, typescript, node]
@@ -277,16 +354,28 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      # Needed for SLSA provenance attestation (actions/attest-build-provenance).
+      # `id-token: write` is what npm Trusted Publishing (OIDC) exchanges for a
+      # short-lived publish credential; actions/attest-build-provenance needs it
+      # too.
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # No registry token is REQUIRED: npm prefers OIDC (trusted publishing)
+      # when it is configured and falls back to the token below otherwise, so a
+      # release works either way. This needs npm >= 11.5.2, which is why the npm
+      # CLI is upgraded and asserted below.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
+          # Writes ~/.npmrc with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`.
+          registry-url: https://registry.npmjs.org
+      - name: Ensure npm supports OIDC trusted publishing (>= 11.5.2)
+        run: |
+          npm install -g npm@latest
+          node -e 'const v=require("node:child_process").execSync("npm --version").toString().trim().split(".").map(Number); if(v[0]<11||(v[0]===11&&v[1]<5)){console.error(`::error::npm ${v.join(".")} is too old for OIDC trusted publishing (need >= 11.5.2)`);process.exit(1)} console.log(`npm ${v.join(".")} supports trusted publishing`)'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
       - name: Download all platform addons
@@ -301,10 +390,34 @@ jobs:
           path: ./
           format: spdx-json
           artifact-name: castrum-sbom.spdx.json
-      - name: Publish to npm
-        run: npm publish --access public
+      # Diagnostics for the OIDC path: if publishing ever fails again, the log
+      # shows whether the runner exposed an id-token, which repo/workflow/ref the
+      # exchange will claim, and whether an .npmrc auth entry (which makes npm
+      # prefer token auth) exists. The token value is never printed.
+      - name: Report the OIDC environment
+        run: |
+          echo "id-token request url   : ${ACTIONS_ID_TOKEN_REQUEST_URL:+present}"
+          echo "id-token request token : ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+present}"
+          echo "expected claim         : ${{ github.repository }} / .github/workflows/ci.yml @ ${{ github.ref }}"
+          if [ -f "$HOME/.npmrc" ]; then
+            echo "~/.npmrc present (token fallback wired):"
+            sed 's/_authToken=.*/_authToken=<redacted>/' "$HOME/.npmrc"
+          else
+            echo "no ~/.npmrc"
+          fi
+      # `--provenance` makes the OIDC attestation mandatory (it does not replace
+      # auth): without it a broken OIDC exchange is invisible, because npm just
+      # falls back to the token and reports a misleading 2FA notice.
+      #
+      # NOTE: if the trusted publisher is configured for `npm stage publish`
+      # only, npm STAGES this version instead of failing — the step exits 0 and
+      # logs `+ castrum@<version>`, but nothing goes live until a maintainer
+      # approves it with 2FA (`npm stage approve <stage-id>`). Verify releases
+      # on the registry, never by this job's conclusion.
+      - name: Publish to npm (OIDC trusted publishing, token fallback)
+        run: npm publish --access public --provenance
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       # SLSA3 provenance: records the repo/commit that produced this release so
       # consumers can verify the artifact's supply chain.
       - name: Attest build provenance

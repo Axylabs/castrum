@@ -32,9 +32,31 @@ condensed version.
   `TextEncoder`/`TextDecoder`**); Rust reads `CStr::from_ptr(x).to_bytes()`.
   Never dereference past the NUL. Returns use `cstring_return`/`CSTR_BUF`
   (per-thread buffer, null = error).
+  
+  **NUL caveat (mandatory)**: because the transcode is NUL-terminated, an
+  embedded `U+0000` SILENTLY TRUNCATES the value native-side. A `cstring` ARG
+  is only safe for developer-supplied config or input that is NUL-free by
+  construction. If the op is reachable from user input AND answers with a
+  VERDICT (validate/gate/batch-validate) or produces a byte-exact value
+  (escape/format), then either add a `*_bytes` sibling taking `(ptr, len)` and
+  route byte callers to it, or guard the string form with `hasNul`
+  (`src/shared/bytes.ts`). Two shipped bugs came from missing this:
+  `validateEmail('a@b.com\0<script>')` returned `true`, and
+  `regexEscape('abc\0def')` returned `'abc'`. Pinned by
+  `test/unit/native/cstring-nul.test.ts`.
 - **Bytes → `(ptr, len)`** or the `buffer`/`buffer_length` ABI pair (the
   engine converts a TypedArray to its pointer — zero-copy). Rust reads
   `slice::from_raw_parts` and must null-check + respect the length.
+  **Prefer this for byte-shaped JS APIs**: it carries the exact length (no NUL
+  truncation) and skips the engine transcode. Measured through the public API
+  on Bun 1.4.2 over 400k calls: `validateEmail` 236 → 110 ns, `validateUuid`
+  153 → 50 ns, `validateIpv4` 118 → 37 ns. Add a `*_bytes` sibling when a
+  `cstring` symbol would otherwise serve a byte-input caller — the
+  `validator_c_abi!` / `validator_bytes_c_abi!` pair in `rust/ffi/validators.rs`
+  is the model. **Measure through the public wrapper, not the raw binding**: for
+  `wsAcceptKey` the binding suggested the byte path was 11% faster while the
+  real call path was 4% SLOVER, so that one keeps `cstring` and guards the NUL
+  case only.
 - **Byte-count returns → `u64_fast`** (`'u64_fast'` in the dlopen map) — plain
   `number` below 2^53, no BigInt boxing.
 - **Opaque state → `usize` handle** (schema/jwt/template/route/ingress

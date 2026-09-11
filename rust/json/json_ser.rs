@@ -416,15 +416,18 @@ pub fn packed_pairs_to_json_into_slice(
 /// same split the old packed pipeline had between its parse and write steps).
 #[derive(Debug, PartialEq, Eq)]
 pub enum QueryJsonError {
-    Malformed,
     BufferTooSmall,
 }
 
 /// Decode a single URL-form component (`+` → space, `%XX` → byte) into `out`.
 ///
-/// Shared decoder with `query_parser::write_decoded_form_component` (this one
-/// appends to a `Vec` rather than writing a length-prefixed slice); errors on
-/// malformed `%XX`.
+/// Uses the LENIENT arm of the shared decoder — the same one the packed pair
+/// parsers use — so a malformed escape or an invalid-UTF-8 escape yields the RAW
+/// component exactly like the pure-TS fallback. (This used to be a strict arm
+/// that rejected malformed `%XX`, which made the native pipeline answer 400
+/// where the JS path returns the raw value.) Bytes that are invalid UTF-8 in the
+/// INPUT still reach the JSON writer verbatim; the escaping below keeps the
+/// output valid JSON.
 #[inline]
 fn decode_query_component(
     src: &[u8],
@@ -432,12 +435,8 @@ fn decode_query_component(
 ) -> std::result::Result<(), QueryJsonError> {
     let start = out.len();
     out.resize(start + src.len(), 0);
-    let written = crate::util::bytes::decode_form_component_into(src, &mut out[start..]).map_err(
-        |e| match e {
-            crate::util::bytes::FormDecodeError::Malformed => QueryJsonError::Malformed,
-            crate::util::bytes::FormDecodeError::BufferTooSmall => QueryJsonError::BufferTooSmall,
-        },
-    )?;
+    let written = crate::util::bytes::decode_form_component_into(src, &mut out[start..])
+        .map_err(|_| QueryJsonError::BufferTooSmall)?;
     out.truncate(start + written);
     Ok(())
 }
@@ -864,7 +863,10 @@ mod tests {
                         "query={raw:?}"
                     );
                 }
-                (Err(_), Err(QueryJsonError::Malformed)) => {} // both reject malformed %XX
+                // Both paths share the lenient decoder now, so a malformed
+                // `%XX` produces the SAME raw component on both sides (the
+                // `Err` arm that used to allow "both reject" is gone with the
+                // strict contract).
                 (other, _) => {
                     panic!("mismatched outcome for query={raw:?}: {other:?} vs {direct:?}")
                 }

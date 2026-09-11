@@ -17,6 +17,15 @@ pub const PBKDF2_MIN_LEN: u32 = 1;
 /// Cap derived-key length so a hostile caller can't request a huge allocation.
 pub const PBKDF2_MAX_LEN: u32 = 1024 * 1024;
 
+/// Pure core (no napi types) for [`pbkdf2_sha256`] and the off-thread task
+/// runtime: derive `dk_len` bytes, clamping the length to the documented range.
+pub fn pbkdf2_sha256_into(password: &[u8], salt: &[u8], rounds: u32, dk_len: u32) -> Vec<u8> {
+    let dk_len = dk_len.clamp(PBKDF2_MIN_LEN, PBKDF2_MAX_LEN) as usize;
+    let mut out = vec![0u8; dk_len];
+    pbkdf2_hmac::<Sha256>(password, salt, rounds.max(1), &mut out);
+    out
+}
+
 /// Derive a PBKDF2-HMAC-SHA256 key: `out = PBKDF2(password, salt, rounds, dkLen)`.
 #[napi]
 pub fn pbkdf2_sha256(

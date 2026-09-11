@@ -23,8 +23,12 @@ describe('rust.formParsePacked', () => {
     expect(rustObj.empty).toBe('')
   })
 
-  test('throws on malformed percent encoding', () => {
-    expect(() => rust.formParsePacked(encoder.encode('a=%ZZ'))).toThrow()
+  test('passes malformed percent encoding through raw instead of throwing', () => {
+    // The shipped contract (0.9.5) mirrors what a JS caller does when it wraps
+    // `decodeURIComponent` and returns the raw component on a throw, so a
+    // malformed escape must be a VALUE, never an error/500. See CHANGELOG 0.9.5.
+    const obj = pairsToObject(readPairsPacked(rust.formParsePacked(encoder.encode('a=%ZZ'))))
+    expect(obj.a).toBe('%ZZ')
   })
 
   test('handles empty body', () => {

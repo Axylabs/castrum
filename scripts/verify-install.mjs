@@ -37,7 +37,14 @@ try {
     env: { ...process.env, CASTRUM_PUBLISH_ALLOW_PARTIAL: '1' },
     encoding: 'utf8',
   })
-  const filename = JSON.parse(packOut)[0].filename
+  // `npm pack --json` emitted an ARRAY of packed tarballs up to npm 11; npm 12
+  // emits an OBJECT keyed by package name. Accept both shapes.
+  const packJson = JSON.parse(packOut)
+  const packed = Array.isArray(packJson) ? packJson[0] : Object.values(packJson)[0]
+  if (!packed?.filename) {
+    throw new Error(`verify-install: could not read the packed filename from npm pack --json output: ${packOut}`)
+  }
+  const filename = packed.filename
   const tarballPath = join(tmp, filename)
 
   // 2. Consumer project + install from the tarball.

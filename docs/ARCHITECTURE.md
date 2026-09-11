@@ -31,7 +31,7 @@ The bridge between TypeScript and Rust has **two transports**, both loading the 
 cdylib (built with napi-rs):
 
 - **`bun:ffi` (PRIMARY on Bun)** — `src/native/ffi.ts` `dlopen`s the addon's
-  `extern "C"` exports (`rust/ffi/`, 109 `castrum_*` symbols — 97 direct + 4
+  `extern "C"` exports (`rust/ffi/`, 119 `castrum_*` symbols — 107 direct + 4
   `validator_c_abi!` + 4 `validator_bytes_c_abi!` + 4 `compress_to_out!`,
   parity guarded by
   `test/unit/native/ffi-symbol-parity.test.ts`) and Bun JIT-calls them

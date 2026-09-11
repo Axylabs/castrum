@@ -144,6 +144,11 @@ src/
     websocket.ts          createWebSocketUpgrade (RFC 6455 101 handshake + subprotocol).
     streaming.ts          sseResponse (SSE frames via rust.sseEncodeEvent).
   baseline/               Pure-JS baseline implementations (benchmark reference). Internal.
+  task/                   Off-thread task runtime ("castrum Tasks", Bun-first). See §RND-CONCURRENCY.
+    op.ts                 PURE op ids + packed-arg encoders (no addon import).
+    runtime.ts            createTaskRuntime() — process-wide singleton; submit → pool → batched
+                          doorbell → drained completion → promise; AbortSignal; zero-copy
+                          submitInto for ops with a size hint.
   bench/                  CPU benchmark framework (tasks, measure, report, checks, comparisons).
   data/                   json-rows.ts fixture generator (benchmark-only).
 ```
@@ -169,13 +174,17 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
                           native stack), options/time/packed, cors, proxy, ip_trust, rate_limit,
                           terminal, output.rs (single numeric layout source),
                           ingress_constants.rs (napi projection).
-  ffi/                    #[no_mangle] extern "C" exports (109 castrum_* symbols — 97 direct + 4
+  task/                   Off-thread task runtime (\"castrum Tasks\"): condvar pool (N = cores−1,
+                          CASTRUM_TASK_THREADS, batch dequeue + spin-then-park + optional
+                          CASTRUM_TASK_PIN_CORES), result ring + batched thread-safe doorbell,
+                          op dispatch + cancel + catch_unwind containment + `_into` ops.
+  ffi/                    #[no_mangle] extern "C" exports (119 castrum_* symbols — 107 direct + 4
                           validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out!; parity guarded by
                           test/unit/native/ffi-symbol-parity.test.ts) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).
                           mod.rs (module map) + util.rs (panic_guard / HMAC cache / cstring helpers)
                           + per-domain wrappers (hashing/validators/crypto/jwt/http/payload/json/
-                          rate_limit/ingress/route/probe) + tests.rs.
+                          rate_limit/ingress/route/task/probe) + tests.rs.
   panic_safety.rs / test_support.rs   Cross-module fuzz + shared #[cfg(test)] helpers.
   proptest_suite.rs      Property-based adversarial-parser tests (dev-dep proptest).
 ```
@@ -284,7 +293,8 @@ consumed.
   (declared in package.json `napi.binaryName` + Cargo.toml — keep in sync).
 - **Multi-platform (recommended)**: push a `v*` tag → `.github/workflows/ci.yml`
   builds each platform addon, the `publish` job downloads them into
-  `./artifacts`, stages them, and runs `npm publish` (needs `NPM_TOKEN`).
+  `./artifacts`, stages them, and runs `npm publish` (npm Trusted Publishing /
+  OIDC — no token secret; needs the Trusted Publisher configured on npmjs.com).
 - **Manual single-platform**: `bun run release:manual`
   (syncs package.json ↔ Cargo.toml ↔ CHANGELOG, tags, builds, publishes with
   `CASTRUM_PUBLISH_ALLOW_PARTIAL=1`). `--dry-run` plans only.
@@ -302,6 +312,7 @@ consumed.
 | [`API.md`](./API.md) | The complete public API reference |
 | [`CASE_STUDY.md`](./CASE_STUDY.md) | Data-driven case study: how castrum was built and measured |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Deep-dive: modules, data flow, output layout, memory, concurrency |
+| [`RND-CONCURRENCY.md`](./RND-CONCURRENCY.md) | R&D + design plan: native (Rust) task offload for Bun — the "goroutine" gap, measured Bun concurrency costs, proposed `rust.tasks` runtime |
 | [`INGRESS.md`](./INGRESS.md) | The pre-baked ingress API + route factories + servers |
 | [`BENCHMARKS.md`](./BENCHMARKS.md) | Benchmark scenarios, report format, how to run |
 | [`ENVIRONMENT.md`](./ENVIRONMENT.md) | All `CASTRUM_*` env vars (+ legacy aliases) |

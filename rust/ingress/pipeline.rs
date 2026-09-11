@@ -486,9 +486,9 @@ impl IngressInner {
                     self.limits.max_pairs,
                 ) {
                     Ok(written) => written as u32,
-                    Err(crate::json::json_ser::QueryJsonError::Malformed) => {
-                        return Err(Error::from_reason("query parse failed"))
-                    }
+                    // A malformed `%XX` is NOT an error: the decoder returns the
+                    // raw component, exactly like the JS `decodeURIComponent`
+                    // fallback (this used to 400 where JS answers 200).
                     Err(crate::json::json_ser::QueryJsonError::BufferTooSmall) => {
                         truncated = true;
                         0

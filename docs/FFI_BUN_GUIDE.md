@@ -7,10 +7,12 @@
 > code is **optimized for Bun** out of the box — correct on the first `dlopen`,
 > fast on the first call, and safe under burst load.
 >
-> **Version anchor**: behavior claims are verified against the **Rust-based Bun
-> 1.3.14** source (`/home/adeel/poc/bun`). `bun:ffi` is experimental upstream;
-> the bind-time self-test + napi fallback are what make it safe to use, and
-> they are mandatory — not optional.
+> **Version anchor**: behavior claims were distilled from the **Rust-based Bun
+> 1.3.14** source (`/home/adeel/poc/bun`) and RE-VERIFIED against the installed
+> **Bun 1.4.2** runtime (the local dev toolchain, matching the CI matrix). Where
+> a claim is runtime-specific the number is stated inline. `bun:ffi` is
+> experimental upstream; the bind-time self-test + napi fallback are what make
+> it safe to use, and they are mandatory — not optional.
 
 ---
 
@@ -191,6 +193,66 @@ returns.
 **Rule**: use per-thread reused buffers for cstring returns; never return a
 pointer into JS-owned memory; treat `null` as the failure sentinel.
 
+### 6.1 `cstring` ARGS: the engine transcodes — and truncates at NUL
+
+The same doc section defines the **argument** side, which is a different trade
+from returns:
+
+> "When used in `args`, `FFIType.cstring` accepts everything `ptr` does and
+> additionally accepts a JavaScript string directly. The engine transcodes the
+> string to a **null-terminated** UTF-8 buffer that lives for the duration of
+> the call, so you don't need to encode it into a `Buffer` yourself."
+
+This is a real win — it removes a `TextEncoder` round trip per call, and it is
+why castrum binds the string surfaces (`validate*`, `metrics_*`,
+`regex_escape_str`, `ws_accept_key`, `mime_from_extension`, `session_*`, the JWT
+/route id strings) as `cstring` ARGs, with byte-input callers crossing as
+`(buffer, buffer_length)` instead. But "null-terminated" is load-bearing:
+
+**An embedded `U+0000` silently truncates the value native-side.** Where the
+callee answers with a VERDICT, that is a correctness hole, and two shipped bugs
+came from it (found 2026-09-11, both now fixed and pinned by
+`test/unit/native/cstring-nul.test.ts`):
+
+| call | was | now |
+|---|---|---|
+| `rust.validateEmail(bytes('a@b.com\0<script>'))` | `true` | `false` |
+| `rust.regexEscape('abc\0def')` | `'abc'` | `'abc\0def'` |
+
+The validator case was the worst shape: bytes were decoded to a JS string and
+handed to the `cstring` ARG, so a NUL **byte** made a non-address validate. The
+fix routes byte-input APIs through the `*_bytes` symbols — which is also
+**faster**, because the bytes then cross as an atomic `(buffer, buffer_length)`
+pair with no transcode. Measured through the PUBLIC API (`rust.validateEmail`,
+400k calls, Bun 1.4.2): email 236 → 110 ns, uuid 153 → 50 ns, ipv4 118 → 37 ns.
+Correctness and speed pointed the same way; the old comment claiming the decode
+route was faster predated the byte siblings.
+
+Two further byte-input sites were closed the same way, with one caveat worth
+recording. `mimeFromExtension` no longer resolves a NUL-suffixed extension as its
+prefix (`'.js\0evil'` resolved as `.js` — a Content-Type chosen from truncated
+input; it now takes the unknown sentinel). `wsAcceptKey` no longer computes the
+accept value for a prefix of the key. Both KEEP the `cstring` fast path and divert
+only the NUL case, because measuring the real call path reversed the raw-binding
+result: `rust.wsAcceptKey` is 367 ns via `cstring` versus 381 ns via the byte
+sibling (the extra `subarray` + decode outweighs the transcode saved), whereas
+measuring the bare binding suggested the opposite. **Measure through the function
+users call, not the binding** — the guard itself costs ~4 ns, so guarding is
+cheap and routing everything through bytes is not always a win.
+
+**Rule**: a `cstring` ARG is only correct when truncation cannot change the
+answer — i.e. the string is developer-supplied config or NUL-free by
+construction (a MIME extension, a base64 key, a header name). Anything
+reachable from user input must either
+
+1. cross as bytes (`buffer` + `buffer_length`) when the API is byte-shaped, or
+2. be guarded with `hasNul` (`src/native/ffi/build/util.ts`): short-circuit the
+   verdict (`false`), throw at declare time (metric names / label keys), or
+   route to the `(ptr, usize)` sibling for a byte-exact result (`regexEscape`,
+   batch hex validation).
+
+Never silently return a value derived from a truncated prefix.
+
 ---
 
 ## 7. `dlopen` lifetime — never `close()` while bound symbols live
@@ -295,6 +357,75 @@ napi-style unwind guard exists for raw `extern "C"`).
    the scalar builder, and `ffi-symbol-parity.test.ts`; a Rust unit test +
    self-test; cross-check FFI vs napi byte-for-byte in `ffi.test.ts`.
 
+### 11.1 Conformance with Bun's published FFI guidance (audit)
+
+The question "are we using Bun's FFI the way Bun recommends?" is answerable from
+this table rather than from memory. Verified 2026-09-11 against
+`https://bun.sh/docs/api/ffi` and the live binding on Bun 1.4.2
+(`ffiBufferMode() === 'buffer-pair'`).
+
+| Bun's guidance (docs) | castrum | Where |
+|---|---|---|
+| `buffer` + `buffer_length`: pass the **same view twice** for atomic ptr+len | **Followed and LIVE** — `abi()` rewrites every `(ptr,usize)` pair; `probeBufferLength()` verifies support at bind time with a `(ptr,usize)` fallback | §4, `src/native/ffi.ts` |
+| `cstring` **returns** are cloned at call time (NULL → null) | Followed — per-thread `CSTR_BUF`, clone is synchronous | §6, `rust/ffi/` |
+| `cstring` **args** accept a JS string; the engine transcodes it | Followed for the string surface; **byte-input APIs use `(buffer,buffer_length)` instead — measured 2.2–3.2× faster AND immune to NUL truncation** | §6.1 |
+| `u64_fast`/`i64_fast` for byte counts (avoid BigInt boxing) | Followed — `U64_FAST` on every size/count return | §5 |
+| `JSCallback`: pass `.ptr`, not the object ("slight performance boost") | Followed — `taskSetDoorbell(Number(cb.ptr))` | §10 |
+| `read.u8/u32/...` avoids a `DataView`/`ArrayBuffer` for pointer reads | Applied where it matters (hot paths use pooled JS scratch, not pointer reads); bind-time blob reads keep `DataView` | `instances.ts` |
+| `toArrayBuffer` with a deallocator for C-owned memory | **Deliberately NOT used** — Bun 1.4.2's deallocator path segfaults (`arity 1`, crash at `0x0`) while the docs describe 4/5-arg forms. Zero-copy instead keeps ownership in JS | `docs/RND-CONCURRENCY.md` §7a |
+| `dlopen` is never `close()`d while symbols live | Followed — bound once, held forever | §7 |
+| Async functions are not supported in `JSCallback` | Followed — the doorbell is a `void()` trampoline | §10 |
+
+Reading the table honestly: the `buffer`/`buffer_length` and `cstring` return
+practices were already conformant. The real gaps were on the **argument** side
+(§6.1) — and those turned out to be correctness bugs, not just style.
+
+### 11.2 Audit log — 2026-09-11 (Bun 1.4.2)
+
+The audit above was run because the practices were *questioned*, not because a
+failure was observed. Recording what it found, including the parts that were
+already right, so nobody has to re-derive it:
+
+**Already conformant (verified, do not "fix"):**
+
+- `buffer`/`buffer_length` is live — `ffiBufferMode() === 'buffer-pair'`, and
+  `abi()` rewrites every `(ptr, usize)` pair.
+- `cstring` for returns and for the string surface; `u64_fast` for byte counts;
+  `JSCallback.prototype.ptr`; `dlopen` never closed. All per the docs.
+
+**Found and fixed (all correctness, two of them security-grade):**
+
+| finding | evidence | fix |
+|---|---|---|
+| Validator verdicts could be fooled | `validateEmail(bytes('a@b.com\0<script>'))` → `true` | byte sibling (`buffer`/`buffer_length`), 2.2–3.2× faster too |
+| `regexEscape` truncated output | `'abc\0def'` → `'abc'` | route the NUL case to the `(ptr,len)` sibling |
+| Batch hex validation could pass a prefix | joined ids truncated at a NUL | same |
+| Query/cookie gates could validate a prefix | `cstring` ARG + user-supplied wire text | short-circuit `false` on NUL |
+| Metric label values silently merged series | truncation collapsed two label values into one | throw at declare time / reject at record |
+| `mimeFromExtension` resolved a NUL-suffixed extension as its prefix | `.js\0evil` → `text/javascript` | unknown sentinel |
+| `wsAcceptKey` hashed a prefix of the key | suffix silently ignored | byte path for the NUL case |
+
+**Methodological corrections (both were nearly written into the docs as fact):**
+
+1. **Raw-binding probes mislead.** `getBunFFI()!.op(...)` omits the memoized
+   `ffi()` hop and the caller's own decode/subarray. For `wsAcceptKey` it made the
+   byte path look 11% faster when through `rust.wsAcceptKey` it is 4% *slower*
+   (381 vs 367 ns) — so that call keeps `cstring` and diverts only the NUL case.
+2. **Closure-wrapped micro-benchmarks inflate small costs.** A guard that
+   measured 90 ns inside a benchmark closure is 3.6 ns isolated (`indexOf`). That
+   ~25× error would have justified adding a C-ABI symbol that earns nothing.
+
+**Also closed:** the sweep found no other non-conformance. `toArrayBuffer`
+appears once in `src/` (a comment explaining why it is avoided), the only
+`bun:ffi` import outside the native layer is a type import, `read.*` has no
+hot-path use (our pointer reads happen once at bind), and `rust.text.*` was
+already FFI-first with `cstring` (zero encode).
+
+**Follow-ups, deliberately not done:** `mimeFromExtension` still decodes for the
+`cstring` ARG because no byte sibling exists (a symbol that would earn ~40 ns on
+a non-hot path); `@types/bun` remains 1.3.14 (see §13 — the cache has no newer
+version, so the casts stay).
+
 ---
 
 ## 12. Bun's own Rust hygiene (borrowed rules)
@@ -318,11 +449,23 @@ that transfer directly to castrum's cdylib:
 
 ## 13. Version anchors & verification
 
-The behavioral claims above are verified against the Rust-based Bun source
+The behavioral claims above were distilled from the Rust-based Bun source
 checkout at `/home/adeel/poc/bun` (LATEST file: 1.3.14; `package.json` tracks
-the 1.4 development line). The decision matrix and ADR-0003 measure against
-the installed **Bun 1.4.0** runtime — both anchors describe the same
-Rust-based runtime family. Castrum's own measurements live in `bench/`.
+the 1.4 development line) and are **re-verified against the installed Bun 1.4.2
+runtime** that the code actually runs on (and that the CI matrix pins). The
+decision matrix and ADR-0003 measured on the installed **Bun 1.4.0** runtime —
+all anchors describe the same Rust-based runtime family. Castrum's own
+measurements live in `bench/`.
+
+**Known gap (2026-09-11): the type package lags the runtime.** `package.json`
+pins `@types/bun@^1.3.14` / `bun-types@1.3.14` while the runtime is 1.4.2, and the
+local package cache holds only 1.3.14 (so bumping it needs network access). The
+visible consequence is that 1.4-era `bun:ffi` declarations are absent from the
+types — `buffer_length` is not a valid `FFITypeOrString` literal there, so
+`src/native/ffi.ts` casts it (`as unknown as readonly FFITypeOrString[]`). Any
+new `bun:ffi` surface added in 1.4.x will need the same treatment until the
+types are upgraded. The casts are load-bearing, not sloppiness: dropping them is
+a type error, not a behavior change.
 
 | Claim | Source (Bun checkout `/home/adeel/poc/bun`) |
 |---|---|
@@ -378,7 +521,9 @@ to bun:ffi itself:
 The minimal C-dylib control experiment bound every suspect signature shape
 (`cstring` leading/middle/trailing, mixed with `buffer`/`buffer_length`,
 `u64_fast` returns) against trivial exports: all marshaled correctly on Bun
-1.4.0/1.4.1 canaries. **No engine bug exists to report.**
+1.4.0/1.4.1 canaries. **No engine bug exists to report.** (Re-run on the 1.4.2
+binding: `ffiBufferMode() === 'buffer-pair'`, i.e. the `buffer`/`buffer_length`
+pair is still live, and the full symbol set passes the bind-time self-test.)
 
 ### Rules for any ABI change (signature, arg order, or type)
 

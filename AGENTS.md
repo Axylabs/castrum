@@ -42,7 +42,7 @@ HTTP **ingress pipeline** for Bun servers.
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
 | Postinstall fallback build | `node scripts/postinstall.mjs` (runs as package.json `postinstall`; no-op when a prebuilt `.node` exists for the host, else `cargo build --release` from the shipped `rust/` source — see `docs/ENVIRONMENT.md`) |
 | Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/panic_safety.rs` + `rust/proptest_suite.rs`) |
-| TS unit tests | `bun test` (~760 tests, `test/unit/**`) |
+| TS unit tests | `bun test test/unit test/property test/compat` (~804 tests; the `test` script passes those paths explicitly) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts) feed docs/bun-builtins-decision-matrix.md (NOT a shipped-op measurement) |
 | Proven selection | baked registry `src/shared/proven.ts` (`PROVEN_SELECTION`: native/js/bun winners) + `proven` surface (`src/rust-ffi/proven.ts`); `test/unit/contract/proven.test.ts` verifies each winner is wired (opImpl/builtins/selection.json) — NO live bench gate |
@@ -50,6 +50,7 @@ HTTP **ingress pipeline** for Bun servers.
 | FFI transport benches | `bun run bench:ffi` / `bench:ffi:load` / `bench:ffi:public` / `bench:ffi:workers` / `bench:margin` (`bench/ffi/`) |
 | Ingress cost benches | `bun run bench:ingress-cost` / `bench:ingress-cost:post` / `bench:router` (`bench/cost/`) |
 | New-op JS-vs-Rust cost | `bun run bench:newops` (`bench/cost/rust-vs-js-new-ops.ts`: metrics registry / hexValidateBatch / regexEscape vs their shipped JS baselines) |
+| Off-thread task cost | `bun run bench:task` (`bench/cost/task-offload.ts`: sync FFI vs the off-thread task runtime — duration AND event-loop stall; see `docs/RND-CONCURRENCY.md`) |
 | Load-phase bench | `bun run bench:load` |
 | Autocannon stress | `bun run bench:http:ac` (with `AC_*` env: `AC_DURATION`, `AC_PATH`, `AC_METHOD`, `AC_BODY`, `AC_CONTENT_TYPE`, `AC_CONNECTIONS`, `AC_WORKERS`, `AC_INSTANCES`, `AC_PIPELINING`, `SERVER`) |
 | Native batch parity check | `bun run verify:native:batch` |
@@ -78,8 +79,26 @@ HTTP **ingress pipeline** for Bun servers.
   tarball, and `prepublishOnly` (`node scripts/prepublish.mjs`) fails unless every
   platform `.node` is present. Push a `v*` tag instead: `.github/workflows/ci.yml`
   builds + uploads each platform artifact, then the `publish` job downloads them
-  into `./artifacts`, stages them, and runs `npm publish --access public`
-  (requires the `NPM_TOKEN` secret). Releases use the shared canonical flow:
+  into `./artifacts`, stages them, and runs `npm publish --access public`.
+  **Auth**: npm Trusted Publishing (OIDC) is preferred — it needs `id-token:
+  write` (present), npm >= 11.5.2 (the job installs `npm@latest` and asserts the
+  version) and the package to list `Axylabs/castrum` +
+  `.github/workflows/ci.yml` (+ environment `NPM_TOKEN` if npm's "Environment
+  name" is set) as its Trusted Publisher on npmjs.com (Package → Settings →
+  Trusted Publisher). The publish job also targets the GitHub **environment
+  `NPM_TOKEN`**, which holds an `NPM_TOKEN` secret; npm prefers OIDC and falls
+  back to that token, so either path ships a release. `repository.url` in
+  package.json MUST match the GitHub repo or the OIDC exchange is rejected and
+  npm reports a misleading `ENEEDAUTH`. **Unattended releases need the trusted
+  publisher to allow direct publish**: connections created after 2026-09-03
+  default to `npm stage publish` only, and npm then STAGES a plain
+  `npm publish` instead of failing — the job exits 0 and logs
+  `+ castrum@<version>`, but the version stays invisible (registry
+  `/castrum/<version>` → 404, `latest` unchanged) until a maintainer approves
+  it with 2FA (`npm stage approve <stage-id>`, or the Staged Packages tab on
+  npmjs.com). Existing connections cannot be edited — delete and recreate the
+  connection with *direct publish* allowed to publish unattended. Always verify
+  a release on the REGISTRY, not by the job conclusion. Releases use the shared canonical flow:
   `bun run release` (`scripts/release.ts` + `.release.json`) bumps `version` in
   package.json AND syncs `Cargo.toml` / `Cargo.lock` / `CHANGELOG.md`, runs the
   verify gate, and commits + tags `v<version>` — CI then builds + publishes every
@@ -93,8 +112,8 @@ HTTP **ingress pipeline** for Bun servers.
   `publish.command` sets `CASTRUM_PUBLISH_ALLOW_PARTIAL=1` for the
   publish, so `prepublishOnly` ships ONLY the platforms built locally (currently the
   host platform) instead of failing on missing `napi.targets`. Full multi-platform
-  tarballs still come from CI on a v* tag push. Prereqs: npm logged in (or
-  `NPM_TOKEN` exported). `bun run release:dry` (`--dry-run`) prints
+  tarballs still come from CI on a v* tag push. Prereqs: npm logged in
+  (`npm login`). `bun run release:dry` (`--dry-run`) prints
   the plan without changing anything.
 - **Cross-compatible source-build fallback (`scripts/postinstall.mjs`)**: the
   tarball ships the `rust/` source + `Cargo.toml`/`Cargo.lock`/`build.rs`/
@@ -168,6 +187,14 @@ src/rust-ffi/             flat Rust FFI API (`rust`), decomposed: options.ts + a
                           shared first-use caches) + text.ts + batch/ (types.ts interface + build.ts impl + index.ts barrel) +
                           packed.ts + scalar/ (interface + hashing/json/http/crypto/payload/factories builders) + client.ts +
                           proven.ts + index.ts barrel
+src/task/                 off-thread task runtime ("castrum Tasks", Bun-first): op.ts (pure op ids + packed-arg
+                          encoders) + runtime.ts (process-wide singleton: submit → native pool → batched doorbell
+                          → drained completion → promise; AbortSignal; ZERO-COPY both ways — submitInto writes
+                          results into a JS-owned Buffer, submitSlice reads a large payload in place) +
+                          index.ts barrel. Ops: gzipDecompress/brotliDecompress (+Into), gzipCompress, pbkdf2Sha256,
+                          argon2Verify. Rust core is rust/task/.
+                          Node falls back to the sync `rust.*` op (napi AsyncTask is the M2 milestone).
+                          See docs/RND-CONCURRENCY.md; measure with `bun run bench:task`.
 src/shared/request-id.ts  shared zero-alloc request ID generator (both ingress paths) — aliased buffer hazard documented
 src/shared/metrics.ts     zero-dep metrics registry (counters/gauges/histograms + Prometheus render)
 src/shared/trace.ts       W3C traceparent/span-id helpers (tracing correlation)
@@ -203,7 +230,7 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi/                `#[no_mangle] extern "C"` exports (109 castrum_* — 97 direct + 4
+  ├── ffi/                `#[no_mangle] extern "C"` exports (119 castrum_* — 107 direct + 4
                           validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out! — incl. the
                           castrum_gzip_isize size probe and the per-route stack
                           castrum_route_compile/run/destroy; parity guarded by
@@ -224,6 +251,16 @@ rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomp
   │   ├── batch/         aggregate packed batch napi APIs (api.rs + core.rs + tests.rs)
   │   ├── threadpool.rs   rayon global pool init + parallelism heuristic
   │   └── validation.rs   email / UUID / IPv4 / IPv6 validators
+  ├── task/               OFF-THREAD TASK RUNTIME ("castrum Tasks", Bun-first): mod.rs
+  │                       (submit_op / submit_op_into / submit_slice_op + re-exports) + runtime.rs
+  │                       (condvar pool, N = cores−1, CASTRUM_TASK_THREADS, deliberately separate
+  │                       from rayon; batch dequeue + bounded spin-then-park + optional core
+  │                       pinning CASTRUM_TASK_PIN_CORES) + completion.rs (result ring + BATCHED
+  │                       thread-safe doorbell) + ops.rs (op dispatch over a header+payload
+  │                       split, cancel, catch_unwind containment, `_into` ops writing into a
+  │                       caller slice, slice ops reading the payload in place) + tests.rs.
+  │                       C-ABI lives in ffi/task.rs (10 castrum_task_* symbols).
+  │                       See docs/RND-CONCURRENCY.md; bench: `bun run bench:task`.
   ├── http/               HTTP WIRE FORMATS & PARSING
   │   ├── headers.rs      zero-alloc packed-header parser (HeaderRefs)
   │   ├── method.rs       HTTP method classification
@@ -387,7 +424,7 @@ success and `error.code` / `error.message` on errors (path 2's format).
   never a hard publish requirement. When you touch the loader, run
   `bun run bench:startup` + the loader unit tests
   (`test/unit/native/loader.test.ts`).
-- **Bun FFI behavior (learned from Bun 1.3.14 — see `docs/FFI_BUN_GUIDE.md`)**:
+- **Bun FFI behavior (learned from Bun 1.3.14, re-verified on 1.4.2 — see `docs/FFI_BUN_GUIDE.md`)**:
   - Hot `bun:ffi` call sites JIT through DFG/FTL into direct native calls (~10–20ns);
     keep `extern "C"` signatures scalar + `(ptr,len)` — no struct-by-value (not
     supported by `bun:ffi`), no variadics, no callbacks in hot paths.
@@ -400,6 +437,15 @@ success and `error.code` / `error.message` on errors (path 2's format).
     (`U64_FAST` in ffi.ts); opaque handles pass as `usize`/number (`Number(innerPtr())` once).
   - `cstring` returns are cloned at call time (NULL → null) — per-thread reused
     `CSTR_BUF` is safe; never return a pointer into JS-owned/argument memory.
+  - `cstring` ARGS are transcoded in-engine (zero JS encode) BUT the buffer is
+    NUL-TERMINATED, so an embedded `U+0000` TRUNCATES the value. Only bind one for
+    developer config / NUL-free input; where an op is reachable from user input and
+    answers with a verdict or a byte-exact value, add a `*_bytes` sibling
+    (`buffer`/`buffer_length` — also measured 2.2–3.2× faster) or guard with
+    `hasNul` (`src/shared/bytes.ts`). Skipping this shipped two bugs:
+    `validateEmail('a@b.com\0<script>')` → `true`, `regexEscape('abc\0def')` →
+    `'abc'`. Pin any new case in `test/unit/native/cstring-nul.test.ts`; full
+    contract in `docs/FFI_BUN_GUIDE.md` §6.1 (+ audit log §11.2).
   - Never `close()` a dlopen'd library while bound symbols are live (Bun leaks by
     design; dlclose-on-GC is unsound). `getBunFFI()` binds once and holds forever.
   - Symbols are shared across Worker threads → thread-local caches only
@@ -493,6 +539,46 @@ success and `error.code` / `error.message` on errors (path 2's format).
 - **`tsconfig.json`** sets `noUncheckedIndexedAccess: true`. Indexed access on
   `Record<string, Uint8Array>` (e.g. `ERROR_BODIES.internal`) is
   `Uint8Array | undefined` — `handlers.ts` uses `!` where the key is guaranteed.
+- **`typescript` stays on 7.x (native compiler) + SCOPED older compilers for
+  the two tools that drive the TS JS API**: `build:js:types` uses
+  `dts-bundle-generator` (9.5.1, latest) and `napi build`'s post-build `.d.ts`
+  step uses `@napi-rs/cli` — both need the pre-7 API (`ts.sys`, `ts.ScriptTarget`,
+  `createProgram`). TypeScript 7's package root exports only `{ version }`, so a
+  flat install throws `Cannot read properties of undefined (reading
+  'getCurrentDirectory')` (bundler) or `... (reading 'ESNext')` (napi build, which
+  breaks every build-matrix job). The fix is the NESTED overrides:
+  `"overrides": { "dts-bundle-generator": { "typescript": "5.9.3" },
+  "@napi-rs/cli": { "typescript": "6.0.3" } }` — typecheck / `bunx tsc` keep
+  running on 7 while each tool resolves its own compiler. Do NOT collapse them
+  into a flat `"typescript"` override (that downgrades the project compiler) and
+  do NOT delete them when bumping TypeScript.
+  After any dependency change, `bun install` must run with a clean
+  `node_modules` (a leftover pnpm-isolated tree keeps a nested `typescript`
+  symlink at the old version and keeps failing even after the override is
+  restored).
+- **CI cross builds (`build` matrix) — three load-bearing rules**:
+  1. The Rust toolchain comes from `rust-toolchain.toml`: the workflow reads the
+     channel out of that file and passes it to `dtolnay/rust-toolchain`. A
+     SHA-pinned ref cannot encode the toolchain, and `targets:` must be installed
+     for the toolchain cargo actually resolves inside the repo — installing
+     `stable` (+ its targets) leaves every non-host target with no std
+     (`can't find crate for core`).
+  2. Linux **gnu** targets build with the host/distro compilers — never
+     `--use-napi-cross`: its prebuilt toolchain is gcc 4.8.5 / glibc 2.17, which
+     cannot compile aws-lc-sys (needs C11 `stdatomic.h` and modern `-march`
+     values) or libmimalloc-sys (`-Wdate-time`), and its ancient linker leaves
+     the host-compiled C objects' `__isoc23_*` symbols unresolved. The
+     `aarch64-unknown-linux-gnu` entry installs `gcc-aarch64-linux-gnu` and
+     points `cc`/CMake/cargo at it via `CC_`/`CXX_`/`AR_<triple>` +
+     `CARGO_TARGET_<TRIPLE>_LINKER`. **musl** targets use cargo-zigbuild
+     (`-x` + `mlugg/setup-zig` + `taiki-e/install-action`).
+  3. The diagnostic `native-bench` bin is gated behind the opt-in
+     `native-bench` feature (`required-features`) so `napi build` never links it:
+     an executable must resolve the aws-lc-sys C symbols that a cdylib may leave
+     undefined. Run it with
+     `cargo run --release --features native-bench --bin native-bench` (the
+     `ffi-margin` bench does), and note the `rust` job lints with
+     `--all-features` so the gated code still gets compiled.
 - **`bench/` IS typechecked by `tsc`** (in tsconfig `include`). `test/` is not —
   validate test files with the editor language server, and run
   `bun run bench:http:smoke` to confirm the servers still pass load checks.
@@ -630,8 +716,13 @@ explicit impurity boundary so the hot path can pool/globalize state:
 
 ## Testing
 
-- **TS**: `bun test` (~760). Add tests under `test/unit/<area>/` (`native/`,
+- **TS**: `bun test test/unit test/property test/compat` (~804). Add tests under
+  `test/unit/<area>/` (`native/`,
   `rust-ffi/`, `contract/`, `ingress/`, `shared/`, `integration/`) — see `test/README.md`.
+  The paths are explicit because `test/integration/*.test.mjs` are `node --test`
+  suites that import the compiled `dist/index.js` (only built by `build:js`), so a
+  bare `bun test` would fail to load them anywhere `dist/` is absent (e.g. the CI
+  `typescript` job). They are covered by `bun run test:node` instead.
 - **Rust**: `cargo test`. New logic ships with a `#[cfg(test)] mod tests` block in
   the SAME module file (ingress.rs, url_codec.rs, validation.rs, proxy.rs,
   hmac_sha256.rs already do). Cross-module suites live in `rust/panic_safety.rs` +

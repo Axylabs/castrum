@@ -1,15 +1,26 @@
 // src/rust-ffi/text.ts — String-oriented FFI namespace (text in → text out).
 //
 // `rust.text.*` is the ergonomic string API over the byte-level native
-// functions. Pure wrappers: encode input, call native, decode output.
+// functions. MOST of it is FFI-first with `cstring` args/returns: the engine
+// transcodes a JS string in-call, so there is no JS-side encode at all (and
+// byte-arg ops are not involved). Encode/decode wrappers exist only for the
+// napi fallback and for ops with no cstring form — plus a NUL guard wherever a
+// `cstring` ARG could truncate a verdict or a byte-exact value
+// (docs/FFI_BUN_GUIDE.md §6.1).
 //
 // Runtime dispatch is centralized in the adapter (`ctx.runtime`): the Bun
 // built-in delegations (urlEncode/urlDecode) come from `builtins.has(op)` and
 // the native call from `transport.ffi` / `transport.resolve` (bun:ffi first,
 // napi fallback) — no inline `isBun()` / `getBunFFI()`.
 
-import { decoder, encoder } from '../shared/bytes'
+import { decoder, encoder, hasNul } from '../shared/bytes'
 import { type RustClientContext, resolveNative } from './context'
+
+/**
+ * Scratch for the byte-path `Sec-WebSocket-Accept` fallback (28 chars; the
+ * NUL case only). Decoded synchronously before returning, so reuse is safe.
+ */
+const WS_ACCEPT_OUT = new Uint8Array(64)
 
 /** String-oriented FFI namespace. */
 export interface RustText {
@@ -91,8 +102,19 @@ export function buildText(ctx: RustClientContext): RustText {
       // FFI-first: `cstring` ARG + cstring return (native transfer both ways —
       // the engine transcodes the key in-engine, no JS encode). napi keeps the
       // encode/decode path.
+      //
+      // Exception: a NUL would truncate the `cstring` ARG, so the accept value
+      // would be computed for a PREFIX of the key. Encode and take the byte path
+      // in that (practically unreachable) case: still a wrong key for a client
+      // that sent a NUL, but wrong for the bytes the caller actually passed.
       const f = transport.ffi
-      if (f) return f.wsAcceptKey(key)
+      if (f) {
+        if (!hasNul(key)) return f.wsAcceptKey(key)
+        const w = f.wsAcceptKeyInto(encoder.encode(key), WS_ACCEPT_OUT)
+        return w > 0 && w <= WS_ACCEPT_OUT.length
+          ? decoder.decode(WS_ACCEPT_OUT.subarray(0, w))
+          : ''
+      }
       return decoder.decode(resolveNative(ctx, 'wsAcceptKey')(encoder.encode(key)) as Uint8Array)
     },
     validateEmail(input) {

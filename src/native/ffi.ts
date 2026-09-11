@@ -34,7 +34,7 @@ import type { BunFFI, FfiMode } from './ffi/types'
 // Static import: loader.ts has no side effects (path resolution only — no
 // dlopen), so this adds zero import-time cost while letting `bind()` reuse the
 // exact same resolved `.node` path the napi fallback uses (the shared seam).
-import { getAddonPath } from './loader'
+import { getAddonPath, getAddonPathCandidates } from './loader'
 
 // Re-export the type surface so `import type { BunFFI } from '../native/ffi'`
 // keeps working (existing call sites).
@@ -48,6 +48,12 @@ let cached: BunFFI | null | undefined
  * explicit `(ptr, usize)` fallback.
  */
 let bufferAbiMode: 'buffer-pair' | 'ptr-len' | null = null
+
+/**
+ * The addon file the live `bun:ffi` binding was opened from, or `null` while
+ * unbound. Diagnostics only — a v3→baseline fallback is visible here.
+ */
+let boundAddonPath: string | null = null
 
 // ── Transport selection (CASTRUM_FFI_MODE) ───────────────────────
 
@@ -97,6 +103,20 @@ export function ffiBufferMode(): 'buffer-pair' | 'ptr-len' | null {
 }
 
 /**
+ * The addon file path the live `bun:ffi` binding was opened from, or `null`
+ * when the transport is unavailable (Node, `CASTRUM_FFI_MODE=napi`, or every
+ * candidate failed). Lazy — triggers the same one-time bind as
+ * {@link getBunFFI}. Use it to confirm WHICH artifact bound, e.g. when a stale
+ * v3 SIMD binary forced the baseline fallback.
+ */
+export function ffiAddonPath(): string | null {
+  if (cached === undefined) {
+    getBunFFI()
+  }
+  return boundAddonPath
+}
+
+/**
  * Probe whether this Bun build accepts the `buffer`/`buffer_length` ABI pair in
  * `dlopen`. Bun's docs list `buffer_length` as engine-native (dlopen-supported),
  * but an earlier canary threw "invalid ABI type" for it. If that regressed (or
@@ -127,7 +147,7 @@ function probeBufferLength(dlopen: typeof import('bun:ffi')['dlopen'], path: str
   }
 }
 
-function bind(): BunFFI | null {
+function bind(forcedPath?: string, tried: string[] = []): BunFFI | null {
   bufferAbiMode = null // reset — the mode below is only valid for a live bind
   const mode = resolveFfiMode()
   if (!isBun()) {
@@ -143,12 +163,13 @@ function bind(): BunFFI | null {
   if (mode === 'napi') {
     return null
   }
+  // Resolve the SAME addon file napi uses (./loader.ts — statically imported
+  // above; it only resolves the path, it never dlopens the addon). On a retry,
+  // `forcedPath` is the next candidate from `getAddonPathCandidates()`.
+  const path = forcedPath ?? getAddonPath()
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { dlopen } = require('bun:ffi') as typeof import('bun:ffi')
-    // Resolve the SAME addon file napi uses (./loader.ts — statically imported
-    // above; it only resolves the path, it never dlopens the addon).
-    const path = getAddonPath()
 
     // Probe `buffer`/`buffer_length` (the engine reads ptr + len off the SAME
     // TypedArray at call time — an atomic snapshot) once; when supported we use
@@ -209,6 +230,14 @@ function bind(): BunFFI | null {
       // The `_bytes` siblings take a `(ptr,len)` pair — zero transcode when
       // the caller already holds bytes (a cstring arg would force a decode +
       // engine re-encode; docs/FFI_BUN_GUIDE.md §3 shape 4).
+      //
+      // SAFETY RULE for every `cstring` ARG added here: the transcode is
+      // NUL-TERMINATED, so an embedded U+0000 truncates the value in-engine. A
+      // verdict op bound this way can be fooled (`validateEmail` on
+      // 'a@b.com\0<script>' returned TRUE before the byte re-route). Either
+      // give the op a `_bytes` sibling and route byte callers to it, or guard
+      // the string form with `hasNul` — see docs/FFI_BUN_GUIDE.md §6.1,
+      // pinned by test/unit/native/cstring-nul.test.ts.
       castrum_validate_email: { args: ['cstring'], returns: 'u8' },
       castrum_validate_uuid: { args: ['cstring'], returns: 'u8' },
       castrum_validate_ipv4: { args: ['cstring'], returns: 'u8' },
@@ -547,6 +576,27 @@ function bind(): BunFFI | null {
         args: abi(['cstring', 'cstring', 'ptr', 'usize']),
         returns: U64_FAST,
       },
+      // Off-thread task runtime: `submit` takes a packed `(ptr,len)` arg blob
+      // plus a JS-assigned id; `drain` writes the packed completion batch into
+      // a caller buffer (needed-size convention). `set_doorbell` takes the raw
+      // `JSCallback({threadsafe:true}).ptr` as a bare pointer (`abi` leaves a
+      // lone `ptr` untouched), so the pool can wake JS once per batch.
+      castrum_task_init: { args: ['u32'], returns: 'u32' },
+      castrum_task_submit: { args: abi(['u32', 'ptr', 'usize', 'usize']), returns: 'u32' },
+      castrum_task_submit_slice: {
+        args: abi(['u32', 'ptr', 'usize', 'ptr', 'usize', 'usize']),
+        returns: 'u32',
+      },
+      castrum_task_submit_out: {
+        args: abi(['u32', 'ptr', 'usize', 'usize', 'ptr', 'usize']),
+        returns: 'u32',
+      },
+      castrum_task_drain: { args: abi(['ptr', 'usize']), returns: U64_FAST },
+      castrum_task_pending: { args: [], returns: 'u32' },
+      castrum_task_cancel: { args: ['usize'], returns: 'u32' },
+      castrum_task_set_doorbell: { args: ['ptr'], returns: 'u32' },
+      castrum_task_shutdown: { args: [], returns: 'u32' },
+      castrum_task_threads: { args: [], returns: 'u32' },
       castrum_metrics_destroy: { args: ['usize'], returns: 'void' },
     })
 
@@ -557,20 +607,29 @@ function bind(): BunFFI | null {
       useBufferLength,
     )
     if (!selfTest(bindings)) {
-      if (mode === 'ffi') {
-        throw new Error(
-          'CASTRUM_FFI_MODE=ffi: the bun:ffi bind-time self-test failed, so the ' +
-            'primary transport cannot be trusted on this Bun/addon combination. ' +
-            'Unset CASTRUM_FFI_MODE (or use CASTRUM_FFI_MODE=auto) to fall back to napi.',
-        )
-      }
-      return null
+      throw new Error(`bun:ffi bind-time self-test failed on ${path}`)
     }
+    boundAddonPath = path
     return bindings
   } catch (err) {
+    bufferAbiMode = null
+    // The preferred artifact failed to dlopen/bind/self-test. The common cause
+    // is a STALE v3 SIMD binary (`castrum.linux-x64-v3-gnu.node`) that predates
+    // a newly added `castrum_*` symbol: dlopen fails, and without this walk the
+    // whole FFI transport would be disabled (every call silently downgraded to
+    // napi, and the task runtime silently made synchronous). Try the remaining
+    // existing candidates — the baseline binary — before giving up.
+    for (const next of getAddonPathCandidates()) {
+      if (next === path || tried.includes(next)) continue
+      const bound = bind(next, [...tried, path])
+      if (bound) return bound
+    }
     if (mode === 'ffi') {
       const cause = err instanceof Error ? `: ${err.message}` : ''
-      throw new Error(`CASTRUM_FFI_MODE=ffi: failed to bind bun:ffi${cause}`)
+      throw new Error(
+        `CASTRUM_FFI_MODE=ffi: failed to bind bun:ffi${cause} ` +
+          `(tried: ${[...tried, path].join(', ')})`,
+      )
     }
     return null
   }

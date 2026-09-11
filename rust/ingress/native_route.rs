@@ -26,7 +26,6 @@
 // `parseQuery` + a cookie pair section iff `parseCookies`. Pair sections are
 // `[count u32] { [nameLen u32][name][valueLen u32][value] }`.
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use super::packed::{read_section, read_u32_at};
@@ -254,28 +253,30 @@ impl NativeRoute {
             }
         }
 
-        // ── Parse + size the pair sections ──────────────────────────
-        let mut query_size = 0usize;
-        let mut cookie_size = 0usize;
-        let mut query_valid = false;
-        let mut cookie_valid = false;
+        // ── Assemble the result in ONE streaming pass ───────────────
+        // Pair sections are decoded + written as they are walked. The old
+        // shape sized them first and walked again, which decoded every escaped
+        // segment TWICE and allocated twice per segment in BOTH passes.
+        // The reused `scratch` holds the decoded bytes of one segment at a time.
+        let mut scratch: Vec<u8> = Vec::new();
+        let mut w = ResultWriter::new(out, RESULT_HEADER_LEN);
+        let mut query_capped = false;
+        let mut cookie_capped = false;
         if self.parse_query {
-            let over = query.len() > self.max_query_bytes;
-            let (size, capped) = query_section_size(query, self.max_pairs);
-            query_size = size;
-            query_valid = !over && !capped;
+            query_capped = write_query_section(&mut w, &mut scratch, query, self.max_pairs);
         }
         if self.parse_cookies {
-            let over = cookie.len() > self.max_cookie_bytes;
-            let (size, capped) = cookie_section_size(cookie, self.max_pairs);
-            cookie_size = size;
-            cookie_valid = !over && !capped;
+            cookie_capped = write_cookie_section(&mut w, cookie, self.max_pairs);
         }
         // validateQuery/validateCookies without a schema are no-ops (the parse
-        // VALID bit above is the verdict); with a schema, compile would have
-        // rejected the descriptor → the caller fell back to JS.
+        // VALID bit is the verdict); with a schema, compile would have rejected
+        // the descriptor → the caller fell back to JS. A section that is not
+        // parsed never reports VALID.
+        let query_valid = self.parse_query && !query_capped && query.len() <= self.max_query_bytes;
+        let cookie_valid =
+            self.parse_cookies && !cookie_capped && cookie.len() <= self.max_cookie_bytes;
 
-        // ── Assemble the result ─────────────────────────────────────
+        // ── Verdict flags + header (committed LAST) ─────────────────
         let mut result_flags: u32 = 0;
         if error_code == 0 {
             result_flags |= ROUTE_RESULT_FLAG_OK;
@@ -292,25 +293,10 @@ impl NativeRoute {
         if body_valid {
             result_flags |= ROUTE_RESULT_FLAG_BODY_VALID;
         }
-
-        let required = 8 + query_size + cookie_size;
-        if out.len() < required {
-            return Ok(required); // needed-size: report the exact size, write nothing
-        }
-
-        let mut w = 0usize;
-        // NOTE: pass the FULL `out` slice (not `&mut out[w..]`) — `w` is the
-        // absolute write position, so re-slicing would double-apply the offset
-        // and scatter the header across the buffer.
-        write_u32(out, &mut w, result_flags);
-        write_u32(out, &mut w, error_code);
-        if self.parse_query {
-            write_query_section(out, &mut w, query, self.max_pairs);
-        }
-        if self.parse_cookies {
-            write_cookie_section(out, &mut w, cookie, self.max_pairs);
-        }
-        Ok(w)
+        let mut header = [0u8; RESULT_HEADER_LEN];
+        header[..4].copy_from_slice(&result_flags.to_le_bytes());
+        header[4..].copy_from_slice(&error_code.to_le_bytes());
+        Ok(w.commit(header))
     }
 }
 
@@ -347,143 +333,148 @@ fn query_pairs(query: &[u8]) -> impl Iterator<Item = Pair<'_>> + '_ {
 /// LENIENT segment decode (matches JS `decodeSegment`): `+` → space, `%XX` →
 /// byte, result must be valid UTF-8; on ANY failure the WHOLE original segment
 /// is returned unchanged (with `+` AND `%` intact — the JS catch returns `s`).
-fn decode_segment_lenient(seg: &[u8]) -> Cow<'_, [u8]> {
-    if memchr::memchr2(b'+', b'%', seg).is_none() {
-        return Cow::Borrowed(seg);
-    }
-    let mut replaced = Vec::with_capacity(seg.len());
-    for &b in seg {
-        replaced.push(if b == b'+' { b' ' } else { b });
-    }
-    match decode_percent_utf8(&replaced) {
-        Some(decoded) => Cow::Owned(decoded),
-        None => Cow::Borrowed(seg),
-    }
-}
-
-/// The decoded byte length of `seg` under the lenient rules (the original
-/// length when decoding fails — the segment is passed through raw).
+///
+/// Decodes into a caller-provided `scratch` (reused across every segment and
+/// pair of the call) so the hot path NEVER allocates per segment — the old
+/// implementation built `Vec::with_capacity` for the `+` replacement AND
+/// another for the percent decode, i.e. two allocations per escaped segment,
+/// twice per call (size pass + write pass).
+///
+/// The slice returned borrows either `seg` (fast path / lenient fallback) or
+/// `scratch`; it is valid only until the next call with the same scratch.
 #[inline]
-fn decode_segment_len(seg: &[u8]) -> usize {
-    decode_segment_lenient(seg).len()
+fn decode_segment_scratch<'a>(seg: &'a [u8], scratch: &'a mut Vec<u8>) -> &'a [u8] {
+    // Semantics live in ONE place (`util::bytes`) so the route stack and the
+    // packed pair parsers can never disagree: `+` → space, `%XX` → byte, and a
+    // malformed escape or an invalid-UTF-8 result falls back to the WHOLE
+    // original segment (JS `try { decodeURIComponent(...) } catch { return s }`).
+    crate::util::bytes::decode_form_component_scratch(seg, scratch)
 }
 
-/// Percent-decode `input` (which has already had `+`→space applied) and
-/// validate the result is well-formed UTF-8. Returns `None` on a malformed
-/// `%XX` OR invalid UTF-8 (both throw in `decodeURIComponent`).
-fn decode_percent_utf8(input: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(input.len());
-    let mut i = 0usize;
-    while i < input.len() {
-        match input[i] {
-            b'%' => {
-                if i + 2 >= input.len() {
-                    return None;
-                }
-                let hi = hex_val(input[i + 1])?;
-                let lo = hex_val(input[i + 2])?;
-                out.push((hi << 4) | lo);
-                i += 3;
+// ── Streaming result writer (ONE pass, zero per-segment alloc) ─────
+
+/// Bytes reserved at the head of the result for the `[flags u32][error u32]`
+/// verdict header.
+const RESULT_HEADER_LEN: usize = 8;
+
+/// Streaming result writer: appends bytes while tracking the EXACT required
+/// size, so a single pass produces both the packed result AND the needed-size
+/// answer. The previous shape walked every pair section TWICE (a sizing pass
+/// and a write pass), decoding every escaped segment in both.
+///
+/// Once the caller's buffer proves too small the writer stops copying (and
+/// stops patching) but KEEPS counting `needed`, so the needed-size convention
+/// still reports the exact size from the same pass. The verdict header is
+/// committed LAST, so a too-small buffer is left untouched — the contract
+/// `run()`'s callers rely on.
+struct ResultWriter<'a> {
+    out: &'a mut [u8],
+    pos: usize,
+    needed: usize,
+    full: bool,
+}
+
+impl<'a> ResultWriter<'a> {
+    #[inline]
+    fn new(out: &'a mut [u8], header_len: usize) -> Self {
+        Self {
+            full: out.len() < header_len,
+            out,
+            pos: header_len,
+            needed: header_len,
+        }
+    }
+
+    /// Append `bytes`, tracking the required size even after the buffer is full.
+    #[inline]
+    fn bytes(&mut self, bytes: &[u8]) {
+        self.needed += bytes.len();
+        if !self.full {
+            let end = self.pos + bytes.len();
+            if end <= self.out.len() {
+                self.out[self.pos..end].copy_from_slice(bytes);
+                self.pos = end;
+            } else {
+                self.full = true;
             }
-            b => {
-                out.push(b);
-                i += 1;
-            }
         }
     }
-    std::str::from_utf8(&out).ok()?;
-    Some(out)
-}
 
-/// Hex digit → nibble (None for non-hex).
-#[inline]
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
+    #[inline]
+    fn u32(&mut self, value: u32) {
+        self.bytes(&value.to_le_bytes());
     }
-}
 
-// ── Pair-section size + write (two passes, zero alloc) ────────────
+    /// Append `[u32 len][bytes]` — the pair-section element layout.
+    #[inline]
+    fn len_prefixed(&mut self, bytes: &[u8]) {
+        self.u32(bytes.len() as u32);
+        self.bytes(bytes);
+    }
 
-/// Size pass over decoded query pairs (name/value both lenient-decoded).
-fn query_section_size(query: &[u8], max_pairs: usize) -> (usize, bool) {
-    let mut size = 4usize;
-    let mut capped = false;
-    for (count, pair) in query_pairs(query).enumerate() {
-        if max_pairs > 0 && count >= max_pairs {
-            capped = true;
-            break;
+    /// Patch a previously reserved u32 (the section pair count) in place.
+    #[inline]
+    fn patch_u32(&mut self, at: usize, value: u32) {
+        if !self.full && at + 4 <= self.out.len() {
+            self.out[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
-        size += 4 + decode_segment_len(pair.name) + 4 + decode_segment_len(pair.value);
     }
-    (size, capped)
-}
 
-/// Size pass over raw cookie pairs (no URL-decoding).
-fn cookie_section_size(cookie: &[u8], max_pairs: usize) -> (usize, bool) {
-    let mut size = 4usize;
-    let mut capped = false;
-    for (count, (name, value)) in cookie_pairs(cookie).enumerate() {
-        if max_pairs > 0 && count >= max_pairs {
-            capped = true;
-            break;
+    /// Commit the verdict header and return the bytes written — or, when the
+    /// buffer was too small, the EXACT required size (nothing committed).
+    #[inline]
+    fn commit(self, header: [u8; RESULT_HEADER_LEN]) -> usize {
+        if self.full || self.needed > self.out.len() {
+            return self.needed;
         }
-        size += 4 + name.len() + 4 + value.len();
+        self.out[..RESULT_HEADER_LEN].copy_from_slice(&header);
+        self.pos
     }
-    (size, capped)
 }
 
-/// Write a decoded segment as `[u32 len][bytes]` into `out` at `pos`.
-#[inline]
-fn write_segment(out: &mut [u8], pos: &mut usize, seg: &[u8]) {
-    let len = seg.len();
-    out[*pos..*pos + 4].copy_from_slice(&(len as u32).to_le_bytes());
-    *pos += 4;
-    out[*pos..*pos + len].copy_from_slice(seg);
-    *pos += len;
-}
-
-/// Write the query pair section (lenient-decoded names/values).
-fn write_query_section(out: &mut [u8], pos: &mut usize, query: &[u8], max_pairs: usize) {
-    let count_pos = *pos;
-    write_u32(out, pos, 0); // count placeholder
+/// Write the query pair section (lenient-decoded names/values) in ONE pass.
+/// Returns `true` when `max_pairs` capped the section (→ not valid).
+fn write_query_section(
+    w: &mut ResultWriter<'_>,
+    scratch: &mut Vec<u8>,
+    query: &[u8],
+    max_pairs: usize,
+) -> bool {
+    let count_pos = w.pos;
+    w.u32(0); // count placeholder, patched below
     let mut count = 0usize;
+    let mut capped = false;
     for pair in query_pairs(query) {
         if max_pairs > 0 && count >= max_pairs {
+            capped = true;
             break;
         }
-        write_segment(out, pos, &decode_segment_lenient(pair.name));
-        write_segment(out, pos, &decode_segment_lenient(pair.value));
+        w.len_prefixed(decode_segment_scratch(pair.name, scratch));
+        w.len_prefixed(decode_segment_scratch(pair.value, scratch));
         count += 1;
     }
-    out[count_pos..count_pos + 4].copy_from_slice(&(count as u32).to_le_bytes());
+    w.patch_u32(count_pos, count as u32);
+    capped
 }
 
-/// Write the cookie pair section (raw trimmed/unquoted names/values).
-fn write_cookie_section(out: &mut [u8], pos: &mut usize, cookie: &[u8], max_pairs: usize) {
-    let count_pos = *pos;
-    write_u32(out, pos, 0); // count placeholder
+/// Write the cookie pair section (raw trimmed/unquoted names/values) in ONE pass.
+/// Returns `true` when `max_pairs` capped the section (→ not valid).
+fn write_cookie_section(w: &mut ResultWriter<'_>, cookie: &[u8], max_pairs: usize) -> bool {
+    let count_pos = w.pos;
+    w.u32(0); // count placeholder, patched below
     let mut count = 0usize;
+    let mut capped = false;
     for (name, value) in cookie_pairs(cookie) {
         if max_pairs > 0 && count >= max_pairs {
+            capped = true;
             break;
         }
-        write_segment(out, pos, name);
-        write_segment(out, pos, value);
+        w.len_prefixed(name);
+        w.len_prefixed(value);
         count += 1;
     }
-    out[count_pos..count_pos + 4].copy_from_slice(&(count as u32).to_le_bytes());
-}
-
-/// Write a u32 LE into `out` at `pos`, advancing `pos`. Caller guarantees
-/// capacity (sizes are pre-computed).
-#[inline]
-fn write_u32(out: &mut [u8], pos: &mut usize, value: u32) {
-    out[*pos..*pos + 4].copy_from_slice(&value.to_le_bytes());
-    *pos += 4;
+    w.patch_u32(count_pos, count as u32);
+    capped
 }
 
 // ── napi boundary: the `Route` class (Node/fallback transport) ─────

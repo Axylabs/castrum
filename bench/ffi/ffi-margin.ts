@@ -133,12 +133,18 @@ function runNative(derivedInputs: Record<string, Uint8Array>): Map<string, numbe
     .map(([k, v]) => `${k}\t${Buffer.from(v).toString('base64')}`)
     .join('\n')
   console.log('Running native-bench (Rust, release, no FFI boundary)...')
-  const res = spawnSync('cargo', ['run', '--release', '--quiet', '--bin', 'native-bench'], {
-    cwd: join(dirname(new URL(import.meta.url).pathname), '..'),
-    input: ndjson,
-    encoding: 'utf8',
-    timeout: 300_000,
-  })
+  // `native-bench` is behind the opt-in `native-bench` feature so that shipped
+  // (cross-compiled) `napi build` runs never link the diagnostic binary.
+  const res = spawnSync(
+    'cargo',
+    ['run', '--release', '--quiet', '--features', 'native-bench', '--bin', 'native-bench'],
+    {
+      cwd: join(dirname(new URL(import.meta.url).pathname), '..'),
+      input: ndjson,
+      encoding: 'utf8',
+      timeout: 300_000,
+    },
+  )
   if (res.status !== 0) {
     throw new Error(
       `native-bench failed (exit ${res.status}): ${(res.stderr ?? '').slice(0, 2000)}`,

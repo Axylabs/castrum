@@ -1,8 +1,11 @@
 [package]
 name = "castrum"
 # Keep in sync with package.json "version" (single source of truth: the npm package).
-version = "0.9.4"
+version = "0.9.6"
 edition = "2021"
+# Keep in sync with package.json "license" (cargo-deny rejects a crate with no
+# license expression).
+license = "MIT"
 
 [lib]
 name = "castrum"
@@ -17,6 +20,7 @@ path = "rust/lib.rs"
 [[bin]]
 name = "native-bench"
 path = "rust/src/bin/native-bench.rs"
+required-features = ["native-bench"]
 
 [dependencies]
 napi = { version = "3", features = ["napi10", "serde-json"] }
@@ -70,7 +74,9 @@ core_affinity = "0.8"
 parking_lot = "0.12"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 ipnet = "2"
-lru = "0.16"
+# 0.18.2+ carries the RUSTSEC-2026-0253 fix (0.16.x is affected); keep this
+# requirement at or above the fixed release so `cargo deny` / OSV stay green.
+lru = "0.18.2"
 # Zero-cost hashing for fast_schema object-key lookups (default SipHash is slow
 # on short keys). Already a transitive dep, so no new download.
 rustc-hash = "2"
@@ -92,7 +98,11 @@ argon2 = "0.5"
 bcrypt = "0.16"
 # PBKDF2-HMAC-SHA256 (RustCrypto) — pure-Rust KDF.
 pbkdf2 = "0.12"
-sha2 = "0.11"
+# sha2 is consumed ONLY by pbkdf2 (digest 0.10). Do NOT bump to 0.11: that
+# moves `Sha256` to digest 0.11 while pbkdf2 0.12 still requires digest 0.10,
+# so `pbkdf2_hmac::<Sha256>` stops compiling (E0277 CoreProxy). Revisit only
+# together with a pbkdf2 release that depends on digest 0.11.
+sha2 = "0.10"
 # HTML templating (fast, safe, no eval).
 minijinja = "2"
 # gzip via the memory-safe zlib-rs backend (pure Rust, no C).
@@ -112,6 +122,13 @@ proptest = "1"
 [features]
 default = ["fast-email"]
 fast-email = ["dep:fast_chemail"]
+# Diagnostic-only gate for the `native-bench` binary (see the [[bin]] below):
+# without this feature the bin is not a default target, so `napi build` — and
+# therefore every shipped cross-compiled artifact — never links it. The napi
+# cross toolchains cannot resolve the aws-lc-sys C symbols an executable needs
+# (`undefined reference to __isoc23_sscanf`), while a cdylib tolerates them.
+# Run it with: cargo run --release --features native-bench --bin native-bench
+native-bench = []
 
 # Codify the CI clippy gate (`cargo clippy --all-targets -- -D warnings`) so a
 # bare local `cargo clippy` fails on the same lints — no flag drift between

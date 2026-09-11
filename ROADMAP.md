@@ -71,7 +71,7 @@ Legend: ✅ done · 🔜 planned · ⏳ in progress · 💤 not started
   manual — see docs/INGRESS.md.
 
 ## Out of scope (deliberate)
-- Live `npm publish` (manual gate; requires `NPM_TOKEN`).
+- Live `npm publish` (on `v*` tags, via npm Trusted Publishing / OIDC).
 - Removing/deprecating any hot-path napi API (see AGENTS.md — hard constraint).
 - Distributed rate-limit/jobs stores in the engine itself (per-process documented
   behavior preserved; pluggable stores belong to the framework layer).
