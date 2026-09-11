@@ -377,6 +377,17 @@ jobs:
           path: ./
           format: spdx-json
           artifact-name: castrum-sbom.spdx.json
+      # Fail fast with an actionable message instead of npm's bare ENEEDAUTH
+      # (which is what an unset NPM_TOKEN produces, since `.npmrc` gets an empty
+      # _authToken). `secrets` is not available in `if:`, so check it in-script.
+      - name: Verify npm credentials are configured
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN is not set. Add an npm granular/automation token with publish rights for 'castrum' under Settings -> Secrets and variables -> Actions, or configure npm Trusted Publishing for Axylabs/castrum + .github/workflows/ci.yml."
+            exit 1
+          fi
       - name: Publish to npm
         run: npm publish --access public
         env:
