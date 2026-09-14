@@ -43,6 +43,24 @@ export interface BuildCtx {
 export const flag = (v?: boolean): number => (v ? 1 : 0)
 
 /**
+ * Does this string contain a NUL (`U+0000`)?
+ *
+ * `bun:ffi` transcodes a JS string passed to a `cstring` ARG into a
+ * NUL-TERMINATED UTF-8 buffer, so an embedded NUL SILENTLY TRUNCATES the value
+ * on the native side (Bun's docs describe the transcode; the truncation is the
+ * C convention it inherits). That is fine when the string is developer-supplied
+ * config or NUL-free by construction — and it is a real bug when the callee
+ * answers with a VERDICT (validators, query/cookie gates, batch validators: a
+ * truncated prefix passes where the full input fails) or when the exact bytes
+ * are the result (`regexEscape`, metric label values).
+ *
+ * Guard contract for every `cstring` ARG reachable from user input: either
+ * reject/short-circuit on NUL, or route to the `(ptr, usize)` byte form which
+ * carries the exact length. `test/unit/native/cstring-nul.test.ts` pins this.
+ */
+export { hasNul } from '../../../shared/bytes'
+
+/**
  * Output-buffer allocation for the FFI wrappers. The native write fills
  * `[0, w)` and only `subarray(0, w)` escapes, so zero-initialization is pure
  * waste: `Buffer.allocUnsafe` skips it (measured ~2x at 4 KB, ~3.4x at 16 KB

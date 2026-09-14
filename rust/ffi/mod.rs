@@ -52,6 +52,7 @@ mod payload;
 mod probe;
 mod rate_limit;
 mod route;
+mod task;
 mod util;
 mod validators;
 

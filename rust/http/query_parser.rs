@@ -15,16 +15,14 @@ fn write_decoded_form_component(src: &[u8], out: &mut [u8], pos: &mut usize) -> 
     // the remaining buffer against the ACTUAL decoded length (so a `%XX`-heavy
     // component only needs room for its decoded form, matching the pre-refactor
     // behavior where a buffer sized to the decoded length succeeds).
-    let written = crate::util::bytes::decode_form_component_into(src, &mut out[*pos..]).map_err(
-        |e| match e {
-            crate::util::bytes::FormDecodeError::Malformed => {
-                Error::from_reason("invalid %-encoding: malformed %XX sequence")
-            }
-            crate::util::bytes::FormDecodeError::BufferTooSmall => {
-                Error::from_reason("packed output: buffer too small")
-            }
-        },
-    )?;
+    //
+    // A malformed escape is NOT an error here: the shared decoder answers with
+    // the raw component, exactly like the pure-TS fallback
+    // (`decodeURIComponent` throws → `catch` returns the segment). The only
+    // error left is a too-small output buffer, which the C-ABI caller turns
+    // into the needed-size answer.
+    let written = crate::util::bytes::decode_form_component_into(src, &mut out[*pos..])
+        .map_err(|_| Error::from_reason("packed output: buffer too small"))?;
     *pos += written;
     let decoded_len = written as u32;
     out[len_pos..len_pos + 4].copy_from_slice(&decoded_len.to_le_bytes());
@@ -59,8 +57,9 @@ pub fn query_parse_packed_into_slice(input: &[u8], out: &mut [u8]) -> Result<usi
 /// Compute the EXACT packed output size for `input` WITHOUT writing — the
 /// "needed-size" pass for the C-ABI convention. Mirrors
 /// [`query_parse_packed_into_slice`]'s structure exactly (split on `&`, skip
-/// empty pairs, split at `=`), so the reported size is byte-exact and a
-/// malformed `%XX` still surfaces as `Err` (caller → `0`).
+/// empty pairs, split at `=`) AND its decoding, including the raw fallback for a
+/// malformed `%XX`: the reported size and the written size must never disagree,
+/// or the caller's grow-and-retry loop would never terminate.
 #[inline]
 pub fn query_parse_packed_size(input: &[u8]) -> Result<usize> {
     let mut size = 4usize; // count prefix
@@ -72,10 +71,8 @@ pub fn query_parse_packed_size(input: &[u8]) -> Result<usize> {
             Some(eq) => (&pair[..eq], &pair[eq + 1..]),
             None => (pair, &[][..]),
         };
-        size += 4 + crate::util::bytes::decode_form_component_len(key)
-            .map_err(|_| Error::from_reason("invalid %-encoding: malformed %XX sequence"))?;
-        size += 4 + crate::util::bytes::decode_form_component_len(value)
-            .map_err(|_| Error::from_reason("invalid %-encoding: malformed %XX sequence"))?;
+        size += 4 + crate::util::bytes::decode_form_component_len(key);
+        size += 4 + crate::util::bytes::decode_form_component_len(value);
     }
     Ok(size)
 }
@@ -139,8 +136,34 @@ mod tests {
     }
 
     #[test]
-    fn query_parse_invalid_percent_rejected() {
-        assert!(query_parse_packed_vec(b"a=%ZZ").is_err());
+    fn query_parse_malformed_percent_falls_back_to_raw() {
+        // JS: `try { decodeURIComponent(s.replace(/\+/g," ")) } catch { return s }`
+        // — applied PER COMPONENT, so name and value fail independently. Checked
+        // against Bun's `decodeURIComponent`:
+        //   "a=%ZZ"     → [["a", "%ZZ"]]
+        //   "a+b=%2"    → [["a b", "%2"]]      (`+` in the NAME still decodes)
+        //   "x=1+2%ZZ"  → [["x", "1+2%ZZ"]]    (raw keeps its `+`)
+        //   "a+b=%20"   → [["a b", " "]]
+        let packed = query_parse_packed_vec(b"a=%ZZ").unwrap();
+        assert_eq!(
+            decode_packed_pairs(&packed),
+            vec![(b"a".to_vec(), b"%ZZ".to_vec())]
+        );
+        let packed = query_parse_packed_vec(b"a+b=%2").unwrap();
+        assert_eq!(
+            decode_packed_pairs(&packed),
+            vec![(b"a b".to_vec(), b"%2".to_vec())]
+        );
+        let packed = query_parse_packed_vec(b"x=1+2%ZZ").unwrap();
+        assert_eq!(
+            decode_packed_pairs(&packed),
+            vec![(b"x".to_vec(), b"1+2%ZZ".to_vec())]
+        );
+        let packed = query_parse_packed_vec(b"a+b=%20").unwrap();
+        assert_eq!(
+            decode_packed_pairs(&packed),
+            vec![(b"a b".to_vec(), b" ".to_vec())]
+        );
     }
 
     #[test]
@@ -169,12 +192,20 @@ mod tests {
     }
 
     #[test]
-    fn query_parse_non_utf8_byte_passthrough() {
-        // `%FF` decodes to a raw 0xFF byte; the parser does not require valid
-        // UTF-8 in query values (callers must handle it when they do).
+    fn query_parse_non_utf8_escape_falls_back_to_raw() {
+        // `%FF` decodes to a byte that cannot appear in valid UTF-8, so JS's
+        // `decodeURIComponent` throws and the component is returned raw. The
+        // packed output must therefore hold the literal `%FF` text, NOT a 0xFF
+        // byte (which a JS caller could only read back lossily as U+FFFD).
         let packed = query_parse_packed_vec(b"a=%FF").unwrap();
         let pairs = decode_packed_pairs(&packed);
         assert_eq!(pairs.len(), 1);
-        assert_eq!(pairs[0], (b"a".to_vec(), vec![0xFF]));
+        assert_eq!(pairs[0], (b"a".to_vec(), b"%FF".to_vec()));
+        // A literal invalid byte with nothing to decode still passes through.
+        let packed = query_parse_packed_vec(b"a=\xFF").unwrap();
+        assert_eq!(
+            decode_packed_pairs(&packed),
+            vec![(b"a".to_vec(), b"\xFF".to_vec())]
+        );
     }
 }

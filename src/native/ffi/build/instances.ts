@@ -10,7 +10,7 @@ import { decodeUtf8, encodeUtf8 } from '../../../shared/codec'
 import { EMPTY_VIEW } from '../constants'
 import type { BunFFI, Raw2, Raw3, Raw4, Raw5, Raw6, Raw7, Raw8, Raw12, RawCStr } from '../types'
 import type { BuildCtx } from './util'
-import { cstr, growExact, unpackRateCheck } from './util'
+import { cstr, growExact, hasNul, unpackRateCheck } from './util'
 
 /**
  * Build the opaque-handle methods of the BunFFI surface. `ctx` is destructured
@@ -144,10 +144,15 @@ export function buildInstances(
       return Number(schemaValidatorValidateRaw(inner, doc, lenOrView(doc))) === 1
     },
     queryValidate(inner, qs) {
-      // `qs` is a cstring ARG — engine-transcoded (zero JS encode).
+      // `qs` is a cstring ARG — engine-transcoded (zero JS encode). A raw NUL is
+      // not a valid query byte, and it would TRUNCATE the arg so only a prefix
+      // got validated: a gate that says "this query passed" must not be foolable.
+      if (hasNul(qs)) return false
       return Number(queryValidateSym(inner, qs)) === 1
     },
     cookieValidate(inner, header) {
+      // Same contract as `queryValidate`: a NUL would validate only a prefix.
+      if (hasNul(header)) return false
       return Number(cookieValidateSym(inner, header)) === 1
     },
     sessionSeal(id, dataJson, expSecs, secret) {

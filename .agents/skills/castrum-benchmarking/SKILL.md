@@ -65,10 +65,11 @@ Never assume — measure before and after a hot-path change.
 
 Never quote a number without the machine + config that produced it. The
 measured ceilings in `docs/BENCHMARKS.md` and `docs/bun-builtins-decision-matrix.md`
-(name the Bun runtime version — 1.4.0) are the reference points; a change that
-moves a shipped-op decision needs a re-run of both.
+(name the Bun runtime version — the matrix rows are 1.4.0, the FFI margin rows
+are 1.4.2) are the reference points; a change that moves a shipped-op decision
+needs a re-run of both.
 
 **Runtime pin**: canary installs auto-update and can swap the runtime
-MID-SESSION (observed 2026-08-23: 1.4.0 → 1.4.1 between two bench runs).
-Record `bun --version` at the start AND end of every measurement session;
-if it changed, discard cross-version comparisons.
+MID-SESSION (observed 2026-08-23: 1.4.0 → 1.4.1 between two bench runs; the
+local toolchain is now 1.4.2). Record `bun --version` at the start AND end of
+every measurement session; if it changed, discard cross-version comparisons.

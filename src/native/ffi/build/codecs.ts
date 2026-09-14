@@ -9,7 +9,7 @@ import { decodeUtf8, encodeUtf8 } from '../../../shared/codec'
 import { SELFTEST_HEX, SELFTEST_JSON } from '../constants'
 import type { BunFFI, Raw3, Raw4, Raw5, Raw6, Raw8, Raw9, Raw10, RawCStr } from '../types'
 import type { BuildCtx } from './util'
-import { allocOut, argon2PhcLength, cstr, flag, growExact, writeOrThrow } from './util'
+import { allocOut, argon2PhcLength, cstr, flag, growExact, hasNul, writeOrThrow } from './util'
 
 /**
  * Build the codec/crypto/auth methods of the BunFFI surface. `ctx` is
@@ -182,10 +182,14 @@ export function buildCodecs(
     },
     urlEncodeInto,
 
-    validateEmail: (input) => Number(validateEmail(input)) === 1,
-    validateUuid: (input) => Number(validateUuid(input)) === 1,
-    validateIpv4: (input) => Number(validateIpv4(input)) === 1,
-    validateIpv6: (input) => Number(validateIpv6(input)) === 1,
+    // Verdict guards: the `cstring` form would truncate at an embedded NUL, so
+    // `"a@b.com\0<script>"` would be reported VALID — a verdict callers act on.
+    // No address / UUID / IP contains U+0000, so short-circuit without an FFI
+    // call (one `indexOf` scan, far cheaper than the encode fallback).
+    validateEmail: (input) => !hasNul(input) && Number(validateEmail(input)) === 1,
+    validateUuid: (input) => !hasNul(input) && Number(validateUuid(input)) === 1,
+    validateIpv4: (input) => !hasNul(input) && Number(validateIpv4(input)) === 1,
+    validateIpv6: (input) => !hasNul(input) && Number(validateIpv6(input)) === 1,
     // Byte-input validators: `(ptr,len)` — zero transcode (no CString decode
     // + engine re-encode like the cstring-ARG string forms above).
     validateEmailBytes: (input) => Number(oneArg(validateEmailBytes, input)) === 1,
@@ -212,11 +216,29 @@ export function buildCodecs(
       return w
     },
     // Zero-copy text path: cstring ARG in (engine-transcoded), cstring return
-    // out (engine-cloned) — the JS side does zero encode AND zero decode.
-    regexEscapeStr: (input) => regexEscapeStrRaw(input),
+    // out (engine-cloned) — the JS side does zero encode AND zero decode. A NUL
+    // would truncate the INPUT, so that case routes to the `(ptr,len)` sibling
+    // (exact length) instead of returning a silently shortened string.
+    regexEscapeStr: (input) => {
+      if (!hasNul(input)) return regexEscapeStrRaw(input)
+      const bytes = encodeUtf8(input)
+      const escaped = growExact(
+        (out) => Number(regexEscapeRaw(bytes, lenOrView(bytes), out, lenOrView(out))),
+        16,
+        1 << 20,
+        'regex escape: output buffer too small',
+      )
+      return decodeUtf8(escaped)
+    },
     hexValidateBatchStr(ids, width, output) {
       if (width === 0 || width > 4096) {
         throw new Error('hex validate batch: width must be 1..=4096')
+      }
+      // A NUL in the joined ids would truncate the line list, so a bad id could
+      // pass as its own prefix. Fall back to the byte form (exact length).
+      if (hasNul(ids)) {
+        const bytes = encodeUtf8(ids)
+        return Number(hexBatchRaw(bytes, lenOrView(bytes), width >>> 0, output, lenOrView(output)))
       }
       const w = Number(hexBatchStrRaw(ids, width >>> 0, output, lenOrView(output)))
       return w

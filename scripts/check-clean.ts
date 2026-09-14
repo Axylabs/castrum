@@ -18,9 +18,11 @@
 //      the addon must take the resolved fn as a parameter instead.
 //   4. FFI symbol count — docs must not carry stale `castrum_*` counts.
 //      Verified against `nm -D --defined-only <addon> | grep -c castrum_`
-//      (2026-08-24): 109 symbols = 97 direct extern fns + 4 validator_c_abi!
+//      (2026-09-11): 117 symbols = 105 direct extern fns + 4 validator_c_abi!
 //      + 4 validator_bytes_c_abi! + 4 compress_to_out!. Older counts
-//      (75–85 / 67–77 direct) are stale.
+//      (75–85 / 67–77 direct) are stale. Re-counted 2026-09-11 after the task
+//      C-ABI landed: 118 = 106 direct + the same three macro families, then 119
+//      after `castrum_task_submit_slice` (zero-copy input) landed.
 //   5. No dangling doc links — markdown links to `docs/*.md` / root `*.md`
 //      must resolve to a real file.
 //   --todos — additionally fail on TODO/FIXME/HACK markers in `src/`.
@@ -134,7 +136,7 @@ const staleCount =
 for (const d of countDocs) {
   const text = readFileSync(join(ROOT, d), 'utf8')
   if (staleCount.test(text)) {
-    problems.push(`stale FFI symbol count in ${d} (should read 109 / 97 direct)`)
+    problems.push(`stale FFI symbol count in ${d} (should read 119 / 107 direct)`)
   }
 }
 

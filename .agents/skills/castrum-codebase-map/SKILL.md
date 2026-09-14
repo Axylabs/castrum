@@ -74,6 +74,7 @@ override throws).
 | Ingress pipeline | `docs/INGRESS.md` + `docs/INGRESS-ROUTER.md` + `docs/NATIVE-ROUTE.md` |
 | Public API reference | `docs/API.md` |
 | Architecture deep-dive | `docs/ARCHITECTURE.md` + `docs/adr/` |
+| Native task offload (goroutine-class) — shipped design + benches | `docs/RND-CONCURRENCY.md` |
 | Coding rules | `RULES.md` |
 | Cross-repo local dev (`bun link`) | `docs/ai/LOCAL_DEV.md` |
 

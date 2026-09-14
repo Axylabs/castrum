@@ -145,33 +145,55 @@ pub fn decode_percent_at(src: &[u8], i: usize) -> Option<(u8, usize)> {
 
 // ── Form-component decoding ────────────────────────────────────────
 
-/// Decode failure modes for [`decode_form_component_into`].
+/// Decode failure modes for the form-component decoders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormDecodeError {
-    /// Malformed `%XX` sequence (truncated or a non-hex digit).
+    /// Malformed `%XX` (truncated / non-hex digit) or a decoded byte sequence
+    /// that is not valid UTF-8 — exactly what JS's `decodeURIComponent` throws
+    /// `URIError` on. Reported by [`decode_form_component_strict_into`]; the
+    /// lenient [`decode_form_component_into`] answers with the RAW component
+    /// instead (JS's `catch` arm).
     Malformed,
     /// `out` cannot hold the decoded result.
     BufferTooSmall,
 }
 
-/// URL-decode a form component (`+` → space, `%XX` → byte) into `out`,
-/// returning the number of bytes written.
-///
-/// The decoded length never exceeds `src.len()` (each input byte maps to at
-/// most one output byte). Callers that pre-size `out` to `src.len()` can never
-/// observe [`FormDecodeError::BufferTooSmall`]; callers that pass the remaining
-/// tail of a larger buffer get a precise capacity check against the ACTUAL
-/// decoded length (a `%XX` sequence shrinks 3 input bytes to 1, so a buffer
-/// sized to the decoded form succeeds).
-///
-/// Single shared implementation for `query_parser::write_decoded_form_component`
-/// (length-prefixed slice writer) and `json_ser::decode_query_component`
-/// (Vec appender) — the wire decode loop lives in exactly one place.
+/// SIMD-accelerated UTF-8 validation (the crate `http::url_codec` already uses,
+/// so the whole HTTP surface validates with the same implementation).
 #[inline]
-pub fn decode_form_component_into(
-    src: &[u8],
-    out: &mut [u8],
-) -> std::result::Result<usize, FormDecodeError> {
+fn is_valid_utf8(bytes: &[u8]) -> bool {
+    simdutf8::basic::from_utf8(bytes).is_ok()
+}
+
+/// THE form-component decoder: `+` → space, `%XX` → byte, bulk-copying plain
+/// runs between them, and validating the result's UTF-8 shape.
+///
+/// This is the single place URL-form decoding happens. Its callers differ only
+/// in their FAILURE ARM:
+///
+/// * [`decode_form_component_into`] — lenient, JS `decodeURIComponent`
+///   semantics: `try { decodeURIComponent(s.replace(/\+/g, " ")) } catch { return s }`.
+///   Used by the packed pair parsers (query/form) and the native route stack,
+///   which must answer exactly like the pure-TS fallback.
+/// * [`decode_form_component_strict_into`] — `Malformed` is a real error, for
+///   callers that map a bad component to a 400 (query → JSON).
+///
+/// Keeping one core means the two can never drift apart again — which is how
+/// the packed parser ended up erroring on input the JS fallback happily
+/// returned raw.
+///
+/// `Malformed` is exactly the set JS rejects: a truncated/non-hex `%XX`, and a
+/// decoded sequence that is not valid UTF-8 (overlong encodings, surrogate
+/// halves and > U+10FFFF fail `simdutf8` and `decodeURIComponent` alike).
+///
+/// The decoded length never exceeds `src.len()`, so a caller that sizes `out`
+/// to the input can only observe [`FormDecodeError::BufferTooSmall`] when it
+/// passed a smaller tail of a larger buffer.
+#[inline]
+fn decode_form_core(src: &[u8], out: &mut [u8]) -> std::result::Result<usize, FormDecodeError> {
+    // Nothing to decode at all (the overwhelming majority of components): a
+    // verbatim copy. No UTF-8 check — an undecoded component is passed through
+    // byte-for-byte, exactly like the JS fallback's `indexOf` early return.
     if memchr::memchr2(b'+', b'%', src).is_none() {
         if out.len() < src.len() {
             return Err(FormDecodeError::BufferTooSmall);
@@ -187,6 +209,9 @@ pub fn decode_form_component_into(
     // input bytes to 1), preserving the existing semantics.
     let mut i = 0usize;
     let mut written = 0usize;
+    // ASCII output is trivially valid UTF-8, so the validator is only paid when
+    // a high byte actually reaches the result (same discipline as `url_codec`).
+    let mut saw_high = false;
     while i < src.len() {
         match memchr::memchr2(b'+', b'%', &src[i..]) {
             Some(rel) => {
@@ -196,6 +221,7 @@ pub fn decode_form_component_into(
                     return Err(FormDecodeError::BufferTooSmall);
                 }
                 out[written..written + run.len()].copy_from_slice(run);
+                saw_high |= !run.is_ascii();
                 written += run.len();
                 i = run_end;
 
@@ -212,6 +238,7 @@ pub fn decode_form_component_into(
                     return Err(FormDecodeError::BufferTooSmall);
                 }
                 out[written] = b;
+                saw_high |= b >= 0x80;
                 written += 1;
                 i = next;
             }
@@ -221,51 +248,136 @@ pub fn decode_form_component_into(
                     return Err(FormDecodeError::BufferTooSmall);
                 }
                 out[written..written + run.len()].copy_from_slice(run);
+                saw_high |= !run.is_ascii();
                 written += run.len();
                 i = src.len();
             }
         }
     }
+    if saw_high && !is_valid_utf8(&out[..written]) {
+        return Err(FormDecodeError::Malformed);
+    }
     Ok(written)
 }
 
-/// Compute the decoded length of `src` WITHOUT writing (mirror of
-/// [`decode_form_component_into`], minus the output). Used by the C-ABI
-/// "needed-size" convention: when a packed/JSON writer hits a too-small output
-/// buffer, the caller runs this exact-size pass ONCE (only on the rare miss)
-/// and reports the required size so the JS wrapper can `growExact` and retry —
-/// no doubling re-run loop, no 9×/8× pre-size.
-///
-/// Same `Malformed` signal on a bad `%XX`, so a caller can disambiguate a
-/// too-small buffer from a real parse error.
+/// Copy `src` verbatim into `out` — the raw fallback of the lenient contract.
 #[inline]
-pub fn decode_form_component_len(src: &[u8]) -> std::result::Result<usize, FormDecodeError> {
+fn write_raw_component(src: &[u8], out: &mut [u8]) -> std::result::Result<usize, FormDecodeError> {
+    if out.len() < src.len() {
+        return Err(FormDecodeError::BufferTooSmall);
+    }
+    out[..src.len()].copy_from_slice(src);
+    Ok(src.len())
+}
+
+/// URL-decode a form component (`+` → space, `%XX` → byte) into `out` with
+/// **JS `decodeURIComponent` fallback semantics**, returning bytes written.
+///
+/// Per COMPONENT (name and value decode independently):
+///
+/// 1. no `%` and no `+` → copied verbatim;
+/// 2. otherwise `+` → space and `%XX` → byte;
+/// 3. a malformed escape (truncated or non-hex) → the WHOLE component is
+///    returned RAW — note `+` stays `+`, because JS's `catch` returns the
+///    string it was given, before the `+` replacement;
+/// 4. a decoded sequence that is not valid UTF-8 → the whole component RAW.
+///
+/// That is `try { decodeURIComponent(s.replace(/\+/g, " ")) } catch { return s }`
+/// — the pure-TS fallback swallows the `URIError` and the native path must too,
+/// or a single bad escape turns a public request into a 500 (and a divergent
+/// parse) instead of a raw field.
+#[inline]
+pub fn decode_form_component_into(
+    src: &[u8],
+    out: &mut [u8],
+) -> std::result::Result<usize, FormDecodeError> {
+    match decode_form_core(src, out) {
+        Ok(written) => Ok(written),
+        Err(FormDecodeError::Malformed) => write_raw_component(src, out),
+        Err(e) => Err(e),
+    }
+}
+
+/// Compute the decoded length of `src` WITHOUT writing — the exact-size pass for
+/// the C-ABI "needed size" convention (run ONCE on a buffer miss, so the caller
+/// can `growExact` and retry instead of a doubling loop).
+///
+/// Reports [`FormDecodeError::Malformed`] exactly when the writer would (the
+/// raw fallback reports `src.len()`), so the reported size and the written size
+/// can never disagree — a mismatch would make the caller's grow-and-retry loop
+/// spin forever.
+///
+/// One conservative case is deliberate: when the decoded output contains a
+/// non-ASCII byte, the result MAY be invalid UTF-8 and the writer would then
+/// emit the raw component (longer than the decoded form), so `src.len()` is
+/// reported. Over-reporting only costs the caller a few buffer bytes (the C fn
+/// still returns the true written length); under-reporting would hang.
+#[inline]
+pub fn decode_form_component_len(src: &[u8]) -> usize {
     if memchr::memchr2(b'+', b'%', src).is_none() {
-        return Ok(src.len());
+        return src.len();
     }
     let mut i = 0usize;
     let mut written = 0usize;
+    let mut saw_high = false;
     while i < src.len() {
         match memchr::memchr2(b'+', b'%', &src[i..]) {
             Some(rel) => {
+                let run_end = i + rel;
                 written += rel;
-                i += rel;
-                let next = match src[i] {
-                    b'+' => i + 1,
-                    _ => decode_percent_at(src, i)
-                        .map(|(_, next)| next)
-                        .ok_or(FormDecodeError::Malformed)?,
-                };
-                written += 1;
-                i = next;
+                saw_high |= !src[i..run_end].is_ascii();
+                i = run_end;
+                match src[i] {
+                    b'+' => {
+                        written += 1;
+                        i += 1;
+                    }
+                    _ => match decode_percent_at(src, i) {
+                        Some((byte, next)) => {
+                            written += 1;
+                            saw_high |= byte >= 0x80;
+                            i = next;
+                        }
+                        // Malformed → the writer emits the raw component, so
+                        // the raw length is the exact answer here.
+                        None => return src.len(),
+                    },
+                }
             }
             None => {
                 written += src.len() - i;
+                saw_high |= !src[i..].is_ascii();
                 i = src.len();
             }
         }
     }
-    Ok(written)
+    if saw_high {
+        src.len()
+    } else {
+        written
+    }
+}
+
+/// Decode a form component into a reusable scratch buffer, returning the
+/// decoded bytes — or `src` itself when nothing needed decoding. The shared
+/// entry point for Vec-based callers (the native route stack); the returned
+/// slice borrows either `src` or `scratch`, so it is valid only until the next
+/// call with the same scratch.
+#[inline]
+pub fn decode_form_component_scratch<'a>(src: &'a [u8], scratch: &'a mut Vec<u8>) -> &'a [u8] {
+    // Fast path: nothing to decode (the overwhelming majority of segments).
+    if memchr::memchr2(b'+', b'%', src).is_none() {
+        return src;
+    }
+    if scratch.len() < src.len() {
+        scratch.resize(src.len(), 0);
+    }
+    match decode_form_component_into(src, scratch.as_mut_slice()) {
+        Ok(n) => &scratch[..n],
+        // Unreachable: the buffer is input-sized, and the decoded length never
+        // exceeds the input.
+        Err(_) => src,
+    }
 }
 
 // ── Whitespace + cookie splitting ──────────────────────────────────
@@ -350,23 +462,98 @@ mod tests {
         assert_eq!(decode(b"%41%42"), b"AB");
         assert_eq!(decode(b"q=%E2%9C%93"), b"q=\xE2\x9C\x93");
         assert_eq!(decode(b"%2B"), b"+");
+        // A NUL is a legal decode target (U+0000), not an error.
+        assert_eq!(decode(b"%00"), b"\x00");
+        assert_eq!(decode(b"%2f"), b"/");
     }
 
     #[test]
-    fn decode_form_malformed_percent() {
-        let mut out = [0u8; 8];
-        assert_eq!(
-            decode_form_component_into(b"%ZZ", &mut out),
-            Err(FormDecodeError::Malformed)
-        );
-        assert_eq!(
-            decode_form_component_into(b"%4", &mut out),
-            Err(FormDecodeError::Malformed)
-        );
-        assert_eq!(
-            decode_form_component_into(b"x%", &mut out),
-            Err(FormDecodeError::Malformed)
-        );
+    fn decode_form_decodeuri_semantics_table() {
+        // The contract is `try { decodeURIComponent(s.replace(/\+/g," ")) }
+        // catch { return s }` — verified against Bun's `decodeURIComponent`.
+        let cases: &[(&[u8], &[u8])] = &[
+            // (input, JS result)
+            (b"a=%C3", b"a=%C3"), // truncated multibyte → URIError → raw
+            (b"a=%2", b"a=%2"),   // truncated escape → raw
+            (b"a=%", b"a=%"),     // dangling % → raw
+            (b"a=%2G", b"a=%2G"), // non-hex digit → raw
+            (b"a=%FF", b"a=%FF"), // invalid UTF-8 byte → raw
+            (b"a=%ED%A0%80", b"a=%ED%A0%80"), // surrogate half → raw
+            (b"a=%C0%80", b"a=%C0%80"), // overlong encoding → raw
+            (b"a=%F4%90%80%80", b"a=%F4%90%80%80"), // > U+10FFFF → raw
+            (b"bad=%ZZ", b"bad=%ZZ"), // non-hex → raw
+            (b"100%", b"100%"),   // trailing % → raw
+            // The whole component goes raw — including a '+' that the decode
+            // would otherwise have turned into a space (the JS catch returns
+            // the string it was given, before the replace).
+            (b"a+b=%ZZ", b"a+b=%ZZ"),
+            (b"a+b=%20", b"a b= "),   // valid → decoded
+            (b"%C3%A9", b"\xC3\xA9"), // valid multibyte → decoded
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                decode(input).as_slice(),
+                *expected,
+                "lenient decode of {:?}",
+                core::str::from_utf8(input).unwrap_or("<non-utf8>")
+            );
+        }
+    }
+
+    #[test]
+    fn decode_form_needed_size_matches_written_size() {
+        // The C-ABI "needed size" pass must equal what the writer produces for
+        // EVERY input — a mismatch would spin the caller's grow-and-retry loop.
+        // It may only over-report (never under-report) when the decoded form
+        // could be invalid UTF-8.
+        let cases: &[&[u8]] = &[
+            b"",
+            b"a",
+            b"a=1&b=2",
+            b"%ZZ",
+            b"a=%C3",
+            b"a=%FF",
+            b"a=%ED%A0%80",
+            b"q=hello+world",
+            b"u=%E2%9C%93",
+            b"\xFF\xFE", // non-UTF-8 passthrough
+            b"a=%E2%9C%93&b%ZZ=1",
+            b"x%",
+        ];
+        for src in cases {
+            let mut out = vec![0u8; src.len() + 16];
+            let written = decode_form_component_into(src, &mut out).unwrap();
+            let reported = decode_form_component_len(src);
+            assert!(
+                reported >= written,
+                "reported {reported} < written {written} for {:?}",
+                core::str::from_utf8(src).unwrap_or("<non-utf8>")
+            );
+            // An exact-size buffer must succeed and agree with the report.
+            let mut exact = vec![0u8; reported];
+            assert_eq!(
+                decode_form_component_into(src, &mut exact).unwrap(),
+                written,
+                "exact-size decode disagreed for {:?}",
+                core::str::from_utf8(src).unwrap_or("<non-utf8>")
+            );
+        }
+    }
+
+    #[test]
+    fn decode_form_scratch_matches_slice_decoder() {
+        let mut scratch: Vec<u8> = Vec::new();
+        for input in [
+            &b"plain"[..],
+            b"a+b",
+            b"a=%20b",
+            b"%ZZ",
+            b"%C3",
+            b"a=%E2%9C%93",
+        ] {
+            let via_scratch = decode_form_component_scratch(input, &mut scratch).to_vec();
+            assert_eq!(via_scratch.as_slice(), decode(input).as_slice());
+        }
     }
 
     #[test]

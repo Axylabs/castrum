@@ -547,9 +547,10 @@ fn truncated_multibyte_query_escaped() {
         parse_query: true,
         ..base_inner()
     };
-    // `%E2%9C` decodes to 2 bytes of a 3-byte sequence → invalid UTF-8. The
-    // JSON writer must escape every byte as `\u00XX` (not emit invalid UTF-8),
-    // and the length accounting must match (6 bytes per byte).
+    // `%E2%9C` is a truncated 3-byte sequence: `decodeURIComponent` throws, so
+    // the component is returned RAW ("%E2%9C") — the same thing the JS
+    // fallback does — and the request is NOT rejected. The JSON writer then
+    // sees plain ASCII and the length accounting is the raw length.
     let input = packed_input(0, "/api?q=%E2%9C".as_bytes(), b"127.0.0.1", b"rid");
     let mut out = vec![0u8; 4096];
     inner.handle_packed(&input, b"", &mut out).unwrap();
@@ -562,5 +563,5 @@ fn truncated_multibyte_query_escaped() {
         out[OUT_QUERY_JSON_LEN + 3],
     ]) as usize;
     let query_json = &out[OUT_DATA_START..OUT_DATA_START + query_len];
-    assert_eq!(query_json, br#"{"q":"\u00e2\u009c"}"#);
+    assert_eq!(query_json, br#"{"q":"%E2%9C"}"#);
 }

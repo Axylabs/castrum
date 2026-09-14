@@ -59,6 +59,7 @@ pub mod json;
 pub mod metrics;
 pub mod payload;
 pub mod selection;
+pub mod task;
 pub mod util;
 
 // ── Unit tests (cargo test) ───────────────────────────────────────

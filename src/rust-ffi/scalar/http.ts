@@ -11,11 +11,18 @@
 
 import type { EncodingPrefResult, MediaTypeResult } from '../../native'
 import type { BunFFI } from '../../native/ffi'
-import { decoder } from '../../shared/bytes'
+import { decoder, hasNul } from '../../shared/bytes'
 import { decodeUtf8Fatal, decodeUtf8Range } from '../../shared/codec'
 import { packPairs } from '../../shared/packed'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
 import { writeInto } from '../into'
+
+/**
+ * RFC 6455 `Sec-WebSocket-Accept` is always 28 chars. Reused across calls
+ * because the value is decoded to a string synchronously before returning —
+ * the same discipline as the other pooled scratches in this layer.
+ */
+const WS_ACCEPT_SCRATCH = new Uint8Array(64)
 
 // Mirror napi `url_decode`'s UTF-8 validation (rust/http/url_codec.rs): only
 // validate when a high byte is present (the ASCII fast path skips it — same as
@@ -144,11 +151,22 @@ export function buildHttp(ctx: RustClientContext) {
 
   return {
     mimeFromExtension(ext: Uint8Array): Uint8Array | string {
-      // FFI-first: the `cstring` ARG is string-only, so bytes are decoded once
-      // (cheap CString clone) before the call. napi keeps the memoized-bytes
-      // path (cachedMime).
+      // FFI-first. This op has no `*_bytes` sibling, so the bytes must be decoded
+      // for the `cstring` ARG — the decode is the price of the cstring form, not
+      // a speed trick (route new byte-shaped ops to a byte sibling instead; see
+      // docs/FFI_BUN_GUIDE.md §6.1). napi keeps the memoized-bytes path
+      // (cachedMime).
+      //
+      // A NUL would truncate the DECODED string native-side, so `.js\0evil`
+      // would resolve as `.js` — a Content-Type from a prefix. An extension
+      // containing a NUL is not an extension, so it takes the unknown sentinel
+      // (the guard is `indexOf` on an already-decoded string: ~4 ns).
       const f = ffi()
-      if (f) return f.mimeFromExtension(decoder.decode(ext)) ?? 'application/octet-stream'
+      if (f) {
+        const name = decoder.decode(ext)
+        if (hasNul(name)) return 'application/octet-stream'
+        return f.mimeFromExtension(name) ?? 'application/octet-stream'
+      }
       return ctx.cachedMime(ext)
     },
     urlEncode(input: Uint8Array): Uint8Array | string {
@@ -188,34 +206,54 @@ export function buildHttp(ctx: RustClientContext) {
       return n('urlDecodeInto')(input, output) as number
     },
     validateEmail(input: Uint8Array): boolean {
-      // FFI-first: the `cstring` ARG is string-only, so bytes are decoded once
-      // (cheap CString clone) before the call — still faster than the old
-      // `(ptr,len)` view path (see bench:margin cstring scenario). napi
-      // fallback keeps the byte path.
+      // FFI-first. The bytes cross as a `buffer`/`buffer_length` pair (an atomic
+      // ptr+len snapshot, zero transcode) rather than being decoded to a JS
+      // string for the `cstring` ARG. Measured on Bun 1.4.2 over 400k calls:
+      // 101 ns vs 234 ns (email), 65 vs 164 (uuid), 31 vs 138 (ipv4) — and the
+      // byte form cannot truncate at an embedded NUL the way a cstring ARG
+      // does (a NUL byte used to make "a@b.com\0<script>" validate as TRUE).
       const f = ffi()
-      if (f) return f.validateEmail(decoder.decode(input))
+      if (f) return f.validateEmailBytes(input)
       return n('validateEmail')(input) as boolean
     },
     validateUuid(input: Uint8Array): boolean {
       const f = ffi()
-      if (f) return f.validateUuid(decoder.decode(input))
+      if (f) return f.validateUuidBytes(input)
       return n('validateUuid')(input) as boolean
     },
     validateIpv4(input: Uint8Array): boolean {
       const f = ffi()
-      if (f) return f.validateIpv4(decoder.decode(input))
+      if (f) return f.validateIpv4Bytes(input)
       return n('validateIpv4')(input) as boolean
     },
     validateIpv6(input: Uint8Array): boolean {
       const f = ffi()
-      if (f) return f.validateIpv6(decoder.decode(input))
+      if (f) return f.validateIpv6Bytes(input)
       return n('validateIpv6')(input) as boolean
     },
     wsAcceptKey(key: Uint8Array): Uint8Array | string {
-      // FFI-first: the `cstring` ARG is string-only, so bytes are decoded once
-      // (cheap CString clone) before the call. napi fallback keeps the bytes.
+      // FFI-first: the `cstring` ARG + cstring return is the fast path (no JS
+      // encode, engine-cloned result) — end-to-end it measures ~367 ns, while
+      // routing every call through the byte sibling costs ~381 ns (the extra
+      // `subarray` + decode outweighs the transcode saved; measured over 300k
+      // calls on Bun 1.4.2 through THIS function, not the raw binding).
+      //
+      // Correctness rider: a NUL would truncate the `cstring` ARG, so the accept
+      // value would be computed for a PREFIX of the key — verified:
+      // `'dGhlIHNhbXBsZSBub25jZQ==\0junk'` returned exactly the value for the
+      // key WITHOUT the suffix. That case takes the byte sibling (exact length).
       const f = ffi()
-      if (f) return f.wsAcceptKey(decoder.decode(key))
+      if (f) {
+        const text = decoder.decode(key)
+        if (!hasNul(text)) return f.wsAcceptKey(text)
+        const w = f.wsAcceptKeyInto(key, WS_ACCEPT_SCRATCH)
+        if (w > 0 && w <= WS_ACCEPT_SCRATCH.length) {
+          return decoder.decode(WS_ACCEPT_SCRATCH.subarray(0, w))
+        }
+        // Unreachable for a live view (the native side writes 28 for any key);
+        // the napi path is byte-exact, so it can never resurrect truncation.
+        return n('wsAcceptKey')(key) as Uint8Array | string
+      }
       return n('wsAcceptKey')(key) as Uint8Array | string
     },
     wsAcceptKeyInto(key: Uint8Array, output: Uint8Array): number {

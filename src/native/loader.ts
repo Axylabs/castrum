@@ -67,15 +67,16 @@ export function supportsX8664V3(cpuinfo?: string): boolean {
  * @param arch `process.arch`
  * @param cpuinfo optional `/proc/cpuinfo` text (tests inject it; the real call
  *   omits it and reads the file lazily on linux/x64 only)
- * @returns the first existing candidate path (throws if none exists)
+ * @returns every candidate path, in preference order (v3 SIMD first on a
+ *   capable linux/x64 host, then the baseline names)
  */
-export function resolveAddonPathFrom(
+export function addonCandidatesFrom(
   envOverride: string | undefined,
   baseDir: string,
   platform: string,
   arch: string,
   cpuinfo?: string,
-): string {
+): string[] {
   // napi-rs artifact naming: castrum.<platform>-<arch>[-<libc>].node
   // e.g. linux-x64-gnu, linux-x64-musl, win32-x64-msvc, darwin-arm64.
   const libcVariants =
@@ -156,6 +157,22 @@ export function resolveAddonPathFrom(
     candidates.push(join(baseDir, '..', '..', 'target', 'release', name))
   }
 
+  return candidates
+}
+
+/**
+ * Resolve the addon path: the FIRST existing candidate from
+ * {@link addonCandidatesFrom} (v3 SIMD first on a capable linux/x64 host).
+ * Throws when nothing exists.
+ */
+export function resolveAddonPathFrom(
+  envOverride: string | undefined,
+  baseDir: string,
+  platform: string,
+  arch: string,
+  cpuinfo?: string,
+): string {
+  const candidates = addonCandidatesFrom(envOverride, baseDir, platform, arch, cpuinfo)
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
       return candidate
@@ -167,6 +184,39 @@ export function resolveAddonPathFrom(
       `Run: bun run build\n` +
       `Looked in:\n${candidates.map((c) => `  - ${c}`).join('\n')}`,
   )
+}
+
+/** Cached result of {@link getAddonPathCandidates} (existing files only). */
+let cachedCandidates: string[] | undefined
+
+/**
+ * Every EXISTING addon candidate, in preference order (v3 SIMD first on a
+ * capable linux/x64 host, then the baseline names).
+ *
+ * The bun:ffi binder walks this list so a stale or partial *preferred* artifact
+ * — e.g. a `castrum.linux-x64-v3-gnu.node` built before a newly added
+ * `castrum_*` symbol — falls back to the baseline binary instead of silently
+ * disabling the whole FFI transport (which would downgrade every native call to
+ * napi and make the off-thread task runtime run synchronously).
+ */
+export function getAddonPathCandidates(): string[] {
+  if (cachedCandidates) return cachedCandidates
+  const all = addonCandidatesFrom(
+    resolveEnvVar('CASTRUM_NATIVE_LIBRARY_PATH', ['NAPI_RS_NATIVE_LIBRARY_PATH']),
+    dirname(fileURLToPath(import.meta.url)),
+    process.platform,
+    process.arch,
+  )
+  const seen = new Set<string>()
+  const existing: string[] = []
+  for (const candidate of all) {
+    if (!seen.has(candidate) && existsSync(candidate)) {
+      seen.add(candidate)
+      existing.push(candidate)
+    }
+  }
+  cachedCandidates = existing
+  return existing
 }
 
 function resolveAddonPath(): string {

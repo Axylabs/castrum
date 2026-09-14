@@ -218,6 +218,12 @@ export interface BunFFI {
   gzipDecompress(data: Uint8Array, maxDecompressed?: number): Uint8Array
   /** gzip-decompress into `output`; returns bytes written (throws if too small). */
   gzipDecompressInto(data: Uint8Array, output: Uint8Array, maxDecompressed?: number): number
+  /**
+   * gzip ISIZE trailer probe → the uncompressed size for a single-member gzip
+   * stream, or `0` when unknown (invalid stream / multi-member). Used to
+   * PRE-SIZE a destination buffer for the zero-copy task path.
+   */
+  gzipIsize(data: Uint8Array): number
   /** brotli-compress into a fresh buffer (quality clamped 0..=11, default 5). */
   brotliCompress(data: Uint8Array, quality?: number): Uint8Array
   /** brotli-compress into `output`; returns bytes written (throws if too small). */
@@ -488,6 +494,40 @@ export interface BunFFI {
    * cstring return out (engine-cloned — zero JS decode). `null` = failure.
    */
   regexEscapeStr(input: string): string | null
+
+  // ── Off-thread task runtime (castrum_task_*) ──────────────────────
+  /** Start the shared native task pool; 0 = started, 1 = already running. */
+  taskInit(threads: number): number
+  /** Submit a task op with packed `args` under `taskId`; 1 = accepted. */
+  taskSubmit(op: number, args: Uint8Array, taskId: number): number
+  /**
+   * Zero-copy submit: the op writes its result DIRECTLY into `output` on the
+   * pool thread. `output` must be a stable, caller-owned buffer that stays
+   * alive (and untouched) until the completion is drained — the runtime holds
+   * the reference. The completion body is the 8-byte LE written length.
+   */
+  taskSubmitOut(op: number, args: Uint8Array, taskId: number, output: Uint8Array): number
+  /**
+   * Zero-copy INPUT: only `hdr` is copied; `data` is read in place by the pool
+   * thread, so the caller must keep it alive (and untouched) until completion.
+   */
+  taskSubmitSlice(op: number, hdr: Uint8Array, data: Uint8Array, taskId: number): number
+  /**
+   * Drain finished tasks into `output` (packed `[u32 count][entry…]`).
+   * Returns bytes written, `0` when nothing is pending, or the EXACT required
+   * size when `output` is too small (nothing is consumed in that case).
+   */
+  taskDrain(output: Uint8Array): number
+  /** Finished-but-undrained completion count. */
+  taskPending(): number
+  /** Mark a task cancelled; 1 = newly marked, 0 = unknown/already finished. */
+  taskCancel(taskId: number): number
+  /** Register the thread-safe doorbell trampoline address (`0` disables it). */
+  taskSetDoorbell(ptr: number): number
+  /** Stop the task pool and drop pending completions. */
+  taskShutdown(): number
+  /** Configured task-pool worker count (0 before the pool starts). */
+  taskThreads(): number
 }
 
 /**

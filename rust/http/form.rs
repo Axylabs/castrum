@@ -108,8 +108,12 @@ mod tests {
     }
 
     #[test]
-    fn form_parse_rejects_malformed_percent() {
-        assert!(form_parse_packed_vec(b"a=%ZZ").is_err());
+    fn form_parse_malformed_percent_falls_back_to_raw() {
+        let packed = form_parse_packed_vec(b"a=%ZZ").unwrap();
+        assert_eq!(
+            crate::test_support::decode_packed_pairs(&packed),
+            vec![(b"a".to_vec(), b"%ZZ".to_vec())]
+        );
     }
 
     #[test]

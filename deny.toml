@@ -7,7 +7,6 @@ version = 2
 yanked = "deny"
 
 [bans]
-version = 2
 # Warn on multiple versions of the same crate; keep the count reasonable.
 multiple-versions = "warn"
 # Standard allowlist of well-known duplicate crates.
@@ -17,14 +16,15 @@ skip-tree = [
 ]
 
 [licenses]
-version = 2
 # Permissive licenses only.
 allow = [
   "MIT",
+  "MIT-0",
   "Apache-2.0",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
+  "BSL-1.0",
   "0BSD",
   "Zlib",
   "Unicode-3.0",

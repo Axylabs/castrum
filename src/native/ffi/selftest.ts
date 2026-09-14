@@ -15,6 +15,7 @@ import { selfTestCompress } from './build/compress'
 import { selfTestInstances } from './build/instances'
 import { selfTestMetrics } from './build/metrics'
 import { selfTestParse } from './build/parse'
+import { selfTestTask } from './build/task'
 import type { BunFFI } from './types'
 
 /** Verify every bound function against known-good results; false disables ffi. */
@@ -24,6 +25,7 @@ export function selfTest(b: BunFFI): boolean {
     selfTestCompress(b) &&
     selfTestParse(b) &&
     selfTestInstances(b) &&
-    selfTestMetrics(b)
+    selfTestMetrics(b) &&
+    selfTestTask(b)
   )
 }

@@ -1,0 +1,10 @@
+# zizmor configuration — read by the qlty zizmor plugin (file must be named
+# `zizmor.yml`, not `.zizmor.yml`).
+rules:
+  # Toolchain caches (Swatinem/rust-cache, dtolnay/rust-toolchain,
+  # oven-sh/setup-bun) are content-hash-keyed caches of official toolchains.
+  # PR/tag runs only write/restore under matching content keys, so the
+  # poisoning surface flagged by the heuristic does not apply here.
+  cache-poisoning:
+    ignore:
+      - ci.yml

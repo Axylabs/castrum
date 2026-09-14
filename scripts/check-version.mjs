@@ -3,8 +3,8 @@
  * Version-consistency check: package.json ↔ Cargo.toml ↔ CHANGELOG.
  *
  * The npm package (`castrum`), the Rust crate, and the changelog must agree on
- * the current version so a `v*` tag push and `publish:manual` never ship a
- * mismatch. Fails (exit 1) on drift.
+ * the current version so a `v*` tag push and the canonical `release` never
+ * ship a mismatch. Fails (exit 1) on drift.
  *
  * Usage: `bun run check:version` (also wired into CI).
  */
@@ -50,7 +50,7 @@ console.log(`Cargo.toml version   : ${cargoVersion}`)
 if (packageVersion !== cargoVersion) {
   fail(
     `package.json version (${packageVersion}) != Cargo.toml version (${cargoVersion}). ` +
-      `Run \`bun run publish:manual --increment <patch|minor|major>\` to sync them.`,
+      `Run \`bun run release <patch|minor|major>\` to sync them.`,
   )
 }
 
