@@ -293,7 +293,8 @@ consumed.
   (declared in package.json `napi.binaryName` + Cargo.toml — keep in sync).
 - **Multi-platform (recommended)**: push a `v*` tag → `.github/workflows/ci.yml`
   builds each platform addon, the `publish` job downloads them into
-  `./artifacts`, stages them, and runs `npm publish` (needs `NPM_TOKEN`).
+  `./artifacts`, stages them, and runs `npm publish` (npm Trusted Publishing /
+  OIDC — no token secret; needs the Trusted Publisher configured on npmjs.com).
 - **Manual single-platform**: `bun run release:manual`
   (syncs package.json ↔ Cargo.toml ↔ CHANGELOG, tags, builds, publishes with
   `CASTRUM_PUBLISH_ALLOW_PARTIAL=1`). `--dry-run` plans only.

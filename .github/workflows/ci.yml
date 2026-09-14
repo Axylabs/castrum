@@ -209,7 +209,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
@@ -244,16 +244,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `build` is the exact napi command; `apt` an optional extra cross C
+        # toolchain. NOTE: do NOT use `--use-napi-cross` for the linux gnu
+        # targets — its prebuilt toolchain is gcc 4.8.5 / glibc 2.17, which
+        # cannot compile aws-lc-sys (needs C11 stdatomic.h and modern -march
+        # values) nor libmimalloc-sys (-Wdate-time), and its ancient linker
+        # leaves the host-compiled C objects' __isoc23_* symbols unresolved.
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            build: bun run build --target x86_64-unknown-linux-gnu --use-napi-cross
+            build: bun run build --target x86_64-unknown-linux-gnu
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             build: bun run build --target x86_64-unknown-linux-musl -x
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            build: bun run build --target aarch64-unknown-linux-gnu --use-napi-cross
+            apt: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            build: bun run build --target aarch64-unknown-linux-gnu
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             build: bun run build --target aarch64-unknown-linux-musl -x
@@ -278,6 +285,7 @@ jobs:
       # leaves every cross target with no std, i.e. "can't find crate for core".
       - name: Read the pinned Rust channel (rust-toolchain.toml)
         id: rust-channel
+        shell: bash
         run: |
           channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
@@ -285,6 +293,11 @@ jobs:
         with:
           toolchain: ${{ steps.rust-channel.outputs.channel }}
           targets: ${{ matrix.target }}
+      # Extra cross C toolchain for the linux gnu aarch64 entry (the runner's
+      # host gcc only targets x86_64).
+      - name: Install cross C toolchain
+        if: matrix.apt
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
       # cargo-zigbuild (the `-x` flag) needs zig on PATH plus the subcommand.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         if: ${{ contains(matrix.target, 'musl') }}
@@ -301,6 +314,13 @@ jobs:
       - name: Build release addon
         run: ${{ matrix.build }}
         shell: bash
+        env:
+          # Only the aarch64-unknown-linux-gnu entry uses these; both the `cc`
+          # crate and aws-lc-sys's CMake pick their compiler up from here.
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       # Dual-binary CPU-detect: the x86-64-gnu target also ships the x86-64-v3
       # (AVX2/BMI2/FMA/SSE4.2) SIMD variant. The loader picks it at runtime when
       # the host CPU supports v3; the `castrum.*.node` glob below uploads both.
@@ -322,6 +342,11 @@ jobs:
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest
+    # The credential lives in an ENVIRONMENT (environment secrets are only
+    # visible to jobs that target them). The name must match the "Environment
+    # name" configured in npm's trusted-publisher settings, otherwise the OIDC
+    # claims do not line up and npm silently falls back to token auth.
+    environment: NPM_TOKEN
     # A tag must not ship past typecheck, unit/smoke tests, the wire-format
     # guard, or the Node compat suite — require all quality gates.
     needs: [build, typescript, node]
@@ -329,24 +354,32 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      # Needed for SLSA provenance attestation (actions/attest-build-provenance).
+      # `id-token: write` is what npm Trusted Publishing (OIDC) exchanges for a
+      # short-lived publish credential; actions/attest-build-provenance needs it
+      # too.
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      # No registry token is REQUIRED: npm prefers OIDC (trusted publishing)
+      # when it is configured and falls back to the token below otherwise, so a
+      # release works either way. This needs npm >= 11.5.2, which is why the npm
+      # CLI is upgraded and asserted below.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
-          # Writes ~/.npmrc with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
-          # so `npm publish` can authenticate. npm does not read NPM_TOKEN on its
-          # own — without this the publish step fails with ENEEDAUTH.
+          node-version: 24
+          # Writes ~/.npmrc with `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`.
           registry-url: https://registry.npmjs.org
+      - name: Ensure npm supports OIDC trusted publishing (>= 11.5.2)
+        run: |
+          npm install -g npm@latest
+          node -e 'const v=require("node:child_process").execSync("npm --version").toString().trim().split(".").map(Number); if(v[0]<11||(v[0]===11&&v[1]<5)){console.error(`::error::npm ${v.join(".")} is too old for OIDC trusted publishing (need >= 11.5.2)`);process.exit(1)} console.log(`npm ${v.join(".")} supports trusted publishing`)'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
       - name: Download all platform addons
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
           pattern: addon-*
@@ -357,8 +390,32 @@ jobs:
           path: ./
           format: spdx-json
           artifact-name: castrum-sbom.spdx.json
-      - name: Publish to npm
-        run: npm publish --access public
+      # Diagnostics for the OIDC path: if publishing ever fails again, the log
+      # shows whether the runner exposed an id-token, which repo/workflow/ref the
+      # exchange will claim, and whether an .npmrc auth entry (which makes npm
+      # prefer token auth) exists. The token value is never printed.
+      - name: Report the OIDC environment
+        run: |
+          echo "id-token request url   : ${ACTIONS_ID_TOKEN_REQUEST_URL:+present}"
+          echo "id-token request token : ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+present}"
+          echo "expected claim         : ${{ github.repository }} / .github/workflows/ci.yml @ ${{ github.ref }}"
+          if [ -f "$HOME/.npmrc" ]; then
+            echo "~/.npmrc present (token fallback wired):"
+            sed 's/_authToken=.*/_authToken=<redacted>/' "$HOME/.npmrc"
+          else
+            echo "no ~/.npmrc"
+          fi
+      # `--provenance` makes the OIDC attestation mandatory (it does not replace
+      # auth): without it a broken OIDC exchange is invisible, because npm just
+      # falls back to the token and reports a misleading 2FA notice.
+      #
+      # NOTE: if the trusted publisher is configured for `npm stage publish`
+      # only, npm STAGES this version instead of failing — the step exits 0 and
+      # logs `+ castrum@<version>`, but nothing goes live until a maintainer
+      # approves it with 2FA (`npm stage approve <stage-id>`). Verify releases
+      # on the registry, never by this job's conclusion.
+      - name: Publish to npm (OIDC trusted publishing, token fallback)
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       # SLSA3 provenance: records the repo/commit that produced this release so

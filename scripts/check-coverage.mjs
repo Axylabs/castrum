@@ -30,13 +30,28 @@ const SHIPPED_DIRS = new Set([
   'src/integration',
 ])
 
-const { stdout, stderr, status } = spawnSync(
+const { stdout, stderr, status, signal, error } = spawnSync(
   'bun',
   // Explicit paths, mirroring package.json's `test` script: `test/integration`
   // holds `node --test` suites that import the compiled dist/ entry (built by
   // `build:js`, which this job does not run), so bare `bun test` would try to
   // load them and fail.
-  ['test', '--coverage', 'test/unit', 'test/property', 'test/compat'],
+  //
+  // `--max-concurrency=4`: bun defaults to 20 concurrent tests, and the
+  // task-runtime stress tests allocate multi-MB buffers — with instrumentation
+  // on, a 4-core/16 GB CI runner got the child SIGKILLed (its output stopped
+  // dead at test/unit/task/runtime.test.ts). `--timeout=30000` gives the
+  // instrumented suites headroom over bun's 5 s default; a genuine hang is still
+  // caught by the plain `bun run test` step, which keeps the default.
+  [
+    'test',
+    '--coverage',
+    '--max-concurrency=4',
+    '--timeout=30000',
+    'test/unit',
+    'test/property',
+    'test/compat',
+  ],
   { encoding: 'utf8' },
 )
 
@@ -45,7 +60,13 @@ const { stdout, stderr, status } = spawnSync(
 const combined = `${stdout ?? ''}\n${stderr ?? ''}`
 
 if (status !== 0) {
-  process.stderr.write(`\`bun test --coverage\` failed.\n\n${combined}`)
+  // Say HOW it failed: a null status with a signal means the child was killed
+  // (SIGKILL ⇒ usually the OOM killer) rather than failing a test.
+  const how =
+    status === null || status === undefined
+      ? `killed by ${signal ?? error?.message ?? 'an unknown signal'}`
+      : `exit code ${status}`
+  process.stderr.write(`\`bun test --coverage\` failed (${how}).\n\n${combined}`)
   process.exit(status ?? 1)
 }
 
