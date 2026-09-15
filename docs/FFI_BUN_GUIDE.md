@@ -240,6 +240,18 @@ measuring the bare binding suggested the opposite. **Measure through the functio
 users call, not the binding** — the guard itself costs ~4 ns, so guarding is
 cheap and routing everything through bytes is not always a win.
 
+**A second measured instance: the session seal/open siblings (0.9.7).** They
+land in the same place, and the hinge is the caller's own encode. Through the
+real call path, 200k calls, ns/call: one short-string `TextEncoder.encode`
+costs 45.4; `session_seal` is 613.5 via `cstring` versus 557.8 via
+`castrum_session_seal_bytes` when every argument is ALREADY bytes (−9.1%), but
+620.6 when the caller re-encodes its JS strings per call (**+1.2%, slower**).
+`session_open` mirrors it: 568.5 / 501.1 (−11.9%) / 579.5 (+1.9%). So ~45 ns of
+encode against ~45–67 ns of transcode: the byte form pays only for a caller that
+already holds bytes. Byte-identical tokens between the two forms was asserted at
+runtime (`parity: true`), so the siblings are a correctness escape hatch — the
+NUL case, or a caller that already owns buffers — never a blanket migration.
+
 **Rule**: a `cstring` ARG is only correct when truncation cannot change the
 answer — i.e. the string is developer-supplied config or NUL-free by
 construction (a MIME extension, a base64 key, a header name). Anything
