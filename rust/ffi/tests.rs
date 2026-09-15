@@ -2420,7 +2420,10 @@ fn wire_validate_and_session_c_abi() {
         .to_string_lossy()
         .into_owned();
 
-    assert_ne!(exact_str, truncated_str, "byte form must not truncate at NUL");
+    assert_ne!(
+        exact_str, truncated_str,
+        "byte form must not truncate at NUL"
+    );
 
     // Open each token and read back the `id` from the packed layout
     // (`[u8 ok][i64 exp][u32 idLen][id]…`) — the ground truth this change is
@@ -2453,20 +2456,18 @@ fn wire_validate_and_session_c_abi() {
     assert_eq!(exact_id, &nul_id[..]);
 
     // Null pointers are rejected, never dereferenced.
-    assert!(
-        unsafe {
-            castrum_session_seal_bytes(
-                std::ptr::null(),
-                0,
-                std::ptr::null(),
-                0,
-                0,
-                std::ptr::null(),
-                0,
-            )
-        }
-        .is_null()
-    );
+    assert!(unsafe {
+        castrum_session_seal_bytes(
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        )
+    }
+    .is_null());
     assert_eq!(
         unsafe {
             castrum_session_open_bytes(
