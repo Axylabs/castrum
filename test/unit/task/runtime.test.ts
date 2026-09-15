@@ -75,27 +75,59 @@ describe('task runtime', () => {
   // built-in it replaces. Zero-copy INPUT (only the 4-byte level header is
   // copied) brought it to ~2 ms of stall, so this test fails loudly if the
   // payload ever goes back through a copy.
+  //
+  // The copy would land INSIDE the call, before the promise is returned, so the
+  // assertion compares that synchronous window against a copy of the SAME
+  // payload on the SAME machine. A fixed event-loop-gap bound is what made this
+  // test flaky: a shared CI runner delays a 2 ms interval well past any locally
+  // met bound (observed >8 ms on `bun latest`), while the zero-copy submit it
+  // guards stays ~1000x cheaper than the copy it has to reject.
   test('compresses a large buffer without copying it on the JS thread', async () => {
     const tasks = createTaskRuntime()
     const payload = new Uint8Array(16 * 1024 * 1024).fill(0x5a)
+    // Warm the pool + the first-call path so the measured window is steady
+    // state rather than pool spin-up.
+    await tasks.gzipCompress(payload.subarray(0, 4096))
 
-    let maxGap = 0
-    let last = performance.now()
-    const timer = setInterval(() => {
-      const now = performance.now()
-      maxGap = Math.max(maxGap, now - last)
-      last = now
-    }, 2)
-    const compressed = await tasks.gzipCompress(payload)
-    maxGap = Math.max(maxGap, performance.now() - last)
-    clearInterval(timer)
+    /**
+     * Minimum wall time of `samples` synchronous runs — preemption can only
+     * inflate a sample, never shrink one.
+     */
+    const minSyncCost = (run: () => void, samples: number): number => {
+      let best = Number.POSITIVE_INFINITY
+      for (let i = 0; i < samples; i += 1) {
+        const start = performance.now()
+        run()
+        best = Math.min(best, performance.now() - start)
+      }
+      return best
+    }
 
-    expect(Buffer.from(Bun.gunzipSync(new Uint8Array(compressed))).equals(Buffer.from(payload))).toBe(
+    // Reference: one full copy of the payload on this thread. A repacked submit
+    // pays at least this much (the `dest.set(data, 4)` into the args blob); the
+    // zero-copy submit pays a 4-byte header write plus the FFI handoff.
+    const copies: Uint8Array[] = []
+    const copyCost = minSyncCost(() => {
+      copies.push(payload.slice())
+    }, 3)
+
+    const submitted: Promise<Uint8Array>[] = []
+    const submitCost = minSyncCost(() => {
+      submitted.push(tasks.gzipCompress(payload))
+    }, 3)
+
+    const [compressed] = await Promise.all(submitted)
+    const first = compressed!
+    expect(Buffer.from(Bun.gunzipSync(new Uint8Array(first))).equals(Buffer.from(payload))).toBe(
       true,
     )
-    // 16 MiB of memcpy is ~5-6 ms on this class of machine; a repacked payload
-    // would blow well past this bound.
-    expect(maxGap).toBeLessThan(8)
+    // The reference copies stay alive until here on purpose: the comparison is
+    // only meaningful if those copies actually happened.
+    expect(copies.every((copy) => copy.length === payload.length)).toBe(true)
+    // 16 MiB of memcpy is single-digit ms on this class of machine; the
+    // zero-copy submit is a few microseconds. The 4x margin keeps the failure
+    // mode (a ~1000x jump) unambiguous while tolerating a preempted sample.
+    expect(submitCost).toBeLessThan(copyCost / 4)
   })
 
   test('brotli-decompresses off-thread, including the zero-copy retry', async () => {
