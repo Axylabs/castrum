@@ -44,7 +44,7 @@ as a pre-baked pipeline, and still be usable from both runtimes.
 ### 2.1 One cdylib, two transports
 
 The addon is built with napi-rs (so Node can load it), but it *also* exports
-`extern "C"` symbols (`rust/ffi/`, **119 `castrum_*` symbols** — 107 direct + 4
+`extern "C"` symbols (`rust/ffi/`, **121 `castrum_*` symbols** — 109 direct + 4
 `validator_c_abi!` + 4 `validator_bytes_c_abi!` + 4 `compress_to_out!`) so Bun can
 `dlopen` it directly:
 

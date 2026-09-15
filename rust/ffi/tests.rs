@@ -2308,6 +2308,179 @@ fn wire_validate_and_session_c_abi() {
         unsafe { castrum_session_open(token, c"wrong".as_ptr(), buf.as_mut_ptr(), buf.len()) },
         0
     );
+
+    // ── Byte-arg siblings ──────────────────────────────────────────
+    // Copy the first token OUT of the shared per-thread CSTR_BUF before the
+    // next `cstring` return reuses it (that buffer is one-per-thread by design).
+    let token_str = unsafe { std::ffi::CStr::from_ptr(token) }
+        .to_string_lossy()
+        .into_owned();
+    let id = b"sess-9";
+    let data = b"{\"n\":1}";
+    let secret = b"sekrit";
+    let token_b = unsafe {
+        castrum_session_seal_bytes(
+            id.as_ptr(),
+            id.len(),
+            data.as_ptr(),
+            data.len(),
+            1_234_567,
+            secret.as_ptr(),
+            secret.len(),
+        )
+    };
+    assert!(!token_b.is_null());
+    // One shared core ⇒ byte-identical token. This is the parity guarantee that
+    // makes the byte form a drop-in for the cstring form.
+    let token_b_str = unsafe { std::ffi::CStr::from_ptr(token_b) }
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(token_b_str, token_str);
+
+    let tok_bytes = token_b_str.as_bytes();
+    let mut buf2 = [0u8; 256];
+    let w2 = unsafe {
+        castrum_session_open_bytes(
+            tok_bytes.as_ptr(),
+            tok_bytes.len(),
+            secret.as_ptr(),
+            secret.len(),
+            buf2.as_mut_ptr(),
+            buf2.len(),
+        )
+    };
+    assert_eq!(w2, w);
+    assert_eq!(buf2[..w2], buf[..w]);
+    // bad signature → 0
+    assert_eq!(
+        unsafe {
+            castrum_session_open_bytes(
+                tok_bytes.as_ptr(),
+                tok_bytes.len(),
+                b"wrong".as_ptr(),
+                5,
+                buf2.as_mut_ptr(),
+                buf2.len(),
+            )
+        },
+        0
+    );
+    // Too-small buffer → the EXACT required size, not 0 (needed-size rule).
+    assert_eq!(
+        unsafe {
+            castrum_session_open_bytes(
+                tok_bytes.as_ptr(),
+                tok_bytes.len(),
+                secret.as_ptr(),
+                secret.len(),
+                buf2.as_mut_ptr(),
+                4,
+            )
+        },
+        w2
+    );
+
+    // The reason this sibling exists: the cstring form TRUNCATES at an embedded
+    // NUL (the engine's transcode is NUL-terminated), so an id carrying one is
+    // sealed under its truncated form. The byte form carries the exact length.
+    //
+    // Each token is copied to a String IMMEDIATELY after its own call: both
+    // `cstring` returns write into ONE per-thread CSTR_BUF, so the earlier
+    // pointer is dead the moment the next call reuses it — the aliasing hazard
+    // `docs/FFI_BUN_GUIDE.md` documents. The assertions below also read the
+    // recovered `id` BYTES rather than the token's text, so they hold
+    // regardless of how the payload is wire-encoded.
+    let nul_id = b"sess-9\0extra";
+    let tp = unsafe {
+        castrum_session_seal(
+            nul_id.as_ptr() as *const std::os::raw::c_char,
+            c"{\"n\":1}".as_ptr(),
+            1_234_567,
+            c"sekrit".as_ptr(),
+        )
+    };
+    assert!(!tp.is_null());
+    let truncated_str = unsafe { std::ffi::CStr::from_ptr(tp) }
+        .to_string_lossy()
+        .into_owned();
+
+    let ep = unsafe {
+        castrum_session_seal_bytes(
+            nul_id.as_ptr(),
+            nul_id.len(),
+            data.as_ptr(),
+            data.len(),
+            1_234_567,
+            secret.as_ptr(),
+            secret.len(),
+        )
+    };
+    assert!(!ep.is_null());
+    let exact_str = unsafe { std::ffi::CStr::from_ptr(ep) }
+        .to_string_lossy()
+        .into_owned();
+
+    assert_ne!(exact_str, truncated_str, "byte form must not truncate at NUL");
+
+    // Open each token and read back the `id` from the packed layout
+    // (`[u8 ok][i64 exp][u32 idLen][id]…`) — the ground truth this change is
+    // about. NOTE: `seal_core` JSON-escapes the id but `open_core` returns the
+    // raw captured span, so an id needing escapes comes back escaped. That
+    // asymmetry is pre-existing; these assertions are written not to depend on
+    // it, only on the truncation itself.
+    let id_of = |tok: &str, out: &mut [u8; 256]| -> Vec<u8> {
+        let w = unsafe {
+            castrum_session_open_bytes(
+                tok.as_ptr(),
+                tok.len(),
+                secret.as_ptr(),
+                secret.len(),
+                out.as_mut_ptr(),
+                out.len(),
+            )
+        };
+        assert!(w > 13, "open of {tok:?} failed");
+        let id_len = u32::from_le_bytes([out[9], out[10], out[11], out[12]]) as usize;
+        out[13..13 + id_len].to_vec()
+    };
+    let mut scratch = [0u8; 256];
+    let truncated_id = id_of(&truncated_str, &mut scratch);
+    let exact_id = id_of(&exact_str, &mut scratch);
+    assert_eq!(truncated_id, b"sess-9");
+    assert_ne!(
+        exact_id, b"sess-9",
+        "the byte form must keep the bytes after the NUL"
+    );
+    assert!(exact_id.len() > truncated_id.len());
+
+    // Null pointers are rejected, never dereferenced.
+    assert!(
+        unsafe {
+            castrum_session_seal_bytes(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        }
+        .is_null()
+    );
+    assert_eq!(
+        unsafe {
+            castrum_session_open_bytes(
+                std::ptr::null(),
+                0,
+                secret.as_ptr(),
+                secret.len(),
+                buf2.as_mut_ptr(),
+                buf2.len(),
+            )
+        },
+        0
+    );
 }
 
 #[test]

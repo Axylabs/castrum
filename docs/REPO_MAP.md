@@ -178,7 +178,7 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
                           CASTRUM_TASK_THREADS, batch dequeue + spin-then-park + optional
                           CASTRUM_TASK_PIN_CORES), result ring + batched thread-safe doorbell,
                           op dispatch + cancel + catch_unwind containment + `_into` ops.
-  ffi/                    #[no_mangle] extern "C" exports (119 castrum_* symbols — 107 direct + 4
+  ffi/                    #[no_mangle] extern "C" exports (121 castrum_* symbols — 109 direct + 4
                           validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out!; parity guarded by
                           test/unit/native/ffi-symbol-parity.test.ts) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).

@@ -471,6 +471,23 @@ export interface BunFFI {
    * exact required size).
    */
   sessionOpen(token: string, secret: string, output: Uint8Array): number
+  /**
+   * Byte-arg `{@link sessionSeal}`: same envelope + wire format, inputs as
+   * bytes. Preferred for user-derived `id`/`dataJson`, because a `cstring` ARG
+   * is engine-transcoded (a per-arg cost) and SILENTLY TRUNCATES at an
+   * embedded `U+0000` before Rust sees it. `null` = failure.
+   */
+  sessionSealBytes(
+    id: Uint8Array,
+    dataJson: Uint8Array,
+    expSecs: number,
+    secret: Uint8Array,
+  ): string | null
+  /**
+   * Byte-arg `{@link sessionOpen}`: same output layout and needed-size
+   * convention, `token`/`secret` as bytes (exact length, no transcode).
+   */
+  sessionOpenBytes(token: Uint8Array, secret: Uint8Array, output: Uint8Array): number
 
   // ── Batch fixed-width hex validation / RegExp escaping ─────────────
   /**

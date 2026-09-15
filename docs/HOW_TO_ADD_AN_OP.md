@@ -13,6 +13,30 @@ guards fail.
 
 ---
 
+### ⚠️ Rebuild BOTH binaries before binding anything
+
+`bun run build` writes the **baseline** addon only. The loader CPU-detects and
+PREFERS the x86-64-v3 SIMD variant (`castrum.linux-x64-v3-gnu.node`, built by
+`bun run build:v3`) on any AVX2 host — i.e. essentially every modern x86-64
+machine, including CI runners.
+
+A stale v3 binary therefore ships the OLD symbol table, and the failure mode is
+**not** a clean "missing symbol" error: `bun:ffi` binds against it, the first call
+jumps through a missing symbol, and the process **SIGSEGVs** — often at teardown,
+with every test passing. Observed while adding
+`castrum_session_{seal,open}_bytes`: `test/compat` printed `9 pass / 0 fail` and
+then died, `gdb` showing the fault inside `castrum.linux-x64-v3-gnu.node`.
+
+So: after adding or changing ANY `castrum_*` export, rebuild with
+`bun run build:all` (baseline + v3). If you hit a segfault with no failing test,
+check this FIRST — it is much cheaper than bisecting the ABI:
+
+```bash
+nm -D --defined-only castrum.linux-x64-v3-gnu.node | grep <your_symbol>
+```
+
+---
+
 ## 0. The six wiring points at a glance
 
 | # | File | What you add |

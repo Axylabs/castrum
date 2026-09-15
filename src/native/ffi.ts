@@ -576,6 +576,18 @@ function bind(forcedPath?: string, tried: string[] = []): BunFFI | null {
         args: abi(['cstring', 'cstring', 'ptr', 'usize']),
         returns: U64_FAST,
       },
+      // Byte-arg siblings of the pair above: identical core and wire format,
+      // but every INPUT crosses as `(ptr,len)`. A `cstring` ARG costs the
+      // engine a transcode per arg AND silently truncates at an embedded
+      // U+0000 — reachable here because `id`/`data_json` are user-derived.
+      castrum_session_seal_bytes: {
+        args: abi(['ptr', 'usize', 'ptr', 'usize', 'i64', 'ptr', 'usize']),
+        returns: 'cstring',
+      },
+      castrum_session_open_bytes: {
+        args: abi(['ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize']),
+        returns: U64_FAST,
+      },
       // Off-thread task runtime: `submit` takes a packed `(ptr,len)` arg blob
       // plus a JS-assigned id; `drain` writes the packed completion batch into
       // a caller buffer (needed-size convention). `set_doorbell` takes the raw

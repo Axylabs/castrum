@@ -41,6 +41,8 @@ export function buildInstances(
   const cookieValidateSym = sym.castrum_cookie_validate as (...a: unknown[]) => number | bigint
   const sessionSealSym = sym.castrum_session_seal as (...a: unknown[]) => string | null
   const sessionOpenSym = sym.castrum_session_open as Raw4
+  const sessionSealBytesSym = sym.castrum_session_seal_bytes as RawCStr
+  const sessionOpenBytesSym = sym.castrum_session_open_bytes as Raw6
   const rateLimiterCheckRaw = sym.castrum_rate_limiter_check as Raw5
   const rateLimiterCheckKeyRaw = sym.castrum_rate_limiter_check_key as Raw5
   const jwtSignBytes = sym.castrum_jwt_sign_bytes as RawCStr
@@ -163,6 +165,33 @@ export function buildInstances(
       // Needed-size convention; 0 = bad signature / malformed.
       const w = Number(sessionOpenSym(token, secret, output, lenOrView(output)))
       return w
+    },
+    sessionSealBytes(id, dataJson, expSecs, secret) {
+      // Byte-arg form: exact lengths, no engine transcode, no NUL truncation.
+      // The parity with `sessionSeal` is asserted in the bind-time self-test
+      // below (same core ⇒ byte-identical token for identical inputs).
+      return sessionSealBytesSym(
+        id,
+        lenOrView(id),
+        dataJson,
+        lenOrView(dataJson),
+        BigInt(expSecs),
+        secret,
+        lenOrView(secret),
+      )
+    },
+    sessionOpenBytes(token, secret, output) {
+      // Needed-size convention; 0 = bad signature / malformed.
+      return Number(
+        sessionOpenBytesSym(
+          token,
+          lenOrView(token),
+          secret,
+          lenOrView(secret),
+          output,
+          lenOrView(output),
+        ),
+      )
     },
     rateLimiterCheck(inner, key, nowMs) {
       // Packed [u8 allowed][u32 remaining LE][i64 reset_ms LE] (13 bytes).
@@ -623,6 +652,24 @@ export function selfTestInstances(b: BunFFI): boolean {
     if (w <= 13 || out[0] !== 1) return false
     // bad signature → 0
     if (b.sessionOpen(tok, 'wrong', out) !== 0) return false
+
+    // Byte-arg siblings. Both forms share ONE core, so the sealed token must be
+    // byte-identical — the strongest available parity check between the two.
+    const enc = new TextEncoder()
+    const tokB = b.sessionSealBytes(
+      enc.encode('sess-9'),
+      enc.encode('{"n":1}'),
+      1234567,
+      enc.encode('sekrit'),
+    )
+    if (tokB === null || tokB !== tok) return false
+    const outB = new Uint8Array(256)
+    const wB = b.sessionOpenBytes(enc.encode(tokB), enc.encode('sekrit'), outB)
+    if (wB !== w || outB[0] !== 1) return false
+    // Bad signature → 0; a too-small buffer reports the EXACT size, not 0.
+    if (b.sessionOpenBytes(enc.encode(tokB), enc.encode('wrong'), outB) !== 0) return false
+    if (b.sessionOpenBytes(enc.encode(tokB), enc.encode('sekrit'), outB.subarray(0, 4)) !== wB)
+      return false
   }
 
   // rateLimiterCheckKey: null (0) handle → throw (ABI exercise).

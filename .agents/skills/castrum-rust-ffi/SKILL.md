@@ -93,6 +93,14 @@ falling back to napi.
 
 ## Gates to run before done
 
+**First: `bun run build:all`** (baseline + v3). `bun run build` writes only the
+baseline addon; the loader CPU-detects and PREFERS the v3 SIMD variant on any
+AVX2 host, so a stale v3 binary makes the first call jump through a missing
+symbol and SIGSEGV — with all tests passing (observed at `test/compat` teardown
+while adding `castrum_session_{seal,open}_bytes`). Check
+`nm -D --defined-only castrum.linux-x64-v3-gnu.node | grep <symbol>` before
+debugging anything else.
+
 ```bash
 cargo test && bun test
 bun run typecheck && bun run typecheck:test

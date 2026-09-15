@@ -136,7 +136,7 @@ const staleCount =
 for (const d of countDocs) {
   const text = readFileSync(join(ROOT, d), 'utf8')
   if (staleCount.test(text)) {
-    problems.push(`stale FFI symbol count in ${d} (should read 119 / 107 direct)`)
+    problems.push(`stale FFI symbol count in ${d} (should read 121 / 109 direct)`)
   }
 }
 

@@ -625,6 +625,58 @@ pub unsafe extern "C" fn castrum_random_token_into(
 
 // ── Session envelope (fused JSON + HMAC) ────────────────────────────
 
+/// Shared tail of both seal entry points: `None` (empty id/secret, or a panic)
+/// → null pointer, otherwise clone the sealed token into the engine's
+/// per-thread cstring buffer. Extracted so the cstring and byte forms cannot
+/// diverge — the byte form exists only to change how the INPUTS cross.
+fn sealed_to_cstr(sealed: Option<Vec<u8>>) -> *const std::os::raw::c_char {
+    let Some(tok) = sealed else {
+        return std::ptr::null();
+    };
+    super::util::cstring_return(tok.len(), move |buf| {
+        if buf.len() < tok.len() {
+            return None;
+        }
+        buf[..tok.len()].copy_from_slice(&tok);
+        Some(tok.len())
+    })
+}
+
+/// Shared tail of both open entry points: pack the extracted envelope into the
+/// caller's buffer as `[u8 ok=1][i64 exp][u32 idLen][id][u32 dataLen][dataJson]`,
+/// or report the EXACT size required when `out_cap` is too small. `None` (bad
+/// signature / malformed envelope) → `0`. Never returns `0` on a valid call.
+///
+/// # Safety
+/// `out` must be valid for writes up to `out_cap`; the caller null-checks it.
+unsafe fn pack_open_result(
+    opened: Option<(i64, Vec<u8>, Vec<u8>)>,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    let Some((exp, id, data)) = opened else {
+        return 0;
+    };
+    // Layout size: 1 + 8 + 4+id + 4+data
+    let need = 1 + 8 + 4 + id.len() + 4 + data.len();
+    if need > out_cap {
+        return need;
+    }
+    let o = slice::from_raw_parts_mut(out, need);
+    o[0] = 1;
+    o[1..9].copy_from_slice(&exp.to_le_bytes());
+    let id_len = id.len() as u32;
+    o[9..13].copy_from_slice(&id_len.to_le_bytes());
+    let mut p = 13usize;
+    o[p..p + id.len()].copy_from_slice(&id);
+    p += id.len();
+    let d_len = data.len() as u32;
+    o[p..p + 4].copy_from_slice(&d_len.to_le_bytes());
+    p += 4;
+    o[p..p + data.len()].copy_from_slice(&data);
+    need
+}
+
 /// Seal a session envelope NATIVELY: build
 /// `{"id":"…","data":<data_json>,"exp":exp}` and HMAC-sign it into the
 /// `payload.<64-hex>` cookie token — ONE crossing replaces the JS
@@ -650,16 +702,7 @@ pub unsafe extern "C" fn castrum_session_seal(
         || crate::crypto::session::seal_core(id_b, data_b, exp_secs, sec_b),
         None,
     );
-    let Some(tok) = sealed else {
-        return std::ptr::null();
-    };
-    super::util::cstring_return(tok.len(), move |buf| {
-        if buf.len() < tok.len() {
-            return None;
-        }
-        buf[..tok.len()].copy_from_slice(&tok);
-        Some(tok.len())
-    })
+    sealed_to_cstr(sealed)
 }
 
 /// Open a sealed session token: verify the HMAC and extract the envelope in
@@ -684,25 +727,72 @@ pub unsafe extern "C" fn castrum_session_open(
     let tok = std::ffi::CStr::from_ptr(token).to_bytes();
     let sec = std::ffi::CStr::from_ptr(secret).to_bytes();
     let opened = panic_guard(|| crate::crypto::session::open_core(tok, sec), None);
-    let Some((exp, id, data)) = opened else {
-        return 0;
-    };
-    // Layout size: 1 + 8 + 4+id + 4+data
-    let need = 1 + 8 + 4 + id.len() + 4 + data.len();
-    if need > out_cap {
-        return need;
+    pack_open_result(opened, out, out_cap)
+}
+
+/// Byte-arg sibling of `castrum_session_seal`: same core, same wire format, but
+/// every input crosses as `(ptr, len)` instead of a `cstring` ARG.
+///
+/// Per `docs/FFI_BUN_GUIDE.md` §6.1 there are two reasons, and only the second
+/// cannot be worked around:
+/// 1. a `cstring` ARG costs the engine a transcode into a call-scoped
+///    NUL-terminated buffer (~80ns per arg through the public surface vs ~37ns
+///    for the byte path);
+/// 2. an embedded `U+0000` SILENTLY TRUNCATES the value before Rust sees it.
+///    `id` and `data_json` are user-derived (the id is escaped by
+///    `seal_core`, which only makes sense if it may contain arbitrary bytes),
+///    so a session id carrying a NUL would be sealed under its truncated form.
+///    This form carries the exact length and cannot be truncated.
+///
+/// # Safety
+/// `id`/`data_json`/`secret` must be valid for reads of their stated lengths;
+/// null pointers are rejected (→ null).
+#[no_mangle]
+pub unsafe extern "C" fn castrum_session_seal_bytes(
+    id: *const u8,
+    id_len: usize,
+    data_json: *const u8,
+    data_len: usize,
+    exp_secs: i64,
+    secret: *const u8,
+    secret_len: usize,
+) -> *const std::os::raw::c_char {
+    if id.is_null() || data_json.is_null() || secret.is_null() {
+        return std::ptr::null();
     }
-    let o = slice::from_raw_parts_mut(out, need);
-    o[0] = 1;
-    o[1..9].copy_from_slice(&exp.to_le_bytes());
-    let id_len = id.len() as u32;
-    o[9..13].copy_from_slice(&id_len.to_le_bytes());
-    let mut p = 13usize;
-    o[p..p + id.len()].copy_from_slice(&id);
-    p += id.len();
-    let d_len = data.len() as u32;
-    o[p..p + 4].copy_from_slice(&d_len.to_le_bytes());
-    p += 4;
-    o[p..p + data.len()].copy_from_slice(&data);
-    need
+    let id_b = slice::from_raw_parts(id, id_len);
+    let data_b = slice::from_raw_parts(data_json, data_len);
+    let sec_b = slice::from_raw_parts(secret, secret_len);
+    let sealed = super::util::panic_guard(
+        || crate::crypto::session::seal_core(id_b, data_b, exp_secs, sec_b),
+        None,
+    );
+    sealed_to_cstr(sealed)
+}
+
+/// Byte-arg sibling of `castrum_session_open`: `token`/`secret` cross as
+/// `(ptr, len)`; the output layout and the needed-size convention are identical
+/// to `castrum_session_open` (`0` = bad signature / malformed). Saves the
+/// per-arg transcode and, unlike the `cstring` form, cannot be truncated by an
+/// embedded `U+0000` in the token.
+///
+/// # Safety
+/// `token`/`secret` must be valid for reads of their stated lengths; `out` must
+/// be valid for writes up to `out_cap`. Null pointers → 0.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_session_open_bytes(
+    token: *const u8,
+    token_len: usize,
+    secret: *const u8,
+    secret_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if token.is_null() || secret.is_null() || out.is_null() {
+        return 0;
+    }
+    let tok = slice::from_raw_parts(token, token_len);
+    let sec = slice::from_raw_parts(secret, secret_len);
+    let opened = panic_guard(|| crate::crypto::session::open_core(tok, sec), None);
+    pack_open_result(opened, out, out_cap)
 }
