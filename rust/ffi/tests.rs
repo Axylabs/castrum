@@ -2447,11 +2447,10 @@ fn wire_validate_and_session_c_abi() {
     let truncated_id = id_of(&truncated_str, &mut scratch);
     let exact_id = id_of(&exact_str, &mut scratch);
     assert_eq!(truncated_id, b"sess-9");
-    assert_ne!(
-        exact_id, b"sess-9",
-        "the byte form must keep the bytes after the NUL"
-    );
-    assert!(exact_id.len() > truncated_id.len());
+    // The byte form carries the exact length, so the id comes back WHOLE — and
+    // byte-exact, because `open_core` now decodes the id rather than returning
+    // the escaped span.
+    assert_eq!(exact_id, &nul_id[..]);
 
     // Null pointers are rejected, never dereferenced.
     assert!(

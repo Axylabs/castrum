@@ -83,13 +83,10 @@ pub fn open_core(token: &[u8], secret: &[u8]) -> Option<(i64, Vec<u8>, Vec<u8>)>
                         if bytes.get(pos) != Some(&b'"') {
                             return None;
                         }
-                        let vs = pos + 1;
-                        let mut ve = vs;
-                        while ve < bytes.len() && bytes[ve] != b'"' {
-                            ve += 1;
-                        }
-                        id = Some(bytes[vs..ve].to_vec());
-                        pos = ve + 1;
+                        let body = pos + 1;
+                        let end = scan_json_string_end(bytes, body)?;
+                        id = Some(unescape_json_id(&bytes[body..end]));
+                        pos = end + 1;
                     }
                     b"exp" => {
                         let vs = pos;
@@ -174,6 +171,108 @@ fn skip_json_value(bytes: &[u8], pos: usize) -> Option<usize> {
     }
 }
 
+/// Index of the `"` that TERMINATES a JSON string whose body starts at `start`
+/// (just past the opening quote).
+///
+/// Escape-aware: the id used to be captured by scanning for the next `"`, which
+/// stops at the quote inside an escaped `\"` — truncating the id AND leaving
+/// `pos` in the middle of the string, so the rest of the envelope was then read
+/// as structure (a quote-carrying id could make `open` fail outright).
+fn scan_json_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Decode 4 hex digits at `at` (the `\uXXXX` payload).
+fn hex4(bytes: &[u8], at: usize) -> Option<u32> {
+    let mut v = 0u32;
+    for k in 0..4 {
+        v = (v << 4) | (*bytes.get(at + k)? as char).to_digit(16)?;
+    }
+    Some(v)
+}
+
+/// Inverse of `json_ser::write_json_escaped` for the id: decodes `\"`, `\\`,
+/// `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX`.
+///
+/// `\u00XX` maps back to the single BYTE `XX`. That is deliberate and load
+/// bearing: the escaper emits that form for control characters AND — in its
+/// invalid-UTF-8 mode — for every byte of binary input, so routing it through a
+/// code point and re-encoding as UTF-8 would expand bytes >= 0x80 into two
+/// bytes and destroy the byte-exact round trip the id is supposed to have.
+/// (A valid-UTF-8 id is written RAW by the escaper, so `\u00XX` cannot be its
+/// origin.)
+///
+/// `\uXXXX` above 0xFF can only come from a different producer (e.g. JS
+/// `JSON.stringify` of a non-ASCII id), so it is decoded as a code point with
+/// surrogate-pair combining. Unknown escapes and a trailing backslash are kept
+/// verbatim — never silently dropped.
+fn unescape_json_id(escaped: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(escaped.len());
+    let mut i = 0usize;
+    while i < escaped.len() {
+        if escaped[i] != b'\\' {
+            out.push(escaped[i]);
+            i += 1;
+            continue;
+        }
+        let Some(&e) = escaped.get(i + 1) else {
+            out.push(b'\\');
+            break;
+        };
+        i += 2;
+        match e {
+            b'"' => out.push(b'"'),
+            b'\\' => out.push(b'\\'),
+            b'/' => out.push(b'/'),
+            b'b' => out.push(0x08),
+            b'f' => out.push(0x0c),
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'u' => {
+                let Some(cp) = hex4(escaped, i) else {
+                    out.push(b'\\');
+                    out.push(b'u');
+                    continue;
+                };
+                i += 4;
+                if cp <= 0xFF {
+                    out.push(cp as u8);
+                    continue;
+                }
+                let mut code = cp;
+                if (0xD800..=0xDBFF).contains(&cp)
+                    && escaped.get(i) == Some(&b'\\')
+                    && escaped.get(i + 1) == Some(&b'u')
+                {
+                    if let Some(lo) = hex4(escaped, i + 2) {
+                        if (0xDC00..=0xDFFF).contains(&lo) {
+                            code = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                            i += 6;
+                        }
+                    }
+                }
+                let mut buf = [0u8; 4];
+                let ch = char::from_u32(code).unwrap_or('\u{FFFD}');
+                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            }
+            other => {
+                out.push(b'\\');
+                out.push(other);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +306,64 @@ mod tests {
     #[test]
     fn empty_id_rejected() {
         assert!(seal_core(b"", b"{}", 0, SECRET).is_none());
+    }
+
+    #[test]
+    fn id_round_trips_byte_exactly_through_escapes() {
+        // A `"` used to terminate the id scan early, and the id came back
+        // escaped. Both are the same root cause: an escape-unaware scan with no
+        // decode. Every id here must survive the envelope byte-for-byte.
+        for id in [
+            &b"plain-id"[..],
+            &b"sess\"quote"[..],
+            &b"back\\slash"[..],
+            &b"new\nline"[..],
+            &b"tab\there"[..],
+            &b"cr\rhere"[..],
+            &b"nul\0byte"[..],
+            &b"binary\xff\xfe"[..],
+            &b"trailing\\"[..],
+        ] {
+            let token = seal_core(id, br#"{"a":1}"#, 42, SECRET).expect("seal");
+            let (exp, got, data) = open_core(&token, SECRET).expect("open");
+            assert_eq!(got, id, "id must round-trip byte-exactly");
+            assert_eq!(exp, 42);
+            assert_eq!(data, br#"{"a":1}"#);
+        }
+    }
+
+    #[test]
+    fn unescape_json_id_matches_the_escaper() {
+        assert_eq!(unescape_json_id(br#"a\"b"#), b"a\"b");
+        assert_eq!(unescape_json_id(br#"a\\b"#), b"a\\b");
+        assert_eq!(unescape_json_id(br#"a\/b"#), b"a/b");
+        assert_eq!(unescape_json_id(br#"a\nb"#), b"a\nb");
+        assert_eq!(unescape_json_id(br#"a\rb"#), b"a\rb");
+        assert_eq!(unescape_json_id(br#"a\tb"#), b"a\tb");
+        assert_eq!(unescape_json_id(br#"a\bb"#), b"a\x08b");
+        assert_eq!(unescape_json_id(br#"a\fb"#), b"a\x0cb");
+        // `\u00XX` is a BYTE (the escaper's binary mode), not a code point.
+        assert_eq!(unescape_json_id(br#"a\u00e9b"#), b"a\xe9b");
+        // Above 0xFF is a real code point → UTF-8.
+        assert_eq!(unescape_json_id(br#"a\u20acb"#), "a\u{20ac}b".as_bytes());
+        // A surrogate pair combines into one code point.
+        assert_eq!(unescape_json_id(br#"\ud83d\ude00"#), "\u{1f600}".as_bytes());
+        // Unknown escapes and a trailing backslash stay verbatim.
+        assert_eq!(unescape_json_id(br#"a\qb"#), br#"a\qb"#);
+        assert_eq!(unescape_json_id(b"a\\"), b"a\\");
+    }
+
+    #[test]
+    fn scan_json_string_end_skips_escaped_quotes() {
+        // `a\"b"` (a, \, ", b, ") — the escaped quote does NOT terminate; the
+        // plain quote at index 4 does.
+        assert_eq!(scan_json_string_end(b"a\\\"b\"", 0), Some(4));
+        // No escape at all: the first quote terminates.
+        assert_eq!(scan_json_string_end(b"ab\"cd", 0), Some(2));
+        // Unterminated: the trailing backslash swallows the rest.
+        assert_eq!(scan_json_string_end(b"ab\\\"", 0), None);
+        // Escaped BACKSLASH then a terminator: `a\\"` = a, \, \, " → Some(3).
+        assert_eq!(scan_json_string_end(b"a\\\\\"", 0), Some(3));
     }
 
     #[test]
