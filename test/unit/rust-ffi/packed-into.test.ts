@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { getBunFFI } from '../../../src/native/ffi'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'
 
@@ -31,6 +32,23 @@ describe('rust.httpParseRequestPackedInto', () => {
 
   test('too-small output throws', () => {
     expect(() => rust.httpParseRequestPackedInto(HTTP_RAW, new Uint8Array(4))).toThrow()
+  })
+})
+
+describe('allocating packed pairs capacity', () => {
+  test('bounds retained storage without sharing results across calls', () => {
+    if (!getBunFFI()) return // Bound applies to the Bun FFI allocation path.
+    for (const parse of [rust.queryParsePacked, rust.cookieParsePacked, rust.formParsePacked]) {
+      for (const text of ['', 'x', 'x&x&x&x', 'a=1;b=2;c=3', 'value=' + 'x'.repeat(4096)]) {
+        const input = encoder.encode(text)
+        const first = parse(input)
+        const expected = Array.from(first)
+        expect(first.buffer.byteLength).toBeLessThanOrEqual(input.length * 5 + 8)
+        const second = parse(input)
+        second.fill(0xff)
+        expect(Array.from(first)).toEqual(expected)
+      }
+    }
   })
 })
 

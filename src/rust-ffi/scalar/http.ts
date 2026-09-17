@@ -322,7 +322,11 @@ export function buildHttp(ctx: RustClientContext) {
     queryParsePacked(input: Uint8Array): Uint8Array {
       const f = ffi()
       if (f) {
-        const out = new Uint8Array(input.length * 9 + 16)
+        // For k nonempty pairs in n bytes, k <= (n + 1) / 2: each
+        // pair needs a byte and adjacent pairs need a separator. Packed size
+        // <= 4 + 8k + (n - k + 1) <= 5n + 8; decoding never expands bytes.
+        // Cookie/form siblings use the same bound and retain fresh ownership.
+        const out = new Uint8Array(input.length * 5 + 8)
         const w = f.queryParsePackedInto(input, out)
         return out.subarray(0, w)
       }
@@ -334,7 +338,7 @@ export function buildHttp(ctx: RustClientContext) {
     cookieParsePacked(input: Uint8Array): Uint8Array {
       const f = ffi()
       if (f) {
-        const out = new Uint8Array(input.length * 9 + 16)
+        const out = new Uint8Array(input.length * 5 + 8)
         const w = f.cookieParsePackedInto(input, out)
         return out.subarray(0, w)
       }
@@ -347,7 +351,7 @@ export function buildHttp(ctx: RustClientContext) {
       const f = ffi()
       if (f) {
         // x-www-form-urlencoded uses the SAME packed-pairs core as query parse.
-        const out = new Uint8Array(input.length * 9 + 16)
+        const out = new Uint8Array(input.length * 5 + 8)
         const w = f.formParsePackedInto(input, out)
         return out.subarray(0, w)
       }
