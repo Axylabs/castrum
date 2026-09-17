@@ -72,6 +72,11 @@ export function buildPayload(ctx: RustClientContext) {
   // Lazy-memoized ffi surface: binds on first call, single local read after.
   const ffi = memoizeFfi(transport)
 
+  // Per-Worker reused scratch for the object-returning multipartParse (the
+  // packed bytes are consumed synchronously — data is copied out, so the
+  // scratch never escapes; NOT shared with the byte-returning packed paths).
+  let SCRATCH: Uint8Array | null = null
+
   return {
     gzipCompress(data: Uint8Array, level?: number | null): Uint8Array {
       // Optimal by default under Bun: `Bun.gzipSync` (native zlib) is ~2x
@@ -140,8 +145,24 @@ export function buildPayload(ctx: RustClientContext) {
     multipartParse(body: Uint8Array, boundary: Uint8Array): MultipartPart[] {
       // FFI-first: packed parts (castrum_multipart_parse_packed) → unpack to
       // the object shape. napi keeps its object path.
+      //
+      // REUSED SCRATCH: the unpack consumes the packed bytes synchronously and
+      // each part's `data` is COPIED out (napi parity) — nothing aliases the
+      // scratch after return, so the escaping-buffer rule does not apply here.
+      // Sizing matches the allocating sibling (body + boundary + 64).
       const f = ffi()
-      if (f) return unpackMultipart(f.multipartParsePacked(body, boundary))
+      if (f) {
+        const need = Math.min(body.length + boundary.length + 64, 64 * 1024)
+        if (!SCRATCH || SCRATCH.length < need) SCRATCH = new Uint8Array(need)
+        let w = f.multipartParsePackedInto(body, boundary, SCRATCH)
+        if (w > SCRATCH.length) {
+          // Needed-size convention: w > len = exact required size.
+          SCRATCH = new Uint8Array(w)
+          w = f.multipartParsePackedInto(body, boundary, SCRATCH)
+        }
+        if (w === 0 || w > SCRATCH.length) throw new Error('multipart parse: malformed body')
+        return unpackMultipart(SCRATCH.subarray(0, w))
+      }
       // Normalize napi `Option<String>` (undefined) → null and expose the
       // camelCase `contentType` key (napi renames `content_type` to camelCase).
       return addon.multipartParse(body, boundary).map((p) => ({
