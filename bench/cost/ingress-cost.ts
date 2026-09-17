@@ -47,7 +47,12 @@ const OPTIONS: Parameters<typeof createIngressHandler>[0] = {
     allowCredentials: true,
     maxAge: 600,
   },
-  rateLimit: { limit: 1000, windowMs: 60_000 },
+  // `limit: 1000` exhausted during the 2.5k warm-up + measured calls, so the
+  // historical `run` number (496 ns) mostly measured 429 rejections, not the
+  // full pipeline. `u32::MAX` matches ingress-cost-post.ts: rate limiting
+  // stays ON (pipeline work unchanged) but can never exhaust — and a genuine
+  // 429 would flip `r.status` to 429 in the callback, a visible failure.
+  rateLimit: { limit: 4_294_967_295, windowMs: 60_000 },
 }
 
 const handler = createIngressHandler(OPTIONS, { outputBufferSize: 262144, emitRequestIdHeader: false })
@@ -108,6 +113,27 @@ const tNative = measure(
   50_000,
 )
 
+// The components entry run() ACTUALLY drives on Bun (12 args: rid + headers +
+// body + output; url/ip are engine-transcoded cstring args). Measured on the
+// same pre-gathered headers so the delta vs `native` is the entry/arity cost.
+const tNativeComponents = measure(
+  () => {
+    const w = bunFFI.ingressHandleComponents(
+      ingressPtr,
+      methodKind,
+      req.url,
+      '127.0.0.1',
+      generateRequestId(),
+      packedHeaders,
+      null,
+      handle.buffer,
+    )
+    if (w === 0) throw new Error('ingress components failed')
+    return w
+  },
+  50_000,
+)
+
 const written = bunFFI.ingressHandlePacked(ingressPtr, prePacked, null, handle.buffer)
 const used = handle.buffer.subarray(0, written)
 const tRefresh = measure(
@@ -120,5 +146,6 @@ console.log(`  run       (full request)    : ${tRun.toFixed(0).padStart(7)}`)
 console.log(`  pack      (JS packing)      : ${tPack.toFixed(0).padStart(7)}`)
 console.log(`  packFrame (fallback frame)  : ${tPackFrame.toFixed(0).padStart(7)}`)
 console.log(`  native    (FFI + pipeline)  : ${tNative.toFixed(0).padStart(7)}`)
+console.log(`  nativeCmp (components entry) : ${tNativeComponents.toFixed(0).padStart(7)}`)
 console.log(`  refresh   (result decode)   : ${tRefresh.toFixed(0).padStart(7)}`)
 console.log(`  JS-side est (run−native)    : ${(tRun - tNative).toFixed(0).padStart(7)}`)
