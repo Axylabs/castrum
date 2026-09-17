@@ -12,6 +12,7 @@
 // test/unit/features/import-contract.test.ts).
 
 export * from './src/ingress'
+export { getIngressBinding, type IngressBinding } from './src/native/ingress-binding'
 // Framework-agnostic integration helpers: run the ingress pipeline as a
 // request stage (createPipeline), RFC 6455 upgrade (createWebSocketUpgrade),
 // and SSE framing (sseResponse). See docs/INGRESS.md.
