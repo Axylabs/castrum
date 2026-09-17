@@ -152,15 +152,20 @@ export function buildPayload(ctx: RustClientContext) {
       // Sizing matches the allocating sibling (body + boundary + 64).
       const f = ffi()
       if (f) {
-        const need = Math.min(body.length + boundary.length + 64, 64 * 1024)
+        const need = body.length + boundary.length + 64
+        // Keep retained scratch bounded; the allocating transport handles exact
+        // growth and the output cap for large uploads. The public Into wrapper
+        // THROWS on insufficient capacity, rather than returning a needed size.
+        if (need > 64 * 1024) return unpackMultipart(f.multipartParsePacked(body, boundary))
         if (!SCRATCH || SCRATCH.length < need) SCRATCH = new Uint8Array(need)
-        let w = f.multipartParsePackedInto(body, boundary, SCRATCH)
-        if (w > SCRATCH.length) {
-          // Needed-size convention: w > len = exact required size.
-          SCRATCH = new Uint8Array(w)
+        let w: number
+        try {
           w = f.multipartParsePackedInto(body, boundary, SCRATCH)
+        } catch {
+          // An estimate miss (e.g. UTF-8 replacement expansion) uses the same
+          // checked allocating path. Malformed input still fails there.
+          return unpackMultipart(f.multipartParsePacked(body, boundary))
         }
-        if (w === 0 || w > SCRATCH.length) throw new Error('multipart parse: malformed body')
         return unpackMultipart(SCRATCH.subarray(0, w))
       }
       // Normalize napi `Option<String>` (undefined) → null and expose the

@@ -60,6 +60,28 @@ describe('rust.multipartParse', () => {
     expect(rust.multipartParse(encoder.encode('no boundary here'), boundary)).toEqual([])
   })
 
+  test('parses uploads larger than scratch capacity and retains independent data', () => {
+    const contents = 'x'.repeat(96 * 1024)
+    const body = encoder.encode(
+      '--TestBoundaryX\r\n' +
+        'Content-Disposition: form-data; name="upload"; filename="large.txt"\r\n' +
+        'Content-Type: application/octet-stream\r\n\r\n' +
+        contents +
+        '\r\n--TestBoundaryX--\r\n',
+    )
+    const first = rust.multipartParse(body, boundary)
+    expect(first).toHaveLength(1)
+    expect(first[0]?.filename).toBe('large.txt')
+    expect(first[0]?.data).toEqual(encoder.encode(contents))
+    const reference = nativeMultipartParse(body, boundary)
+    expect(first.map((part) => ({ ...part, data: [...part.data] }))).toEqual(
+      reference.map((part) => ({ ...part, data: [...part.data] })),
+    )
+    body.fill(0)
+    rust.multipartParse(makeBody(), boundary)
+    expect(first[0]?.data).toEqual(encoder.encode(contents))
+  })
+
   test('handles binary data', () => {
     const binary = new Uint8Array([0x00, 0x01, 0x02, 0xff])
     const b = encoder.encode(
