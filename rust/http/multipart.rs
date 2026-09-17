@@ -356,6 +356,90 @@ pub fn parts_to_packed(parts: &[Part<'_>], out: &mut Vec<u8>) {
     }
 }
 
+/// Packed size of `parts` per `parts_to_packed`'s layout (fixed header +
+/// per-part fields), saturating — used by the C-ABI direct-write path to
+/// size-check the caller's buffer BEFORE any write (no partial output).
+#[inline]
+pub fn parts_packed_len(parts: &[Part<'_>]) -> usize {
+    // [u32 count] + per part: [u32 name_len][name] + [u8 has_filename]
+    // ([u32 filename_len][filename] | [u32 0]) + [u8 has_ct]
+    // ([u32 ct_len][ct] | [u32 0]) + [u32 data_len][data].
+    // The has_* flags are ONE byte each (the Vec path `push`es them) — this
+    // must stay in lockstep with `parts_to_packed_into`'s writer below.
+    let mut len = 4usize;
+    for p in parts {
+        len += 4 + p.name.len();
+        len += 1 + match p.filename {
+            Some(f) => 4 + f.len(),
+            None => 4,
+        };
+        len += 1 + match p.content_type {
+            Some(c) => 4 + c.len(),
+            None => 4,
+        };
+        len += 4 + p.data.len();
+    }
+    len
+}
+
+/// Write `parts` into `out` exactly as [`parts_to_packed`] would, directly
+/// into a caller-provided slice (no intermediate `Vec`, no final memcpy).
+/// Returns bytes written, or `None` when `out` is smaller than needed (the
+/// caller then sizes via [`parts_packed_len`] and retries — needed-size
+/// convention; no partial bytes are written).
+pub fn parts_to_packed_into(parts: &[Part<'_>], out: &mut [u8]) -> Option<usize> {
+    let needed = parts_packed_len(parts);
+    if needed > out.len() {
+        return None;
+    }
+    let mut w = 0usize;
+    macro_rules! put32 {
+        ($v:expr) => {{
+            out[w..w + 4].copy_from_slice(&($v as u32).to_le_bytes());
+            w += 4;
+        }};
+    }
+    put32!(parts.len() as usize);
+    for p in parts {
+        put32!(p.name.len());
+        out[w..w + p.name.len()].copy_from_slice(p.name);
+        w += p.name.len();
+        match p.filename {
+            Some(f) => {
+                out[w] = 1;
+                w += 1;
+                put32!(f.len());
+                out[w..w + f.len()].copy_from_slice(f);
+                w += f.len();
+            }
+            None => {
+                out[w] = 0;
+                w += 1;
+                put32!(0);
+            }
+        }
+        match p.content_type {
+            Some(c) => {
+                out[w] = 1;
+                w += 1;
+                put32!(c.len());
+                out[w..w + c.len()].copy_from_slice(c);
+                w += c.len();
+            }
+            None => {
+                out[w] = 0;
+                w += 1;
+                put32!(0);
+            }
+        }
+        put32!(p.data.len());
+        out[w..w + p.data.len()].copy_from_slice(p.data);
+        w += p.data.len();
+    }
+    debug_assert_eq!(w, needed);
+    Some(needed)
+}
+
 /// Parallel multipart parse batch: packed `[u32 count]{[u32 len][body]}` in →
 /// packed `[u32 count]{[u32 len][parts_packed]}` out (same boundary for all).
 #[napi]
@@ -451,6 +535,60 @@ mod tests {
         let name_len = u32::from_le_bytes(packed[4..8].try_into().unwrap()) as usize;
         assert_eq!(&packed[8..8 + name_len], b"file");
         assert_eq!(packed[8 + name_len], 1); // has filename
+    }
+
+    #[test]
+    fn parts_to_packed_into_matches_vec_path() {
+        // The direct-write core must be byte-identical to the Vec-based
+        // serializer for every corpus shape (field-only, file, multi-part).
+        let shapes: Vec<Vec<(&[u8], Option<&[u8]>, Option<&[u8]>, &[u8])>> = vec![
+            vec![(b"a", None, None, b"1")],
+            vec![(
+                b"file",
+                Some(b"report.pdf"),
+                Some(b"application/pdf"),
+                b"BBBB",
+            )],
+            vec![(b"x", None, None, b""), (b"y", Some(b"y.bin"), None, b"zz")],
+            // Static multi-part corpus with varying field widths (no
+            // generated/borrowed temporaries — every slice is a literal).
+            vec![
+                (b"name_a" as &[u8], None, None, b"AAAAA" as &[u8]),
+                (b"n2", Some(b"n2.bin"), Some(b"text/plain"), b"BBBBBBBBBB"),
+                (b"n3", None, Some(b"application/json"), b"C"),
+            ],
+        ];
+        for parts in &shapes {
+            let owned: Vec<Part<'_>> = parts
+                .iter()
+                .map(|(n, f, c, d)| Part {
+                    name: n,
+                    filename: *f,
+                    content_type: *c,
+                    data: d,
+                })
+                .collect();
+            let mut expected = Vec::new();
+            parts_to_packed(&owned, &mut expected);
+            let mut direct = vec![0u8; expected.len() + 7];
+            let written = parts_to_packed_into(&owned, &mut direct).expect("fits");
+            assert_eq!(written, expected.len());
+            assert_eq!(&direct[..written], &expected[..]);
+            // Too-small buffer → None, no partial writes.
+            let mut small = vec![0u8; expected.len() - 1];
+            assert_eq!(parts_to_packed_into(&owned, &mut small), None);
+            assert!(small.iter().all(|&b| b == 0));
+        }
+    }
+
+    #[test]
+    fn parts_packed_len_matches_parts_to_packed() {
+        let mut b = body("f", Some("a.bin"), Some("text/plain"), b"data123");
+        b.extend_from_slice(b"--\r\n");
+        let parts = parse_multipart(&b, BOUNDARY);
+        let mut expected = Vec::new();
+        parts_to_packed(&parts, &mut expected);
+        assert_eq!(parts_packed_len(&parts), expected.len());
     }
 
     #[test]

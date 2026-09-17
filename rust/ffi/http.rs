@@ -446,7 +446,11 @@ pub unsafe extern "C" fn castrum_url_encode_query(
                 return None;
             }
             let count = u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
-            let mut map = std::collections::BTreeMap::new();
+            // Borrow the keys/values as &str straight from the input slice
+            // instead of .to_string()-copying each into the map — the map is
+            // consumed inside this closure, so the borrows outlive it; the
+            // BTreeMap ordering (byte-lexicographic) is identical for &str.
+            let mut map = std::collections::BTreeMap::<&str, &str>::new();
             let mut off = 4usize;
             for _ in 0..count {
                 if off + 4 > input.len() {
@@ -462,9 +466,7 @@ pub unsafe extern "C" fn castrum_url_encode_query(
                 if off + klen > input.len() {
                     return None;
                 }
-                let key = std::str::from_utf8(&input[off..off + klen])
-                    .ok()?
-                    .to_string();
+                let key = std::str::from_utf8(&input[off..off + klen]).ok()?;
                 off += klen;
                 if off + 4 > input.len() {
                     return None;
@@ -479,9 +481,7 @@ pub unsafe extern "C" fn castrum_url_encode_query(
                 if off + vlen > input.len() {
                     return None;
                 }
-                let val = std::str::from_utf8(&input[off..off + vlen])
-                    .ok()?
-                    .to_string();
+                let val = std::str::from_utf8(&input[off..off + vlen]).ok()?;
                 off += vlen;
                 map.insert(key, val);
             }
@@ -730,23 +730,32 @@ pub unsafe extern "C" fn castrum_multipart_parse_packed(
     }
     // Wrap in panic_guard: the parser allocates internally — a panic must not
     // unwind through the C ABI (process crash); it becomes 0 instead.
-    let packed = panic_guard(
+    // Direct write: needed-size first (no partial output), then serialize
+    // straight into the caller's buffer — no intermediate Vec, no final copy.
+    // Two-pass (parse → len check → write) keeps the needed-size convention
+    // without re-parsing: parts are borrowed slices, writable twice cheaply.
+    let parts = panic_guard(
         || {
-            let parts = crate::http::multipart::parse_multipart_limited(
+            crate::http::multipart::parse_multipart_limited(
                 slice::from_raw_parts(body, blen),
                 slice::from_raw_parts(boundary, boundary_len),
                 &Default::default(),
-            );
-            let mut buf = Vec::new();
-            crate::http::multipart::parts_to_packed(&parts, &mut buf);
-            buf
+            )
         },
         Vec::new(),
     );
-    if packed.len() > out_cap {
-        // Needed-size convention (see compress_to_out!): exact retry, no re-run.
-        return packed.len();
+    let needed = panic_guard(|| crate::http::multipart::parts_packed_len(&parts), 0);
+    if needed == 0 || needed > out_cap {
+        return needed;
     }
-    slice::from_raw_parts_mut(out, packed.len()).copy_from_slice(&packed);
-    packed.len()
+    let written = panic_guard(
+        || {
+            crate::http::multipart::parts_to_packed_into(
+                &parts,
+                slice::from_raw_parts_mut(out, out_cap),
+            )
+        },
+        None,
+    );
+    written.unwrap_or(0)
 }

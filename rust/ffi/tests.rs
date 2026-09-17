@@ -190,6 +190,30 @@ fn utf8_valid_c_abi() {
 }
 
 #[test]
+fn borrowed_hmac_key_preserves_signatures_after_eviction() {
+    HMAC_KEY_CACHE.with(|c| c.borrow_mut().clear());
+    for i in 0..(HMAC_KEY_CACHE_CAP * 3) {
+        let secret = format!("borrowed-key-{}", i % (HMAC_KEY_CACHE_CAP + 1));
+        let expected = hmac::sign(&hmac_key(secret.as_bytes()), b"payload");
+        for _ in 0..2 {
+            let actual = with_hmac_key_cached(secret.as_bytes(), |key| hmac::sign(key, b"payload"));
+            assert_eq!(actual.as_ref(), expected.as_ref());
+        }
+    }
+}
+
+#[test]
+fn borrowed_hmac_key_releases_cache_on_unwind() {
+    let caught = std::panic::catch_unwind(|| {
+        with_hmac_key_cached(b"borrow-panic", |_| panic!("test callback panic"));
+    });
+    assert!(caught.is_err());
+    let actual = with_hmac_key_cached(b"borrow-panic", |key| hmac::sign(key, b"payload"));
+    let expected = hmac::sign(&hmac_key(b"borrow-panic"), b"payload");
+    assert_eq!(actual.as_ref(), expected.as_ref());
+}
+
+#[test]
 fn hmac_key_cache_reuses_compiled_key() {
     // Same-secret calls must hit the cache (the whole point of the LRU):
     // repeated calls reuse the precomputed key schedule instead of

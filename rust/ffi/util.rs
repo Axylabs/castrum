@@ -39,6 +39,7 @@ thread_local! {
 
 /// Return a compiled HMAC-SHA256 key for `secret`, reusing a cached copy when
 /// the same secret was used recently (per-thread LRU, cap 16).
+#[cfg(test)]
 #[inline]
 pub(crate) fn hmac_key_cached(secret: &[u8]) -> hmac::Key {
     HMAC_KEY_CACHE.with(|cache| {
@@ -51,6 +52,30 @@ pub(crate) fn hmac_key_cached(secret: &[u8]) -> hmac::Key {
         let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
         cache.put(secret.to_vec(), key.clone());
         key
+    })
+}
+
+/// Run `f` with a reference to the cached compiled key for `secret` WITHOUT
+/// cloning it out of the per-thread LRU (the clone deep-copies the aws-lc
+/// `HMAC_CTX` on every hit). The borrow lives only inside `f`; the cache entry
+/// stays owned by the cache. The callback must not re-enter this cache:
+/// its mutable RefCell borrow is held until `f` returns. If `f` panics,
+/// the borrow is released by unwinding (no poisoning).
+///
+/// On a MISS the key is compiled, inserted, and passed by reference — same
+/// one-time cost as before.
+#[inline]
+pub(crate) fn with_hmac_key_cached<T>(secret: &[u8], f: impl FnOnce(&hmac::Key) -> T) -> T {
+    HMAC_KEY_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(key) = cache.get(secret) {
+            #[cfg(test)]
+            HMAC_CACHE_HITS.with(|h| h.set(h.get() + 1));
+            return f(key);
+        }
+        let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
+        cache.put(secret.to_vec(), key.clone());
+        f(&key)
     })
 }
 
