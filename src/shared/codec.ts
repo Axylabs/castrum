@@ -80,6 +80,32 @@ export const decodeUtf8Range: (bytes: Uint8Array, start: number, end: number) =>
   runtimeCodec.decodeUtf8Range
 
 /**
+ * Decode a range of a PREPARED bounded Buffer `view` (absolute offsets into
+ * the view) to a string — replacement mode on invalid. Companion to
+ * `decodeUtf8Range` for packed-wire unpackers that decode MANY fields from
+ * ONE packed result: the caller resolves the Buffer view once and every field
+ * decode skips the per-field cache lookup + offset arithmetic.
+ *
+ * Falls back to `decodeUtf8Range` when the runtime codec does not provide the
+ * view variant (older adapters / custom codecs).
+ *
+ * @param view - A bounded Buffer over the packed bytes.
+ * @param start - Range start (inclusive, relative to the view).
+ * @param end - Range end (exclusive, relative to the view).
+ * @returns The decoded string.
+ *
+ * @example
+ * ```ts
+ * const view = Buffer.from(packed.buffer, packed.byteOffset, packed.byteLength)
+ * decodeUtf8RangeView(view, 4, 24) // → 'multipart/form-data'
+ * ```
+ */
+export const decodeUtf8RangeView: (view: Buffer, start: number, end: number) => string =
+  runtimeCodec.decodeUtf8RangeView
+    ? runtimeCodec.decodeUtf8RangeView
+    : (view, start, end) => decodeUtf8Range(view, start, end)
+
+/**
  * Decode UTF-8 bytes to a string, throwing on invalid UTF-8.
  *
  * Under Node this uses a fatal `TextDecoder`. On Bun (whose `CString` is

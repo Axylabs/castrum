@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { toText } from '../../../src/shared/bytes'
 import { rust } from '../../../src/rust-ffi'
 import { encoder } from '../../../src/shared/bytes'
 
@@ -12,7 +13,10 @@ const options = { mCost: 4096, tCost: 2, pCost: 1 }
 
 describe('rust.passwordHash', () => {
   test('hash then verify roundtrip', () => {
-    const phc = rust.passwordHash(password, salt, options)
+    // napi returns BYTES for text ops (documented Bun-vs-Node divergence —
+    // docs/API.md §Runtime return-type divergence); toText normalizes the
+    // union so the roundtrip holds under both transports.
+    const phc = toText(rust.passwordHash(password, salt, options))
     expect(phc).toMatch(/^\$argon2id\$v=19\$/)
     expect(rust.passwordVerify(password, encoder.encode(phc))).toBe(true)
   })

@@ -38,6 +38,17 @@ export interface Utf8Codec {
    * a latin1 fast path (~2x on Bun); multi-byte ranges fall back to UTF-8.
    */
   decodeUtf8Range(bytes: Uint8Array, start: number, end: number): string
+  /**
+   * Decode the byte RANGE `[start, end)` of a PREPARED bounded `Buffer` view
+   * using ABSOLUTE offsets into the view (0 = the view's first byte).
+   * `unpackMediaType` resolves the WeakMap/Buffer view ONCE per packed result
+   * and calls this per field — removing the per-field cache lookup + view
+   * arithmetic. Identical semantics to `decodeUtf8Range` (replacement mode,
+   * ASCII latin1 fast path); offsets are relative to the view, not the view's
+   * backing buffer. Optional: runtimes/tests may leave it undefined — callers
+   * fall back to `decodeUtf8Range` on the original bytes.
+   */
+  decodeUtf8RangeView?: (view: Buffer, start: number, end: number) => string
 }
 
 /** UUIDv7 generation (Bun built-in vs crypto.randomUUID on Node). */

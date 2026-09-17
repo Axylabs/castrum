@@ -12,7 +12,13 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { decodeUtf8, decodeUtf8Range, encodeUtf8, encodeUtf8Into } from '../../../src/shared/codec'
+import {
+  decodeUtf8,
+  decodeUtf8Range,
+  decodeUtf8RangeView,
+  encodeUtf8,
+  encodeUtf8Into,
+} from '../../../src/shared/codec'
 
 describe('encodeUtf8', () => {
   test('encodes ASCII', () => {
@@ -120,7 +126,51 @@ describe('decodeUtf8Range', () => {
     expect(decodeUtf8Range(bytes, 6, 6 + E(mixed).byteLength)).toBe(mixed)
   })
 
+  test('ranged decode preserves NUL and respects a nonzero-offset view', () => {
+    const backing = new Uint8Array([120, 120, 97, 0, 98, 121, 121])
+    expect(decodeUtf8Range(backing.subarray(2, 5), 0, 3)).toBe('a\u0000b')
+  })
+
+  test('ranged decode replaces incomplete UTF-8 without reading adjacent bytes', () => {
+    const bytes = new Uint8Array([0xc3, 0xa9, 0xff, 97])
+    expect(decodeUtf8Range(bytes, 0, 1)).toBe('\ufffd')
+    expect(decodeUtf8Range(bytes, 1, 4)).toBe('\ufffd\ufffda')
+    expect(decodeUtf8Range(bytes, 0, 2)).toBe('é')
+  })
+
   test('empty range → empty string', () => {
     expect(decodeUtf8Range(E('abc'), 1, 1)).toBe('')
+  })
+})
+
+describe('decodeUtf8RangeView', () => {
+  const E = (s: string): Uint8Array => encodeUtf8(s)
+
+  test('decodes ASCII and multibyte ranges at absolute offsets', () => {
+    const bytes = E('\x00multipart/form-data\x00charset')
+    const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    expect(decodeUtf8RangeView(view, 1, 20)).toBe('multipart/form-data')
+    expect(decodeUtf8RangeView(view, 21, 28)).toBe('charset')
+    const uni = E('héllo→世界')
+    const uv = Buffer.from(uni.buffer, uni.byteOffset, uni.byteLength)
+    expect(decodeUtf8RangeView(uv, 0, uni.byteLength)).toBe('héllo→世界')
+  })
+
+  test('view into a subarray keeps the absolute base', () => {
+    const backing = new Uint8Array([120, 120, 97, 0, 98, 121, 121])
+    const view = Buffer.from(backing.buffer, 2, 3)
+    expect(decodeUtf8RangeView(view, 0, 3)).toBe('a\u0000b')
+  })
+
+  test('replacement-mode parity with decodeUtf8Range', () => {
+    const bytes = new Uint8Array([0xc3, 0xa9, 0xff, 97])
+    const view = Buffer.from(bytes.buffer, 0, bytes.byteLength)
+    expect(decodeUtf8RangeView(view, 0, 1)).toBe('\ufffd')
+    expect(decodeUtf8RangeView(view, 1, 4)).toBe('\ufffd\ufffda')
+    expect(decodeUtf8RangeView(view, 0, 2)).toBe('é')
+  })
+
+  test('empty range → empty string', () => {
+    expect(decodeUtf8RangeView(Buffer.alloc(4), 1, 1)).toBe('')
   })
 })

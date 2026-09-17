@@ -12,7 +12,7 @@
 import type { EncodingPrefResult, MediaTypeResult } from '../../native'
 import type { BunFFI } from '../../native/ffi'
 import { decoder, hasNul } from '../../shared/bytes'
-import { decodeUtf8Fatal, decodeUtf8Range } from '../../shared/codec'
+import { decodeUtf8Fatal, decodeUtf8Range, decodeUtf8RangeView } from '../../shared/codec'
 import { packPairs } from '../../shared/packed'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
 import { writeInto } from '../into'
@@ -59,6 +59,19 @@ function u32LE(b: Uint8Array, off: number): number {
   )
 }
 
+/** ASCII byte form of the two known media-type param keys (byte-compare
+ * targets — avoids decoding the key string for every packed param). */
+const CHARSET_KEY_BYTES = new Uint8Array([0x63, 0x68, 0x61, 0x72, 0x73, 0x65, 0x74]) // 'charset'
+const BOUNDARY_KEY_BYTES = new Uint8Array([0x62, 0x6f, 0x75, 0x6e, 0x64, 0x61, 0x72, 0x79]) // 'boundary'
+
+/** Byte-equality of `b[off..off+len]` with the literal `lit` (no allocation). */
+function keyBytesEqual(b: Uint8Array, off: number, lit: Uint8Array): boolean {
+  for (let i = 0; i < lit.length; i++) {
+    if ((b[off + i] ?? 0) !== (lit[i] ?? 0)) return false
+  }
+  return true
+}
+
 /**
  * Unpack the `castrum_parse_media_type` verdict into the napi-shaped result.
  * Layout: `[u32 mediaTypeLen][mediaType][u32 charsetLen (0xFFFFFFFF = none)]
@@ -69,42 +82,75 @@ function u32LE(b: Uint8Array, off: number): number {
 function unpackMediaType(packed: Uint8Array): MediaTypeResult {
   // Ranged decode straight off the (pooled) packed buffer — no per-field
   // subarray views. ASCII fields take the latin1 fast path.
+  // ONE view per result: `decodeUtf8RangeView` decodes at absolute offsets
+  // into a bounded Buffer resolved once here — the per-field WeakMap lookup
+  // + offset arithmetic in `decodeUtf8Range` disappear (profile: unpackMediaType
+  // called the cached-view path 5x per result).
+  const view = Buffer.from(packed.buffer, packed.byteOffset, packed.byteLength)
   let off = 0
   const mtLen = u32LE(packed, off)
   off += 4
-  const mediaType = decodeUtf8Range(packed, off, off + mtLen)
+  const mediaType = decodeUtf8RangeView(view, off, off + mtLen)
   off += mtLen
   let charset: string | null = null
   const csLen = u32LE(packed, off)
   off += 4
   if (csLen !== 0xffffffff) {
-    charset = decodeUtf8Range(packed, off, off + csLen)
+    charset = decodeUtf8RangeView(view, off, off + csLen)
     off += csLen
   }
   let boundary: string | null = null
   const bLen = u32LE(packed, off)
   off += 4
   if (bLen !== 0xffffffff) {
-    boundary = decodeUtf8Range(packed, off, off + bLen)
+    boundary = decodeUtf8RangeView(view, off, off + bLen)
     off += bLen
   }
   const count = u32LE(packed, off)
   off += 4
   const params: Record<string, string> = {}
+  // The summary slots above hold the FIRST charset/boundary occurrence (the
+  // Rust core fills them via `params.iter().find(...)`), while `params` keeps
+  // the LAST duplicate (JS assignment order). Reusing the already-decoded
+  // summary string for the first matching param skips one redundant ranged
+  // decode per named field without changing any observable value.
+  let charsetTaken = charset === null
+  let boundaryTaken = boundary === null
   for (let i = 0; i < count; i++) {
     const kLen = u32LE(packed, off)
     off += 4
-    const key = decodeUtf8Range(packed, off, off + kLen)
+    // Byte-compare the param KEY against the ASCII literals BEFORE decoding:
+    // on a match the key decode is skipped (`params` is keyed by the identical
+    // literal) and the summary/decided-value path handles the value. A
+    // byte-match to 'charset'/'boundary' implies valid UTF-8 for those bytes,
+    // so the skipped decode was exact — observable behavior unchanged
+    // (non-matching keys decode normally, casing preserved).
+    let key: string
+    if (kLen === 7 && keyBytesEqual(packed, off, CHARSET_KEY_BYTES)) {
+      key = 'charset'
+    } else if (kLen === 8 && keyBytesEqual(packed, off, BOUNDARY_KEY_BYTES)) {
+      key = 'boundary'
+    } else {
+      key = decodeUtf8RangeView(view, off, off + kLen)
+    }
     off += kLen
     const vLen = u32LE(packed, off)
     off += 4
-    const val = decodeUtf8Range(packed, off, off + vLen)
+    let val: string
+    if (!charsetTaken && key === 'charset' && charset !== null) {
+      val = charset
+      charsetTaken = true
+    } else if (!boundaryTaken && key === 'boundary' && boundary !== null) {
+      val = boundary
+      boundaryTaken = true
+    } else {
+      val = decodeUtf8RangeView(view, off, off + vLen)
+    }
     off += vLen
     params[key] = val
   }
   return { mediaType, charset, boundary, params }
 }
-
 /** Unpack the `castrum_parse_accept_encoding` verdict (f32 q-values) into the
  * napi-shaped array. Layout: `[u32 count]{[u32 encLen][enc][f32 q][u32 order]}`.
  * Ranged decode off the pooled buffer + shared f32 bit-reinterpret views —

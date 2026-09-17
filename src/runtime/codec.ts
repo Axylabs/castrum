@@ -79,6 +79,7 @@ function createBunCodec(): Utf8Codec {
     // ffi surface). This fallback matches the historical behavior.
     decodeUtf8Fatal: decodeUtf8Bun,
     decodeUtf8Range: decodeUtf8RangeBun,
+    decodeUtf8RangeView: decodeUtf8RangeViewBun,
   }
 }
 
@@ -154,6 +155,21 @@ function decodeUtf8RangeBun(bytes: Uint8Array, start: number, end: number): stri
   return view.toString('latin1', base + start, base + end)
 }
 
+/**
+ * View-based ranged decode (Bun): same ASCII-scan + latin1/utf8 split as
+ * `decodeUtf8RangeBun`, but the caller supplies the bounded Buffer view so the
+ * WeakMap lookup + `byteOffset` arithmetic happen once per packed RESULT, not
+ * once per field. Offsets are relative to the view (0 = view start).
+ */
+function decodeUtf8RangeViewBun(view: Buffer, start: number, end: number): string {
+  for (let i = start; i < end; i++) {
+    if ((view[i] ?? 0) >= 0x80) {
+      return view.toString('utf8', start, end)
+    }
+  }
+  return view.toString('latin1', start, end)
+}
+
 // ── Node codec ────────────────────────────────────────────────────
 function createNodeCodec(): Utf8Codec {
   return {
@@ -174,6 +190,14 @@ function createNodeCodec(): Utf8Codec {
       const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
       for (let i = start; i < end; i++) {
         if ((bytes[i] ?? 0) >= 0x80) {
+          return view.toString('utf8', start, end)
+        }
+      }
+      return view.toString('latin1', start, end)
+    },
+    decodeUtf8RangeView(view: Buffer, start: number, end: number): string {
+      for (let i = start; i < end; i++) {
+        if ((view[i] ?? 0) >= 0x80) {
           return view.toString('utf8', start, end)
         }
       }
