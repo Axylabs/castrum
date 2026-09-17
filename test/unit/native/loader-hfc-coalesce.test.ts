@@ -262,6 +262,28 @@ describe('loader: load-aware single↔coalesce strategy', () => {
     expect(b).toBe(false)
     expect(l.stats.batchCalls).toBe(before + 1)
   })
+
+  test('byte-returning loads hand out INDEPENDENT buffers (no scratch aliasing)', async () => {
+    // Loader consumers receive the packed bytes themselves (dispatchSingle →
+    // req.resolve(value)) — they may retain them, so the byte-returning ops
+    // MUST keep the fresh-buffer contract. Pins the exact regression the
+    // escaping-buffer rule exists to prevent: two loads of the same input in
+    // one tick must resolve to distinct, byte-equal buffers; mutating one
+    // result must never mutate the other or a later load.
+    const l = createLoader()
+    const http = l('httpParseRequest')
+    const req = encoder.encode('GET /x?q=1 HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\n\r\n')
+    const [r1, r2] = await Promise.all([l('httpParseRequest').load(req), http.load(req)])
+    expect(r1).toBeTruthy()
+    expect(r2).toBeTruthy()
+    const b1 = r1 as Uint8Array
+    const b2 = r2 as Uint8Array
+    expect(b1).not.toBe(b2) // distinct buffers — a shared scratch would alias
+    expect([...b1]).toEqual([...b2])
+    b1[0] = (b1[0] ?? 0) ^ 0xff // mutate the first result…
+    const r3 = await http.load(req)
+    expect([...(r3 as Uint8Array)]).toEqual([...b2]) // …later loads unaffected
+  })
 })
 
 describe('loader: adaptive default cache key', () => {
