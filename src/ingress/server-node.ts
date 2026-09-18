@@ -254,6 +254,35 @@ function makeRequestListener(
  * (which owns the frame codec — e.g. the `ws` library). Previously a 101 was
  * written as a normal response and the connection never became a socket.
  */
+/** RFC 6455 subprotocol is an HTTP token (no separators / control bytes). */
+const WS_PROTOCOL_TOKEN = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/
+
+/**
+ * Build the RFC 6455 `101 Switching Protocols` response head for a hijacked
+ * socket. `protocol` is emitted only when it is a valid HTTP token, so a caller
+ * that reflects an untrusted `Sec-WebSocket-Protocol` cannot inject CRLF or
+ * extra headers.
+ *
+ * @param accept - The `Sec-WebSocket-Accept` value (must contain no CR/LF).
+ * @param protocol - Optional negotiated subprotocol.
+ * @returns The raw response head, terminated by a blank line.
+ * @throws If `accept` contains a CR/LF.
+ */
+export function formatWebSocketHandshake(accept: string, protocol?: string | null): string {
+  if (/[\r\n]/.test(accept)) {
+    throw new Error('invalid Sec-WebSocket-Accept value')
+  }
+  let raw =
+    'HTTP/1.1 101 Switching Protocols\r\n' +
+    'Upgrade: websocket\r\n' +
+    'Connection: Upgrade\r\n' +
+    `Sec-WebSocket-Accept: ${accept}\r\n`
+  if (protocol && WS_PROTOCOL_TOKEN.test(protocol)) {
+    raw += `Sec-WebSocket-Protocol: ${protocol}\r\n`
+  }
+  return `${raw}\r\n`
+}
+
 function makeUpgradeListener(
   options: CreateIngressServerOptions,
 ): (req: IncomingMessage, socket: Duplex, head: Buffer) => Promise<void> {
@@ -268,16 +297,7 @@ function makeUpgradeListener(
       }
 
       // Complete the RFC 6455 handshake on the hijacked socket.
-      let raw =
-        'HTTP/1.1 101 Switching Protocols\r\n' +
-        'Upgrade: websocket\r\n' +
-        'Connection: Upgrade\r\n' +
-        `Sec-WebSocket-Accept: ${handshake.accept}\r\n`
-      if (handshake.protocol) {
-        raw += `Sec-WebSocket-Protocol: ${handshake.protocol}\r\n`
-      }
-      raw += '\r\n'
-      socket.write(raw)
+      socket.write(formatWebSocketHandshake(handshake.accept, handshake.protocol))
 
       // Hand the upgraded socket to the caller (frame codec / message loop).
       options.onUpgrade?.(socket, req, head)

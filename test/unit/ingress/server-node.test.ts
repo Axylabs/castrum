@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createIngressHandler } from '../../../src/ingress/handlers'
 import { buildPathMatcher } from '../../../src/ingress/server'
-import { createIngressServerNode } from '../../../src/ingress/server-node'
+import { createIngressServerNode, formatWebSocketHandshake } from '../../../src/ingress/server-node'
 
 describe('createIngressServerNode', () => {
   test('serves GET through the pre-baked handlers over node:http', async () => {
@@ -82,6 +82,21 @@ describe('createIngressServerNode', () => {
     const body = (await res.json()) as { ok?: boolean }
     expect(body.ok).toBe(true)
     srv.stop()
+  })
+})
+
+describe('formatWebSocketHandshake', () => {
+  test('omits an invalid (CRLF-injecting) subprotocol', () => {
+    const raw = formatWebSocketHandshake('s3pPLMBiTxaQ9kYGzzhZRbK+xOo=', 'chat\r\nX-Evil: 1')
+    expect(raw).toContain('Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n')
+    expect(raw).not.toContain('X-Evil')
+    expect(raw).not.toContain('Sec-WebSocket-Protocol')
+  })
+
+  test('includes a valid subprotocol token', () => {
+    const raw = formatWebSocketHandshake('AAAA', 'chat.v1')
+    expect(raw).toContain('Sec-WebSocket-Protocol: chat.v1\r\n')
+    expect(raw.endsWith('\r\n\r\n')).toBe(true)
   })
 })
 
