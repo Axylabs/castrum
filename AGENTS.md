@@ -727,6 +727,17 @@ explicit impurity boundary so the hot path can pool/globalize state:
   the SAME module file (ingress.rs, url_codec.rs, validation.rs, proxy.rs,
   hmac_sha256.rs already do). Cross-module suites live in `rust/panic_safety.rs` +
   `rust/proptest_suite.rs`; shared test helpers live in `rust/test_support.rs`.
+- **Rust compile cache (sccache)**: `rustc` runs through `sccache` locally
+  (`~/.cargo/config.toml` sets `rustc-wrapper` + `CC`/`CXX` wrappers — machine
+  scoped, NOT committed) and in CI (`mozilla/sccache-action` + `RUSTC_WRAPPER`
+  on every Rust-building job, keyed to the GitHub Actions cache backend). This
+  is what keeps the ~440-test Rust suite cheap despite the heavy dependency
+  tree (aws-lc-sys etc.): objects compile once per unique compiler+flags and
+  are reused across `cargo test` debug/release, `target/`, `target/perf`
+  (build:v3), and fresh target dirs. The `cargo test --release` suite runs on
+  the nightly schedule + version tags only (not every PR) — sccache caches the
+  per-object compile but not the final link, and the debug suite already covers
+  PR-time correctness.
 - **HTTP**: after touching any server or `handlers.ts`, run
   `bun run bench:http:smoke` (or `SERVER=ingress SCENARIO=01-smoke bun run bench:http:smoke`)
   and confirm no `shape_failure` / `unexpected_status` in the report.

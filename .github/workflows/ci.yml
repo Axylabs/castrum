@@ -32,6 +32,13 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      # sccache: compiled objects are shared across jobs and survive between
+      # runs through the GitHub Actions cache backend (the ephemeral runner's
+      # target/ dies with the job — this is what makes the cross-job + cross-
+      # profile object reuse possible).
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_CACHE: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -44,6 +51,9 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - uses: mozilla/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          cache-name: castrum-${{ github.job }}
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - name: Format
         run: cargo fmt --check
@@ -53,8 +63,14 @@ jobs:
         run: cargo test
       # Release profile (`panic=unwind`, `overflow-checks=true`) is never hit by
       # the debug `cargo test` above — run the suite once in release so panic/
-      # overflow behavior under the shipped profile is covered too.
+      # overflow behavior under the shipped profile is covered too. Gated to the
+      # nightly schedule + release tags: the debug suite above covers PR-time
+      # correctness, and the release pass costs a full codegen+LINK (sccache
+      # only caches the per-object compile, not the final link), so running it
+      # on every PR would add ~1-2 min to every commit. Nightly catches any
+      # release-only regression within a day.
       - name: Unit tests (release profile)
+        if: ${{ github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') }}
         run: cargo test --release
       - name: Dependency audit
         uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
@@ -88,6 +104,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_CACHE: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +124,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
         with:
           toolchain: stable
+      - uses: mozilla/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          cache-name: castrum-${{ github.job }}
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: bun install --frozen-lockfile
       - name: Build native addon (host)
@@ -170,6 +192,9 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_CACHE: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -178,6 +203,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
         with:
           toolchain: stable
+      - uses: mozilla/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          cache-name: castrum-${{ github.job }}
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: bun install --frozen-lockfile
       - name: Build release addon (baseline CPU)
@@ -198,6 +226,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_CACHE: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -215,6 +246,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
         with:
           toolchain: stable
+      - uses: mozilla/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          cache-name: castrum-${{ github.job }}
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: bun install --frozen-lockfile
       - name: Build native addon (host)
@@ -241,6 +275,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_CACHE: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -293,6 +330,9 @@ jobs:
         with:
           toolchain: ${{ steps.rust-channel.outputs.channel }}
           targets: ${{ matrix.target }}
+      - uses: mozilla/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          cache-name: castrum-build-${{ matrix.target }}
       # Extra cross C toolchain for the linux gnu aarch64 entry (the runner's
       # host gcc only targets x86_64).
       - name: Install cross C toolchain
