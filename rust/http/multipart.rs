@@ -399,7 +399,7 @@ pub fn parts_to_packed_into(parts: &[Part<'_>], out: &mut [u8]) -> Option<usize>
             w += 4;
         }};
     }
-    put32!(parts.len() as usize);
+    put32!(parts.len());
     for p in parts {
         put32!(p.name.len());
         out[w..w + p.name.len()].copy_from_slice(p.name);
@@ -541,7 +541,8 @@ mod tests {
     fn parts_to_packed_into_matches_vec_path() {
         // The direct-write core must be byte-identical to the Vec-based
         // serializer for every corpus shape (field-only, file, multi-part).
-        let shapes: Vec<Vec<(&[u8], Option<&[u8]>, Option<&[u8]>, &[u8])>> = vec![
+        type Shape<'a> = (&'a [u8], Option<&'a [u8]>, Option<&'a [u8]>, &'a [u8]);
+        let shapes: Vec<Vec<Shape<'_>>> = vec![
             vec![(b"a", None, None, b"1")],
             vec![(
                 b"file",
