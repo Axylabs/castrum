@@ -93,6 +93,18 @@ describe('createMetricsRegistry (public surface)', () => {
     expect(() => m.histogram('h', [], [0])).toThrow()
     m.destroy?.()
   })
+
+  test('destroy is terminal: double destroy is safe and use after destroy throws', () => {
+    const m = rust.createMetricsRegistry()
+    if (!m.destroy) return // napi-backed instance: no explicit handle to free
+    m.counter('lifecycle_total', [])
+    m.destroy()
+    // A second destroy must be a no-op, not a double-free of the handle.
+    expect(() => m.destroy?.()).not.toThrow()
+    // Using the registry after destroy must fail loudly, not dereference freed
+    // native memory.
+    expect(() => m.render()).toThrow()
+  })
 })
 
 describe('metrics ffi ↔ napi parity', () => {

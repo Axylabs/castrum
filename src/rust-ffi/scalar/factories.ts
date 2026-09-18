@@ -339,17 +339,24 @@ function ffiFormParser(ffi: BunFFI): FormParserInstance {
  * `values.join('\u001f')` — ZERO TextEncoder work (Bun 1.4 zero-copy text).
  */
 function ffiMetricsRegistry(ffi: BunFFI): MetricsRegistryInstance {
-  const handle = ffi.metricsCreate()
+  let handle = ffi.metricsCreate()
+  // Destroyed state is terminal: every method that would pass the handle to
+  // native memory throws instead of dereferencing a freed pointer, and a
+  // second destroy is a no-op (not a double-free).
+  const live = (): number => {
+    if (handle === 0) throw new Error('metrics registry: already destroyed')
+    return handle
+  }
   return {
     counter(name, labelKeys) {
-      return ffi.metricsCounter(handle, name, (labelKeys ?? []).join('\u001f'))
+      return ffi.metricsCounter(live(), name, (labelKeys ?? []).join('\u001f'))
     },
     gauge(name, labelKeys) {
-      return ffi.metricsGauge(handle, name, (labelKeys ?? []).join('\u001f'))
+      return ffi.metricsGauge(live(), name, (labelKeys ?? []).join('\u001f'))
     },
     histogram(name, labelKeys, buckets) {
       return ffi.metricsHistogram(
-        handle,
+        live(),
         name,
         (labelKeys ?? []).join('\u001f'),
         (buckets ?? []).join(','),
@@ -357,13 +364,13 @@ function ffiMetricsRegistry(ffi: BunFFI): MetricsRegistryInstance {
     },
     record(series, values, amount) {
       const joined = (values ?? []).join('\u001f')
-      if (!ffi.metricsRecordStr(handle, series, joined, amount ?? 1)) {
+      if (!ffi.metricsRecordStr(live(), series, joined, amount ?? 1)) {
         throw new Error('metrics record: unknown series / arity mismatch / invalid amount')
       }
     },
     gaugeSet(series, values, value) {
       const joined = (values ?? []).join('\u001f')
-      if (!ffi.metricsGaugeSetStr(handle, series, joined, value)) {
+      if (!ffi.metricsGaugeSetStr(live(), series, joined, value)) {
         throw new Error('metrics gauge set: unknown series / arity mismatch')
       }
     },
@@ -371,24 +378,27 @@ function ffiMetricsRegistry(ffi: BunFFI): MetricsRegistryInstance {
       // Probe large enough for typical registries (one native pass), then
       // grow exactly once if ever exceeded (needed-size convention).
       let out = new Uint8Array(8192)
-      let w = ffi.metricsRender(handle, out)
+      let w = ffi.metricsRender(live(), out)
       if (w > out.length) {
         out = new Uint8Array(w)
-        w = ffi.metricsRender(handle, out)
+        w = ffi.metricsRender(live(), out)
       }
       return decodeUtf8(out.subarray(0, w))
     },
     destroy() {
-      ffi.metricsDestroy(handle)
+      if (handle !== 0) {
+        ffi.metricsDestroy(handle)
+        handle = 0
+      }
     },
     snapshot() {
       // Packed v1 dump — decoded by consumers (the @ignex/native metrics
       // wrapper); probe large, grow exactly once.
       let out = new Uint8Array(4096)
-      let w = ffi.metricsSnapshot(handle, out)
+      let w = ffi.metricsSnapshot(live(), out)
       if (w > out.length) {
         out = new Uint8Array(w)
-        w = ffi.metricsSnapshot(handle, out)
+        w = ffi.metricsSnapshot(live(), out)
       }
       return out.subarray(0, w)
     },
