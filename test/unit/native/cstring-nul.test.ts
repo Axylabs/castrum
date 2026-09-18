@@ -133,4 +133,26 @@ describe('cstring-arg NUL contract', () => {
       expect(() => registry.counter('ok_name', [`k${NUL}`])).toThrow(/NUL/)
     })
   })
+
+  describe('rate limiter: no silent budget aliasing', () => {
+    test('a NUL-containing key must not consume the prefix key budget', () => {
+      const limiter = rust.createRateLimiter(1, 60_000)
+      const now = Date.now()
+      // A key with a NUL is denied outright; pre-fix it truncated to 'a',
+      // creating and consuming the 'a' bucket.
+      expect(limiter.check(`a${NUL}b`, now).allowed).toBe(false)
+      // The clean key still has its full, independent budget.
+      expect(limiter.check('a', now).allowed).toBe(true)
+    })
+  })
+
+  describe('accept negotiation: no truncated header match', () => {
+    test('a NUL in the header is identity, not a prefix match', () => {
+      const negotiator = rust.createAcceptNegotiator(['gzip', 'br', 'identity'])
+      expect(negotiator.negotiateServerPreference(enc.encode('gzip'))).toBe('gzip')
+      const withNul = new Uint8Array([...enc.encode('gzip'), 0, ...enc.encode('evil')])
+      // Pre-fix the cstring ARG truncated to 'gzip' and returned a match.
+      expect(negotiator.negotiateServerPreference(withNul)).toBeNull()
+    })
+  })
 })

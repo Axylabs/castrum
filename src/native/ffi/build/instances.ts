@@ -83,8 +83,12 @@ export function buildInstances(
       // Server-preference tie-breaking (RFC 7231 server semantics). The C ABI
       // takes `header` as a `cstring` ARG, so decode the bytes to a JS string
       // (the engine transcodes it to the call-scoped NUL-terminated buffer).
+      // A raw NUL is not a valid header byte and would TRUNCATE the arg, so the
+      // negotiator would evaluate a prefix — fail safe to identity instead.
       // `null` = identity (napi Option parity).
-      return acceptNegotiatorNegotiateServerRaw(inner, decodeUtf8(header))
+      const text = decodeUtf8(header)
+      if (hasNul(text)) return null
+      return acceptNegotiatorNegotiateServerRaw(inner, text)
     },
     jwtSignerSign(inner, claimsJson, nowSeconds) {
       // Precompiled key + ttl → compact token. 0 = invalid claims JSON (real
@@ -196,7 +200,10 @@ export function buildInstances(
     rateLimiterCheck(inner, key, nowMs) {
       // Packed [u8 allowed][u32 remaining LE][i64 reset_ms LE] (13 bytes).
       // Reused scratch + cached DataView (no per-call allocs). `key` is a
-      // `cstring` ARG (the engine transcodes the JS string in-engine).
+      // `cstring` ARG (the engine transcodes the JS string in-engine). A NUL
+      // would TRUNCATE the key so distinct keys collapse into ONE budget — deny
+      // fail-closed instead of silently aliasing them.
+      if (hasNul(key)) return { allowed: false, remaining: 0, resetMs: 0 }
       const out = rateScratch
       const w = Number(
         rateLimiterCheckRaw(inner, key, BigInt(Math.trunc(nowMs)), out, lenOrView(out)),
