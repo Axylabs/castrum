@@ -40,13 +40,14 @@ export interface NativeRouteHandlerOptions extends BakedHandlerOptions {
 /**
  * Build a prototype-safe record from native packed pairs. The `+`-to-space /
  * `%XX` decoding is done natively; keys are last-wins. Keys are written as OWN
- * data on a null-prototype record via {@link assignOwn}, so a `__proto__` /
- * `constructor` / `prototype` key can never mutate a prototype chain.
+ * data via {@link assignOwn}: `__proto__` is defined (never routed through the
+ * inherited setter), and other keys — including `constructor` / `prototype` —
+ * are plain own shadowing properties. The record keeps `Object.prototype`.
  *
  * Exported for the prototype-pollution tests.
  *
  * @param pairs - Decoded `[key, value]` pairs from the native route stack.
- * @returns A null-prototype record (last value wins per key).
+ * @returns A record with `Object.prototype` preserved (last value wins per key).
  */
 export function pairsToRecord(pairs: ReadonlyArray<[string, string]>): Record<string, string> {
   const out = safeRecord()

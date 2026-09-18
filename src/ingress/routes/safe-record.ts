@@ -1,41 +1,57 @@
-// src/ingress/routes/safe-record.ts — prototype-safe containers for
+// src/ingress/routes/safe-record.ts — prototype-safe key assignment for
 // request-derived objects.
 //
-// PURE: no addon and no pooled-buffer state. Every object keyed by request data
-// (query/cookie/body keys) goes through these helpers, so attacker-controlled
-// keys such as `__proto__` / `constructor` / `prototype` land as inert OWN
-// data. `Object.create(null)` removes the inherited `__proto__` setter, and
-// `Object.defineProperty` avoids the setter even on a target that has a
-// prototype, so nothing can reach `Object.prototype` (or a downstream config
-// merge) as an accessor.
+// PURE: no addon and no pooled-buffer state. Request keys are attacker
+// controlled, so a key of `__proto__` must not invoke the inherited setter on a
+// plain object. `assignOwn` writes `__proto__` with `Object.defineProperty` (an
+// own enumerable data property) and every other key with plain assignment,
+// which is already safe: `constructor` / `prototype` just become own shadowing
+// properties.
+//
+// Scope: this protects the RECORD itself — it keeps `Object.prototype` (so
+// `hasOwnProperty` / `instanceof Object` still work), gains an own `__proto__`
+// data key, and is never mutated through the setter. It does NOT protect a
+// consumer that blindly merges the record into another object, e.g.
+// `Object.assign({}, rec)`: the own `__proto__` key is still enumerable, so a
+// merge target's inherited setter can fire there. Such consumers must guard
+// their own merge.
+
+/** A request-derived key that would invoke the inherited `__proto__` setter. */
+const PROTO_KEY = '__proto__'
 
 /**
- * Create an empty null-prototype record.
+ * Create an empty plain record (`Object.prototype` is preserved, so
+ * `hasOwnProperty` / `instanceof Object` keep working). Safety comes from
+ * {@link assignOwn}, not from the container.
  *
- * @returns A fresh `Record<string, unknown>` with no prototype, so
- *   `__proto__` / `constructor` / `prototype` are ordinary own keys.
+ * @returns A fresh, empty `Record<string, unknown>`.
  */
 export function safeRecord(): Record<string, unknown> {
-  return Object.create(null) as Record<string, unknown>
+  return {}
 }
 
 /**
- * Assign a key as an OWN, enumerable, writable, configurable data property.
+ * Assign a request-derived key as an OWN enumerable data property.
  *
- * `Object.defineProperty` is used instead of `target[key] = value` because the
- * latter invokes an inherited `__proto__` setter on ordinary objects;
- * `defineProperty` always writes own data and never touches the prototype
- * chain.
+ * Only `__proto__` is written with `Object.defineProperty` — a plain
+ * `target[key] = value` would invoke the inherited `__proto__` setter and
+ * mutate the prototype. Every other key (including `constructor` /
+ * `prototype`) uses plain assignment: faster, and it merely shadows on the
+ * object.
  *
  * @param target - Record to write into (normally from {@link safeRecord}).
  * @param key - Request-derived key (may be `__proto__` / `constructor`).
  * @param value - Request-derived value.
  */
 export function assignOwn(target: Record<string, unknown>, key: string, value: unknown): void {
-  Object.defineProperty(target, key, {
-    value,
-    enumerable: true,
-    configurable: true,
-    writable: true,
-  })
+  if (key === PROTO_KEY) {
+    Object.defineProperty(target, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
+    return
+  }
+  target[key] = value
 }

@@ -30,7 +30,6 @@ import type {
   TerminalStyle,
 } from '../types'
 import { type BakedHandlerOptions, resolveIp } from './common'
-import { assignOwn, safeRecord } from './safe-record'
 
 /** Options for {@link nativeResponderRoute}. */
 export interface ResponderRouteOptions extends BakedHandlerOptions {
@@ -70,31 +69,28 @@ function buildIgngexTerminal(result: BakedIngressResult, _ctx: BakedContext): Re
 }
 
 /**
- * Parse a `queryJson()`/`cookiesJson()` section into a prototype-safe record
- * (empty on failure). The decoded keys are copied onto a null-prototype record
- * via {@link assignOwn}, so a `__proto__` / `constructor` key is inert own data
- * and can never mutate a prototype chain downstream.
+ * Parse a `queryJson()`/`cookiesJson()` section into a record (empty on
+ * failure).
+ *
+ * Prototype-safe by construction: `JSON.parse` creates `__proto__` as an OWN
+ * enumerable data property (it never invokes the setter), so the returned
+ * object keeps `Object.prototype` and carries `__proto__` as inert own data.
  *
  * Exported for the prototype-pollution tests.
  *
  * @param json - The section JSON emitted by the native pipeline.
- * @returns A null-prototype record of the section's own keys, or an empty one.
+ * @returns The decoded object, or an empty record for a non-object / malformed
+ *   section.
  */
 export function parseSection(json: string): Record<string, unknown> {
-  let parsed: unknown
   try {
-    parsed = JSON.parse(json)
+    const parsed: unknown = JSON.parse(json)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {}
   } catch {
-    return safeRecord()
+    return {}
   }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return safeRecord()
-  }
-  const out = safeRecord()
-  for (const key of Object.keys(parsed)) {
-    assignOwn(out, key, (parsed as Record<string, unknown>)[key])
-  }
-  return out
 }
 
 /**
