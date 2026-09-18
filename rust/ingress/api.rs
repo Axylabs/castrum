@@ -85,11 +85,13 @@ impl Ingress {
                 .map_err(|e| Error::new(Status::InvalidArg, format!("Schema JSON error: {}", e)))?;
             // Compile BOTH the authoritative jsonschema validator and the
             // zero-DOM fast path once at construction — no per-request schema
-            // work (see IngressSchema in pipeline.rs).
-            let compiled = IngressSchema::compile(&schema_value).map_err(|e| {
-                Error::new(Status::InvalidArg, format!("Schema compile error: {}", e))
-            })?;
-            Some(Arc::new(compiled))
+            // work (see IngressSchema in pipeline.rs). Identical schema bytes
+            // are shared process-wide via the compiled-schema cache.
+            let compiled =
+                crate::ingress::schema_cache::get_or_compile(&schema_value).map_err(|e| {
+                    Error::new(Status::InvalidArg, format!("Schema compile error: {}", e))
+                })?;
+            Some(compiled)
         } else {
             None
         };
@@ -352,4 +354,18 @@ impl Ingress {
 
         inner.handle_packed(&packed, body, out)
     }
+}
+
+/// Clear the process-wide compiled-schema cache — the dedupe store that shares
+/// one compiled `IngressSchema` across every `Ingress`/`NativeRoute` built from
+/// identical schema bytes.
+///
+/// Maintenance hook for the public `flushMemory()` (napi export name:
+/// `clearSchemaCache`). Idempotent; safe to call at any time, including before
+/// any schema has ever been compiled. Dropping the cache only releases the
+/// native validators — already-constructed ingress/route instances keep their
+/// own `Arc<IngressSchema>`, so live routes are unaffected.
+#[napi]
+pub fn clear_schema_cache() {
+    crate::ingress::schema_cache::clear_schema_cache();
 }

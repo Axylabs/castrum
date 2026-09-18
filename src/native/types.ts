@@ -344,6 +344,12 @@ export interface NativeAddon {
 
   initThreadPool(rayonThreads?: number): void
   rayonNumThreads(): number
+  /**
+   * Drop the process-wide compiled request-body schema cache (identical schema
+   * bytes are compiled once and shared across ingress instances/routes).
+   * Maintenance hook for the public `flushMemory()`; idempotent.
+   */
+  clearSchemaCache(): void
 
   jsonValidBatchPacked(input: Uint8Array): Uint8Array
   validateEmailBatchPacked(input: Uint8Array): Uint8Array

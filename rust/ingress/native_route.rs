@@ -177,9 +177,11 @@ impl NativeRoute {
                     .map_err(|_| "route descriptor: body schema is not valid UTF-8".to_string())?;
                 let schema_value: serde_json::Value = sonic_rs::from_str(schema_str)
                     .map_err(|e| format!("route descriptor: body schema JSON error: {e}"))?;
-                let compiled = IngressSchema::compile(&schema_value)
+                // Shared process-wide: identical schema bytes compile once even
+                // across routes/instances (see ingress/schema_cache.rs).
+                let compiled = super::schema_cache::get_or_compile(&schema_value)
                     .map_err(|e| format!("route descriptor: body schema compile error: {e}"))?;
-                Some(Arc::new(compiled))
+                Some(compiled)
             }
             None => None,
         };

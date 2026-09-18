@@ -7,6 +7,7 @@
 // clearing it would erase the counters an operator is watching.
 
 import { loader } from '../loader'
+import { rust } from '../rust-ffi'
 import { clearMimeCaches } from '../rust-ffi/context'
 import { forceGc } from './runtime'
 
@@ -26,13 +27,14 @@ export interface FlushMemoryOptions {
  *
  * Clears:
  * - the global loader LRU cache (`loader.clear()`),
- * - the process-wide MIME caches (`clearMimeCaches()`).
+ * - the process-wide MIME caches (`clearMimeCaches()`),
+ * - the native compiled-schema cache (`rust.clearSchemaCache()`).
  *
- * The native schema cache is a no-op placeholder here and is wired in a later
- * task. The metrics registry is intentionally left untouched.
+ * The metrics registry is intentionally left untouched.
  *
  * Idempotent, and safe to call before the native addon has ever been loaded
- * (every cache starts empty and the loader cache is a plain Map).
+ * (every cache starts empty, the loader cache is a plain Map, and the native
+ * schema-cache clear is a defensive no-op when the addon/symbol is absent).
  *
  * @param options - `gc: false` skips the runtime GC request. Defaults to `{}`
  *   (GC requested).
@@ -52,8 +54,13 @@ export function flushMemory(options: FlushMemoryOptions = {}): void {
   // Process-wide MIME caches (bytes + string forms).
   clearMimeCaches()
 
-  // Native schema cache: intentionally a no-op placeholder until the later
-  // task wires its owner here.
+  // Process-wide native compiled-schema cache. Defensive: an absent or stale
+  // addon (no `clearSchemaCache` symbol) must be a no-op, never a throw.
+  try {
+    rust.clearSchemaCache()
+  } catch {
+    // addon not loaded / stale build — nothing to clear.
+  }
 
   if (options.gc !== false) {
     forceGc()

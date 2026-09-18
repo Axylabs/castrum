@@ -59,6 +59,20 @@ describe('flushMemory', () => {
     expect(mimeStrCache.size).toBeLessThanOrEqual(1024)
   })
 
+  test('calls the native schema-cache clear', () => {
+    const original = rust.clearSchemaCache
+    let calls = 0
+    rust.clearSchemaCache = () => {
+      calls++
+    }
+    try {
+      flushMemory({ gc: false })
+    } finally {
+      rust.clearSchemaCache = original
+    }
+    expect(calls).toBe(1)
+  })
+
   test('never clears the metrics registry', () => {
     const metrics = createMetrics()
     metrics.counter('flush_keep_total', 'kept across flush').inc()

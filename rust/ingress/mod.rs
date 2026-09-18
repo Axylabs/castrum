@@ -22,6 +22,9 @@ mod tests;
 
 pub(crate) mod options;
 pub(crate) mod packed;
+// Process-wide compiled-schema cache: dedupes identical `IngressSchema`
+// compiles across `Ingress` / `NativeRoute` instances (schema_cache.rs).
+pub(crate) mod schema_cache;
 pub(crate) mod time;
 
 pub(crate) mod cors;
@@ -40,6 +43,10 @@ pub(crate) mod terminal;
 #[cfg(test)]
 pub(crate) use self::api::clamp_output_size;
 pub use self::api::Ingress;
+// napi maintenance export (`clearSchemaCache`) — re-exported so it is a
+// crate-reachable item (dead-code analysis) while the `#[napi]` macro does the
+// JS-side registration.
+pub use self::api::clear_schema_cache;
 pub(crate) use self::api::IngressInner;
 pub(crate) use self::native_route::NativeRoute;
 pub(crate) use self::options::{IngressOptions, Limits};

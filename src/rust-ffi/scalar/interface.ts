@@ -237,6 +237,15 @@ export interface RustScalar {
   createMetricsRegistry(): MetricsRegistryInstance
   initThreadPool(rayonThreads?: number): void
   rayonNumThreads(): number
+  /**
+   * Drop the process-wide compiled request-body schema cache. Identical schema
+   * bytes are compiled once and shared across `Ingress` / `NativeRoute`
+   * instances; this releases those compiled validators (already-constructed
+   * instances keep their own shared reference and are unaffected). Idempotent,
+   * and a safe no-op when the native addon is absent or predates the symbol
+   * (the public `flushMemory()` relies on that).
+   */
+  clearSchemaCache(): void
 
   // ── Backend-framework scalar features ──
   jwtSign(

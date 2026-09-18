@@ -559,5 +559,11 @@ export function buildFactories(ctx: RustClientContext) {
     rayonNumThreads(): number {
       return asNumber(addon.rayonNumThreads() as unknown)
     },
+    clearSchemaCache(): void {
+      // Defensive: a stale addon built before this symbol, or a failed bind,
+      // must make this a no-op rather than a throw (flushMemory calls it).
+      const native = addon as unknown as { clearSchemaCache?: () => void }
+      native.clearSchemaCache?.()
+    },
   }
 }
