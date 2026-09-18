@@ -2,7 +2,7 @@
 //
 // `build(sym, useBufferLength)` sets up the shared per-bind state — the
 // probe-gated `lenOrView`/`oneArg` argument adapters and the pooled scratch
-// buffers — then delegates to the four domain builders (each receives the raw
+// buffers — then delegates to the domain builders (each receives the raw
 // dlopen'd symbols + this context) and merges their method objects into the
 // final `BunFFI`. Extracted from the former monolithic `ffi.ts` so the
 // per-call wrapper surface is navigable by domain:
@@ -10,6 +10,10 @@
 //   - `build/compress.ts`   gzip / brotli / json patch
 //   - `build/parse.ts`      packed parsers / media-type / http-date / sse
 //   - `build/instances.ts`  opaque-handle evals + ingress + route stack
+//   - `build/metrics.ts`    metrics-registry handle surface
+//   - `build/task.ts`       off-thread task-runtime symbols
+// Bind-time value probes live in `build/*-selftest.ts` (e.g.
+// `build/instances-selftest.ts`) and are ANDed by `selftest.ts`.
 
 import { buildCodecs } from './build/codecs'
 import { buildCompress } from './build/compress'

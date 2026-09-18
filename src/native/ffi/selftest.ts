@@ -12,7 +12,7 @@
 
 import { selfTestCodecs } from './build/codecs'
 import { selfTestCompress } from './build/compress'
-import { selfTestInstances } from './build/instances'
+import { selfTestInstances } from './build/instances-selftest'
 import { selfTestMetrics } from './build/metrics'
 import { selfTestParse } from './build/parse'
 import { selfTestTask } from './build/task'
