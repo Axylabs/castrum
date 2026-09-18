@@ -113,19 +113,6 @@ pub fn build_token_with_key(
     signing_input
 }
 
-/// Constant-time byte comparison (no early exit on length mismatch beyond the
-/// required guard — lengths differ → false).
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 /// Verify an HS256 signature (constant-time). Does NOT check claims/expiry.
 ///
 /// Test-only convenience over the fresh-key derivation: production code uses
@@ -148,10 +135,11 @@ pub fn verify_signature_with_key(token: &[u8], key: &aws_lc_rs::hmac::Key) -> bo
     signing_input.push(b'.');
     signing_input.extend_from_slice(parts.payload_b64);
 
-    let sig = hmac_sha256_with_key(key, &signing_input);
-
     match base64url_decode_bytes(parts.sig_b64) {
-        Some(provided) => ct_eq(&sig, &provided),
+        // Audited constant-time comparison (aws-lc-rs), matching every other
+        // MAC path in the crate (cookie sign / CSRF / hmac_sha256) instead of a
+        // hand-rolled loop the compiler could optimize into an early exit.
+        Some(provided) => aws_lc_rs::hmac::verify(key, &signing_input, &provided).is_ok(),
         None => false,
     }
 }
@@ -239,29 +227,56 @@ pub(crate) fn verify_time_claims(payload_b64: &[u8], now_seconds: i64) -> Option
     let payload = base64url_decode_bytes(payload_b64)?;
     let value: sonic_rs::Value = sonic_rs::from_slice(&payload).ok()?;
 
+    // RFC 7519 NumericDate may be non-integer, so parse as f64 — `as_i64()`
+    // returns None for a float, which previously SKIPPED the check entirely and
+    // made a token with a fractional `exp` verify as never-expiring. A claim
+    // that is present but not a finite number is malformed → reject.
+    let now = now_seconds as f64;
+
     // `exp`: reject when now >= exp.
-    if let Some(exp) = value.get("exp").and_then(|v| v.as_i64()) {
-        if now_seconds >= exp {
-            return None;
-        }
+    match time_claim(&value, "exp") {
+        TimeClaim::Absent => {}
+        TimeClaim::Invalid => return None,
+        TimeClaim::Value(exp) if now >= exp => return None,
+        TimeClaim::Value(_) => {}
     }
 
     // `nbf` (not before): reject when the token is not yet valid.
-    if let Some(nbf) = value.get("nbf").and_then(|v| v.as_i64()) {
-        if now_seconds < nbf {
-            return None;
-        }
+    match time_claim(&value, "nbf") {
+        TimeClaim::Absent => {}
+        TimeClaim::Invalid => return None,
+        TimeClaim::Value(nbf) if now < nbf => return None,
+        TimeClaim::Value(_) => {}
     }
 
     // `iat` (issued at): reject tokens issued in the future beyond a small
     // clock-skew leeway.
-    if let Some(iat) = value.get("iat").and_then(|v| v.as_i64()) {
-        if now_seconds < iat.saturating_sub(CLOCK_SKEW_LEEWAY_SECS) {
-            return None;
-        }
+    match time_claim(&value, "iat") {
+        TimeClaim::Absent => {}
+        TimeClaim::Invalid => return None,
+        TimeClaim::Value(iat) if now < iat - CLOCK_SKEW_LEEWAY_SECS as f64 => return None,
+        TimeClaim::Value(_) => {}
     }
 
     Some(payload)
+}
+
+/// Parsed state of a JWT time claim: absent, a finite numeric value, or present
+/// but malformed (string / null / non-finite).
+enum TimeClaim {
+    Absent,
+    Value(f64),
+    Invalid,
+}
+
+fn time_claim(value: &sonic_rs::Value, key: &str) -> TimeClaim {
+    match value.get(key) {
+        None => TimeClaim::Absent,
+        Some(v) => match v.as_f64() {
+            Some(n) if n.is_finite() => TimeClaim::Value(n),
+            _ => TimeClaim::Invalid,
+        },
+    }
 }
 
 /// Verify with a PRE-COMPILED key (no per-call key derivation). Time-claim

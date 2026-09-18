@@ -77,6 +77,25 @@ fn verify_token_enforces_iat_leeway() {
 }
 
 #[test]
+fn verify_token_rejects_non_integer_or_non_numeric_exp() {
+    let now = 1_000_000i64;
+    // A fractional exp in the PAST must reject. Pre-fix `as_i64()` returned
+    // None for a float, so the expiry check was skipped and the token verified
+    // as never-expiring.
+    let frac_past = token(&serde_json::json!({ "sub": "1", "exp": 999_999.5 }), SECRET);
+    assert!(verify_token(&frac_past, SECRET, now).is_none());
+    // Present-but-non-numeric exp is malformed → reject.
+    let string_exp = token(&serde_json::json!({ "sub": "1", "exp": "999999" }), SECRET);
+    assert!(verify_token(&string_exp, SECRET, now).is_none());
+    // A fractional exp in the FUTURE is a valid RFC 7519 NumericDate → accept.
+    let frac_future = token(
+        &serde_json::json!({ "sub": "1", "exp": 1_000_000.5 }),
+        SECRET,
+    );
+    assert!(verify_token(&frac_future, SECRET, now).is_some());
+}
+
+#[test]
 fn verify_token_accepts_valid_claims() {
     let claims = serde_json::json!({ "sub": "123", "role": "admin" });
     let t = token(&claims, SECRET);
