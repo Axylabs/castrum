@@ -234,9 +234,26 @@ export async function readBodyWithLimit(
       // path — `req.bytes()` (Bun) / `arrayBuffer()` (Node) read the buffered
       // body directly, avoiding a lazily-constructed stream per write request.
       if (deadline <= 0) {
+        // No deadline: use the same buffered fast path as the deadline branch.
+        // Under Bun a small declared-length body is usually already buffered —
+        // `Bun.peek` returns the bytes synchronously, so the common case skips
+        // the abort race + microtask entirely. Only a genuinely pending read
+        // (slow/trickling body) or a runtime without `req.bytes()` (Node) pays
+        // the abort race.
+        const buffered = peekBufferedBody(req)
+        if (buffered !== false && 'bytes' in buffered) {
+          throwIfAborted(req.signal)
+          if (guard && buffered.bytes.byteLength > maxBytes) {
+            throw bodyTooLargeError()
+          }
+          return buffered.bytes
+        }
         const abort = createAbortGuard(req.signal)
         try {
-          const bytes = await raceRead(readBodyBytes(req), abort !== null ? [abort] : [])
+          const bytes = await raceRead(
+            buffered === false ? readBodyBytes(req) : buffered,
+            abort !== null ? [abort] : [],
+          )
           throwIfAborted(req.signal)
           if (guard && bytes.byteLength > maxBytes) {
             throw bodyTooLargeError()

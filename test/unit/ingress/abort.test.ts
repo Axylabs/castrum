@@ -101,6 +101,52 @@ describe('readBodyWithLimit cancellation', () => {
     expect((caught as { code?: string })?.code).toBe(ABORT_CODE)
   })
 
+  test('rejects with REQUEST_ABORTED when already aborted at entry (bodyTimeoutMs: 0)', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    const r = req('/', {
+      method: 'POST',
+      body: 'hello',
+      headers: { 'content-length': '5' },
+      signal: ac.signal,
+    })
+
+    let caught: unknown
+    try {
+      await readBodyWithLimit(r, 1024, true, 0)
+    } catch (err) {
+      caught = err
+    }
+    expect(isAbortError(caught)).toBe(true)
+    expect((caught as { code?: string })?.code).toBe(ABORT_CODE)
+  })
+
+  test('rejects promptly when aborted during a pending declared-length read (bodyTimeoutMs: 0)', async () => {
+    const ac = new AbortController()
+    const r = req('/', {
+      method: 'POST',
+      body: pendingBodyStream(),
+      duplex: 'half',
+      headers: { 'content-length': '5' },
+      signal: ac.signal,
+    } as RequestInit)
+
+    // bodyTimeoutMs: 0 disables the deadline; the read is still racy because
+    // the declared-length body is not yet buffered (a genuinely pending read).
+    const read = readBodyWithLimit(r, 1024, true, 0)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    ac.abort()
+
+    let caught: unknown
+    try {
+      await read
+    } catch (err) {
+      caught = err
+    }
+    expect(isAbortError(caught)).toBe(true)
+    expect((caught as { code?: string })?.code).toBe(ABORT_CODE)
+  })
+
   test('rejects promptly when aborted during a streamed body read', async () => {
     const ac = new AbortController()
     const r = req('/', {
@@ -196,6 +242,29 @@ describe('route cancellation', () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
       ac.abort()
       const res = await pending
+
+      expect(res.status).toBe(499)
+      expect(spy.state.ran).toBe(false)
+    } finally {
+      spy.restore()
+    }
+  })
+
+  test('jsonWriteHandler with bodyTimeoutMs: 0 and an already-aborted signal returns 499', async () => {
+    const handler = createIngressHandler({ ...baseOptions }, { outputBufferSize: 131072 })
+    const spy = spyRun(handler)
+    try {
+      const ac = new AbortController()
+      ac.abort()
+      const write = jsonWriteHandler(handler, { maxBodyBytes: 1024, bodyTimeoutMs: 0 })
+      const res = await write(
+        req('/api/users', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'content-length': '5' },
+          body: 'hello',
+          signal: ac.signal,
+        }),
+      )
 
       expect(res.status).toBe(499)
       expect(spy.state.ran).toBe(false)
