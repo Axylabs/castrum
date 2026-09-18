@@ -1,5 +1,6 @@
 // src/ingress/routes/common.ts — Shared route-handler options + helpers.
 
+import { abortResponse } from '../abort'
 import type { BakedIngressResult } from '../decode/baked-result'
 import { memoizedHeaders } from '../headers/memoized-headers'
 import { secondsFromMs } from '../shared'
@@ -93,11 +94,18 @@ export function buildSuccessInit(
  * runner: resolve the client IP once and dispatch through the native pipeline
  * (`ingress.run` with a null body). Used by the read / head / fallback route
  * factories whose responder never needs the request object.
+ *
+ * A disconnected client (`req.signal?.aborted`) short-circuits to the 499
+ * cancelled response BEFORE `ingress.run`, so no pooled output buffer is
+ * acquired for a request that can no longer be delivered.
  */
 export function runBaked(
   ingress: OptimizedIngressHandler,
   opts: BakedHandlerOptions,
   respond: (result: BakedIngressResult, ctx: BakedContext) => Response,
 ): (req: Request, srv?: unknown) => Response {
-  return (req, srv) => ingress.run<Response>(req, resolveIp(req, srv, opts), null, respond)
+  return (req, srv) => {
+    if (req.signal?.aborted) return abortResponse()
+    return ingress.run<Response>(req, resolveIp(req, srv, opts), null, respond)
+  }
 }

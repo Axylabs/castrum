@@ -1,5 +1,6 @@
 // src/ingress/routes/echo.ts — Pre-baked echo handler.
 
+import { abortResponse, isAbortError } from '../abort'
 import { readBodyWithLimit } from '../body'
 import { HV_JSON } from '../constants'
 import { ERROR_BODIES } from '../response/error-bodies'
@@ -53,6 +54,8 @@ export function echoHandler(
   return async (req, srv) => {
     const ip = resolveIp(req, srv, opts)
 
+    if (req.signal?.aborted) return abortResponse()
+
     const prep = ingress.run<{
       terminal?: Response
       headers?: ReadonlyArray<[string, string]>
@@ -78,6 +81,9 @@ export function echoHandler(
     })
 
     if (prep.terminal) return prep.terminal
+
+    // The client may have disconnected while the native prep ran.
+    if (req.signal?.aborted) return abortResponse()
 
     const baseHeaders: ReadonlyArray<[string, string]> = prep.headers ?? []
 
@@ -125,11 +131,15 @@ export function echoHandler(
       // oversized or trickling body before rejecting it.
       const bodyBytes = await readBodyWithLimit(req, maxBodyBytes, true, bodyTimeoutMs)
 
+      // Disconnect during the read must not be answered with a body.
+      if (req.signal?.aborted) return abortResponse()
+
       return new Response(bodyBytes.byteLength > 0 ? bodyBytes : null, {
         status: 200,
         headers: withEchoHeaders(requestedContentType),
       })
     } catch (err) {
+      if (isAbortError(err)) return abortResponse()
       const code = (err as { code?: string } | null)?.code
       const isTooLarge = code === 'BODY_TOO_LARGE'
       const isTimeout = code === 'REQUEST_TIMEOUT'

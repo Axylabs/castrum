@@ -16,6 +16,7 @@
 
 import { decoder } from '../../shared/bytes'
 import { generateRequestId } from '../../shared/request-id'
+import { abortResponse, isAbortError } from '../abort'
 import { readBodyWithLimit } from '../body'
 import type { BakedIngressResult } from '../decode/baked-result'
 import { errorCodeName, errorMessage } from '../errors'
@@ -110,6 +111,8 @@ export function nativeResponderRoute(
 
   return async (req, srv, _params) => {
     const ip = resolveIp(req, srv, opts)
+    // Client already gone: no request-id work, body read, or native run.
+    if (req.signal?.aborted) return abortResponse()
     // The request-id the framework surfaces (same source as the pre-baked path's
     // `ctx.requestIdHeader`): the baked result does not carry it, so generate it
     // here — the native pipeline uses the same rid for its internal frame.
@@ -122,6 +125,8 @@ export function nativeResponderRoute(
       try {
         body = await readBodyWithLimit(req, maxBodyBytes, true, bodyTimeoutMs)
       } catch (err) {
+        // Client disconnect: the cancelled response, never a 400/408/413.
+        if (isAbortError(err)) return abortResponse()
         const code = (err as Error & { code?: string }).code
         const status = code === 'REQUEST_TIMEOUT' ? 408 : code === 'BODY_TOO_LARGE' ? 413 : 400
         const payload = JSON.stringify({ error: 'Bad Request', status, code: 'BAD_REQUEST' })
@@ -129,6 +134,8 @@ export function nativeResponderRoute(
         headers.set('content-type', 'application/json; charset=utf-8')
         return new Response(payload, { status, headers })
       }
+      // Disconnect while the body was streaming in.
+      if (req.signal?.aborted) return abortResponse()
     }
 
     let terminal: Response | null = null

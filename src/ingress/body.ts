@@ -2,6 +2,7 @@
 // API.
 
 import { isBun } from '../shared/runtime'
+import { ABORT_CODE } from './abort'
 
 const EMPTY_BODY = new Uint8Array(0)
 
@@ -63,6 +64,59 @@ function bodyTooLargeError(): Error & { code?: string } {
   const err = new Error('BODY_TOO_LARGE') as Error & { code?: string }
   err.code = 'BODY_TOO_LARGE'
   return err
+}
+
+function abortError(): Error & { code?: string } {
+  const err = new Error(ABORT_CODE) as Error & { code?: string }
+  err.code = ABORT_CODE
+  return err
+}
+
+/** Reject when `signal` is already aborted (the entry guard for every path). */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError()
+}
+
+/** A reusable rejection promise + listener-cleanup pair for a read race. */
+interface ReadGuard {
+  promise: Promise<never>
+  cancel: () => void
+}
+
+/**
+ * Track `req.signal` as a rejection racer: settles with a `REQUEST_ABORTED`
+ * error when the client disconnects. Returns `null` when the request carries no
+ * signal, so runtimes without `Request.signal` are unaffected. The
+ * `{ once: true }` listener self-removes when it fires; `cancel()` detaches it
+ * on the read-completed-first path so no listener outlives the read.
+ */
+function createAbortGuard(signal: AbortSignal | undefined): ReadGuard | null {
+  if (!signal) return null
+  if (signal.aborted) {
+    return { promise: Promise.reject(abortError()), cancel: () => {} }
+  }
+  let listener: (() => void) | null = null
+  const promise = new Promise<never>((_resolve, reject) => {
+    listener = () => reject(abortError())
+    signal.addEventListener('abort', listener, { once: true })
+  })
+  return {
+    promise,
+    cancel: () => {
+      if (listener !== null) {
+        signal.removeEventListener('abort', listener)
+        listener = null
+      }
+    },
+  }
+}
+
+/** Race a read against guard rejections (a plain await when there are none). */
+function raceRead<T>(read: Promise<T>, guards: ReadonlyArray<ReadGuard>): Promise<T> {
+  if (guards.length === 0) return read
+  const racers: Promise<unknown>[] = [read]
+  for (const guard of guards) racers.push(guard.promise)
+  return Promise.race(racers) as Promise<T>
 }
 
 // ── Shared body-read deadline watchdog ──────────────────────────────────────
@@ -145,6 +199,9 @@ function createDeadline(deadlineMs: number): { promise: Promise<never>; cancel: 
  *   (thrown as soon as the limit is crossed — the body is never fully
  *   buffered first, which is the slowloris/large-body protection).
  * - `REQUEST_TIMEOUT` when `timeoutMs` elapses before the body completes.
+ * - `REQUEST_ABORTED` when `req.signal` aborts (client disconnect) before the
+ *   read settles — including an already-aborted signal at entry. The race's
+ *   abort listener is removed once the read settles.
  */
 export async function readBodyWithLimit(
   req: Request,
@@ -152,6 +209,10 @@ export async function readBodyWithLimit(
   guard: boolean,
   timeoutMs?: number,
 ): Promise<Uint8Array> {
+  // Client disconnect before any read work: reject immediately (also covers an
+  // already-aborted signal on every downstream path).
+  throwIfAborted(req.signal)
+
   const deadline = timeoutMs && timeoutMs > 0 ? timeoutMs : 0
 
   // Fast path: a declared Content-Length lets us PROVE the body fits the
@@ -173,11 +234,17 @@ export async function readBodyWithLimit(
       // path — `req.bytes()` (Bun) / `arrayBuffer()` (Node) read the buffered
       // body directly, avoiding a lazily-constructed stream per write request.
       if (deadline <= 0) {
-        const bytes = await readBodyBytes(req)
-        if (guard && bytes.byteLength > maxBytes) {
-          throw bodyTooLargeError()
+        const abort = createAbortGuard(req.signal)
+        try {
+          const bytes = await raceRead(readBodyBytes(req), abort !== null ? [abort] : [])
+          throwIfAborted(req.signal)
+          if (guard && bytes.byteLength > maxBytes) {
+            throw bodyTooLargeError()
+          }
+          return bytes
+        } finally {
+          abort?.cancel()
         }
-        return bytes
       }
       // Deadline path. Under Bun, a small declared-length body is usually
       // already buffered — `Bun.peek` returns the bytes synchronously, so we
@@ -187,31 +254,38 @@ export async function readBodyWithLimit(
       const buffered = peekBufferedBody(req)
       if (buffered === false) {
         const dl = createDeadline(deadline)
+        const abort = createAbortGuard(req.signal)
         try {
-          const bytes = await Promise.race([readBodyBytes(req), dl.promise])
+          const bytes = await raceRead(readBodyBytes(req), abort !== null ? [dl, abort] : [dl])
+          throwIfAborted(req.signal)
           if (guard && bytes.byteLength > maxBytes) {
             throw bodyTooLargeError()
           }
           return bytes
         } finally {
           dl.cancel()
+          abort?.cancel()
         }
       }
       if ('bytes' in buffered) {
+        throwIfAborted(req.signal)
         if (guard && buffered.bytes.byteLength > maxBytes) {
           throw bodyTooLargeError()
         }
         return buffered.bytes
       }
       const dl = createDeadline(deadline)
+      const abort = createAbortGuard(req.signal)
       try {
-        const bytes = await Promise.race([buffered, dl.promise])
+        const bytes = await raceRead(buffered, abort !== null ? [dl, abort] : [dl])
+        throwIfAborted(req.signal)
         if (guard && bytes.byteLength > maxBytes) {
           throw bodyTooLargeError()
         }
         return bytes
       } finally {
         dl.cancel()
+        abort?.cancel()
       }
     }
   }
@@ -220,6 +294,7 @@ export async function readBodyWithLimit(
   // is only touched here — the declared-length fast path never needs it.
   const body = req.body
   if (!body) {
+    throwIfAborted(req.signal)
     return EMPTY_BODY
   }
 
@@ -231,11 +306,14 @@ export async function readBodyWithLimit(
   // per request. It is still required when the loop exits early (timeout/error).
   let completed = false
   const dl = deadline > 0 ? createDeadline(deadline) : null
+  const abort = createAbortGuard(req.signal)
+  const guards: ReadGuard[] = []
+  if (dl !== null) guards.push(dl)
+  if (abort !== null) guards.push(abort)
 
   try {
     for (;;) {
-      const { done, value } =
-        dl !== null ? await Promise.race([reader.read(), dl.promise]) : await reader.read()
+      const { done, value } = await raceRead(reader.read(), guards)
 
       if (done) {
         completed = true
@@ -253,6 +331,7 @@ export async function readBodyWithLimit(
     }
   } finally {
     dl?.cancel()
+    abort?.cancel()
     // Release the underlying stream. Cancelling while a read() is still
     // pending (the timeout case) can resolve that pending read() as `done`
     // and RACE the timeout rejection — so reject first, cancel only AFTER

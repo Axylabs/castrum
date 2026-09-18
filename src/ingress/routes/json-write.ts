@@ -2,6 +2,7 @@
 // (POST/PUT/PATCH).
 
 import { decodeUtf8 } from '../../shared/codec'
+import { abortResponse, isAbortError } from '../abort'
 import { readBodyWithLimit } from '../body'
 import { DEFAULT_BODY_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES } from '../shared'
 import type { OptimizedIngressHandler } from '../types'
@@ -58,6 +59,10 @@ export function jsonWriteHandler(
   return async (req, srv) => {
     const ip = resolveIp(req, srv, opts)
 
+    // Client already gone: do no work (no content-type check, no body read,
+    // no native run). A disconnect DURING the body read is handled below.
+    if (req.signal?.aborted) return abortResponse()
+
     const contentType = req.headers.get('content-type') ?? ''
     if (!isJsonContentType(contentType)) {
       // Always 415 for an unsupported media type. Do NOT short-circuit on the
@@ -87,6 +92,9 @@ export function jsonWriteHandler(
       // never fully buffered first.
       bodyBytes = await readBodyWithLimit(req, maxBodyBytes, true, bodyTimeoutMs)
     } catch (err) {
+      // Client disconnect is NOT a bad request / timeout: return the cancelled
+      // response without running the native pipeline.
+      if (isAbortError(err)) return abortResponse()
       const code = (err as { code?: string } | null)?.code
       const isTooLarge = code === 'BODY_TOO_LARGE'
       return fallback.run(req, ip, null, (result, ctx) => {
@@ -103,6 +111,9 @@ export function jsonWriteHandler(
         )
       })
     }
+
+    // The client may have disconnected while the body was streaming in.
+    if (req.signal?.aborted) return abortResponse()
 
     return ingress.run(req, ip, bodyBytes, (result, ctx) => {
       const terminal = ingress.terminalResponse(req, result, ctx)

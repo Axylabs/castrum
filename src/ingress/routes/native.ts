@@ -21,6 +21,7 @@
 
 import { decoder } from '../../shared/bytes'
 import { generateRequestId } from '../../shared/request-id'
+import { abortResponse, isAbortError } from '../abort'
 import { readBodyWithLimit } from '../body'
 import type { NativeRoute } from '../native-route'
 import type { RouteWireResult } from '../packing/route-wire'
@@ -90,6 +91,8 @@ export function nativeRouteHandler(
 
   return async (req, srv, _params) => {
     const ip = resolveIp(req, srv, opts)
+    // Client already gone: no request-id work, body read, or native run.
+    if (req.signal?.aborted) return abortResponse()
     const requestId = decoder.decode(generateRequestId())
 
     let body: Uint8Array | null = null
@@ -97,10 +100,14 @@ export function nativeRouteHandler(
       try {
         body = await readBodyWithLimit(req, maxBodyBytes, true, bodyTimeoutMs)
       } catch (err) {
+        // Client disconnect: the cancelled response, never a 400/408/413.
+        if (isAbortError(err)) return abortResponse()
         const code = (err as Error & { code?: string }).code
         const status = code === 'REQUEST_TIMEOUT' ? 408 : code === 'BODY_TOO_LARGE' ? 413 : 400
         return terminal(status, 'BAD_REQUEST', 'Request body read failed')
       }
+      // Disconnect while the body was streaming in.
+      if (req.signal?.aborted) return abortResponse()
     }
 
     // Extract the query substring + Cookie header (the only request inputs the
