@@ -48,6 +48,7 @@ This project implements the following security measures:
 6. **CORS enforcement**: Origin validation with strict allowlist; `allowCredentials` cannot be combined with `*`.
 7. **Input validation**: All external inputs are validated before processing (fuzz-style property tests cover the reachable parsers).
 8. **Minimal unsafe**: `unsafe` is used only where necessary and documented.
+9. **Schema `pattern` is trusted author input**: JSON Schema `pattern` / `patternProperties` regexes come from the application developer's schema, not from the request. The zero-DOM fast path compiles them with `fancy-regex`, which delegates regular (non-backtracking) patterns to the linear `regex` engine and caps backtracking patterns at **1,000,000 steps** (its default); a cap miss is treated as a non-match by both the fast path and the authoritative `jsonschema` fallback (the same engine, so routing a pattern to the fallback is **not** a mitigation). Classic nested-quantifier patterns such as `^(a+)+$` are therefore evaluated in linear time even against large inputs. Patterns that force the backtracking engine (lookaround, backreferences) can still spend CPU proportional to the validated string length, so treat schema regexes as trusted code: avoid pathological lookaround patterns, and keep `maxBodyBytes` modest on schema-validated routes (default 1 MiB). Regression-pinned by `test/unit/ingress/regex-dos.test.ts`.
 
 ## Disclosure Process
 
