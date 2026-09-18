@@ -10,7 +10,7 @@
 // `selfTestInstances` / `selfTestMetrics`), and this entry point ANDs them
 // together so any single failure disables the whole layer.
 
-import { selfTestCodecs } from './build/codecs'
+import { selfTestCodecs } from './build/codecs-selftest'
 import { selfTestCompress } from './build/compress'
 import { selfTestInstances } from './build/instances-selftest'
 import { selfTestMetrics } from './build/metrics'
