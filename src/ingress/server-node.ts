@@ -22,6 +22,7 @@ import {
 import { type Duplex, Readable } from 'node:stream'
 import { buildPathMatcher } from './path-matcher'
 import { fallbackHandler } from './routes'
+import { createServerErrorHandler } from './server-error'
 import {
   type BakedServer,
   buildRouteHandlers,
@@ -169,6 +170,11 @@ function makeRequestListener(
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   // Exact paths win; `:param`/`*` patterns are matched most-specific-first.
   const matchPath = buildPathMatcher(routes)
+  // Shared masked-500 responder: same body + `onError` hook as the Bun path.
+  const onServerError = createServerErrorHandler({
+    onError: options.onError,
+    logger: options.logger,
+  })
 
   return async (req, res) => {
     try {
@@ -218,27 +224,12 @@ function makeRequestListener(
 
       await writeResponse(res, response)
     } catch (err) {
-      // Never leave a client hanging on a handler failure.
+      // Never leave a client hanging on a handler failure. Reuse the shared
+      // masked-500 responder so both runtimes emit the same body and hook.
       if (!res.headersSent) {
-        res.statusCode = 500
-        res.setHeader('content-type', 'application/json')
-        res.end(
-          JSON.stringify({
-            error: { code: 'internal_error', message: 'Internal Server Error' },
-          }),
-        )
+        await writeResponse(res, onServerError(err))
       } else {
         res.destroy()
-      }
-      // NOTE: surfaced via the onError hook (observability phase).
-      if (options.onError) {
-        try {
-          options.onError({
-            error: err instanceof Error ? err : new Error(String(err)),
-          })
-        } catch {
-          // hook must never crash the server
-        }
       }
     }
   }

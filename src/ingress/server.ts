@@ -15,6 +15,7 @@ import {
 import type { BakedHandlerOptions } from './routes/common'
 import { nativeRouteHandler } from './routes/native'
 import { nativeResponderRoute } from './routes/responder'
+import { createServerErrorHandler, guardRouteHandler } from './server-error'
 import type { NativeResponder, OptimizedIngressHandler, TerminalStyle } from './types'
 
 /** Server-level default for the socket request-body cap (16 MiB). */
@@ -113,11 +114,17 @@ export interface CreateIngressServerOptions {
   routes: Record<string, BakedRoute>
   fallback?: OptimizedIngressHandler
   /**
-   * Invoked when an unhandled error escapes a request handler (currently wired
-   * on the Node adapter; the Bun path uses runtime.onResponse). Never throws —
-   * hook failures are swallowed.
+   * Invoked when an unhandled error escapes a request handler (raw `read`
+   * functions, `responder`/`native` responders, or the Bun/Node adapter
+   * catch-all). The error is masked to a generic 500 on the wire. Never
+   * throws — hook failures are swallowed.
    */
   onError?: (info: { error: Error; request?: Request }) => void
+  /**
+   * Optional structured-log sink for escaped handler errors (one JSON line per
+   * masked 500, message only). Never throws.
+   */
+  logger?: (line: string) => void
   /** Node adapter only: ms to receive the complete request (headers + body).
    *  Guards slowloris/trickling requests. Default: 30_000. */
   requestTimeoutMs?: number
@@ -225,7 +232,7 @@ export function gracefulShutdown(
  *  options — it does not need `port` or the Node-only server fields). */
 export type BuildRouteHandlersOptions = Pick<
   CreateIngressServerOptions,
-  'routes' | 'fallback' | 'getIp' | 'copyBody'
+  'routes' | 'fallback' | 'getIp' | 'copyBody' | 'onError' | 'logger'
 >
 
 /**
@@ -243,6 +250,16 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
     copyBody: options.copyBody,
   }
 
+  // Masked-500 responder for the escape-capable handlers below. Built once per
+  // server: the raw `read` function, the `responder` route, and the `native`
+  // route run OUTSIDE the native pipeline (and outside the built-in factories'
+  // own error handling). Built-in factories stay unwrapped so the hot path is
+  // unchanged.
+  const onServerError = createServerErrorHandler({
+    onError: options.onError,
+    logger: options.logger,
+  })
+
   const serverRoutes: Record<string, Record<string, unknown>> = {}
 
   for (const [path, spec] of Object.entries(options.routes)) {
@@ -257,8 +274,9 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
       if (typeof spec.read === 'function') {
         // Raw request→Response handler (probes, /metrics): serve GET directly,
         // outside the ingress pipeline. HEAD is intentionally not wired (a raw
-        // handler returns a body; probes use GET).
-        methods.GET = spec.read
+        // handler returns a body; probes use GET). Guarded: a raw handler is
+        // user code with no built-in fault containment.
+        methods.GET = guardRouteHandler(spec.read, onServerError)
       } else {
         methods.GET = readHandler(spec.read, routeOpts)
         methods.HEAD = headHandler(spec.read, routeOpts)
@@ -288,22 +306,25 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
     }
 
     if (spec.responder) {
-      // JS responder route: native decides + rejects; JS builds the 2xx.
+      // JS responder route: native decides + rejects; JS builds the 2xx. The
+      // user responder is guarded — a throw/rejection becomes a masked 500.
       const responderRoute = nativeResponderRoute(spec.responder.ingress, spec.responder.handler, {
         ...routeOpts,
         terminalStyle: spec.responder.terminalStyle,
         readBody: spec.responder.readBody,
       })
+      const guardedResponderRoute = guardRouteHandler(responderRoute, onServerError)
       const responderMethods = spec.responder.methods ?? ['GET']
       for (const m of responderMethods) {
-        methods[m] = responderRoute
+        methods[m] = guardedResponderRoute
       }
     }
 
     if (spec.native) {
       // LEAN native-stack responder route: route-wire v3 stack, no envelope.
       // The compiled route is injected into the pure route factory (DI across
-      // the purity boundary — the compile touches the dlopen layer here).
+      // the purity boundary — the compile touches the dlopen layer here). The
+      // user responder is guarded — a throw/rejection becomes a masked 500.
       const nativeRoute = nativeRouteHandler(
         createNativeRoute(spec.native.plan),
         spec.native.handler,
@@ -312,9 +333,10 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
           readBody: spec.native.readBody,
         },
       )
+      const guardedNativeRoute = guardRouteHandler(nativeRoute, onServerError)
       const nativeMethods = spec.native.methods ?? ['GET']
       for (const m of nativeMethods) {
-        methods[m] = nativeRoute
+        methods[m] = guardedNativeRoute
       }
     }
 
