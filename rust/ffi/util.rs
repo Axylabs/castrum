@@ -50,6 +50,13 @@ pub(crate) fn hmac_key_cached(secret: &[u8]) -> hmac::Key {
             return key.clone();
         }
         let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
+        // Zeroize the secret bytes of the entry we are about to evict: the raw
+        // key otherwise lingers in the per-thread LRU until eviction.
+        if cache.len() >= HMAC_KEY_CACHE_CAP {
+            if let Some((mut evicted, _)) = cache.pop_lru() {
+                evicted.iter_mut().for_each(|b| *b = 0);
+            }
+        }
         cache.put(secret.to_vec(), key.clone());
         key
     })
@@ -74,6 +81,14 @@ pub(crate) fn with_hmac_key_cached<T>(secret: &[u8], f: impl FnOnce(&hmac::Key) 
             return f(key);
         }
         let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
+        // Zeroize the raw secret bytes of the evicted entry (the compiled key's
+        // ctx is already wiped on drop by aws-lc-rs; the cache KEY is the raw
+        // secret Vec, which would otherwise linger).
+        if cache.len() >= HMAC_KEY_CACHE_CAP {
+            if let Some((mut evicted, _)) = cache.pop_lru() {
+                evicted.iter_mut().for_each(|b| *b = 0);
+            }
+        }
         cache.put(secret.to_vec(), key.clone());
         f(&key)
     })

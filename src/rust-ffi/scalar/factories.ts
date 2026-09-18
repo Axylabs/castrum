@@ -29,6 +29,19 @@ import { decodeUtf8, encodeUtf8 } from '../../shared/codec'
 import type { RustClientContext } from '../context'
 import { asNumber, assertNonEmptySecret } from '../options'
 
+/**
+ * Convert a napi `innerPtr()` (u64) into a JS number handle, rejecting values
+ * above `Number.MAX_SAFE_INTEGER`: the `Number()` conversion would silently
+ * round a high canonical address into a wild pointer.
+ */
+function handlePtr(inner: bigint | null | undefined): number {
+  const v = inner ?? 0n
+  if (v < 0n || v > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('castrum: native handle exceeds Number.MAX_SAFE_INTEGER')
+  }
+  return Number(v)
+}
+
 // ── FFI-backed instance wrappers ───────────────────────────────────────────
 // On Bun, instances whose methods have a STATELESS C-ABI sibling are backed by
 // the `bun:ffi` fast path instead of a NAPI instance — cutting the per-call
@@ -415,7 +428,7 @@ export function buildFactories(ctx: RustClientContext) {
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.SchemaValidator(schema)
-        return ffiSchemaValidator(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
+        return ffiSchemaValidator(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
       return new addon.SchemaValidator(schema)
     },
@@ -429,7 +442,7 @@ export function buildFactories(ctx: RustClientContext) {
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.TemplateRenderer(source)
-        return ffiTemplateRenderer(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
+        return ffiTemplateRenderer(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
       return new addon.TemplateRenderer(source)
     },
@@ -451,7 +464,7 @@ export function buildFactories(ctx: RustClientContext) {
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.ConditionalRequest(etagValue, lastModifiedSecs ?? undefined)
-        return ffiConditionalRequest(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
+        return ffiConditionalRequest(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
       return new addon.ConditionalRequest(etagValue, lastModifiedSecs ?? undefined)
     },
@@ -459,7 +472,7 @@ export function buildFactories(ctx: RustClientContext) {
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.AcceptNegotiator(supported)
-        return ffiAcceptNegotiator(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
+        return ffiAcceptNegotiator(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
       return new addon.AcceptNegotiator(supported)
     },
@@ -487,7 +500,7 @@ export function buildFactories(ctx: RustClientContext) {
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.UrlBuilder(base)
-        return ffiUrlBuilder(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
+        return ffiUrlBuilder(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
       return new addon.UrlBuilder(base)
     },
@@ -496,7 +509,7 @@ export function buildFactories(ctx: RustClientContext) {
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.JwtSigner(secret, ttlSeconds ?? undefined)
-        return ffiJwtSigner(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
+        return ffiJwtSigner(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
       return new addon.JwtSigner(secret, ttlSeconds ?? undefined)
     },
@@ -514,7 +527,7 @@ export function buildFactories(ctx: RustClientContext) {
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.MediaTypeMatcher(expected)
-        return ffiMediaTypeMatcher(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
+        return ffiMediaTypeMatcher(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
       return new addon.MediaTypeMatcher(expected)
     },
@@ -526,7 +539,7 @@ export function buildFactories(ctx: RustClientContext) {
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.RateLimiter(limit, windowMs, maxEntries ?? undefined)
-        return ffiRateLimiter(napi, Number(napi.innerPtr?.() ?? 0n), ffi)
+        return ffiRateLimiter(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
       return new addon.RateLimiter(limit, windowMs, maxEntries ?? undefined)
     },
