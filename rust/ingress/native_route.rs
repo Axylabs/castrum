@@ -224,9 +224,11 @@ impl NativeRoute {
         if self.require_json_body || self.validate_body {
             if !has_body || body.len() > self.max_body_bytes {
                 body_valid_json = false;
-                if self.require_json_body {
-                    error_code = ERR_BODY_NOT_JSON;
-                }
+                // Inside `require_json_body || validate_body`: an absent or
+                // oversized body can never satisfy either constraint, so fail
+                // closed. (Pre-fix a validateBody-only route returned OK with
+                // error_code 0 and skipped schema validation entirely.)
+                error_code = ERR_BODY_NOT_JSON;
             } else {
                 body_valid_json = crate::json::json_ops::json_valid_bytes(body);
                 if self.require_json_body && !body_valid_json {
@@ -728,6 +730,22 @@ mod tests {
 
         // absent body on requireJsonBody → 400
         let (_, flags, code) = read(frame(b"", b"", None));
+        assert_eq!(code, 400);
+        assert_eq!(flags & ROUTE_RESULT_FLAG_OK, 0);
+    }
+
+    #[test]
+    fn validate_body_without_require_json_fails_closed_on_absent_body() {
+        let schema = br#"{"type":"object","required":["x"],"properties":{"x":{"type":"number"}}}"#;
+        // Deliberately NO requireJsonBody stage: a route that only declares
+        // validateBody must still reject a missing body. Pre-fix this returned
+        // OK with error_code 0 and skipped schema validation entirely.
+        let d = descriptor(&[STAGE_VALIDATE_BODY], &[(PART_BODY, schema)]);
+        let r = NativeRoute::compile(&d).unwrap();
+        let mut out = vec![0u8; 64];
+        r.run(&frame(b"", b"", None), &mut out).unwrap();
+        let flags = u32::from_le_bytes(out[0..4].try_into().unwrap());
+        let code = u32::from_le_bytes(out[4..8].try_into().unwrap());
         assert_eq!(code, 400);
         assert_eq!(flags & ROUTE_RESULT_FLAG_OK, 0);
     }

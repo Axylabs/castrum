@@ -327,4 +327,13 @@ describe('createNativeRoute lifecycle', () => {
     // handle into the native stack.
     expect(() => route.run('a=1', '', null)).toThrow()
   })
+
+  test('validateBody without requireJsonBody fails closed on an absent body', () => {
+    const schema = encoder.encode(JSON.stringify({ type: 'object', required: ['x'] }))
+    const route = createNativeRoute({ validateBody: true, schema })
+    // No body at all: schema validation cannot run, so the route must reject
+    // (pre-fix it returned errorCode 0 and reported success).
+    expect(route.run('', '', null).errorCode).toBe(400)
+    route.destroy()
+  })
 })
