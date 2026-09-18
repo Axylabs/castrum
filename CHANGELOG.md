@@ -39,8 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **CORS prewarm** warms the actual success header variant (`HV_JSON |
   HV_CORS_SIMPLE`, plus `HV_RATE_ACTIVE`) instead of `HV_CORS_SIMPLE` alone.
+- **Write-route Content-Type parsing**: the media type is parsed (`application/
+  json` or a `+json` suffix) instead of substring-matched, so
+  `text/plain; application/json` is rejected; and an unsupported media type now
+  reports 415 even when `requireJsonBody` is set (the native "body required" 400
+  no longer masks it).
 - FFI symbol-count docs (121 total / 109 direct), `buildParse` JSDoc (coverage
   back to 100%), and the `IGNGEX_SECURITY_HEADERS` typo.
+- Stale `REPO_MAP`/`ENVIRONMENT`/ingress-skill counts and the archive label on
+  the duplicate `## [Unreleased]` section.
+
+### Removed
+
+- Dead re-exports: `MAX_OUTPUT_BUFFER_SIZE` and `EMPTY_BYTES` are module-private
+  again, `gather-raw-headers` no longer re-exports the scratch size guards, and
+  `server.ts` no longer re-exports `PathMatch`/`safeDecode`.
 
 ### Changed
 
