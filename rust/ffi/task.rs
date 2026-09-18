@@ -18,7 +18,8 @@ pub extern "C" fn castrum_task_init(threads: u32) -> u32 {
 }
 
 /// Submit `op` with `args_len` packed arg bytes, completing under `task_id`.
-/// Returns `1` accepted, `0` rejected (null args with a non-zero length).
+/// Returns `1` accepted, `2` overloaded (the bounded work queue is full), or
+/// `0` invalid args (null args with a non-zero length) / panic.
 ///
 /// # Safety
 /// `args` must be valid for reads of `args_len` bytes.
@@ -39,7 +40,11 @@ pub unsafe extern "C" fn castrum_task_submit(
             } else {
                 slice::from_raw_parts(args, args_len).to_vec()
             };
-            u32::from(task::submit_op(op, owned, task_id as u64))
+            if task::submit_op(op, owned, task_id as u64) {
+                1
+            } else {
+                2
+            }
         },
         0,
     )
@@ -72,7 +77,7 @@ pub extern "C" fn castrum_task_pending() -> u32 {
 /// (UNSUPPORTED) means the op has no `_into` form and the caller should fall
 /// back to `castrum_task_submit`.
 ///
-/// Returns `1` accepted, `0` rejected.
+/// Returns `1` accepted, `2` overloaded (bounded queue full), `0` invalid args.
 ///
 /// # Safety
 /// `args` must be valid for reads of `args_len` bytes. `out` must be valid for
@@ -97,13 +102,11 @@ pub unsafe extern "C" fn castrum_task_submit_out(
             } else {
                 slice::from_raw_parts(args, args_len).to_vec()
             };
-            u32::from(task::submit_op_into(
-                op,
-                owned,
-                task_id as u64,
-                out as usize,
-                out_cap,
-            ))
+            if task::submit_op_into(op, owned, task_id as u64, out as usize, out_cap) {
+                1
+            } else {
+                2
+            }
         },
         0,
     )
@@ -121,7 +124,7 @@ pub extern "C" fn castrum_task_cancel(task_id: usize) -> u32 {
 /// compression costs a full-size copy on the JS thread and measured WORSE than
 /// the synchronous built-in (docs/RND-CONCURRENCY.md §7b).
 ///
-/// Returns `1` accepted, `0` rejected.
+/// Returns `1` accepted, `2` overloaded (bounded queue full), `0` invalid args.
 ///
 /// # Safety
 /// `hdr` must be valid for reads of `hdr_len` bytes. `data` must be valid for
@@ -148,13 +151,11 @@ pub unsafe extern "C" fn castrum_task_submit_slice(
             } else {
                 slice::from_raw_parts(hdr, hdr_len).to_vec()
             };
-            u32::from(task::submit_slice_op(
-                op,
-                owned,
-                data as usize,
-                data_len,
-                task_id as u64,
-            ))
+            if task::submit_slice_op(op, owned, data as usize, data_len, task_id as u64) {
+                1
+            } else {
+                2
+            }
         },
         0,
     )

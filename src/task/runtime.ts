@@ -152,6 +152,37 @@ function cancelledError(): Error {
   return err
 }
 
+/** Native `taskSubmit*` return: the task was accepted onto the pool. */
+const TASK_SUBMIT_ACCEPTED = 1
+/** Native `taskSubmit*` return: the bounded work queue is full (overload). */
+const TASK_SUBMIT_OVERLOADED = 2
+
+/** Error raised when the bounded native task queue is at its admission bound. */
+interface TaskOverloadedError extends Error {
+  /** Stable discriminant so callers can branch on overload. */
+  code: 'OVERLOADED'
+}
+
+/**
+ * Map a native `taskSubmit*` return code to the reason a task promise should
+ * reject with, or `null` when the submission was accepted. Pure and exported
+ * for tests, so the rejection mapping can be checked without driving the native
+ * pool into a real overload.
+ *
+ * @param code Native submit return: `1` accepted, `2` overloaded, else rejected.
+ * @returns The typed overload error, the generic rejection, or `null`.
+ */
+export function taskSubmitError(code: number): Error | null {
+  if (code === TASK_SUBMIT_ACCEPTED) return null
+  if (code === TASK_SUBMIT_OVERLOADED) {
+    const err = new Error('task rejected: native work queue is full') as TaskOverloadedError
+    err.name = 'TaskOverloadedError'
+    err.code = 'OVERLOADED'
+    return err
+  }
+  return new Error('task rejected by the native runtime')
+}
+
 /** Bunny-shaped doorbell handle (structural, so it needs no bun-types dep). */
 interface Doorbell {
   ptr: number | null
@@ -361,10 +392,11 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
     return new Promise<Uint8Array>((resolve, reject) => {
       inflight.set(id, { out: null, keep: null, resolve, reject })
       retain()
-      if (ffi.taskSubmit(op, args, id) === 0) {
+      const rejected = taskSubmitError(ffi.taskSubmit(op, args, id))
+      if (rejected) {
         inflight.delete(id)
         release()
-        reject(new Error('task rejected by the native runtime'))
+        reject(rejected)
         return
       }
       const signal = runOptions?.signal
@@ -394,10 +426,11 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
     return new Promise<Uint8Array>((resolve, reject) => {
       inflight.set(id, { out: output, keep: null, resolve, reject })
       retain()
-      if (ffi.taskSubmitOut(op, args, id, output) === 0) {
+      const rejected = taskSubmitError(ffi.taskSubmitOut(op, args, id, output))
+      if (rejected) {
         inflight.delete(id)
         release()
-        reject(new Error('task rejected by the native runtime'))
+        reject(rejected)
         return
       }
       const signal = runOptions?.signal
@@ -428,10 +461,11 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
     return new Promise<Uint8Array>((resolve, reject) => {
       inflight.set(id, { out: null, keep: data, resolve, reject })
       retain()
-      if (ffi.taskSubmitSlice(op, hdr, data, id) === 0) {
+      const rejected = taskSubmitError(ffi.taskSubmitSlice(op, hdr, data, id))
+      if (rejected) {
         inflight.delete(id)
         release()
-        reject(new Error('task rejected by the native runtime'))
+        reject(rejected)
         return
       }
       const signal = runOptions?.signal

@@ -10,7 +10,7 @@
 
 use parking_lot::{Condvar, Mutex};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -25,6 +25,11 @@ const SPIN_ROUNDS: u32 = 64;
 /// Idle park timeout. A bounded wait (instead of an indefinite one) means a
 /// missed wakeup costs at most this much latency and can never wedge a worker.
 const PARK_TIMEOUT: Duration = Duration::from_micros(200);
+/// Default admission bound for the work queue. A submission that would exceed
+/// it is rejected (the C ABI returns `2 = overloaded`) instead of growing
+/// memory without bound. Overridable with `CASTRUM_TASK_QUEUE_MAX` (minimum 1)
+/// when the pool is first created.
+pub const DEFAULT_QUEUE_MAX: usize = 4096;
 
 /// A unit of offloaded work. Owns its input bytes (`'static`, `Send`).
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
@@ -35,6 +40,9 @@ pub struct TaskPool {
     cv: Condvar,
     running: AtomicBool,
     threads: AtomicU32,
+    /// Admission bound for `queue`; read once when the pool is created (tests
+    /// override it through [`set_queue_max`]).
+    queue_max: AtomicUsize,
 }
 
 static POOL: OnceLock<TaskPool> = OnceLock::new();
@@ -46,6 +54,7 @@ impl TaskPool {
             cv: Condvar::new(),
             running: AtomicBool::new(false),
             threads: AtomicU32::new(0),
+            queue_max: AtomicUsize::new(default_queue_max()),
         }
     }
 
@@ -121,9 +130,17 @@ impl TaskPool {
         }
     }
 
-    fn enqueue(&'static self, job: Job) {
-        self.queue.lock().push_back(job);
+    /// Push `job` only while the queue is below its admission bound. Returns
+    /// `false` when full — the caller drops the job (overload).
+    fn try_enqueue(&'static self, job: Job) -> bool {
+        let mut q = self.queue.lock();
+        if q.len() >= self.queue_max.load(Ordering::Relaxed) {
+            return false;
+        }
+        q.push_back(job);
+        drop(q);
         self.cv.notify_one();
+        true
     }
 
     fn shutdown(&self) {
@@ -173,6 +190,16 @@ pub fn default_threads() -> usize {
         })
 }
 
+/// Default admission bound: `CASTRUM_TASK_QUEUE_MAX` when set to a valid value
+/// `>= 1`, else {@link DEFAULT_QUEUE_MAX}.
+fn default_queue_max() -> usize {
+    std::env::var("CASTRUM_TASK_QUEUE_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_QUEUE_MAX)
+}
+
 /// Start the pool with `threads` workers (`None`/`0` → {@link default_threads}).
 ///
 /// Returns `0` when this call started the pool and `1` when it was already
@@ -190,8 +217,9 @@ pub fn init(threads: Option<u32>) -> u32 {
     0
 }
 
-/// Enqueue `job`, auto-starting the pool on first use. Always accepted in v1
-/// (the queue is unbounded; admission/backpressure is a later milestone).
+/// Enqueue `job`, auto-starting the pool on first use. Returns `false` (the C
+/// ABI's `2 = overloaded`) when the bounded work queue is full — admission is
+/// capped by `CASTRUM_TASK_QUEUE_MAX` (default {@link DEFAULT_QUEUE_MAX}).
 pub fn submit<F>(job: F) -> bool
 where
     F: FnOnce() + Send + 'static,
@@ -201,8 +229,28 @@ where
         let n = default_threads();
         p.start(n);
     }
-    p.enqueue(Box::new(job));
-    true
+    p.try_enqueue(Box::new(job))
+}
+
+/// Jobs queued but not yet started (monitoring / tests).
+pub fn queue_depth() -> usize {
+    POOL.get_or_init(TaskPool::new).queue.lock().len()
+}
+
+/// Configured admission bound for the work queue (monitoring / tests).
+pub fn queue_max() -> usize {
+    POOL.get_or_init(TaskPool::new)
+        .queue_max
+        .load(Ordering::Relaxed)
+}
+
+/// Override the admission bound. TEST ONLY: production reads
+/// `CASTRUM_TASK_QUEUE_MAX` once when the pool is created.
+#[cfg(test)]
+pub fn set_queue_max(max: usize) {
+    POOL.get_or_init(TaskPool::new)
+        .queue_max
+        .store(max.max(1), Ordering::Relaxed);
 }
 
 /// Configured worker count (0 before the pool starts).

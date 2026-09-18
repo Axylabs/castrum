@@ -5,7 +5,9 @@
 // threads.
 
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use super::completion::{self, Completion};
 use super::ops::{
@@ -258,4 +260,99 @@ fn pool_starts_with_a_nonzero_thread_count() {
     let _g = LOCK.lock();
     runtime::init(None);
     assert!(runtime::threads() >= 1);
+}
+
+/// Block until `counter` reaches `target` (10 s guard).
+fn wait_for_counter(counter: &AtomicUsize, target: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while counter.load(Ordering::SeqCst) < target {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "counter never reached {target}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Block until the admission queue is empty (10 s guard).
+fn wait_for_drained_queue() {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while runtime::queue_depth() != 0 {
+        assert!(std::time::Instant::now() < deadline, "queue never drained");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The queue is a hard-bounded admission gate: once every worker is occupied
+/// and the queue holds `queue_max` jobs, further submits are rejected rather
+/// than growing memory; releasing the workers restores capacity.
+#[test]
+fn queue_admission_is_bounded_and_recovers() {
+    let _g = LOCK.lock();
+    completion::clear();
+    runtime::init(None);
+    let workers = runtime::threads().max(1) as usize;
+
+    const CAP: usize = 4;
+    runtime::set_queue_max(CAP);
+
+    let started = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(AtomicBool::new(false));
+
+    let make_blocker = || {
+        let started = Arc::clone(&started);
+        let finished = Arc::clone(&finished);
+        let release = Arc::clone(&release);
+        move || {
+            started.fetch_add(1, Ordering::SeqCst);
+            while !release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            finished.fetch_add(1, Ordering::SeqCst);
+        }
+    };
+
+    // Occupy every worker, one submission at a time, waiting for each to START
+    // so it has left the queue. (Submitting them all at once would let one
+    // worker batch-pop several, which still occupies it but muddies the depth
+    // arithmetic this test asserts.)
+    for i in 0..workers {
+        assert!(
+            runtime::submit(make_blocker()),
+            "worker {i} submit rejected"
+        );
+        wait_for_counter(&started, i + 1);
+    }
+    assert_eq!(runtime::queue_depth(), 0);
+    assert_eq!(runtime::queue_max(), CAP);
+
+    // Every worker is busy: fill the queue to the cap.
+    for i in 0..CAP {
+        assert!(
+            runtime::submit(make_blocker()),
+            "queued submit {i} rejected"
+        );
+    }
+    assert_eq!(runtime::queue_depth(), CAP);
+
+    // The cap is a HARD bound — the next submit is rejected, not queued.
+    assert!(
+        !runtime::submit(make_blocker()),
+        "submit accepted at the cap"
+    );
+    assert_eq!(runtime::queue_depth(), CAP);
+
+    // Release: the queue drains and admission recovers.
+    release.store(true, Ordering::SeqCst);
+    wait_for_counter(&finished, workers + CAP);
+    wait_for_drained_queue();
+    assert!(
+        runtime::submit(make_blocker()),
+        "capacity did not recover after drain"
+    );
+    wait_for_counter(&finished, workers + CAP + 1);
+
+    // Restore the default bound so a later test cannot inherit the tiny cap.
+    runtime::set_queue_max(4096);
 }

@@ -37,7 +37,8 @@ export function buildTask(
   return {
     taskInit: (n) => Number(init(n)),
     // `args` is copied onto the worker by Rust, so the caller's pooled buffer
-    // may be released as soon as this returns.
+    // may be released as soon as this returns. The return code is `1` accepted,
+    // `2` overloaded (bounded work queue full), `0` invalid args.
     taskSubmit: (op, args, taskId) => Number(submit(op, args, lenOrView(args), taskId)),
     taskSubmitOut: (op, args, taskId, output) =>
       Number(submitOut(op, args, lenOrView(args), taskId, output, lenOrView(output))),

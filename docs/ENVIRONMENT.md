@@ -38,6 +38,7 @@ for false; anything else is warned about and falls back to the default.
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `CASTRUM_TASK_THREADS` | int | `max(1, cores-1)` | Worker threads for the off-thread task runtime (castrum Tasks). Read when the pool first starts — the pool is process-wide and cannot be resized afterwards (`tasks.stats().threads` reports the live count). |
+| `CASTRUM_TASK_QUEUE_MAX` | int | `4096` | Admission bound on the off-thread task work queue. Read when the pool first starts (minimum 1). A submit that would exceed it is rejected rather than growing memory: the native submit returns `2` and the task promise rejects with a typed `OVERLOADED` error. |
 | `CASTRUM_TASK_PIN_CORES` | (presence) | — | When set (Linux), pin each task worker to its own core (core 0 is skipped so the JS event loop keeps it). `CASTRUM_PIN_CORES` enables it too. Off by default: pinning competes with the JS/rayon threads for the same box. |
 
 ## Native transport selection (`src/native/ffi.ts`)

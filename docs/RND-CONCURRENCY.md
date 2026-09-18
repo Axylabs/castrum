@@ -69,7 +69,8 @@ documented `JSTypedArrayBytesDeallocator` hook crashes the process (fault at
 
 ```
 rust/task/runtime.rs     condvar pool, N = cores−1 (CASTRUM_TASK_THREADS), auto-start on submit,
-                         batch dequeue + bounded spin-then-park, optional core pinning
+                         batch dequeue + bounded spin-then-park, optional core pinning,
+                         HARD admission bound on the queue (CASTRUM_TASK_QUEUE_MAX)
 rust/task/completion.rs  result ring + ARMED coalescing doorbell + needed-size drain layout
 rust/task/ops.rs         op dispatch (header + payload split), cancellation set, catch_unwind
                          containment, `_into` (zero-copy output) and slice (zero-copy input) forms
@@ -120,6 +121,17 @@ right one is picked per op:
 3. `castrum_task_submit_slice` — **zero-copy input**: only the small header is
    copied and the payload is read in place, so a large argument never crosses the
    boundary. This one was forced by a measurement, not symmetry (§7b).
+
+**Bounded admission (backpressure).** The work queue is HARD-bounded by
+`CASTRUM_TASK_QUEUE_MAX` (default 4096, minimum 1; read once when the pool is
+created). A submit that would exceed the bound is rejected instead of growing
+memory: `castrum_task_submit{,_out,_slice}` return `2 = overloaded`, and the JS
+runtime rejects the task promise with a typed `code: 'OVERLOADED'` error. The
+existing return meanings are unchanged — `1` accepted, `0` invalid args / panic.
+A rejected zero-copy submit drops its `output`/`keep` reference exactly like any
+other rejection, so a full queue cannot leak buffers. (The richer M2 design — a
+`WouldBlock` + re-queue-behind-drain policy and priority levels — remains a
+later milestone; v1 is a hard cap with a distinct overload outcome.)
 
 **Measured comparison** (`bun run bench:task`, Bun 1.4.2, 12 cores):
 
@@ -466,9 +478,12 @@ rust/task/
   as in rayon/Go. Deliberately **separate from the rayon global pool**: rayon
   stays the batch executor for `par_iter`; the task runtime owns offloaded ops.
   `CASTRUM_TASK_THREADS` sizes it (default `cores − 1`).
-- **Admission/backpressure**: bounded queue (`CASTRUM_TASK_QUEUE_MAX`, default
-  4× threads). `submit` returns `WouldBlock` when full; JS resolves by queueing
-  behind a `drain` promise — no unbounded growth (fixes F6).
+- **Admission/backpressure** (v1 shipped): the queue is hard-bounded by
+  `CASTRUM_TASK_QUEUE_MAX` (default 4096, min 1, read once at pool creation).
+  `submit` returns `false` when full; the C ABI reports `2 = overloaded` and JS
+  rejects that promise with a typed `OVERLOADED` error — no unbounded growth
+  (fixes F6). M2 replaces this hard cap with `WouldBlock` + requeue-behind-drain
+  and priority levels; v1 has neither.
 - **Cancellation**: each task carries an `Arc<CancelToken>` (atomic + reason).
   Ops check it at safepoints (between chunks: gzip blocks, schema subtrees,
   Argon2 is atomic and reports "not cancellable"). Scope cancellation cascades
@@ -618,6 +633,7 @@ Each of these removes syscalls, lock traffic, or reallocations from the hot path
 | **Zero-copy INPUT** (`castrum_task_submit_slice` + the header/payload split in `ops.rs`) | Forced by a measurement: packing the payload into the args blob copied the whole input on the JS thread, making offloaded `gzipCompress` of 24 MiB **18.6 ms / 11.7 ms stall against 5.6 ms synchronous** — a net loss on both axes. Reading the payload in place: **7.3 ms / 2.1 ms**. The split also simplified every op arm (no more `args[4..]` offset arithmetic). |
 | **No BigInt, no per-completion DataView** | The drain loop reads ids and lengths as two `u32` reads at an offset — `getBigUint64` boxes a BigInt and `readU64` allocated a DataView *per completion*. Exact for any value under 2^53 (ids are a JS counter, sizes are byte counts). A zero-copy completion's body is never materialized at all. |
 | **Reusable args scratch** (copy path only) | Rust copies args on submit, so one growable buffer serves every synchronous submission. Deliberately NOT used for secret-bearing ops (pbkdf2/argon2) — a shared buffer would keep plaintext passwords alive far longer than a per-call allocation — nor for zero-copy retries, which re-submit after an `await` and must own their memory. |
+| **Bounded admission** (`CASTRUM_TASK_QUEUE_MAX`, default 4096) | A hard cap turns sustained overload into an explicit rejection (`2 = overloaded` → typed `OVERLOADED`) instead of unbounded queue/`inflight` growth. The bound is a length check inside the same lock that pushes, so it is one comparison on a path that already locks. |
 
 ---
 

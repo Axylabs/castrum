@@ -30,6 +30,7 @@ pub use runtime::{init, shutdown, threads};
 ///
 /// The pool auto-starts (default worker count) on first use, so callers do not
 /// have to sequence `init` before `submit`. `args` is moved onto the worker.
+/// Returns `false` when the bounded admission queue is full (`OVERLOADED`).
 pub fn submit_op(op: u32, args: Vec<u8>, id: u64) -> bool {
     runtime::submit(move || ops::execute_guarded(op, &args, id))
 }

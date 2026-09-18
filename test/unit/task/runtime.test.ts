@@ -16,6 +16,27 @@ import {
   encodeGzipDecompressArgs,
   gzipCompressUpperBound,
 } from '../../../src/task'
+import { taskSubmitError } from '../../../src/task/runtime'
+
+describe('task submit rejection mapping', () => {
+  test('maps the overload code to a typed OVERLOADED error', () => {
+    const err = taskSubmitError(2)
+    expect(err).toBeInstanceOf(Error)
+    expect(err?.name).toBe('TaskOverloadedError')
+    expect((err as { code?: string }).code).toBe('OVERLOADED')
+  })
+
+  test('maps the invalid-args code to the generic rejection', () => {
+    const err = taskSubmitError(0)
+    expect(err).toBeInstanceOf(Error)
+    expect(err?.message).toMatch(/rejected/i)
+    expect((err as { code?: string }).code).toBeUndefined()
+  })
+
+  test('treats the accepted code as a success (no error)', () => {
+    expect(taskSubmitError(1)).toBeNull()
+  })
+})
 
 describe('task runtime', () => {
   test('packs gzip.decompress args as [u32 max][bytes]', () => {

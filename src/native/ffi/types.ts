@@ -515,18 +515,23 @@ export interface BunFFI {
   // ── Off-thread task runtime (castrum_task_*) ──────────────────────
   /** Start the shared native task pool; 0 = started, 1 = already running. */
   taskInit(threads: number): number
-  /** Submit a task op with packed `args` under `taskId`; 1 = accepted. */
+  /**
+   * Submit a task op with packed `args` under `taskId`. Returns `1` accepted,
+   * `2` overloaded (bounded queue full), `0` invalid args.
+   */
   taskSubmit(op: number, args: Uint8Array, taskId: number): number
   /**
    * Zero-copy submit: the op writes its result DIRECTLY into `output` on the
    * pool thread. `output` must be a stable, caller-owned buffer that stays
    * alive (and untouched) until the completion is drained — the runtime holds
    * the reference. The completion body is the 8-byte LE written length.
+   * Returns `1` accepted, `2` overloaded, `0` invalid args.
    */
   taskSubmitOut(op: number, args: Uint8Array, taskId: number, output: Uint8Array): number
   /**
    * Zero-copy INPUT: only `hdr` is copied; `data` is read in place by the pool
    * thread, so the caller must keep it alive (and untouched) until completion.
+   * Returns `1` accepted, `2` overloaded, `0` invalid args.
    */
   taskSubmitSlice(op: number, hdr: Uint8Array, data: Uint8Array, taskId: number): number
   /**
