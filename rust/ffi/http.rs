@@ -630,11 +630,18 @@ pub unsafe extern "C" fn castrum_http_parse_request_packed(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    crate::http::http_parser::http_parse_request_packed_into_slice(
-        slice::from_raw_parts(data, len),
-        slice::from_raw_parts_mut(out, out_cap),
+    // Attacker-controlled request bytes: a panic must become 0, not unwind
+    // through the C ABI.
+    panic_guard(
+        || {
+            crate::http::http_parser::http_parse_request_packed_into_slice(
+                slice::from_raw_parts(data, len),
+                slice::from_raw_parts_mut(out, out_cap),
+            )
+            .unwrap_or(0)
+        },
+        0,
     )
-    .unwrap_or(0)
 }
 
 /// Query string parse → packed output into `out`.
@@ -657,14 +664,19 @@ pub unsafe extern "C" fn castrum_query_parse_packed(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    let input = slice::from_raw_parts(data, len);
-    let output = slice::from_raw_parts_mut(out, out_cap);
-    match crate::http::query_parser::query_parse_packed_into_slice(input, output) {
-        Ok(w) => w,
-        // Too-small OR malformed — the size pass disambiguates: it parses the
-        // same input, so Ok(needed) ⇒ too-small, Err ⇒ malformed (real error).
-        Err(_) => crate::http::query_parser::query_parse_packed_size(input).unwrap_or(0),
-    }
+    panic_guard(
+        || {
+            let input = slice::from_raw_parts(data, len);
+            let output = slice::from_raw_parts_mut(out, out_cap);
+            match crate::http::query_parser::query_parse_packed_into_slice(input, output) {
+                Ok(w) => w,
+                // Too-small OR malformed — the size pass disambiguates: it parses
+                // the same input, so Ok(needed) ⇒ too-small, Err ⇒ malformed.
+                Err(_) => crate::http::query_parser::query_parse_packed_size(input).unwrap_or(0),
+            }
+        },
+        0,
+    )
 }
 
 /// Cookie header parse → packed output into `out`.
@@ -683,12 +695,17 @@ pub unsafe extern "C" fn castrum_cookie_parse_packed(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    let input = slice::from_raw_parts(data, len);
-    let output = slice::from_raw_parts_mut(out, out_cap);
-    match crate::http::cookie_parser::cookie_parse_packed_into_slice(input, output) {
-        Ok(w) => w,
-        Err(_) => crate::http::cookie_parser::cookie_parse_packed_size(input).unwrap_or(0),
-    }
+    panic_guard(
+        || {
+            let input = slice::from_raw_parts(data, len);
+            let output = slice::from_raw_parts_mut(out, out_cap);
+            match crate::http::cookie_parser::cookie_parse_packed_into_slice(input, output) {
+                Ok(w) => w,
+                Err(_) => crate::http::cookie_parser::cookie_parse_packed_size(input).unwrap_or(0),
+            }
+        },
+        0,
+    )
 }
 
 /// Parse an `application/x-www-form-urlencoded` body into packed pairs — the

@@ -7,6 +7,8 @@
 use std::ptr;
 use std::slice;
 
+use super::util::panic_guard;
+
 /// CRC32 over `data[0..len]`. Returns the CRC-32 checksum.
 ///
 /// # Safety
@@ -179,19 +181,22 @@ pub unsafe extern "C" fn castrum_json_sum_ids(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    match crate::json::json_ops::json_sum_ids_bytes(slice::from_raw_parts(data, len)) {
-        Ok(sum) if out_len >= 9 => {
-            *out = 1;
-            ptr::copy_nonoverlapping(sum.to_le_bytes().as_ptr(), out.add(1), 8);
-            9
-        }
-        Ok(_) => 9, // too-small buffer → exact required size (growExact)
-        Err(_) if out_len >= 1 => {
-            *out = 0;
-            1
-        }
-        Err(_) => 1, // too-small buffer → exact required size
-    }
+    panic_guard(
+        || match crate::json::json_ops::json_sum_ids_bytes(slice::from_raw_parts(data, len)) {
+            Ok(sum) if out_len >= 9 => {
+                *out = 1;
+                ptr::copy_nonoverlapping(sum.to_le_bytes().as_ptr(), out.add(1), 8);
+                9
+            }
+            Ok(_) => 9, // too-small buffer → exact required size (growExact)
+            Err(_) if out_len >= 1 => {
+                *out = 0;
+                1
+            }
+            Err(_) => 1, // too-small buffer → exact required size
+        },
+        0,
+    )
 }
 
 /// Escape JS-RegExp metacharacters (`\ . * + ? ^ $ { } | ( ) [ ]`) in
@@ -212,13 +217,18 @@ pub unsafe extern "C" fn castrum_regex_escape(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    let input = slice::from_raw_parts(data, len);
-    let needed = crate::util::text::regex_escape_len(input);
-    if needed > out_cap {
-        return needed;
-    }
-    crate::util::text::regex_escape_write(input, slice::from_raw_parts_mut(out, out_cap));
-    needed
+    panic_guard(
+        || {
+            let input = slice::from_raw_parts(data, len);
+            let needed = crate::util::text::regex_escape_len(input);
+            if needed > out_cap {
+                return needed;
+            }
+            crate::util::text::regex_escape_write(input, slice::from_raw_parts_mut(out, out_cap));
+            needed
+        },
+        0,
+    )
 }
 
 /// String-input / string-return sibling of [`castrum_regex_escape`]: the
@@ -269,17 +279,22 @@ pub unsafe extern "C" fn castrum_hex_validate_batch_str(
     if ids.is_null() || out.is_null() {
         return 0;
     }
-    let input = std::ffi::CStr::from_ptr(ids).to_bytes();
-    let needed = crate::util::validation::hex_batch_count(input);
-    if needed > out_cap {
-        return needed;
-    }
-    let mut buf = Vec::with_capacity(needed);
-    match crate::util::validation::hex_batch_valid_into(input, width as usize, &mut buf) {
-        Ok(()) if buf.len() <= out_cap => {
-            slice::from_raw_parts_mut(out, buf.len()).copy_from_slice(&buf);
-            buf.len()
-        }
-        _ => 0,
-    }
+    panic_guard(
+        || {
+            let input = std::ffi::CStr::from_ptr(ids).to_bytes();
+            let needed = crate::util::validation::hex_batch_count(input);
+            if needed > out_cap {
+                return needed;
+            }
+            let mut buf = Vec::with_capacity(needed);
+            match crate::util::validation::hex_batch_valid_into(input, width as usize, &mut buf) {
+                Ok(()) if buf.len() <= out_cap => {
+                    slice::from_raw_parts_mut(out, buf.len()).copy_from_slice(&buf);
+                    buf.len()
+                }
+                _ => 0,
+            }
+        },
+        0,
+    )
 }

@@ -73,10 +73,17 @@ pub unsafe extern "C" fn castrum_password_verify(
     if password.is_null() || phc.is_null() {
         return 0;
     }
-    u8::from(crate::crypto::argon2::verify_password(
-        slice::from_raw_parts(password, plen),
-        slice::from_raw_parts(phc, phclen),
-    ))
+    // The argon2 core allocates/derives — a panic must become 0, not unwind
+    // through `extern "C"`.
+    panic_guard(
+        || {
+            u8::from(crate::crypto::argon2::verify_password(
+                slice::from_raw_parts(password, plen),
+                slice::from_raw_parts(phc, phclen),
+            ))
+        },
+        0,
+    )
 }
 
 /// bcrypt password verify → 1/0 (PHC `$2b$` string).
@@ -97,10 +104,15 @@ pub unsafe extern "C" fn castrum_password_verify_bcrypt(
     if password.is_null() || hash.is_null() {
         return 0;
     }
-    let Ok(h) = std::ffi::CStr::from_ptr(hash).to_str() else {
-        return 0;
-    };
-    u8::from(bcrypt::verify(slice::from_raw_parts(password, plen), h).unwrap_or(false))
+    panic_guard(
+        || {
+            let Ok(h) = std::ffi::CStr::from_ptr(hash).to_str() else {
+                return 0;
+            };
+            u8::from(bcrypt::verify(slice::from_raw_parts(password, plen), h).unwrap_or(false))
+        },
+        0,
+    )
 }
 
 /// HMAC-SHA256 hex (64 chars) into `out`.

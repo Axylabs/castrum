@@ -24,10 +24,18 @@ pub unsafe extern "C" fn castrum_ws_accept_key(
     if key.is_null() {
         return std::ptr::null();
     }
-    cstring_return(28, |out| {
-        crate::payload::websocket::ws_accept_key_into(std::ffi::CStr::from_ptr(key).to_bytes(), out)
-            .ok()
-    })
+    panic_guard(
+        || {
+            cstring_return(28, |out| {
+                crate::payload::websocket::ws_accept_key_into(
+                    std::ffi::CStr::from_ptr(key).to_bytes(),
+                    out,
+                )
+                .ok()
+            })
+        },
+        std::ptr::null(),
+    )
 }
 
 /// RFC 6455 Sec-WebSocket-Accept written directly into a caller buffer — the
@@ -76,14 +84,19 @@ pub unsafe extern "C" fn castrum_ws_frame_encode(
     if payload.is_null() || out.is_null() {
         return 0;
     }
-    crate::payload::ws_frames::encode_frame_into(
-        opcode,
-        slice::from_raw_parts(payload, plen),
-        mask != 0,
-        fin != 0,
-        slice::from_raw_parts_mut(out, out_cap),
+    panic_guard(
+        || {
+            crate::payload::ws_frames::encode_frame_into(
+                opcode,
+                slice::from_raw_parts(payload, plen),
+                mask != 0,
+                fin != 0,
+                slice::from_raw_parts_mut(out, out_cap),
+            )
+            .unwrap_or(0)
+        },
+        0,
     )
-    .unwrap_or(0)
 }
 
 /// Decode a WebSocket frame into a packed `[u8 flags][u8 opcode][u32 payload_len]
@@ -102,22 +115,29 @@ pub unsafe extern "C" fn castrum_ws_frame_decode_packed(
     if data.is_null() || out.is_null() {
         return 0;
     }
-    let Some(frame) = crate::payload::ws_frames::decode_frame(slice::from_raw_parts(data, len))
-    else {
-        return 0;
-    };
-    let Some(need) = 6usize.checked_add(frame.payload.len()) else {
-        return 0;
-    };
-    if need > out_cap {
-        return 0;
-    }
-    let o = slice::from_raw_parts_mut(out, need);
-    o[0] = u8::from(frame.fin);
-    o[1] = frame.opcode;
-    o[2..6].copy_from_slice(&(frame.payload.len() as u32).to_le_bytes());
-    o[6..].copy_from_slice(&frame.payload);
-    need
+    // Attacker-controlled frame bytes: a panic must become 0.
+    panic_guard(
+        || {
+            let Some(frame) =
+                crate::payload::ws_frames::decode_frame(slice::from_raw_parts(data, len))
+            else {
+                return 0;
+            };
+            let Some(need) = 6usize.checked_add(frame.payload.len()) else {
+                return 0;
+            };
+            if need > out_cap {
+                return 0;
+            }
+            let o = slice::from_raw_parts_mut(out, need);
+            o[0] = u8::from(frame.fin);
+            o[1] = frame.opcode;
+            o[2..6].copy_from_slice(&(frame.payload.len() as u32).to_le_bytes());
+            o[6..].copy_from_slice(&frame.payload);
+            need
+        },
+        0,
+    )
 }
 
 // ── Compression (gzip / brotli) ──────────────────────────────────

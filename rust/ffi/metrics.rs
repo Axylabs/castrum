@@ -19,8 +19,12 @@ pub(crate) const METRICS_DECLARE_ERR: u32 = u32::MAX;
 /// Create an empty metrics registry → opaque handle (`0` = allocation panic).
 #[no_mangle]
 pub extern "C" fn castrum_metrics_create() -> usize {
-    let handle = Box::into_raw(Box::new(crate::metrics::MetricsRegistry::new()));
-    handle as usize
+    // An allocation panic must become the null-handle sentinel, not unwind
+    // through `extern "C"`.
+    panic_guard(
+        || Box::into_raw(Box::new(crate::metrics::MetricsRegistry::new())) as usize,
+        0,
+    )
 }
 
 /// Declare a counter family → series id (`METRICS_DECLARE_ERR` on error).

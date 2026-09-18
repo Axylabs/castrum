@@ -32,12 +32,17 @@ pub unsafe extern "C" fn castrum_task_submit(
     if args.is_null() && args_len != 0 {
         return 0;
     }
-    let owned: Vec<u8> = if args_len == 0 {
-        Vec::new()
-    } else {
-        slice::from_raw_parts(args, args_len).to_vec()
-    };
-    u32::from(task::submit_op(op, owned, task_id as u64))
+    panic_guard(
+        || {
+            let owned: Vec<u8> = if args_len == 0 {
+                Vec::new()
+            } else {
+                slice::from_raw_parts(args, args_len).to_vec()
+            };
+            u32::from(task::submit_op(op, owned, task_id as u64))
+        },
+        0,
+    )
 }
 
 /// Drain finished tasks into `out` (packed `[u32 count][entry…]`).
@@ -85,18 +90,23 @@ pub unsafe extern "C" fn castrum_task_submit_out(
     if (args.is_null() && args_len != 0) || out.is_null() || out_cap == 0 {
         return 0;
     }
-    let owned: Vec<u8> = if args_len == 0 {
-        Vec::new()
-    } else {
-        slice::from_raw_parts(args, args_len).to_vec()
-    };
-    u32::from(task::submit_op_into(
-        op,
-        owned,
-        task_id as u64,
-        out as usize,
-        out_cap,
-    ))
+    panic_guard(
+        || {
+            let owned: Vec<u8> = if args_len == 0 {
+                Vec::new()
+            } else {
+                slice::from_raw_parts(args, args_len).to_vec()
+            };
+            u32::from(task::submit_op_into(
+                op,
+                owned,
+                task_id as u64,
+                out as usize,
+                out_cap,
+            ))
+        },
+        0,
+    )
 }
 
 /// Mark `task_id` cancelled. Returns `1` when newly marked, `0` otherwise.
@@ -129,20 +139,25 @@ pub unsafe extern "C" fn castrum_task_submit_slice(
     if (hdr.is_null() && hdr_len != 0) || (data.is_null() && data_len != 0) {
         return 0;
     }
-    // The header is small, so copying it keeps the caller free to reuse a
-    // scratch buffer; the payload is never copied.
-    let owned = if hdr_len == 0 {
-        Vec::new()
-    } else {
-        slice::from_raw_parts(hdr, hdr_len).to_vec()
-    };
-    u32::from(task::submit_slice_op(
-        op,
-        owned,
-        data as usize,
-        data_len,
-        task_id as u64,
-    ))
+    panic_guard(
+        || {
+            // The header is small, so copying it keeps the caller free to reuse a
+            // scratch buffer; the payload is never copied.
+            let owned = if hdr_len == 0 {
+                Vec::new()
+            } else {
+                slice::from_raw_parts(hdr, hdr_len).to_vec()
+            };
+            u32::from(task::submit_slice_op(
+                op,
+                owned,
+                data as usize,
+                data_len,
+                task_id as u64,
+            ))
+        },
+        0,
+    )
 }
 
 /// Register the thread-safe doorbell trampoline address (`0` disables it).
