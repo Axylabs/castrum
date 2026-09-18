@@ -55,7 +55,9 @@ const handle = pool.acquire(262144)
 const NativeIngress = getAddon().Ingress as new (o: unknown) => {
   ingressInnerPtr(): bigint
 }
-const ingressPtr = Number(new NativeIngress(OPTIONS).ingressInnerPtr())
+const ingressInstance = new NativeIngress(OPTIONS)
+const ingressPtr = Number(ingressInstance.ingressInnerPtr())
+void ingressInstance // retain the native owner behind `ingressPtr`
 const bunFFI = getBunFFI()
 if (!bunFFI) throw new Error('bun:ffi not active')
 

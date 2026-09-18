@@ -29,7 +29,9 @@ const opts = {
 const NativeIngress = getAddon().Ingress as new (o: unknown) => {
   ingressInnerPtr(): bigint
 }
-const ingressPtr = Number(new NativeIngress(opts).ingressInnerPtr())
+const ingressInstance = new NativeIngress(opts)
+const ingressPtr = Number(ingressInstance.ingressInnerPtr())
+void ingressInstance // retain the native owner behind `ingressPtr`
 const bunFFI = getBunFFI()
 if (!bunFFI) throw new Error('bun:ffi not active')
 

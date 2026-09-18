@@ -18,6 +18,9 @@
 //   native     : bunFFI.ingressHandlePacked into a pooled buffer (FFI + Rust
 //                pipeline) on a PRE-PACKED frame — the pure native+FFI cost
 //   refresh    : BakedIngressResult.refresh on a pre-written output (decode)
+//   respond    : the RESPONSE-BUILD phase the real server pays on top of `run`
+//                (responseHeaders + memoizedHeaders + body slice/copy +
+//                `new Response`) — the biggest chunk the `run` number hides
 
 import { getAddon } from '../../src/native'
 import { getBunFFI } from '../../src/native/ffi'
@@ -26,9 +29,15 @@ import { viewForArrayBuffer } from '../../src/shared/bytes'
 import { generateRequestId } from '../../src/shared/request-id'
 import { createIngressHandler } from '../../src/ingress/handlers'
 import { BakedIngressResult } from '../../src/ingress/decode/baked-result'
-import { buildHeaderPlan, METHOD_KIND, METHOD_KIND_UNKNOWN } from '../../src/ingress/shared'
+import {
+  buildHeaderPlan,
+  METHOD_KIND,
+  METHOD_KIND_UNKNOWN,
+  secondsFromMs,
+} from '../../src/ingress/shared'
 import { IngressInputPacker } from '../../src/ingress/packing/input-packer'
 import { gatherRawHeadersPacked } from '../../src/ingress/packing/gather-raw-headers'
+import { memoizedHeaders } from '../../src/ingress/headers/memoized-headers'
 import { measureNs as measure } from '../measure'
 
 const OPTIONS: Parameters<typeof createIngressHandler>[0] = {
@@ -60,7 +69,11 @@ const NativeIngress = getAddon().Ingress as new (o: unknown) => {
   ingressInnerPtr(): bigint
   handleRequestPacked(input: Uint8Array, body: Uint8Array | null, output: Uint8Array): number
 }
-const ingressPtr = Number(new NativeIngress(OPTIONS).ingressInnerPtr())
+// Retain the instance: `ingressPtr` points into its native state, so dropping
+// the JS owner would let GC free it under the raw-pointer call sites.
+const ingressInstance = new NativeIngress(OPTIONS)
+const ingressPtr = Number(ingressInstance.ingressInnerPtr())
+void ingressInstance
 const bunFFI = getBunFFI()
 if (!bunFFI) throw new Error('bun:ffi not active')
 
@@ -115,7 +128,9 @@ const tNative = measure(
 
 // The components entry run() ACTUALLY drives on Bun (12 args: rid + headers +
 // body + output; url/ip are engine-transcoded cstring args). Measured on the
-// same pre-gathered headers so the delta vs `native` is the entry/arity cost.
+// same pre-gathered headers and a PRE-GENERATED rid so the delta vs `native` is
+// the entry/arity cost — not request-id generation.
+const preRid = generateRequestId()
 const tNativeComponents = measure(
   () => {
     const w = bunFFI.ingressHandleComponents(
@@ -123,7 +138,7 @@ const tNativeComponents = measure(
       methodKind,
       req.url,
       '127.0.0.1',
-      generateRequestId(),
+      preRid,
       packedHeaders,
       null,
       handle.buffer,
@@ -141,6 +156,31 @@ const tRefresh = measure(
   50_000,
 )
 
+// The response-build phase the REAL server pays on top of `run`: the exact
+// `readHandler` success path — responseHeaders (origin-cached template or
+// rate-extras array) → memoizedHeaders (memo HIT in steady state) →
+// `new Response(body.slice(), init)`. `buildSuccessInit` is not exported, so
+// this replicates it inline with the same pieces.
+const tRespond = measure(
+  () => {
+    result.refresh(used, EMPTY_BODY, viewForArrayBuffer(used.buffer, used.byteOffset))
+    const init = {
+      status: 200,
+      headers: memoizedHeaders(
+        handler.responseHeaders(
+          result.headerVariant,
+          null,
+          'https://app.example.com',
+          result.rateRemaining,
+          result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
+        ),
+      ),
+    }
+    return new Response(result.bodyJson(true), init)
+  },
+  50_000,
+)
+
 console.log('═══ Ingress per-request cost (ns/op, min-of-5) ═══')
 console.log(`  run       (full request)    : ${tRun.toFixed(0).padStart(7)}`)
 console.log(`  pack      (JS packing)      : ${tPack.toFixed(0).padStart(7)}`)
@@ -148,4 +188,5 @@ console.log(`  packFrame (fallback frame)  : ${tPackFrame.toFixed(0).padStart(7)
 console.log(`  native    (FFI + pipeline)  : ${tNative.toFixed(0).padStart(7)}`)
 console.log(`  nativeCmp (components entry) : ${tNativeComponents.toFixed(0).padStart(7)}`)
 console.log(`  refresh   (result decode)   : ${tRefresh.toFixed(0).padStart(7)}`)
+console.log(`  respond   (Response build)  : ${tRespond.toFixed(0).padStart(7)}`)
 console.log(`  JS-side est (run−native)    : ${(tRun - tNative).toFixed(0).padStart(7)}`)

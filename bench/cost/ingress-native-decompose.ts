@@ -67,8 +67,13 @@ const BODY = new TextEncoder().encode('{"id":1,"name":"stress_test"}')
 const out = new Uint8Array(262144)
 
 const results: Record<string, number> = {}
+// Retain every instance: `ptr` points into its native state, so dropping the
+// JS owner would let GC free the target under the raw-pointer call site.
+const retainedInstances: Array<{ ingressInnerPtr(): bigint }> = []
 for (const [name, opts] of Object.entries(variants)) {
-  const ptr = Number(new NativeIngress(opts).ingressInnerPtr())
+  const instance = new NativeIngress(opts)
+  retainedInstances.push(instance)
+  const ptr = Number(instance.ingressInnerPtr())
   const t = measure(
     () => bunFFI.ingressHandleComponents(ptr, methodKind, req.url, '', generateRequestId(), packedHeaders, BODY, out),
     30_000,

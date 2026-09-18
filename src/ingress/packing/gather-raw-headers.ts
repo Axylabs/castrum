@@ -167,15 +167,19 @@ function cachedOriginBlock(origin: string): Uint8Array {
  * `allow-origin` values (load-time-for-RPS trade): the FIRST request from each
  * known origin then skips the shared encode + pack + scratch write entirely,
  * like every later request does. Oversized values are skipped (they map to the
- * EMPTY block anyway), and the module-level cache stays bounded by
- * `ORIGIN_CACHE_MAX`. No-op for any plan that never consults the origin cache.
+ * EMPTY block anyway) and wildcard/pattern values are skipped (they never
+ * resolve to their own literal origin), while the module-level cache stays
+ * bounded by `ORIGIN_CACHE_MAX`. No-op for any plan that never consults it.
  */
 export function prewarmOriginBlocks(origins: readonly string[]): void {
   for (const origin of origins) {
     if (
       typeof origin === 'string' &&
       origin.length > 0 &&
-      origin.length <= MAX_SMALL_HEADER_BYTES
+      origin.length <= MAX_SMALL_HEADER_BYTES &&
+      // A wildcard/pattern never resolves to its own literal origin string, so
+      // caching it would only burn a slot (the handler filters these too).
+      !origin.includes('*')
     ) {
       cachedOriginBlock(origin)
     }

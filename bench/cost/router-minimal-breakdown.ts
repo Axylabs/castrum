@@ -38,7 +38,9 @@ const tAcquire = measure(() => pool.acquire(131072), 50_000)
 
 // Native components call on a pre-built minimal frame (same as run() does).
 const NativeIngress = getAddon().Ingress as new (o: unknown) => { ingressInnerPtr(): bigint }
-const ptr = Number(new NativeIngress({ parseCookies: false, parseQuery: false }).ingressInnerPtr())
+const ingressInstance = new NativeIngress({ parseCookies: false, parseQuery: false })
+const ptr = Number(ingressInstance.ingressInnerPtr())
+void ingressInstance // retain the native owner behind `ptr`
 const packedHeaders = gatherRawHeadersPacked(req, headerPlan, methodKind, undefined)
 const out = new Uint8Array(131072)
 const tNative = measure(
