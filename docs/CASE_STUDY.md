@@ -58,7 +58,7 @@ The addon is built with napi-rs (so Node can load it), but it *also* exports
 
 ```mermaid
 flowchart LR
-    TS["TypeScript (index.ts)"] -->|"bun:ffi · 85 C-ABI symbols · ~10–20 ns"| RUST["Rust cdylib (rust/ffi/)"]
+    TS["TypeScript (index.ts)"] -->|"bun:ffi · 121 C-ABI symbols · ~10–20 ns"| RUST["Rust cdylib (rust/ffi/)"]
     TS -.->|"NAPI fallback (Node / self-test failure)"| RUST
     RUST --> PIPELINE["8-stage ingress pipeline"]
     TS --> PACKED["Packed, length-prefixed buffers (zero-copy)"]

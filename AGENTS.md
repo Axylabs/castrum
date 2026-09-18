@@ -58,7 +58,7 @@ HTTP **ingress pipeline** for Bun servers.
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
 | Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
 | JSDoc coverage guard | `bun run check:jsdoc` (== `bun scripts/check-jsdoc.ts`) — fails if < 95% of `src/`+`index.ts` exported symbols lack a JSDoc block; run after adding public exports |
-| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (no `typeof Bun` outside `src/runtime/detect.ts`), PURE-module purity boundary, FFI doc count = 109, no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
+| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (no `typeof Bun` outside `src/runtime/detect.ts`), PURE-module purity boundary, FFI doc count = 121 (109 direct), no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
 | JS dependency audit | `bun run audit` |
 | Cargo deny audit | `bun run deny` (== `cargo deny check`) |
 | Coverage floors | `bun run test:coverage` (== `node scripts/check-coverage.mjs`) — 75% overall line floor + a 50% per-directory floor on the SHIPPED dirs (`src/ingress`, `src/shared`, `src/rust-ffi`, `src/native`, `src/loader`, `src/integration`) so one directory can't collapse while others compensate |

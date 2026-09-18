@@ -106,7 +106,7 @@ cargo test && bun test
 bun run typecheck && bun run typecheck:test
 bun run lint:ci
 bun run check:jsdoc      # ≥95% JSDoc on exported symbols
-bun run check:clean      # FFI doc count stays 85 castrum_* / 77 direct
+bun run check:clean      # FFI doc count stays 121 castrum_* / 109 direct
 bun run check:selection  # selection.json ↔ code consistency
 bun run bench:startup    # after touching the loader
 ```

@@ -13,11 +13,6 @@ import type { BunFFI, Raw3, Raw4, Raw6, Raw7, Raw10 } from '../types'
 import type { BuildCtx } from './util'
 import { allocOut, flag, growExact } from './util'
 
-/**
- * Build the parser/wire-format methods of the BunFFI surface. `ctx` is
- * destructured so the method bodies read exactly as the original `build()`.
- */
-
 // ── SSE event/id encode memo ────────────────────────────────────────────────
 // SSE streams repeat the same event NAME constantly ('message'/'update') and
 // often repeat ids; re-encoding them per event is pure waste (~60ns each).
@@ -34,6 +29,16 @@ function sseMemoEncode(slot: { str: string | null; bytes: Uint8Array }, s: strin
   return bytes
 }
 
+/**
+ * Build the parser/wire-format methods of the BunFFI surface (HTTP/query/
+ * cookie/form/multipart/ws-frame parsers, media-type/http-date/accept
+ * verdicts, MIME lookup, URL resolve, and SSE encode). `ctx` is destructured so
+ * the method bodies read exactly as the original `build()`.
+ *
+ * @param sym - Raw dlopen'd symbols for this domain.
+ * @param ctx - Per-bind shared scratch/context from `build()`.
+ * @returns The parser/wire-format slice of the `BunFFI` surface.
+ */
 export function buildParse(
   sym: Record<string, (...a: unknown[]) => unknown>,
   ctx: BuildCtx,

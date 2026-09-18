@@ -45,7 +45,7 @@ export interface ResponderRouteOptions extends BakedHandlerOptions {
 }
 
 /** ignex framework security posture for terminal responses. */
-const IGNGEX_SECURITY_HEADERS: [string, string][] = [
+const IGNEX_SECURITY_HEADERS: [string, string][] = [
   ['x-frame-options', 'DENY'],
   ['x-content-type-options', 'nosniff'],
   ['referrer-policy', 'no-referrer'],
@@ -55,7 +55,7 @@ const IGNGEX_SECURITY_HEADERS: [string, string][] = [
 function buildIgngexTerminal(result: BakedIngressResult, _ctx: BakedContext): Response {
   const preflightAllowed = result.isPreflight && result.corsAllowed
   if (preflightAllowed) {
-    return new Response(null, { status: 204, headers: IGNGEX_SECURITY_HEADERS })
+    return new Response(null, { status: 204, headers: IGNEX_SECURITY_HEADERS })
   }
   const status = safeTerminalStatus(result)
   const body = JSON.stringify({
@@ -63,7 +63,7 @@ function buildIgngexTerminal(result: BakedIngressResult, _ctx: BakedContext): Re
     status,
     code: errorCodeName(result.errorCode),
   })
-  const headers = new Headers(IGNGEX_SECURITY_HEADERS)
+  const headers = new Headers(IGNEX_SECURITY_HEADERS)
   headers.set('content-type', 'application/json; charset=utf-8')
   return new Response(body, { status, headers })
 }
@@ -112,7 +112,7 @@ export function nativeResponderRoute(
         const code = (err as Error & { code?: string }).code
         const status = code === 'REQUEST_TIMEOUT' ? 408 : code === 'BODY_TOO_LARGE' ? 413 : 400
         const payload = JSON.stringify({ error: 'Bad Request', status, code: 'BAD_REQUEST' })
-        const headers = new Headers(IGNGEX_SECURITY_HEADERS)
+        const headers = new Headers(IGNEX_SECURITY_HEADERS)
         headers.set('content-type', 'application/json; charset=utf-8')
         return new Response(payload, { status, headers })
       }

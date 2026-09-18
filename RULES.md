@@ -64,6 +64,10 @@ how-to guide; `.agents/skills/` holds task-specific runbooks;
   factories returning plain objects with closures (`createRust()`,
   `createLoader()`, `createIngressServer()`, `createPipeline()`). No classes,
   no `this`, for public surfaces.
+- Sanctioned exceptions (internal result/utility classes, not public
+  factories): `AdaptiveEstimate`, `BakedIngressResult`, `FastIngressResult`.
+  They are data holders with no behavioral `this` surface; the public API
+  stays functional.
 - Prefer **pure functions** (same input → same output, no hidden state) so
   they are directly unit-testable without mocks. Isolate side effects
   (dlopen, sockets, timers, env) in dedicated seams (`src/native/`,

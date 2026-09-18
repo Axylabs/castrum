@@ -65,7 +65,7 @@ bun run check
 │   ├── json/      # JSON & schema (json_ops, json_ser, json/patch/, json_schema, fast_schema/)
 │   ├── payload/   # Output & streaming (compress, sse, ws_frames, template)
 │   ├── ingress/   # The ingress pipeline (api.rs napi boundary + pipeline.rs core + native_route.rs)
-│   ├── ffi/       # #[no_mangle] extern "C" exports (79 castrum_* symbols — bun:ffi primary transport)
+│   ├── ffi/       # #[no_mangle] extern "C" exports (121 castrum_* symbols — 109 direct; bun:ffi primary transport)
 │   ├── panic_safety.rs / proptest_suite.rs / test_support.rs  # cross-module test suites
 │   └── selection.rs  # Rust-side op selection metadata
 ├── src/           # TypeScript source
