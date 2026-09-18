@@ -30,8 +30,16 @@ pub struct PasswordHashOptions {
     pub out_len: Option<u32>,
 }
 
+/// Sanity caps for caller-supplied argon2 params: a hostile or mis-set config
+/// must not force a multi-GiB allocation or a multi-minute CPU burn. Generous
+/// enough for any real deployment (defaults are 19 MiB / 2 / 1 / 32).
+pub const ARGON2_MAX_M_COST: u32 = 1_048_576; // 1 GiB, in KiB
+pub const ARGON2_MAX_T_COST: u32 = 64;
+pub const ARGON2_MAX_P_COST: u32 = 64;
+pub const ARGON2_MAX_OUT_LEN: u32 = 1024;
+
 fn resolve_opts(o: Option<&PasswordHashOptions>) -> (u32, u32, u32, u32) {
-    match o {
+    let (m, t, p, out) = match o {
         Some(o) => (
             o.m_cost.unwrap_or(19_456),
             o.t_cost.unwrap_or(2),
@@ -39,7 +47,13 @@ fn resolve_opts(o: Option<&PasswordHashOptions>) -> (u32, u32, u32, u32) {
             o.out_len.unwrap_or(32),
         ),
         None => (19_456, 2, 1, 32),
-    }
+    };
+    (
+        m.min(ARGON2_MAX_M_COST),
+        t.min(ARGON2_MAX_T_COST),
+        p.min(ARGON2_MAX_P_COST),
+        out.min(ARGON2_MAX_OUT_LEN),
+    )
 }
 
 // ── Pure-Rust core ─────────────────────────────────────────────
@@ -228,6 +242,22 @@ mod tests {
             out_len: Some(32),
         }))
         .is_err());
+    }
+
+    #[test]
+    fn argon2_params_are_capped() {
+        let (m, t, p, out) = resolve_opts(Some(&PasswordHashOptions {
+            m_cost: Some(u32::MAX),
+            t_cost: Some(u32::MAX),
+            p_cost: Some(u32::MAX),
+            out_len: Some(u32::MAX),
+        }));
+        assert_eq!(m, ARGON2_MAX_M_COST);
+        assert_eq!(t, ARGON2_MAX_T_COST);
+        assert_eq!(p, ARGON2_MAX_P_COST);
+        assert_eq!(out, ARGON2_MAX_OUT_LEN);
+        // Sane defaults pass through untouched.
+        assert_eq!(resolve_opts(None), (19_456, 2, 1, 32));
     }
 
     #[test]

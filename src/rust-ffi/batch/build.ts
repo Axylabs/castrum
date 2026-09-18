@@ -22,6 +22,7 @@ import {
   withPackScratch2,
 } from '../../shared/packed'
 import { type RustClientContext, resolvePoolNative } from '../context'
+import { assertNonEmptySecret } from '../options'
 import type { RustBatch } from './types'
 
 // Native batch fns are process-wide singletons (one lazy addon). `resolvePoolNative`
@@ -129,11 +130,18 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
       via(ctx, 'brotliCompressBatchPacked', unpackByteResults, [quality ?? null])(items),
     brotliDecompress: (items, maxDecompressed) =>
       via(ctx, 'brotliDecompressBatchPacked', unpackByteResults, [maxDecompressed ?? null])(items),
-    jwtVerify: (tokens, secret, nowSeconds) =>
-      via(ctx, 'jwtVerifyBatchPacked', unpackBitset, [secret, nowSeconds])(tokens),
-    hmacSha256: (items, key) => via(ctx, 'hmacSha256BatchPacked', unpackByteResults, [key])(items),
-    hmacSha256Verify: (items, sigs, key) =>
-      via2(ctx, 'hmacSha256VerifyBatchPacked', unpackBitset, [key])(items, sigs),
+    jwtVerify: (tokens, secret, nowSeconds) => {
+      assertNonEmptySecret(secret, 'batch.jwtVerify')
+      return via(ctx, 'jwtVerifyBatchPacked', unpackBitset, [secret, nowSeconds])(tokens)
+    },
+    hmacSha256: (items, key) => {
+      assertNonEmptySecret(key, 'batch.hmacSha256')
+      return via(ctx, 'hmacSha256BatchPacked', unpackByteResults, [key])(items)
+    },
+    hmacSha256Verify: (items, sigs, key) => {
+      assertNonEmptySecret(key, 'batch.hmacSha256Verify')
+      return via2(ctx, 'hmacSha256VerifyBatchPacked', unpackBitset, [key])(items, sigs)
+    },
     // ── Two-list ──
     passwordVerify: (items, phcs) =>
       via2(ctx, 'passwordVerifyBatchPacked', unpackBitset)(items, phcs),
@@ -141,12 +149,14 @@ export function buildBatch(ctx: RustClientContext): RustBatch {
       via2(ctx, 'urlResolveBatchPacked', unpackByteResults)(bases, references),
     templateRender: (source, contexts) =>
       via(ctx, 'templateRenderBatchPacked', unpackByteResults, [source])(contexts),
-    jwtSign: (items, secret, ttlSeconds, nowSeconds) =>
-      via(ctx, 'jwtSignBatchPacked', unpackByteResults, [
+    jwtSign: (items, secret, ttlSeconds, nowSeconds) => {
+      assertNonEmptySecret(secret, 'batch.jwtSign')
+      return via(ctx, 'jwtSignBatchPacked', unpackByteResults, [
         secret,
         ttlSeconds ?? null,
         nowSeconds ?? Math.floor(Date.now() / 1000),
-      ])(items),
+      ])(items)
+    },
     sseEncode: (items, event, id, retry) =>
       via(ctx, 'sseEncodeBatchPacked', unpackByteResults, [
         event ?? null,

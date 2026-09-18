@@ -84,6 +84,26 @@ describe('empty-input matrix', () => {
     ).toBe(false)
   })
 
+  test('auth surfaces reject an empty secret; the raw hmac primitive stays tolerant', () => {
+    // Raw primitive: documented empty-input tolerance (kept on purpose).
+    expect(() => rust.hmacSha256(empty, enc('data'))).not.toThrow()
+    // Auth surfaces: an empty secret is a public function, so it would mint or
+    // verify forgeable tokens silently.
+    expect(() => rust.jwtSign({ sub: '1' }, empty, 3600, 1_700_000_000)).toThrow(/empty/)
+    expect(() => rust.jwtVerify(enc('a.b.c'), empty, 1_700_000_000)).toThrow(/empty/)
+    expect(() => rust.csrfToken(empty)).toThrow(/empty/)
+    expect(() => rust.createHmacSigner(empty)).toThrow(/empty/)
+    expect(() => rust.createCookieSigner(empty)).toThrow(/empty/)
+    expect(() => rust.createCsrfProtector(empty)).toThrow(/empty/)
+    expect(() => rust.createJwtSigner(empty, 3600)).toThrow(/empty/)
+    expect(() => rust.batch.hmacSha256([enc('d')], empty)).toThrow(/empty/)
+    expect(() => rust.batch.hmacSha256Verify([enc('d')], [enc('s')], empty)).toThrow(/empty/)
+    expect(() => rust.batch.jwtSign([enc('{"sub":"1"}')], empty, null, 1_700_000_000)).toThrow(
+      /empty/,
+    )
+    expect(() => rust.batch.jwtVerify([enc('a.b.c')], empty, 1_700_000_000)).toThrow(/empty/)
+  })
+
   test('packed parsers accept empty without throwing', () => {
     expect(() => rust.queryParsePacked(empty)).not.toThrow()
     expect(() => rust.cookieParsePacked(empty)).not.toThrow()

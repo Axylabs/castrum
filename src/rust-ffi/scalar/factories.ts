@@ -27,7 +27,7 @@ import type { BunFFI } from '../../native/ffi'
 import { encoder } from '../../shared/bytes'
 import { decodeUtf8, encodeUtf8 } from '../../shared/codec'
 import type { RustClientContext } from '../context'
-import { asNumber } from '../options'
+import { asNumber, assertNonEmptySecret } from '../options'
 
 // ── FFI-backed instance wrappers ───────────────────────────────────────────
 // On Bun, instances whose methods have a STATELESS C-ABI sibling are backed by
@@ -420,6 +420,7 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.SchemaValidator(schema)
     },
     createHmacSigner(key: Uint8Array): HmacSignerInstance {
+      assertNonEmptySecret(key, 'createHmacSigner')
       const ffi = transport.ffi
       if (ffi) return ffiHmacSigner(key, ffi)
       return new addon.HmacSigner(key)
@@ -468,11 +469,13 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.Base64Codec(urlSafe ?? undefined, padding ?? undefined)
     },
     createCookieSigner(secret: Uint8Array): CookieSignerInstance {
+      assertNonEmptySecret(secret, 'createCookieSigner')
       const ffi = transport.ffi
       if (ffi) return ffiCookieSigner(secret, ffi)
       return new addon.CookieSigner(secret)
     },
     createCsrfProtector(secret: Uint8Array): CsrfProtectorInstance {
+      assertNonEmptySecret(secret, 'createCsrfProtector')
       const ffi = transport.ffi
       if (ffi) return ffiCsrfProtector(secret, ffi)
       return new addon.CsrfProtector(secret)
@@ -489,6 +492,7 @@ export function buildFactories(ctx: RustClientContext) {
       return new addon.UrlBuilder(base)
     },
     createJwtSigner(secret: Uint8Array, ttlSeconds?: number): JwtSignerInstance {
+      assertNonEmptySecret(secret, 'createJwtSigner')
       const ffi = transport.ffi
       if (ffi) {
         const napi = new addon.JwtSigner(secret, ttlSeconds ?? undefined)

@@ -93,6 +93,25 @@ export function asNumber(value: unknown): number {
   return 0
 }
 
+/**
+ * Throw when a signing secret/key is empty.
+ *
+ * An empty HMAC/JWT/CSRF secret is effectively a public function — anyone can
+ * compute the MAC — so a blank/missing env var would silently mint forgeable
+ * tokens. The raw `rust.hmacSha256` primitive deliberately stays tolerant of an
+ * empty key (see the empty-input matrix); this guards the auth surfaces built
+ * on top of it.
+ *
+ * @param secret - The secret/key bytes about to be used.
+ * @param op - Operation name for the error message.
+ * @throws Error when `secret` is empty.
+ */
+export function assertNonEmptySecret(secret: Uint8Array, op: string): void {
+  if (secret.byteLength === 0) {
+    throw new Error(`${op}: secret must not be empty`)
+  }
+}
+
 /** Normalize a file-extension byte slice to a lowercase string w/o a dot. */
 export function normalizeExt(ext: Uint8Array): string {
   let s: string

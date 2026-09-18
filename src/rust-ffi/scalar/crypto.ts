@@ -12,6 +12,7 @@ import type { PasswordHashOptions } from '../../native'
 import { encoder } from '../../shared/bytes'
 import { memoizeFfi, type RustClientContext, resolveNative } from '../context'
 import { writeInto } from '../into'
+import { assertNonEmptySecret } from '../options'
 
 /** Auth / crypto scalar methods (`Pick<RustScalar, ...>`). */
 export function buildCrypto(ctx: RustClientContext) {
@@ -152,14 +153,17 @@ export function buildCrypto(ctx: RustClientContext) {
       return writeInto('verify cookie', output, value)
     },
     csrfToken(secret: Uint8Array): Uint8Array | string {
+      assertNonEmptySecret(secret, 'csrfToken')
       return resolveNative(ctx, 'csrfToken')(secret) as Uint8Array | string
     },
     csrfTokenInto(secret: Uint8Array, output: Uint8Array): number {
+      assertNonEmptySecret(secret, 'csrfTokenInto')
       const f = ffi()
       if (f) return f.csrfTokenInto(secret, output)
       return writeInto('csrf token', output, addon.csrfToken(secret))
     },
     csrfVerify(token: Uint8Array, secret: Uint8Array): boolean {
+      assertNonEmptySecret(secret, 'csrfVerify')
       return resolveNative(ctx, 'csrfVerify')(token, secret) as boolean
     },
     jwtSign(
@@ -175,6 +179,7 @@ export function buildCrypto(ctx: RustClientContext) {
       // preserves JS insertion order while napi's serde_json sorts keys — for
       // multi-key claims the two transports emit different-but-equally-valid
       // tokens (both verify; parity tests cross-verify semantically).
+      assertNonEmptySecret(secret, 'jwtSign')
       const f = ffi()
       if (f) {
         const token = f.jwtSignBytes(
@@ -198,6 +203,7 @@ export function buildCrypto(ctx: RustClientContext) {
       ttlSeconds?: number | null,
       nowSeconds?: number,
     ): Uint8Array | string {
+      assertNonEmptySecret(secret, 'jwtSignBytes')
       const f = ffi()
       if (f) {
         // The C-ABI `ttl <= 0` sentinel matches napi's Option<i64> (inject only
@@ -223,6 +229,7 @@ export function buildCrypto(ctx: RustClientContext) {
       ttlSeconds?: number | null,
       nowSeconds?: number,
     ): number {
+      assertNonEmptySecret(secret, 'jwtSignBytesInto')
       const f = ffi()
       if (f) {
         return f.jwtSignBytesInto(
@@ -245,6 +252,7 @@ export function buildCrypto(ctx: RustClientContext) {
       )
     },
     jwtVerify(token: Uint8Array, secret: Uint8Array, nowSeconds?: number): unknown {
+      assertNonEmptySecret(secret, 'jwtVerify')
       const f = ffi()
       if (f) {
         // Verify via the FFI cstring path (castrum_jwt_verify): the engine
