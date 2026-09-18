@@ -21,7 +21,12 @@ const rustSource = readdirSync(ffiDir)
   .filter((f) => f.endsWith('.rs'))
   .map((f) => readFileSync(new URL(f, ffiDir), 'utf8'))
   .join('\n')
-const ffiSource = readFileSync(new URL('../../../src/native/ffi.ts', import.meta.url), 'utf8')
+// The dlopen symbol map lives in src/native/ffi/symbols.ts after the bind-core
+// split; scan it alongside ffi.ts (which holds the bind orchestration).
+const ffiSource = [
+  readFileSync(new URL('../../../src/native/ffi.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../../../src/native/ffi/symbols.ts', import.meta.url), 'utf8'),
+].join('\n')
 // The bind-time self-test lives in src/native/ffi/build/*.ts (per-domain
 // `selfTest*` functions) after the transport-core decomposition — scan the
 // whole folder for wrapper coverage.
