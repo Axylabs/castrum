@@ -40,6 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Focused A/B with rate limiting ON: **1978 → 793 ns per response (−1185 ns)**.
   The no-extras path is unchanged (memo hit). `responseHeaders` keeps its array
   API; mocks without `successHeaders` fall back to the old path.
+- **The handler `run()` no longer slices the pooled output buffer, and copies
+  the body directly.** `run()` passed `handle.buffer.subarray(0, written)` to the
+  decoder and `bodyJson(true)` did `subarray(...).slice()` — two per-request
+  `TypedArray` view allocations (~35 ns each in Bun). The decoder now takes the
+  whole buffer plus the written length (bounds-checks against it), and the body
+  copy uses `buffer.slice(begin, end)` directly. `bench:ingress-cost`:
+  **`run` 442 → 396 ns, `respond` 537 → 487 ns, JS-side 289 → 252 ns.**
 
 ### Changed
 

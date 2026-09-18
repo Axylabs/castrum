@@ -36,12 +36,12 @@ import { IngressResultBase } from './result-base'
 
 /** Zero-alloc, reusable result decoder for the pre-baked handler path. */
 export class BakedIngressResult extends IngressResultBase {
-  refresh(buf: Uint8Array, body: Uint8Array, view: DataView): void {
+  refresh(buf: Uint8Array, body: Uint8Array, view: DataView, len: number = buf.byteLength): void {
     // Defensive: the native core always writes the full fixed header
     // (>= OUT_DATA_START bytes) before returning `written`. The cached
     // whole-buffer DataView (see viewForArrayBuffer) would otherwise decode
     // stale bytes if this contract is ever violated — treat as internal error.
-    if (buf.byteLength < OUT_DATA_START) {
+    if (len < OUT_DATA_START) {
       this.setInternalError()
       return
     }
@@ -59,7 +59,7 @@ export class BakedIngressResult extends IngressResultBase {
 
     // Bounds-checked section offsets shared with the fast decoder: a
     // malformed/truncated buffer can never produce slices past its end.
-    const layout = sectionLayout(buf.byteLength, cookiesLenRaw, queryLenRaw, bodyJsonLenRaw)
+    const layout = sectionLayout(len, cookiesLenRaw, queryLenRaw, bodyJsonLenRaw)
 
     if (h0 === 0 && h1 === 0) {
       this.verdict = 1
@@ -85,7 +85,7 @@ export class BakedIngressResult extends IngressResultBase {
 
     // The baked path trusts the already-clamped section lengths, so pass the
     // safe body len here (the fast path re-checks bounds on read instead).
-    this.setSections(buf, layout, layout.safeBodyJsonLen)
+    this.setSections(buf, layout, layout.safeBodyJsonLen, len)
 
     this.updateOkTerminal()
 
@@ -115,7 +115,15 @@ export class BakedIngressResult extends IngressResultBase {
   }
 
   bodyJson(copy: boolean): Uint8Array {
+    if (copy) {
+      // Copy directly out of the buffer — `buffer.slice(begin, end)` avoids the
+      // intermediate `subarray()` view that `bodyJsonSlice().slice()` created.
+      if (this._bodyJsonLen === 0) return this._buf.slice(0, 0)
+      const end = this._bodyJsonStart + this._bodyJsonLen
+      if (end > this._len) return this._buf.slice(0, 0)
+      return this._buf.slice(this._bodyJsonStart, end)
+    }
     const slice = this.bodyJsonSlice()
-    return (copy ? slice.slice() : slice) as Uint8Array
+    return slice as Uint8Array
   }
 }

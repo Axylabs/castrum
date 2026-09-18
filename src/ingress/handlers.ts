@@ -554,9 +554,16 @@ export function createIngressHandler(
           written = handler.handleRequestPacked(input, body, handle.buffer)
         }
 
-        const used = handle.buffer.subarray(0, written)
-        // Cached per-ArrayBuffer DataView: no per-request view allocation.
-        result.refresh(used, body ?? EMPTY_BODY, viewForArrayBuffer(used.buffer, used.byteOffset))
+        // Pass the WHOLE pooled buffer + the written length instead of a
+        // per-request `buffer.subarray(0, written)` view (a ~35ns allocation in
+        // Bun); the decoder bounds-checks against the length. Same DataView
+        // (cached per-ArrayBuffer, offset unchanged).
+        result.refresh(
+          handle.buffer,
+          body ?? EMPTY_BODY,
+          viewForArrayBuffer(handle.buffer.buffer, handle.buffer.byteOffset),
+          written,
+        )
       } catch (err) {
         result.setInternalError()
         const error = err instanceof Error ? err : new Error(String(err))

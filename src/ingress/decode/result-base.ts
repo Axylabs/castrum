@@ -62,6 +62,13 @@ export abstract class IngressResultBase {
   body: Uint8Array = EMPTY_BODY
 
   protected _buf: Uint8Array = EMPTY_BODY
+  /**
+   * Valid byte length of `_buf` (the native `written` count). `_buf` may be the
+   * WHOLE pooled output buffer (`outputBufferSize` bytes), so bounds checks must
+   * use this, not `_buf.byteLength` — that lets `run()` skip a per-request
+   * `buffer.subarray(0, written)` view.
+   */
+  protected _len = 0
   protected _bodyJsonStart = OUT_DATA_START
   protected _bodyJsonLen = 0
   private _cookiesBuf: Uint8Array | null = null
@@ -89,6 +96,7 @@ export abstract class IngressResultBase {
     this.bodyTruncated = false
     this.body = EMPTY_BODY
     this._buf = EMPTY_BODY
+    this._len = 0
     this._bodyJsonStart = OUT_DATA_START
     this._bodyJsonLen = 0
     this._cookiesBuf = null
@@ -134,8 +142,14 @@ export abstract class IngressResultBase {
    * baked path passes the already-clamped `layout.safeBodyJsonLen`. Sections
    * are stored as slices and decoded lazily by `cookiesJson()`/`queryJson()`.
    */
-  protected setSections(buf: Uint8Array, layout: PackedSectionLayout, bodyJsonLen: number): void {
+  protected setSections(
+    buf: Uint8Array,
+    layout: PackedSectionLayout,
+    bodyJsonLen: number,
+    len: number = buf.byteLength,
+  ): void {
     this._buf = buf
+    this._len = len
     this._bodyJsonStart = layout.bodyJsonStart
     this._bodyJsonLen = bodyJsonLen
     this._cookiesBuf =
@@ -174,7 +188,7 @@ export abstract class IngressResultBase {
   protected bodyJsonSlice(): Uint8Array {
     if (this._bodyJsonLen === 0) return EMPTY_BODY
     const end = this._bodyJsonStart + this._bodyJsonLen
-    if (end > this._buf.byteLength) return EMPTY_BODY
+    if (end > this._len) return EMPTY_BODY
     return this._buf.subarray(this._bodyJsonStart, end)
   }
 }

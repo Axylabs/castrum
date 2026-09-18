@@ -127,7 +127,7 @@ export class FastIngressResult extends IngressResultBase {
     // Store slices for lazy decode instead of eagerly decoding strings. The
     // fast path trusts the RAW declared body length and re-checks bounds on
     // read (bodyJson()), so pass the raw declared length here.
-    this.setSections(buf, layout, bodyJsonLen)
+    this.setSections(buf, layout, bodyJsonLen, buf.byteLength)
 
     // Parity with the baked decoder: any declared section (cookies, query,
     // OR body) that overran the buffer counts as truncated.
