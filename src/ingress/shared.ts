@@ -36,7 +36,7 @@ export const DEFAULT_BAKED_OUTPUT_BUFFER_SIZE = 131_072
  * (`handle_request_full_sync` allocates `vec![0u8; output_size]`), OOM-ing the
  * process. Callers that genuinely need more can raise it here.
  */
-export const MAX_OUTPUT_BUFFER_SIZE = 64 * 1024 * 1024
+const MAX_OUTPUT_BUFFER_SIZE = 64 * 1024 * 1024
 
 /**
  * Clamp an ingress output-buffer size into `[min, MAX_OUTPUT_BUFFER_SIZE]` so

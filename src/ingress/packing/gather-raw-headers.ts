@@ -12,14 +12,6 @@ import { writeHeaderPair } from './header-packing'
 import { getHeaderBuf, MAX_SMALL_HEADER_BYTES } from './scratch'
 import { forEachSelectedHeader, HDR_ORIGIN } from './select-headers'
 
-// Shared per-header size guards (single source of truth in scratch.ts).
-// Re-exported for back-compat with imports that referenced them here.
-export {
-  MAX_COOKIE_HEADER_BYTES,
-  MAX_SMALL_HEADER_BYTES,
-  MAX_XFF_HEADER_BYTES,
-} from './scratch'
-
 /**
  * Gather the request headers selected by `plan` as a packed byte block
  * (`[u16 count] { [u16 name_len][name][u32 val_len][value] }`) written into a

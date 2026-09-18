@@ -339,11 +339,10 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
 }
 
 // ── Path matching (shared with server-node.ts + router.ts) ─────────
-// `buildPathMatcher` / `PathMatch` / `safeDecode` live in path-matcher.ts;
-// re-exported here for back-compat (they were historically exported from this
-// module).
+// `PathMatch` / `safeDecode` live in path-matcher.ts and are not part of this
+// module's surface; only `buildPathMatcher` is re-exported for back-compat.
 
-export { buildPathMatcher, type PathMatch, safeDecode } from './path-matcher'
+export { buildPathMatcher } from './path-matcher'
 
 /** Typed options forwarded to `Bun.serve`. */
 interface BunServerOptions {

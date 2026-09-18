@@ -26,7 +26,7 @@ import { decoder } from '../shared/bytes'
 import type { SchemaValidator } from '../shared/packed'
 
 /** Empty bytes sentinel for skip-on-error scalar parity (e.g. AEAD decrypt). */
-export const EMPTY_BYTES = new Uint8Array(0)
+const EMPTY_BYTES = new Uint8Array(0)
 
 /** Result kinds supported by the loader (mirrors the packed batch wire shapes). */
 export type LoaderResultKind = 'boolean' | 'number' | 'bigint' | 'bytes'
