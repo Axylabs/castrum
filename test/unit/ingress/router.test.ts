@@ -82,6 +82,24 @@ describe('createIngressRouter', () => {
     expect(await echoRes.text()).toBe('hello')
   })
 
+  test('echo does not reflect an active Content-Type (no reflected XSS)', async () => {
+    const router = createIngressRouter({
+      routes: { '/api/echo': { echo: true, options: { parseCookies: false, parseQuery: false } } },
+    })
+    const res = await router.fetch(
+      new Request('http://x/api/echo', {
+        method: 'POST',
+        body: '<script>alert(1)</script>',
+        headers: { 'content-type': 'text/html' },
+      }),
+    )
+    expect(res.status).toBe(200)
+    // The attacker-controlled body must NOT be served as executable HTML, and
+    // sniffing is disabled.
+    expect(res.headers.get('content-type')).not.toContain('text/html')
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+  })
+
   test('raw handlers bypass the pipeline', async () => {
     const raw = () => new Response('raw-ok', { status: 201 })
     const router = createIngressRouter({

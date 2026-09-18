@@ -8,8 +8,39 @@ import type { OptimizedIngressHandler } from '../types'
 import { type BakedHandlerOptions, resolveIp } from './common'
 
 /**
+ * Content types safe to echo back for an attacker-supplied body. Anything else
+ * — notably `text/html`, `application/xhtml+xml`, `image/svg+xml` and XML — is
+ * coerced to `application/octet-stream`: reflecting an active type would let a
+ * `POST /echo` execute the request body as script in a browser.
+ */
+const SAFE_ECHO_CONTENT_TYPES = new Set([
+  'application/json',
+  'application/octet-stream',
+  'text/plain',
+])
+
+/** Lowercased media type with parameters stripped (`text/html; charset=x` → `text/html`). */
+function echoMediaTypeOf(contentType: string): string {
+  const semi = contentType.indexOf(';')
+  return (semi >= 0 ? contentType.slice(0, semi) : contentType).trim().toLowerCase()
+}
+
+/**
+ * Coerce a client Content-Type into a type that is safe to echo back.
+ *
+ * @param contentType - The raw request `Content-Type` header value.
+ * @returns The value unchanged when it is a safe non-active type, else
+ *   `application/octet-stream`.
+ */
+export function safeEchoContentType(contentType: string): string {
+  return SAFE_ECHO_CONTENT_TYPES.has(echoMediaTypeOf(contentType))
+    ? contentType
+    : 'application/octet-stream'
+}
+
+/**
  * Pre-baked echo handler: streams the request body back with the client's
- * Content-Type, bounded by `maxBodyBytes`.
+ * Content-Type (coerced to a non-active type), bounded by `maxBodyBytes`.
  */
 export function echoHandler(
   ingress: OptimizedIngressHandler,
@@ -50,7 +81,19 @@ export function echoHandler(
 
     const baseHeaders: ReadonlyArray<[string, string]> = prep.headers ?? []
 
-    const requestedContentType = req.headers.get('content-type') ?? 'application/octet-stream'
+    const requestedContentType = safeEchoContentType(
+      req.headers.get('content-type') ?? 'application/octet-stream',
+    )
+
+    // Content-Type + `nosniff` (unless the security config already emitted it),
+    // so the echoed body can never be sniffed into an active type.
+    const withEchoHeaders = (contentType: string): [string, string][] => {
+      const headers = ingress.withContentType(baseHeaders, contentType)
+      if (!headers.some(([name]) => name.toLowerCase() === 'x-content-type-options')) {
+        headers.push(['x-content-type-options', 'nosniff'])
+      }
+      return headers
+    }
 
     const contentLengthHeader = req.headers.get('content-length')
     const contentLength = contentLengthHeader === null ? NaN : Number(contentLengthHeader)
@@ -59,20 +102,20 @@ export function echoHandler(
       if (contentLength > maxBodyBytes) {
         return new Response(ERROR_BODIES.body_too_large, {
           status: 413,
-          headers: ingress.withContentType(baseHeaders, 'application/json'),
+          headers: withEchoHeaders('application/json'),
         })
       }
 
       if (contentLength <= 0 || req.body === null) {
         return new Response(null, {
           status: 200,
-          headers: ingress.withContentType(baseHeaders, requestedContentType),
+          headers: withEchoHeaders(requestedContentType),
         })
       }
 
       return new Response(req.body, {
         status: 200,
-        headers: ingress.withContentType(baseHeaders, requestedContentType),
+        headers: withEchoHeaders(requestedContentType),
       })
     }
 
@@ -84,7 +127,7 @@ export function echoHandler(
 
       return new Response(bodyBytes.byteLength > 0 ? bodyBytes : null, {
         status: 200,
-        headers: ingress.withContentType(baseHeaders, requestedContentType),
+        headers: withEchoHeaders(requestedContentType),
       })
     } catch (err) {
       const code = (err as { code?: string } | null)?.code
@@ -99,7 +142,7 @@ export function echoHandler(
             : ERROR_BODIES.bad_request,
         {
           status: isTooLarge ? 413 : isTimeout ? 408 : 400,
-          headers: ingress.withContentType(baseHeaders, 'application/json'),
+          headers: withEchoHeaders('application/json'),
         },
       )
     }
