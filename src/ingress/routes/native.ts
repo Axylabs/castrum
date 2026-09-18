@@ -1,6 +1,6 @@
 // src/ingress/routes/native.ts — lean per-route native-stack route factory.
 //
-// A `RouteHandler` backed by the route-wire v3 stack (`createNativeRoute`)
+// A `RouteHandler` backed by the route-wire v4 stack (`createNativeRoute`)
 // instead of the full 8-stage `IngressInner`: the native side runs ONLY the
 // stages the plan compiled (parseQuery/parseCookies/requireJsonBody/
 // validateBody) and returns a packed verdict + pair sections; the responder

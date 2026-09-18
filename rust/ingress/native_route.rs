@@ -8,7 +8,7 @@
 //
 // This is the live external contract that supersedes the deleted `rust/route.rs`
 // (dead external-project wire). The wire is pinned on the JS side by
-// `@ignex/native/src/route-wire.ts` (magic `ROUT`, version 3) and the lenient
+// `@ignex/native/src/route-wire.ts` (magic `ROUT`, version 4) and the lenient
 // parse parity by `scripts/verify-native-route.ts`; stage tags MUST match
 // `ROUTE_STAGE_TAG` there:
 //   parseQuery=0, parseCookies=1, validateQuery=2, validateCookies=3,
@@ -25,6 +25,17 @@
 // required size): `[flags u32][errorCode u32]` + a query pair section iff
 // `parseQuery` + a cookie pair section iff `parseCookies`. Pair sections are
 // `[count u32] { [nameLen u32][name][valueLen u32][value] }`.
+//
+// v3 → v4 (Phase 1, native response projection): a descriptor may carry a
+// `response` projection part (part tag 5). When it does AND the pipeline is OK,
+// the result payload after the verdict header is a framed HTTP response
+// `[status u16][hdrCount u32]{[nameLen u32][name][valueLen u32][value]}…`
+// `[bodyLen u32][body]` INSTEAD of the pair sections, and the
+// `ROUTE_RESULT_FLAG_HAS_RESPONSE` bit is set. The body is a pre-encoded
+// constant that may contain ONE literal `{requestId}` placeholder, substituted
+// from the frame's request-id section (frame flag `HAS_REQUEST_ID`, appended
+// after the optional body section as `[ridLen u32][rid]`). Templating from
+// query/cookies/derive is a later phase.
 
 use std::sync::Arc;
 
@@ -36,10 +47,13 @@ use crate::util::bytes::cookie_pairs;
 /// Magic that identifies a route descriptor (`"ROUT"` LE).
 pub(crate) const ROUTE_DESC_MAGIC: u32 = 0x524f5554;
 /// Wire version — bump on ANY layout change (descriptor, frame, or result).
-pub(crate) const ROUTE_DESC_VERSION: u32 = 3;
+pub(crate) const ROUTE_DESC_VERSION: u32 = 4;
 
 /// Frame flag: the body section is present (bit 0 of the frame flags word).
 pub(crate) const ROUTE_FRAME_FLAG_HAS_BODY: u32 = 1 << 0;
+/// Frame flag: the request-id section is present (bit 1). The section is
+/// appended after the optional body section: `[ridLen u32][rid]`.
+pub(crate) const ROUTE_FRAME_FLAG_HAS_REQUEST_ID: u32 = 1 << 1;
 
 /// Result flag: the route stack succeeded (else `errorCode` is meaningful).
 pub(crate) const ROUTE_RESULT_FLAG_OK: u32 = 1 << 0;
@@ -58,6 +72,10 @@ pub(crate) const ROUTE_RESULT_FLAG_BODY_VALID: u32 = 1 << 4;
 pub(crate) const ROUTE_RESULT_FLAG_PARAMS_VALID: u32 = 1 << 5;
 #[allow(dead_code)]
 pub(crate) const ROUTE_RESULT_FLAG_HEADERS_VALID: u32 = 1 << 6;
+/// Result flag: the payload is a framed native response projection
+/// (`[status u16][headers][body]`) rather than query/cookie pair sections.
+/// Set only when the descriptor carries a `response` part AND the pipeline is OK.
+pub(crate) const ROUTE_RESULT_FLAG_HAS_RESPONSE: u32 = 1 << 7;
 
 /// Descriptor stage tags (the ordered pipeline a route instance runs).
 pub(crate) const STAGE_PARSE_QUERY: u8 = 0;
@@ -69,10 +87,28 @@ pub(crate) const STAGE_REQUIRE_JSON_BODY: u8 = 5;
 
 /// Descriptor part tags (`RoutePartKind`): the schema-bearing request parts.
 const PART_BODY: u8 = 3;
+/// The native response projection (`[status][headers][body]`). Only the BODY
+/// schema and this part are supported; any other part tag fails compilation.
+const PART_RESPONSE: u8 = 5;
+
+/// The single accepted body placeholder, substituted from the frame's
+/// request-id section. Byte-exact ASCII (`{requestId}`).
+const RID_PLACEHOLDER: &[u8] = b"{requestId}";
 
 /// Body-rejected error codes reported in the result header (0 = ok).
 const ERR_BODY_NOT_JSON: u32 = 400;
 const ERR_BODY_SCHEMA: u32 = 422;
+
+/// A compiled 2xx response projection: the status, static headers, and a
+/// pre-encoded body that may contain ONE `{requestId}` placeholder.
+#[derive(Debug)]
+struct ResponseProjection {
+    status: u16,
+    headers: Vec<(Vec<u8>, Vec<u8>)>,
+    body: Vec<u8>,
+    /// Byte offset of the single `{requestId}` placeholder in `body`, if any.
+    rid_at: Option<usize>,
+}
 
 /// A compiled, pre-baked per-route native stack.
 pub(crate) struct NativeRoute {
@@ -86,6 +122,9 @@ pub(crate) struct NativeRoute {
     max_pairs: usize,
     /// Compiled draft-07 body schema (fast_schema + jsonschema dual).
     body_schema: Option<Arc<IngressSchema>>,
+    /// Optional native response projection (route-wire v4). When present and the
+    /// pipeline is OK, `run` emits the framed response instead of pair sections.
+    response: Option<ResponseProjection>,
 }
 
 impl NativeRoute {
@@ -141,6 +180,7 @@ impl NativeRoute {
 
         let schema_count = read_u32_at(desc, &mut pos)?;
         let mut body_schema_bytes: Option<Vec<u8>> = None;
+        let mut response: Option<ResponseProjection> = None;
         for _ in 0..schema_count {
             let part = *desc
                 .get(pos)
@@ -156,14 +196,26 @@ impl NativeRoute {
             let bytes = &desc[pos..end];
             pos = end;
             match part {
-                PART_BODY => body_schema_bytes = Some(bytes.to_vec()),
+                PART_BODY => {
+                    if body_schema_bytes.is_some() {
+                        return Err("route descriptor: duplicate body schema part".to_string());
+                    }
+                    body_schema_bytes = Some(bytes.to_vec());
+                }
+                PART_RESPONSE => {
+                    if response.is_some() {
+                        return Err("route descriptor: duplicate response part".to_string());
+                    }
+                    response = Some(parse_response(bytes)?);
+                }
                 other => {
-                    // This stack validates the BODY only. A schema for any other
-                    // part (params/query/cookie/headers/response) is unsupported
-                    // → fail compilation so the caller falls back to JS
-                    // (byte-parity preserved by design). validateQuery /
-                    // validateCookies WITHOUT a schema are a no-op (the parse
-                    // VALID bit is the verdict), so they never reach this check.
+                    // This stack validates the BODY only and builds a RESPONSE
+                    // projection. A schema for any other part (params/query/
+                    // cookie/headers) is unsupported → fail compilation so the
+                    // caller falls back to JS (byte-parity preserved by design).
+                    // validateQuery / validateCookies WITHOUT a schema are a
+                    // no-op (the parse VALID bit is the verdict), so they never
+                    // reach this check.
                     return Err(format!(
                         "route descriptor: unsupported schema part tag {other} (this stack validates the body only)"
                     ));
@@ -196,6 +248,7 @@ impl NativeRoute {
             max_cookie_bytes,
             max_pairs,
             body_schema,
+            response,
         })
     }
 
@@ -211,9 +264,17 @@ impl NativeRoute {
         let mut pos = 0usize;
         let flags = read_u32_at(frame, &mut pos)?;
         let has_body = (flags as u32) & ROUTE_FRAME_FLAG_HAS_BODY != 0;
+        let has_request_id = (flags as u32) & ROUTE_FRAME_FLAG_HAS_REQUEST_ID != 0;
         let query = read_section(frame, &mut pos, usize::MAX)?;
         let cookie = read_section(frame, &mut pos, usize::MAX)?;
         let body: &[u8] = if has_body {
+            read_section(frame, &mut pos, usize::MAX)?
+        } else {
+            &[]
+        };
+        // The request-id section is appended AFTER the optional body section
+        // (it is only read when the frame advertises it).
+        let request_id: &[u8] = if has_request_id {
             read_section(frame, &mut pos, usize::MAX)?
         } else {
             &[]
@@ -262,26 +323,72 @@ impl NativeRoute {
         // shape sized them first and walked again, which decoded every escaped
         // segment TWICE and allocated twice per segment in BOTH passes.
         // The reused `scratch` holds the decoded bytes of one segment at a time.
+        //
+        // v4 response mode: when the descriptor carries a response projection
+        // and the pipeline is OK, the payload is the framed HTTP response
+        // INSTEAD of the pair sections. Any non-OK verdict keeps the v3 result
+        // shape (verdict header + pair sections) so the caller can reject.
+        let response_mode = self.response.is_some() && error_code == 0;
         let mut scratch: Vec<u8> = Vec::new();
         let mut w = ResultWriter::new(out, RESULT_HEADER_LEN);
         let mut query_capped = false;
         let mut cookie_capped = false;
-        if self.parse_query {
-            query_capped = write_query_section(&mut w, &mut scratch, query, self.max_pairs);
+        let mut result_flags: u32 = 0;
+
+        if response_mode {
+            let proj = self
+                .response
+                .as_ref()
+                .expect("response_mode implies a projection");
+            // A template placeholder needs the caller-supplied request id. Fail
+            // BEFORE writing anything so `out` stays untouched on error.
+            if proj.rid_at.is_some() && !has_request_id {
+                return Err("route frame: response template needs a request-id section".to_string());
+            }
+            w.u16(proj.status);
+            w.u32(proj.headers.len() as u32);
+            for (name, value) in &proj.headers {
+                w.len_prefixed(name);
+                w.len_prefixed(value);
+            }
+            match proj.rid_at {
+                Some(at) => {
+                    let before = &proj.body[..at];
+                    let after = &proj.body[at + RID_PLACEHOLDER.len()..];
+                    w.u32((before.len() + request_id.len() + after.len()) as u32);
+                    w.bytes(before);
+                    w.bytes(request_id);
+                    w.bytes(after);
+                }
+                None => {
+                    w.u32(proj.body.len() as u32);
+                    w.bytes(&proj.body);
+                }
+            }
+            result_flags |= ROUTE_RESULT_FLAG_HAS_RESPONSE;
+        } else {
+            if self.parse_query {
+                query_capped = write_query_section(&mut w, &mut scratch, query, self.max_pairs);
+            }
+            if self.parse_cookies {
+                cookie_capped = write_cookie_section(&mut w, cookie, self.max_pairs);
+            }
         }
-        if self.parse_cookies {
-            cookie_capped = write_cookie_section(&mut w, cookie, self.max_pairs);
-        }
+
         // validateQuery/validateCookies without a schema are no-ops (the parse
         // VALID bit is the verdict); with a schema, compile would have rejected
         // the descriptor → the caller fell back to JS. A section that is not
-        // parsed never reports VALID.
+        // parsed never reports VALID. In response mode the pair sections are not
+        // emitted, so the counts come from a cheap walk (same cap semantics).
+        if response_mode {
+            query_capped = self.parse_query && query_pairs_capped(query, self.max_pairs);
+            cookie_capped = self.parse_cookies && cookie_pairs_capped(cookie, self.max_pairs);
+        }
         let query_valid = self.parse_query && !query_capped && query.len() <= self.max_query_bytes;
         let cookie_valid =
             self.parse_cookies && !cookie_capped && cookie.len() <= self.max_cookie_bytes;
 
         // ── Verdict flags + header (committed LAST) ─────────────────
-        let mut result_flags: u32 = 0;
         if error_code == 0 {
             result_flags |= ROUTE_RESULT_FLAG_OK;
         }
@@ -302,6 +409,68 @@ impl NativeRoute {
         header[4..].copy_from_slice(&error_code.to_le_bytes());
         Ok(w.commit(header))
     }
+}
+
+// ── Response projection (route-wire v4) ─────────────────────────────
+
+/// Read a u16le, advancing `pos` on success (bounds-checked).
+#[inline]
+fn read_u16_at(input: &[u8], pos: &mut usize) -> std::result::Result<u16, String> {
+    if *pos + 2 > input.len() {
+        return Err("route descriptor: truncated u16".to_string());
+    }
+    let v = u16::from_le_bytes([input[*pos], input[*pos + 1]]);
+    *pos += 2;
+    Ok(v)
+}
+
+/// Parse the `response` projection part bytes:
+/// `[status u16][hdrCount u32]{[nameLen u32][name][valueLen u32][value]}…`
+/// `[bodyLen u32][body]`. Rejects duplicate `{requestId}` placeholders and an
+/// absurd header count (allocation guard). All reads are bounds-checked.
+fn parse_response(bytes: &[u8]) -> std::result::Result<ResponseProjection, String> {
+    let mut pos = 0usize;
+    let status = read_u16_at(bytes, &mut pos)?;
+    let header_count = read_u32_at(bytes, &mut pos)?;
+    // Each header costs at least 8 bytes (two u32 length prefixes), so a count
+    // larger than the remaining descriptor can only be malformed. This caps the
+    // `Vec::with_capacity` below so a hostile descriptor cannot force a huge
+    // allocation.
+    if header_count > bytes.len() / 8 + 1 {
+        return Err("route descriptor: response header count exceeds descriptor size".to_string());
+    }
+    let mut headers: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(header_count);
+    for _ in 0..header_count {
+        let name = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+        let value = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+        headers.push((name, value));
+    }
+    let body = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+    if body.len() > u32::MAX as usize {
+        return Err("route descriptor: response body too large".to_string());
+    }
+    let mut rid_at = None;
+    if let Some(at) = body
+        .windows(RID_PLACEHOLDER.len())
+        .position(|w| w == RID_PLACEHOLDER)
+    {
+        if body[at + RID_PLACEHOLDER.len()..]
+            .windows(RID_PLACEHOLDER.len())
+            .any(|w| w == RID_PLACEHOLDER)
+        {
+            return Err(
+                "route descriptor: response body has more than one {requestId} placeholder"
+                    .to_string(),
+            );
+        }
+        rid_at = Some(at);
+    }
+    Ok(ResponseProjection {
+        status,
+        headers,
+        body,
+        rid_at,
+    })
 }
 
 // ── Lenient query parsing (byte-parity with ignex `decodePairList`) ──
@@ -328,6 +497,20 @@ fn query_pairs(query: &[u8]) -> impl Iterator<Item = Pair<'_>> + '_ {
                 value: &[],
             },
         })
+}
+
+/// Whether `max_pairs` caps the query pair section — the same `count >=
+/// max_pairs` semantics `write_query_section` implements, without writing.
+#[inline]
+fn query_pairs_capped(query: &[u8], max_pairs: usize) -> bool {
+    max_pairs > 0 && query_pairs(query).take(max_pairs + 1).count() > max_pairs
+}
+
+/// Whether `max_pairs` caps the cookie pair section — same semantics as
+/// `write_cookie_section`, without writing.
+#[inline]
+fn cookie_pairs_capped(cookie: &[u8], max_pairs: usize) -> bool {
+    max_pairs > 0 && cookie_pairs(cookie).take(max_pairs + 1).count() > max_pairs
 }
 
 // `cookie_pairs` (crate::util::bytes) yields raw (trimmed, DQUOTE-unwrapped,
@@ -402,6 +585,11 @@ impl<'a> ResultWriter<'a> {
                 self.full = true;
             }
         }
+    }
+
+    #[inline]
+    fn u16(&mut self, value: u16) {
+        self.bytes(&value.to_le_bytes());
     }
 
     #[inline]
@@ -561,6 +749,60 @@ mod tests {
             f.extend_from_slice(b);
         }
         f
+    }
+
+    /// Encode a request frame WITH a request-id section (v4 frame flag).
+    fn frame_with_rid(query: &[u8], cookie: &[u8], body: Option<&[u8]>, rid: &[u8]) -> Vec<u8> {
+        let mut f = frame(query, cookie, body);
+        let flags =
+            u32::from_le_bytes(f[0..4].try_into().unwrap()) | ROUTE_FRAME_FLAG_HAS_REQUEST_ID;
+        f[0..4].copy_from_slice(&flags.to_le_bytes());
+        f.extend_from_slice(&(rid.len() as u32).to_le_bytes());
+        f.extend_from_slice(rid);
+        f
+    }
+
+    /// Encode a response projection part body.
+    fn response_payload(status: u16, headers: &[(&[u8], &[u8])], body: &[u8]) -> Vec<u8> {
+        let mut r = Vec::new();
+        r.extend_from_slice(&status.to_le_bytes());
+        r.extend_from_slice(&(headers.len() as u32).to_le_bytes());
+        for (name, value) in headers {
+            r.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            r.extend_from_slice(name);
+            r.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            r.extend_from_slice(value);
+        }
+        r.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        r.extend_from_slice(body);
+        r
+    }
+
+    /// Decoded response frame: (status, headers, body).
+    type DecodedResponse = (u16, Vec<(Vec<u8>, Vec<u8>)>, Vec<u8>);
+
+    /// Decode the v4 response frame payload (after the 8-byte verdict header).
+    fn decode_response(wire: &[u8]) -> DecodedResponse {
+        let mut pos = RESULT_HEADER_LEN;
+        let status = u16::from_le_bytes(wire[pos..pos + 2].try_into().unwrap());
+        pos += 2;
+        let count = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        let mut headers = Vec::with_capacity(count);
+        for _ in 0..count {
+            let nl = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+            let name = wire[pos..pos + nl].to_vec();
+            pos += nl;
+            let vl = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+            let value = wire[pos..pos + vl].to_vec();
+            pos += vl;
+            headers.push((name, value));
+        }
+        let bl = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        (status, headers, wire[pos..pos + bl].to_vec())
     }
 
     fn decode_pairs(wire: &[u8], pos: &mut usize) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -786,5 +1028,129 @@ mod tests {
         let mut bad = frame(b"a=1", b"", None);
         bad.truncate(bad.len() - 1);
         assert!(r.run(&bad, &mut out).is_err());
+    }
+
+    // ── v4 response projection ─────────────────────────────────
+
+    #[test]
+    fn response_projection_constant_body_round_trips() {
+        let payload = response_payload(
+            200,
+            &[(b"content-type", b"application/json")],
+            b"{\"ok\":true}",
+        );
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &payload)])).unwrap();
+        let mut out = vec![0u8; 256];
+        let w = r.run(&frame(b"", b"", None), &mut out).unwrap();
+        let flags = u32::from_le_bytes(out[0..4].try_into().unwrap());
+        assert_ne!(flags & ROUTE_RESULT_FLAG_OK, 0);
+        assert_ne!(flags & ROUTE_RESULT_FLAG_HAS_RESPONSE, 0);
+        let (status, headers, body) = decode_response(&out[..w]);
+        assert_eq!(status, 200);
+        assert_eq!(
+            headers,
+            vec![(b"content-type".to_vec(), b"application/json".to_vec())]
+        );
+        assert_eq!(body, b"{\"ok\":true}");
+        // header 8 + status 2 + count 4 + (4+12)+(4+16) + len 4 + body 11.
+        assert_eq!(w, 65);
+    }
+
+    #[test]
+    fn response_projection_substitutes_request_id() {
+        let payload = response_payload(201, &[], b"{\"ok\":true,\"requestId\":\"{requestId}\"}");
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &payload)])).unwrap();
+        let f = frame_with_rid(b"", b"", None, b"rid-abc-123");
+        let mut out = vec![0u8; 256];
+        let w = r.run(&f, &mut out).unwrap();
+        let (status, headers, decoded) = decode_response(&out[..w]);
+        assert_eq!(status, 201);
+        assert!(headers.is_empty());
+        assert_eq!(decoded, b"{\"ok\":true,\"requestId\":\"rid-abc-123\"}");
+        assert!(!decoded
+            .windows(RID_PLACEHOLDER.len())
+            .any(|x| x == RID_PLACEHOLDER));
+    }
+
+    #[test]
+    fn response_projection_requires_request_id_when_template_has_placeholder() {
+        let payload = response_payload(200, &[], b"{\"requestId\":\"{requestId}\"}");
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &payload)])).unwrap();
+        let mut out = vec![0u8; 256];
+        // No request-id flag/section → the frame cannot satisfy the template.
+        assert!(r.run(&frame(b"", b"", None), &mut out).is_err());
+        assert_eq!(out, vec![0u8; 256], "nothing written on the error path");
+    }
+
+    #[test]
+    fn response_projection_needed_size_convention() {
+        let payload = response_payload(
+            200,
+            &[(b"content-type", b"application/json; charset=utf-8")],
+            b"{\"ok\":true,\"requestId\":\"{requestId}\",\"path\":\"/api/users\"}",
+        );
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &payload)])).unwrap();
+        let f = frame_with_rid(b"", b"", None, b"0193f2c4-0000-7000-8000-000000000000");
+        let mut small = [0u8; 8];
+        let needed = r.run(&f, &mut small).unwrap();
+        assert!(needed > 8);
+        assert_eq!(small, [0u8; 8], "nothing written to a too-small buffer");
+        let mut big = vec![0u8; needed];
+        assert_eq!(r.run(&f, &mut big).unwrap(), needed);
+    }
+
+    #[test]
+    fn response_projection_error_keeps_verdict_shape() {
+        // requireJsonBody + a response projection: a bad body must NOT emit the
+        // response frame — the caller needs the 400 verdict to reject.
+        let payload = response_payload(200, &[], b"{}");
+        let r = NativeRoute::compile(&descriptor(
+            &[STAGE_REQUIRE_JSON_BODY],
+            &[(PART_RESPONSE, &payload)],
+        ))
+        .unwrap();
+        let mut out = vec![0u8; 64];
+        let w = r
+            .run(&frame(b"", b"", Some(b"not json")), &mut out)
+            .unwrap();
+        let flags = u32::from_le_bytes(out[0..4].try_into().unwrap());
+        let code = u32::from_le_bytes(out[4..8].try_into().unwrap());
+        assert_eq!(code, 400);
+        assert_eq!(flags & ROUTE_RESULT_FLAG_OK, 0);
+        assert_eq!(flags & ROUTE_RESULT_FLAG_HAS_RESPONSE, 0);
+        assert_eq!(w, RESULT_HEADER_LEN); // verdict only — no pair sections
+    }
+
+    #[test]
+    fn response_projection_malformed_is_rejected() {
+        // Two placeholders (the phase-1 spec allows at most one).
+        let two = response_payload(200, &[], b"{requestId}{requestId}");
+        assert!(NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &two)])).is_err());
+        // Truncated header value.
+        let mut trunc = response_payload(200, &[(b"x", b"y")], b"");
+        trunc.truncate(trunc.len() - 1);
+        assert!(NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &trunc)])).is_err());
+        // Absurd header count (allocation guard).
+        let mut absurd = vec![0u8; 10];
+        absurd[2..6].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &absurd)])).is_err());
+        // Duplicate response part.
+        let p = response_payload(200, &[], b"");
+        assert!(NativeRoute::compile(&descriptor(
+            &[],
+            &[(PART_RESPONSE, p.as_slice()), (PART_RESPONSE, p.as_slice())]
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn compile_rejects_v3_descriptor_with_version_error() {
+        let mut d = descriptor(&[STAGE_PARSE_QUERY], &[]);
+        d[4..8].copy_from_slice(&3u32.to_le_bytes());
+        let err = match NativeRoute::compile(&d) {
+            Ok(_) => panic!("a v3 descriptor must be rejected by the v4 stack"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unsupported version 3"), "got: {err}");
     }
 }

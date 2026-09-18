@@ -18,7 +18,7 @@ fn crc32_c_abi_matches_core() {
 
 // ── Per-route stack C-ABI (castrum_route_*) ────────────────────
 
-/// Minimal route descriptor wire (magic + version 3 + parseQuery +
+/// Minimal route descriptor wire (magic + current version + parseQuery +
 /// parseCookies stages).
 fn route_desc_parse_both() -> Vec<u8> {
     let mut d = Vec::new();
@@ -78,6 +78,73 @@ fn route_compile_rejects_bad_magic() {
     desc[0] = 0;
     let handle = unsafe { castrum_route_compile(desc.as_ptr(), desc.len()) };
     assert_eq!(handle, 0, "bad magic must fail compilation");
+}
+
+/// v4 response projection through the C ABI: the same `castrum_route_*`
+/// symbols must emit `[flags][errorCode]` + the framed response (status +
+/// headers + requestId-substituted body) with NO new symbol.
+#[test]
+fn route_response_projection_c_abi() {
+    // Response part payload: [status u16][hdrCount u32]{[name][value]}[body].
+    let body = b"{\"ok\":true,\"requestId\":\"{requestId}\"}";
+    let mut resp = Vec::new();
+    resp.extend_from_slice(&200u16.to_le_bytes());
+    resp.extend_from_slice(&1u32.to_le_bytes());
+    let (name, value): (&[u8], &[u8]) = (b"content-type", b"application/json");
+    resp.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    resp.extend_from_slice(name);
+    resp.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    resp.extend_from_slice(value);
+    resp.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    resp.extend_from_slice(body);
+
+    let mut desc = Vec::new();
+    desc.extend_from_slice(&crate::ingress::native_route::ROUTE_DESC_MAGIC.to_le_bytes());
+    desc.extend_from_slice(&crate::ingress::native_route::ROUTE_DESC_VERSION.to_le_bytes());
+    desc.extend_from_slice(&(2 * 1024 * 1024u32).to_le_bytes());
+    desc.extend_from_slice(&8192u32.to_le_bytes());
+    desc.extend_from_slice(&8192u32.to_le_bytes());
+    desc.extend_from_slice(&0u32.to_le_bytes());
+    desc.extend_from_slice(&0u32.to_le_bytes()); // stageCount
+    desc.extend_from_slice(&1u32.to_le_bytes()); // schemaCount
+    desc.push(5); // PART_RESPONSE
+    desc.extend_from_slice(&(resp.len() as u32).to_le_bytes());
+    desc.extend_from_slice(&resp);
+
+    let handle = unsafe { castrum_route_compile(desc.as_ptr(), desc.len()) };
+    assert_ne!(handle, 0, "v4 response descriptor must compile");
+
+    // Frame with a request-id section (flag bit 1) and no body.
+    let rid = b"0193f2c4-0000-7000-8000-000000000000";
+    let mut f = route_frame(b"", b"");
+    let flags = 1u32 << 1; // ROUTE_FRAME_FLAG_HAS_REQUEST_ID
+    f[0..4].copy_from_slice(&flags.to_le_bytes());
+    f.extend_from_slice(&(rid.len() as u32).to_le_bytes());
+    f.extend_from_slice(rid);
+
+    let mut out = vec![0u8; 256];
+    let w = unsafe { castrum_route_run(handle, f.as_ptr(), f.len(), out.as_mut_ptr(), out.len()) };
+    assert!(w > 8, "response result must exceed the verdict header");
+    let rflags = u32::from_le_bytes(out[0..4].try_into().unwrap());
+    assert_ne!(
+        rflags & crate::ingress::native_route::ROUTE_RESULT_FLAG_HAS_RESPONSE,
+        0
+    );
+    // status u16 at offset 8.
+    assert_eq!(u16::from_le_bytes(out[8..10].try_into().unwrap()), 200);
+    // The substituted body must appear verbatim near the tail.
+    let wire = &out[..w];
+    assert!(
+        wire.windows(rid.len()).any(|x| x == rid),
+        "request id must be substituted into the body"
+    );
+    assert!(
+        !wire
+            .windows(b"{requestId}".len())
+            .any(|x| x == b"{requestId}"),
+        "placeholder must be gone"
+    );
+    unsafe { castrum_route_destroy(handle) };
 }
 
 #[test]

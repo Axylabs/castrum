@@ -1,4 +1,4 @@
-// src/ingress/packing/route-wire.ts — route-wire v3 byte helpers (PURE).
+// src/ingress/packing/route-wire.ts — route-wire v4 byte helpers (PURE).
 //
 // The per-route native stack (`rust/ingress/native_route.rs`,
 // `castrum_route_*` / napi `Route`) compiles a descriptor ONCE and runs each
@@ -8,6 +8,13 @@
 // `route-wire.ts` EXACTLY (`ROUTE_DESC_VERSION` bumps on any layout change; a
 // mismatched compiler/addon must be a hard reject, never a silent misparse).
 //
+// v4 adds the optional `response` projection part: when a descriptor carries it
+// AND the pipeline is OK, the native result payload is a framed HTTP response
+// `[status u16][hdrCount u32]{[name][value]}…[bodyLen u32][body]` instead of the
+// pair sections, with a single `{requestId}` placeholder substituted from the
+// frame's request-id section. See `encodeResponseProjection` /
+// `decodeRouteResponse`.
+//
 // PURE: no addon import, no module state — safe for any consumer. The
 // addon-touching factory lives in `src/ingress/native-route.ts`.
 
@@ -16,7 +23,7 @@ import { decoder, encoder } from '../../shared/bytes'
 /** Route descriptor magic (`"ROUT"` LE). Must match `ROUTE_DESC_MAGIC` in Rust. */
 export const ROUTE_DESC_MAGIC = 0x524f5554
 /** Wire version — bump on ANY descriptor/frame/result layout change. */
-export const ROUTE_DESC_VERSION = 3
+export const ROUTE_DESC_VERSION = 4
 
 /** Descriptor stage tags (the ordered pipeline a route instance runs). */
 export const ROUTE_STAGE = {
@@ -31,7 +38,7 @@ export const ROUTE_STAGE = {
 export type RouteStageTag = (typeof ROUTE_STAGE)[keyof typeof ROUTE_STAGE]
 
 /** Descriptor part tags (`RoutePartKind`): the schema-bearing request parts. */
-export const ROUTE_PART = { body: 3 } as const
+export const ROUTE_PART = { body: 3, response: 5 } as const
 
 /** Result flag bits (`ROUTE_RESULT_FLAG_*` in Rust). */
 export const ROUTE_FLAG = {
@@ -40,10 +47,20 @@ export const ROUTE_FLAG = {
   QUERY_VALID: 1 << 2,
   COOKIE_VALID: 1 << 3,
   BODY_VALID: 1 << 4,
+  /** v4: the payload is a framed native response, not pair sections. */
+  HAS_RESPONSE: 1 << 7,
 } as const
 
 /** Frame flag: the body section is present (bit 0 of the frame flags word). */
 export const ROUTE_FRAME_FLAG_HAS_BODY = 1 << 0
+/**
+ * Frame flag: the request-id section is present (bit 1). The section is
+ * appended AFTER the optional body section: `[ridLen u32][rid]`.
+ */
+export const ROUTE_FRAME_FLAG_HAS_REQUEST_ID = 1 << 1
+
+/** The single accepted response-body placeholder (byte-exact ASCII). */
+export const ROUTE_REQUEST_ID_PLACEHOLDER = '{requestId}'
 
 /** Size limits a route descriptor carries. */
 export interface RouteWireLimits {
@@ -109,19 +126,39 @@ export function encodeRouteDescriptor(
 }
 
 /**
- * Encode a request frame: `[flags u32][qLen][query][cLen][cookie]([bLen][body])`.
- * The `flags` word currently only carries `ROUTE_FRAME_FLAG_HAS_BODY`.
+ * Encode a request frame:
+ * `[flags u32][qLen][query][cLen][cookie]([bLen][body])([ridLen][requestId])`.
+ * `flags` carries `ROUTE_FRAME_FLAG_HAS_BODY` and
+ * `ROUTE_FRAME_FLAG_HAS_REQUEST_ID`. The request-id section (v4) is appended
+ * LAST, after the optional body section — it is only needed by a descriptor
+ * that carries a `response` projection with a `{requestId}` placeholder.
  */
-export function packRouteFrame(query: string, cookie: string, body: Uint8Array | null): Uint8Array {
+export function packRouteFrame(
+  query: string,
+  cookie: string,
+  body: Uint8Array | null,
+  requestId: string | null = null,
+): Uint8Array {
   const q = encoder.encode(query)
   const c = encoder.encode(cookie)
+  const r = requestId !== null ? encoder.encode(requestId) : null
   const hasBody = body !== null && body.byteLength > 0
+  const hasRequestId = r !== null
+  let flags = 0
+  if (hasBody) flags |= ROUTE_FRAME_FLAG_HAS_BODY
+  if (hasRequestId) flags |= ROUTE_FRAME_FLAG_HAS_REQUEST_ID
   const total =
-    4 + 4 + q.byteLength + 4 + c.byteLength + (hasBody ? 4 + (body?.byteLength ?? 0) : 0)
+    4 +
+    4 +
+    q.byteLength +
+    4 +
+    c.byteLength +
+    (hasBody ? 4 + (body?.byteLength ?? 0) : 0) +
+    (hasRequestId ? 4 + (r?.byteLength ?? 0) : 0)
   const out = new Uint8Array(total)
   const view = new DataView(out.buffer)
   let pos = 0
-  view.setUint32(pos, hasBody ? ROUTE_FRAME_FLAG_HAS_BODY : 0, true)
+  view.setUint32(pos, flags, true)
   pos += 4
   view.setUint32(pos, q.byteLength, true)
   pos += 4
@@ -135,8 +172,113 @@ export function packRouteFrame(query: string, cookie: string, body: Uint8Array |
     view.setUint32(pos, body.byteLength, true)
     pos += 4
     out.set(body, pos)
+    pos += body.byteLength
+  }
+  if (r) {
+    view.setUint32(pos, r.byteLength, true)
+    pos += 4
+    out.set(r, pos)
   }
   return out
+}
+
+/** A static header in a {@link RouteWireResponse} projection. */
+export interface RouteWireResponseHeader {
+  /** Header name (ASCII/UTF-8 bytes on the wire). */
+  name: string
+  /** Header value (ASCII/UTF-8 bytes on the wire). */
+  value: string
+}
+
+/** A native response projection (route-wire v4 `response` part). */
+export interface RouteWireResponse {
+  /** HTTP status (u16). */
+  status: number
+  /** Static headers, emitted in order. */
+  headers: readonly RouteWireResponseHeader[]
+  /**
+   * Pre-encoded body bytes. May contain ONE literal `{requestId}`
+   * placeholder, substituted by the native stack from the frame's request-id
+   * section (at most once).
+   */
+  body: Uint8Array
+}
+
+/**
+ * Encode the `response` projection part payload:
+ * `[status u16][hdrCount u32]{[nameLen u32][name][valueLen u32][value]}…`
+ * `[bodyLen u32][body]`.
+ */
+export function encodeResponseProjection(resp: RouteWireResponse): Uint8Array {
+  const nameBytes = resp.headers.map((h) => encoder.encode(h.name))
+  const valueBytes = resp.headers.map((h) => encoder.encode(h.value))
+  let total = 2 + 4 + 4 + resp.body.byteLength
+  for (let i = 0; i < resp.headers.length; i++) {
+    total += 4 + (nameBytes[i]?.byteLength ?? 0) + 4 + (valueBytes[i]?.byteLength ?? 0)
+  }
+  const out = new Uint8Array(total)
+  const view = new DataView(out.buffer)
+  let pos = 0
+  view.setUint16(pos, resp.status, true)
+  pos += 2
+  view.setUint32(pos, resp.headers.length, true)
+  pos += 4
+  for (let i = 0; i < resp.headers.length; i++) {
+    const name = nameBytes[i]!
+    const value = valueBytes[i]!
+    view.setUint32(pos, name.byteLength, true)
+    pos += 4
+    out.set(name, pos)
+    pos += name.byteLength
+    view.setUint32(pos, value.byteLength, true)
+    pos += 4
+    out.set(value, pos)
+    pos += value.byteLength
+  }
+  view.setUint32(pos, resp.body.byteLength, true)
+  pos += 4
+  out.set(resp.body, pos)
+  return out
+}
+
+/** A decoded native response frame. */
+export interface RouteWireResponseResult {
+  /** HTTP status. */
+  status: number
+  /** Emitted headers in order. */
+  headers: RouteWirePair[]
+  /** The body bytes (a subarray view of the result buffer — no copy). */
+  body: Uint8Array
+}
+
+/**
+ * Decode the v4 native response frame from a route result whose flags include
+ * {@link ROUTE_FLAG.HAS_RESPONSE}: `[status u16][hdrCount u32]{[nameLen u32]
+ * [name][valueLen u32][value]}…[bodyLen u32][body]`, starting after the 8-byte
+ * verdict header (`offset`, default 8).
+ */
+export function decodeRouteResponse(buf: Uint8Array, offset = 8): RouteWireResponseResult {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  let pos = offset
+  const status = view.getUint16(pos, true)
+  pos += 2
+  const count = view.getUint32(pos, true)
+  pos += 4
+  const headers: RouteWirePair[] = []
+  for (let i = 0; i < count; i++) {
+    const nameLen = view.getUint32(pos, true)
+    pos += 4
+    const name = decoder.decode(buf.subarray(pos, pos + nameLen))
+    pos += nameLen
+    const valueLen = view.getUint32(pos, true)
+    pos += 4
+    const value = decoder.decode(buf.subarray(pos, pos + valueLen))
+    pos += valueLen
+    headers.push([name, value])
+  }
+  const bodyLen = view.getUint32(pos, true)
+  pos += 4
+  return { status, headers, body: buf.subarray(pos, pos + bodyLen) }
 }
 
 /** A decoded `[name, value]` pair from a result section. */

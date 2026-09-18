@@ -1,6 +1,6 @@
 // src/ingress/native-route.ts — public per-route native stack factory.
 //
-// `createNativeRoute` compiles a route-wire v3 descriptor ONCE (via the
+// `createNativeRoute` compiles a route-wire v4 descriptor ONCE (via the
 // `castrum_route_*` C-ABI / napi `Route` surface over `rust/ingress/
 // native_route.rs`) and runs each request frame in ONE native call — the same
 // lean per-route stack `@ignex/native`'s `createNativeRoute` consumes. This
@@ -50,7 +50,7 @@ export interface NativeRoutePlan {
   maxPairs?: number
 }
 
-/** A compiled per-route native stack (route-wire v3). */
+/** A compiled per-route native stack (route-wire v4). */
 export interface NativeRoute {
   /** Whether the plan compiled `parseQuery` (the result carries a query section). */
   readonly parseQuery: boolean
@@ -58,8 +58,9 @@ export interface NativeRoute {
   readonly parseCookies: boolean
   /**
    * Run one request frame through the compiled stack and return the decoded
-   * verdict. The frame is `[flags u32][qLen][query][cLen][cookie]([bLen][body])`
-   * — build it with {@link packRouteFrame}. Reuses one growable output buffer
+   * verdict. The frame is
+   * `[flags u32][qLen][query][cLen][cookie]([bLen][body])([ridLen][rid])` —
+   * build it with {@link packRouteFrame}. Reuses one growable output buffer
    * (the needed-size convention: `0` = real error → throws; `> out.length` =
    * exact required size → retry once).
    */

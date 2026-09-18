@@ -1,5 +1,5 @@
 // bench/cost/native-route-smoke.ts — functional smoke of the public
-// `createNativeRoute` surface + the router `native` route kind (route-wire v3).
+// `createNativeRoute` surface + the router `native` route kind (route-wire v4).
 import { createNativeRoute, createIngressRouter, ROUTE_FLAG } from '../../src/ingress'
 
 const route = createNativeRoute({ parseQuery: true, parseCookies: true })

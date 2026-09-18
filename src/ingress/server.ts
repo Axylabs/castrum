@@ -107,13 +107,13 @@ export interface BakedRoute {
     readBody?: boolean
   }
   /**
-   * A LEAN native-stack responder route: the route-wire v3 per-route stack
+   * A LEAN native-stack responder route: the route-wire v4 per-route stack
    * (`createNativeRoute`) runs ONLY the plan's stages in ONE native call —
    * no CORS/rate-limit/security/IP/metadata envelope. Wired for `methods`
    * (default GET) by `nativeRouteHandler` (src/ingress/routes/native.ts).
    */
   native?: {
-    /** The route-wire v3 plan (parse/validate stages + limits). */
+    /** The route-wire v4 plan (parse/validate stages + limits). */
     plan: NativeRoutePlan
     /** The JS 2xx builder. */
     handler: NativeResponder
@@ -381,7 +381,7 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
     }
 
     if (spec.native) {
-      // LEAN native-stack responder route: route-wire v3 stack, no envelope.
+      // LEAN native-stack responder route: route-wire v4 stack, no envelope.
       // The compiled route is injected into the pure route factory (DI across
       // the purity boundary — the compile touches the dlopen layer here). The
       // user responder is guarded — a throw/rejection becomes a masked 500.

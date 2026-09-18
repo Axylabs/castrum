@@ -47,7 +47,7 @@ export interface NativeAddon {
   HmacSigner: new (key: Uint8Array) => HmacSignerInstance
   Ingress: new (options: Record<string, unknown>) => IngressInstance
   /**
-   * Per-route native stack (the `@ignex/native` route-wire v3 contract).
+   * Per-route native stack (the `@ignex/native` route-wire v4 contract).
    * Compile a route descriptor once at construction; `run` processes one
    * packed request frame (parseQuery/parseCookies/requireJsonBody/
    * validateBody) into the packed verdict result.

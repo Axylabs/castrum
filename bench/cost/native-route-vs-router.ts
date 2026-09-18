@@ -1,5 +1,5 @@
 // bench/cost/native-route-vs-router.ts — A/B: the native per-route stack
-// (route-wire v3, castrum_route_*) vs the router's pruned-IngressInner run().
+// (route-wire v4, castrum_route_*) vs the router's pruned-IngressInner run().
 //
 // Full-path comparison INCLUDING response construction (the load generator
 // requires the castrum envelope `{"ok":true,"requestId":...,"path":...,"query":
@@ -50,11 +50,11 @@ const tRouter = measure(() => {
   })
 }, 50_000)
 
-// ── Native route stack path (route-wire v3) + JS envelope build ────
+// ── Native route stack path (route-wire v4) + JS envelope build ────
 const desc = new Uint8Array(34)
 const dv = new DataView(desc.buffer)
 dv.setUint32(0, 0x524f5554, true) // ROUTE_DESC_MAGIC
-dv.setUint32(4, 3, true) // ROUTE_DESC_VERSION
+dv.setUint32(4, 4, true) // ROUTE_DESC_VERSION
 dv.setUint32(8, 2 * 1024 * 1024, true) // maxBodyBytes
 dv.setUint32(12, 8192, true) // maxQueryBytes
 dv.setUint32(16, 8192, true) // maxCookieBytes

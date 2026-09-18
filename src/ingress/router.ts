@@ -64,7 +64,7 @@ export interface RouterRouteSpec {
     readBody?: boolean
   }
   /**
-   * A LEAN native-stack responder route: the route-wire v3 per-route stack
+   * A LEAN native-stack responder route: the route-wire v4 per-route stack
    * (`createNativeRoute` over `castrum_route_*`) runs ONLY the stages in
    * `plan` (parseQuery/parseCookies/requireJsonBody/validateBody) in ONE
    * native call — no CORS/rate-limit/security/IP/metadata envelope. On a
@@ -76,7 +76,7 @@ export interface RouterRouteSpec {
    * for this route are ignored.
    */
   native?: {
-    /** The route-wire v3 plan (parse/validate stages + limits). */
+    /** The route-wire v4 plan (parse/validate stages + limits). */
     plan: NativeRoutePlan
     /** The JS 2xx builder (receives the decoded query/cookies/body snapshot). */
     handler: NativeResponder
@@ -206,7 +206,7 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
       continue
     }
     if (spec.native) {
-      // LEAN native-stack responder route: the route-wire v3 stack runs ONLY
+      // LEAN native-stack responder route: the route-wire v4 stack runs ONLY
       // the plan's stages (no full IngressInner, no CORS/rate-limit/security).
       bakedRoutes[path] = {
         native: {

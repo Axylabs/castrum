@@ -1,5 +1,5 @@
 // test/unit/ingress/native-route-public.test.ts — Public `createNativeRoute`
-// surface + the router `native` route kind (route-wire v3 in castrum).
+// surface + the router `native` route kind (route-wire v4 in castrum).
 //
 // The lean per-route native stack (`rust/ingress/native_route.rs`) is now a
 // first-class castrum surface: `createNativeRoute` compiles a plan once and
@@ -30,7 +30,7 @@ function tryCompile(plan: NativeRoutePlan) {
   }
 }
 
-describe('createNativeRoute (public route-wire v3 surface)', () => {
+describe('createNativeRoute (public route-wire v4 surface)', () => {
   test('parseQuery+parseCookies: lenient decode + OK flag', () => {
     const route = tryCompile({ parseQuery: true, parseCookies: true })
     if (!route) return
@@ -108,7 +108,7 @@ describe('createNativeRoute (public route-wire v3 surface)', () => {
     )
     const view = new DataView(desc.buffer)
     expect(view.getUint32(0, true)).toBe(0x524f5554) // ROUT
-    expect(view.getUint32(4, true)).toBe(3) // version 3
+    expect(view.getUint32(4, true)).toBe(4) // version 4
     expect(view.getUint32(24, true)).toBe(4) // stageCount
     expect(desc[28]).toBe(0)
     expect(desc[29]).toBe(1)

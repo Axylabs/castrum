@@ -385,8 +385,8 @@ export interface BunFFI {
 
   // ── Per-route native stack (`castrum_route_*`) ──────────────────
   /**
-   * Compile a route descriptor (the `@ignex/native` route-wire v3 format:
-   * magic `ROUT`, version 3, limits, stage tags, draft-07 body schema) into an
+   * Compile a route descriptor (the `@ignex/native` route-wire v4 format:
+   * magic `ROUT`, version 4, limits, stage tags, draft-07 body schema) into an
    * opaque handle. Returns the handle (`0` = invalid descriptor / compile
    * failure / panic — throws). The handle is owned by the caller and must be
    * released with {@link routeDestroy}.

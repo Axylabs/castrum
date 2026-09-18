@@ -1,4 +1,4 @@
-# Native route stack — the `@ignex/native` wire (route-wire v3)
+# Native route stack — the `@ignex/native` wire (route-wire v4)
 
 `rust/ingress/native_route.rs` exposes the **per-route native stack**: a route
 descriptor compiles once into a pre-baked `NativeRoute`, then each request runs
@@ -9,16 +9,27 @@ ONE native call. It is the LIVE external wire consumed by `@ignex/native`'s
 > wire format, never bound in `src/native/ffi.ts`) and was removed in v0.9.0.
 > `native_route.rs` implements the now-live ignex contract and supersedes it.
 
-## Route-wire v3
+## Route-wire v4
 
-- Magic `ROUT` (0x524f5554), version 3.
+- Magic `ROUT` (0x524f5554), version 4.
 - Stage tags: `parseQuery = 0 … requireJsonBody = 5`.
-- Result layout: `[flags u32][errorCode u32]` + optional query/cookie pair
-  sections.
+- Part tags: `body = 3`, `response = 5`.
+- Frame: `[flags u32][qLen][query][cLen][cookie]` followed by an optional
+  `[bLen][body]` and an optional `[ridLen][rid]`. Frame flag bit 0 = body
+  present, bit 1 = request-id present.
+- Result layout: `[flags u32][errorCode u32]` + either the optional query/cookie
+  pair sections (v3 shape) OR, when the descriptor carries a `response` part AND
+  the pipeline is OK, the framed 2xx response:
+  `[status u16][hdrCount u32]{[nameLen u32][name][valueLen u32][value]}…`
+  `[bodyLen u32][body]`, with result flag bit 7 (`HAS_RESPONSE`) set.
+- The response body is a pre-encoded constant that may contain ONE literal
+  `{requestId}` placeholder, substituted from the frame's request-id section
+  (templating from query/cookies/derive is a later phase).
 
 Descriptor/stage/part tags + result layout must match `route-wire.ts` EXACTLY —
 `ROUTE_DESC_VERSION` bumps on any wire change (a mismatched compiler/addon must
-be a hard reject, never a silent misparse).
+be a hard reject, never a silent misparse). v3 descriptors are rejected by a v4
+build (and vice versa).
 
 ## Parse semantics (LENIENT)
 
@@ -33,6 +44,16 @@ The stack validates the BODY only (via `IngressSchema`); a non-body schema in
 the descriptor is an unsupported feature → fail compile so the caller falls
 back to JS. `requireJsonBody` → 400; `validateBody` schema fail → 422;
 first-failure-wins in stage order.
+
+## Native response projection (v4)
+
+An optional `response` part lets an OK plan BUILD the 2xx natively, so JS only
+writes bytes (no `JSON.stringify` / `Headers`). v1 is deliberately minimal: a
+constant pre-encoded body with one optional `{requestId}` placeholder. A
+non-OK verdict keeps the v3 verdict shape (the caller must be able to reject).
+`test/unit/ingress/native-route-response.test.ts` pins the wire round-trip;
+`bench/cost/native-route-response.ts` is the micro-benchmark comparing native
+assembly against the JS `JSON.stringify` + `new Headers` + body-encode cost.
 
 ## Surfaces
 

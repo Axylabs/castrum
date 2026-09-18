@@ -47,7 +47,7 @@ export interface IngressInstance {
 
 /**
  * The native `Route` class instance (per-route native stack — the
- * `@ignex/native` route-wire v3 contract). Constructed from a compiled route
+ * `@ignex/native` route-wire v4 contract). Constructed from a compiled route
  * descriptor; `run` processes one packed request frame and returns the packed
  * verdict result bytes written (`0` = error / too-small, `> output.length` =
  * the exact required size — the growExact convention).
