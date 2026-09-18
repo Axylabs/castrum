@@ -229,6 +229,11 @@ function makeRequestListener(
       if (!res.headersSent) {
         await writeResponse(res, onServerError(err))
       } else {
+        // Headers already flushed (e.g. a body-stream error mid-write): the
+        // masked 500 cannot be delivered, but the onError/logger hooks MUST
+        // still observe the failure before the socket is dropped. The returned
+        // Response is intentionally discarded.
+        onServerError(err)
         res.destroy()
       }
     }

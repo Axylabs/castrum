@@ -191,4 +191,53 @@ describe('route wiring', () => {
       srv.stop()
     }
   })
+
+  test('onError fires even when the failure happens after headers are sent', async () => {
+    // A body stream that yields one chunk (flushing headers) then errors mid-
+    // write forces the adapter catch-all into its `res.headersSent` branch.
+    // The masked 500 cannot be delivered, but the observability hook MUST run.
+    const seen: string[] = []
+    let pulls = 0
+    const failingStream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++
+        if (pulls === 1) controller.enqueue(new TextEncoder().encode('partial'))
+        else controller.error(new Error('stream-boom'))
+      },
+    })
+    const srv = createIngressServerNode({
+      port: 0,
+      routes: {
+        '/stream': {
+          read: () =>
+            new Response(failingStream, {
+              status: 200,
+              headers: { 'content-type': 'text/plain' },
+            }),
+        },
+      },
+      onError: (info) => {
+        seen.push(info.error.message)
+      },
+    })
+
+    const port = await srv.ready
+    try {
+      // The client sees a truncated/reset response; the server-side hook is
+      // what we assert. Swallow the client-side fetch/read failure.
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/stream`, {
+          headers: { connection: 'close' },
+        })
+        await res.text().catch(() => '')
+      } catch {
+        // connection reset mid-stream — expected
+      }
+      // Let the server finish its catch block.
+      await Bun.sleep(30)
+      expect(seen).toEqual(['stream-boom'])
+    } finally {
+      srv.stop()
+    }
+  })
 })
