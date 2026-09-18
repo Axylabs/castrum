@@ -217,6 +217,19 @@ mod tests {
     }
 
     #[test]
+    fn headers_parse_keeps_the_last_duplicate_xff() {
+        // Documented behavior (docs/INGRESS.md trustProxy row): the parser
+        // overwrites on each occurrence, so only the LAST X-Forwarded-For line
+        // is read. A trusted-edge deployment must append only to that line.
+        let packed = pack_headers([
+            ("X-Forwarded-For", "10.0.0.1"),
+            ("X-Forwarded-For", "203.0.113.9"),
+        ]);
+        let h = HeaderRefs::parse(&packed, false, 100).unwrap();
+        assert_eq!(h.xff(), Some(&b"203.0.113.9"[..]));
+    }
+
+    #[test]
     fn headers_parse_case_insensitive_names() {
         let packed = pack_headers([("ORIGIN", "https://x.io")]);
         let h = HeaderRefs::parse(&packed, false, 100).unwrap();

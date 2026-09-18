@@ -22,9 +22,9 @@
 // the deleted dead wire).
 
 import type { BakedIngressResult } from './decode/baked-result'
-import { type BakedIngressRuntime, createIngressHandler } from './handlers'
+import { type BakedIngressRuntime, createIngressHandler, RATE_LIMIT_U32_MAX } from './handlers'
 import type { NativeRoutePlan } from './native-route'
-import type { IngressHandlerOptions } from './options'
+import { type IngressHandlerOptions, warnRateLimitWithoutGetIp } from './options'
 import type { PathMatch } from './path-matcher'
 import { buildPathMatcher } from './path-matcher'
 import type { BakedRoute, RouteHandler } from './server'
@@ -198,6 +198,18 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
     // Compile a dedicated native instance for this route's options.
     const handler = createIngressHandler(spec.options ?? {}, runtime)
     compiled[path] = handler
+
+    // Rate limiting without a getIp resolver collapses every client into ONE
+    // bucket; warn once (a global bucket can be deliberate, so don't fail).
+    const routeLimit = (spec.options?.rateLimit as { limit?: number } | undefined)?.limit
+    if (
+      typeof routeLimit === 'number' &&
+      routeLimit > 0 &&
+      routeLimit !== RATE_LIMIT_U32_MAX &&
+      options.getIp === undefined
+    ) {
+      warnRateLimitWithoutGetIp()
+    }
 
     if (spec.responder) {
       // Responder route: native decides + rejects; JS builds the 2xx.

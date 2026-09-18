@@ -195,3 +195,23 @@ export function warnTrustProxyDeprecated(): void {
       'only enable proxy trust behind a trusted edge.',
   )
 }
+
+let rateLimitNoIpWarned = false
+
+/**
+ * Warn once (per process) when rate limiting is enabled without a `getIp`
+ * resolver. The native pipeline then resolves an empty client IP, so EVERY
+ * client shares one bucket — one attacker can exhaust it and 429 everyone.
+ *
+ * A single global bucket is a legitimate choice, so this warns rather than
+ * fails; provide `getIp` for per-client isolation.
+ */
+export function warnRateLimitWithoutGetIp(): void {
+  if (rateLimitNoIpWarned) return
+  rateLimitNoIpWarned = true
+  console.warn(
+    '[castrum] WARN: rate limiting is enabled without `getIp` — every client ' +
+      'shares ONE bucket, so one client can exhaust it for everyone. Provide ' +
+      '`getIp` for per-client limits (or use a global limit deliberately).',
+  )
+}

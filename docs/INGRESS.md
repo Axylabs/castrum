@@ -415,14 +415,14 @@ interface SyncIngressHandler {
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `trustProxy` | `boolean` | `false` | Trust `X-Forwarded-For` and `X-Real-IP` headers |
+| `trustProxy` | `boolean` | `false` | Trust `X-Forwarded-For` and `X-Real-IP` headers. Duplicate `X-Forwarded-For` lines: only the **last** is read (warning in `rust/http/headers.rs`) |
 | `trustedProxies` | `{ enabled, networks? }` | — | Fine-grained proxy trust with optional network whitelist |
 | `parseCookies` | `boolean` | `false` | Parse `Cookie` header into structured JSON |
 | `parseQuery` | `boolean` | `false` | Parse URL query string into structured JSON |
 | `requireJsonBody` | `boolean` | `false` | Require body to be valid JSON |
 | `schema` | `Uint8Array` | — | JSON Schema (as UTF-8 bytes) for body validation |
-| `cors` | `CorsOptions` | — | CORS configuration |
-| `rateLimit` | `{ limit, windowMs, maxEntries }` | — | Rate limiting configuration |
+| `cors` | `CorsOptions` | — | CORS configuration. A present-but-empty `{}` (no `allowOrigin`) resolves to wildcard allow-all |
+| `rateLimit` | `{ limit, windowMs, maxEntries }` | — | Rate limiting configuration. Without a `getIp` resolver every client shares ONE bucket (warns once at router construction) |
 | `security` | `SecurityHeadersOptions` | — | Security headers configuration |
 | `https` | `boolean` | — | Force HTTPS detection (overrides auto-detection) |
 | `maxBodyBytes` | `number` | 1,048,576 | Maximum body size (1 MB) |
@@ -438,7 +438,7 @@ interface SyncIngressHandler {
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `allowOrigin` | `string[]` | — | Allowed origins (empty or `["*"]` = wildcard) |
+| `allowOrigin` | `string[]` | — | Allowed origins. Absent, empty, or `["*"]` = wildcard allow-all; list exact origins (or patterns) to narrow |
 | `allowMethods` | `string[]` | `["GET", "HEAD", "POST"]` | Allowed HTTP methods |
 | `allowHeaders` | `string[]` | — | Allowed request headers |
 | `exposeHeaders` | `string[]` | — | Exposed response headers |
