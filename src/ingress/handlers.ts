@@ -94,6 +94,7 @@ export type {
   CreateIngressServerOptions,
   GracefulShutdownOptions,
   ServerHandle,
+  StaticRoute,
 } from './server'
 export { createIngressServer, gracefulShutdown } from './server'
 export type { RouteHandler as IngressNodeRouteHandler } from './server-node'

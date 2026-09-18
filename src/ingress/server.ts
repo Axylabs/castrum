@@ -34,8 +34,35 @@ export type RouteHandler = (
   params?: Record<string, string>,
 ) => Response | Promise<Response>
 
+/**
+ * A prebuilt constant response for static route promotion.
+ *
+ * Either a bare `Response` or a factory that builds a FRESH `Response` per
+ * request. Behavior differs by runtime:
+ *
+ * - **Bun**: a bare `Response` is snapshotted into `Bun.serve`'s native route
+ *   table at bind time (verified on Bun 1.4.2 — the body is NOT consumed by the
+ *   first request) and served on every request without entering JS.
+ * - **Node** (`createIngressServerNode`): the adapter reads the bare `Response`
+ *   body ONCE and materializes a fresh `Response` per request (a web body is
+ *   one-shot).
+ *
+ * A factory is invoked by the runtime on every request, so it MUST return a new
+ * `Response` each call. Returning the SAME already-sent instance fails on the
+ * second request with `ERR_BODY_ALREADY_USED` (Bun) / a consumed stream
+ * (Node) — use a factory only when the response genuinely varies per request.
+ */
+export type StaticRoute = Response | (() => Response)
+
 /** Route spec for the Bun.serve builder. */
 export interface BakedRoute {
+  /**
+   * A prebuilt constant response served for GET, bypassing the ingress
+   * pipeline entirely. Takes precedence over `read`/`cookies` for GET (the
+   * pipeline handler is never wired); other methods (`write`/`echo`/`delete`)
+   * are unaffected. See {@link StaticRoute} for the one-shot-body contract.
+   */
+  static?: StaticRoute
   /**
    * Wires GET + HEAD read handlers. Accepts an optimized ingress handler OR a
    * raw `RouteHandler` function (health/metrics probes are raw — see
@@ -269,8 +296,15 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
       bodyTimeoutMs: spec.bodyTimeoutMs,
     }
     const methods: Record<string, unknown> = {}
+    const hasStatic = spec.static !== undefined
 
-    if (spec.read) {
+    if (hasStatic) {
+      // Static promotion: `static` owns GET and is placed in the route table
+      // verbatim (a bare Response relies on Bun's native table; see
+      // BakedRoute.static). The read/cookies GET wiring below is skipped so
+      // the ingress pipeline is NEVER entered for a static route.
+      methods.GET = spec.static
+    } else if (spec.read) {
       if (typeof spec.read === 'function') {
         // Raw request→Response handler (probes, /metrics): serve GET directly,
         // outside the ingress pipeline. HEAD is intentionally not wired (a raw
@@ -297,7 +331,7 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
       methods.POST = echoHandler(spec.echo, routeOpts)
     }
 
-    if (spec.cookies) {
+    if (spec.cookies && !hasStatic) {
       methods.GET = readHandler(spec.cookies, routeOpts)
     }
 
@@ -308,15 +342,24 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
     if (spec.responder) {
       // JS responder route: native decides + rejects; JS builds the 2xx. The
       // user responder is guarded — a throw/rejection becomes a masked 500.
-      const responderRoute = nativeResponderRoute(spec.responder.ingress, spec.responder.handler, {
-        ...routeOpts,
-        terminalStyle: spec.responder.terminalStyle,
-        readBody: spec.responder.readBody,
-      })
-      const guardedResponderRoute = guardRouteHandler(responderRoute, onServerError)
-      const responderMethods = spec.responder.methods ?? ['GET']
-      for (const m of responderMethods) {
-        methods[m] = guardedResponderRoute
+      // A static GET takes precedence: filter GET out of the wired methods.
+      const responderMethods = (spec.responder.methods ?? ['GET']).filter(
+        (m) => !(hasStatic && m === 'GET'),
+      )
+      if (responderMethods.length > 0) {
+        const responderRoute = nativeResponderRoute(
+          spec.responder.ingress,
+          spec.responder.handler,
+          {
+            ...routeOpts,
+            terminalStyle: spec.responder.terminalStyle,
+            readBody: spec.responder.readBody,
+          },
+        )
+        const guardedResponderRoute = guardRouteHandler(responderRoute, onServerError)
+        for (const m of responderMethods) {
+          methods[m] = guardedResponderRoute
+        }
       }
     }
 
@@ -325,29 +368,35 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
       // The compiled route is injected into the pure route factory (DI across
       // the purity boundary — the compile touches the dlopen layer here). The
       // user responder is guarded — a throw/rejection becomes a masked 500.
-      const nativeRoute = nativeRouteHandler(
-        createNativeRoute(spec.native.plan),
-        spec.native.handler,
-        {
-          ...routeOpts,
-          readBody: spec.native.readBody,
-        },
+      // A static GET takes precedence: filter GET out of the wired methods.
+      const nativeMethods = (spec.native.methods ?? ['GET']).filter(
+        (m) => !(hasStatic && m === 'GET'),
       )
-      const guardedNativeRoute = guardRouteHandler(nativeRoute, onServerError)
-      const nativeMethods = spec.native.methods ?? ['GET']
-      for (const m of nativeMethods) {
-        methods[m] = guardedNativeRoute
+      if (nativeMethods.length > 0) {
+        const nativeRoute = nativeRouteHandler(
+          createNativeRoute(spec.native.plan),
+          spec.native.handler,
+          {
+            ...routeOpts,
+            readBody: spec.native.readBody,
+          },
+        )
+        const guardedNativeRoute = guardRouteHandler(nativeRoute, onServerError)
+        for (const m of nativeMethods) {
+          methods[m] = guardedNativeRoute
+        }
       }
     }
 
     // CORS preflight (OPTIONS) is served for EVERY route with a NATIVE handler
     // (not just write routes with a fallback), so read-only routes also answer
     // preflights with 204/403 from the native pipeline. Raw probe handlers
-    // (plain functions) are excluded — browsers don't preflight probes.
+    // (plain functions) and static routes are excluded — browsers don't
+    // preflight probes, and a static route has no pipeline to answer with.
     const primary =
       spec.delete ??
-      (spec.read && typeof spec.read !== 'function' ? spec.read : undefined) ??
-      spec.cookies ??
+      (!hasStatic && spec.read && typeof spec.read !== 'function' ? spec.read : undefined) ??
+      (!hasStatic ? spec.cookies : undefined) ??
       spec.write ??
       spec.echo
     if (primary) {

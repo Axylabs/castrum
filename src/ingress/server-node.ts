@@ -184,6 +184,54 @@ function requestHasBody(req: IncomingMessage): boolean {
   )
 }
 
+/**
+ * Cached body/status/headers for a bare static `Response` route value.
+ *
+ * A web `Response` body is ONE-SHOT: writing it once consumes the stream.
+ * `Bun.serve` snapshots a bare `Response` into its native table, but the
+ * node:http adapter must materialize a FRESH `Response` per request, so the
+ * body is read once and the bytes cached. The WeakMap key is the original
+ * `Response` instance, so the cache never retains anything the route table
+ * does not already hold. The cached value is the in-flight PROMISE (not the
+ * resolved bytes) so concurrent first requests share ONE body read instead of
+ * racing to consume the same one-shot stream.
+ */
+const STATIC_RESPONSE_CACHE = new WeakMap<
+  Response,
+  Promise<{ status: number; statusText: string; headers: Headers; body: Uint8Array | null }>
+>()
+
+/** Materialize a fresh, unconsumed `Response` from a static route value. */
+function materializeStaticResponse(response: Response): Promise<Response> {
+  let cached = STATIC_RESPONSE_CACHE.get(response)
+  if (cached === undefined) {
+    cached = (async () => {
+      const body = response.body === null ? null : new Uint8Array(await response.arrayBuffer())
+      const headers = new Headers(response.headers)
+      // Framing headers describe the ORIGINAL stream; drop them so the runtime
+      // recomputes them from the re-materialized body (avoiding a stale
+      // `content-length` on every replay).
+      headers.delete('content-length')
+      headers.delete('transfer-encoding')
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+        body,
+      }
+    })()
+    STATIC_RESPONSE_CACHE.set(response, cached)
+  }
+  return cached.then(
+    (c) =>
+      new Response(c.body, {
+        status: c.status,
+        statusText: c.statusText,
+        headers: new Headers(c.headers),
+      }),
+  )
+}
+
 /** Build a request listener that dispatches to the shared route map. */
 function makeRequestListener(
   options: CreateIngressServerOptions,
@@ -229,14 +277,25 @@ function makeRequestListener(
       const method = webReq.method ?? 'GET'
 
       const matched = matchPath(pathname)
-      const handler = matched?.methods?.[method] as RouteHandler | undefined
+      const entry = matched?.methods?.[method]
 
       let response: Response
-      if (handler !== undefined && matched !== undefined) {
+      if (entry !== undefined && matched !== undefined) {
         // The ingress pipeline does not echo path params, so matching only
         // selects the handler; the extracted params are passed as a 3rd arg
         // (ignored by current handlers) for future/raw-handler use.
-        response = await handler(webReq, req, matched.params)
+        if (typeof entry === 'function') {
+          response = await (entry as RouteHandler)(webReq, req, matched.params)
+        } else if (entry instanceof Response) {
+          // Bare static route value (Bun's native-table path). Node cannot
+          // replay a consumed body, so build a fresh Response per request.
+          response = await materializeStaticResponse(entry)
+        } else if (options.fallback !== undefined) {
+          const fallback = fallbackHandler(options.fallback, baseOpts)
+          response = await fallback(webReq, req)
+        } else {
+          response = new Response('Not Found', { status: 404 })
+        }
       } else if (options.fallback !== undefined) {
         const fallback = fallbackHandler(options.fallback, baseOpts)
         response = await fallback(webReq, req)

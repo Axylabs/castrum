@@ -11,6 +11,11 @@
 //     "/livez":   { read: healthHandler() },
 //   }});
 //
+// For probes that are truly constant, prefer static promotion — it skips the
+// JS ingress pipeline entirely:
+//
+//   createIngressServer({ routes: { "/livez": { static: staticLiveness() } } });
+//
 // The liveness probe NEVER touches dependencies (process alive? -> 200).
 // The readiness probe runs the optional `check` (deps up? -> 200/503).
 // The health probe is an alias of liveness (process up) plus optional check.
@@ -34,6 +39,23 @@ function jsonResponse(status: number, body: Record<string, unknown>): Response {
  */
 export function livenessHandler() {
   return (_req: Request): Response => jsonResponse(200, { status: 'ok' })
+}
+
+/**
+ * Liveness probe as a PREBUILT `Response`, for static route promotion.
+ *
+ * Wire it as `{ static: staticLiveness() }` so `Bun.serve` snapshots the
+ * constant body into its native route table and serves `/livez` without
+ * entering the JavaScript ingress pipeline at all (see `BakedRoute.static` in
+ * src/ingress/server.ts). On the node:http adapter the bare `Response` is
+ * re-materialized per request from cached body bytes, so the one-shot body is
+ * never replayed. Unlike {@link readinessHandler}, it never runs a dependency
+ * check.
+ *
+ * @returns A fresh 200 `{"status":"ok"}` `Response`.
+ */
+export function staticLiveness(): Response {
+  return jsonResponse(200, { status: 'ok' })
 }
 
 /**

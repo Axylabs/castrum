@@ -36,6 +36,7 @@ describe('package entry eager-load contract', () => {
       'livenessHandler',
       'readinessHandler',
       'healthHandler',
+      'staticLiveness',
       'gracefulShutdown',
       'createWebSocketUpgrade',
       'sseResponse',

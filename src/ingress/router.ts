@@ -27,7 +27,7 @@ import type { NativeRoutePlan } from './native-route'
 import { type IngressHandlerOptions, warnRateLimitWithoutGetIp } from './options'
 import type { PathMatch } from './path-matcher'
 import { buildPathMatcher } from './path-matcher'
-import type { BakedRoute, RouteHandler } from './server'
+import type { BakedRoute, RouteHandler, StaticRoute } from './server'
 import { buildRouteHandlers } from './server'
 import type { BakedContext, NativeResponder, OptimizedIngressHandler, TerminalStyle } from './types'
 
@@ -88,6 +88,13 @@ export interface RouterRouteSpec {
   /** Terminal envelope style for this route's responder (default: router-level
    *  `terminalStyle` or `'castrum'`). */
   terminalStyle?: TerminalStyle
+  /**
+   * A prebuilt constant response served directly for GET, OUTSIDE the ingress
+   * pipeline (static route promotion). Takes precedence over `read`/`write`/
+   * etc. — like `raw`, it owns the route. See `BakedRoute.static` in
+   * src/ingress/server.ts for the one-shot-body contract.
+   */
+  static?: StaticRoute
   /**
    * A raw request→Response handler served directly for GET, OUTSIDE the
    * ingress pipeline (health/metrics probes, /metrics). When set, `read`/
@@ -175,6 +182,17 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
   if (options.copyBody !== undefined) baseOpts.copyBody = options.copyBody
 
   for (const [path, spec] of Object.entries(options.routes)) {
+    if (spec.static !== undefined) {
+      // Static promotion: a prebuilt constant response owns the route. Placed
+      // verbatim so Bun.serve can serve it from its native table (a bare
+      // Response) with zero JS.
+      bakedRoutes[path] = {
+        static: spec.static,
+        maxBodyBytes: spec.maxBodyBytes,
+        bodyTimeoutMs: spec.bodyTimeoutMs,
+      }
+      continue
+    }
     if (spec.raw) {
       // Raw handler: served directly, outside the pipeline.
       bakedRoutes[path] = { read: spec.raw as RouteHandler }
@@ -276,6 +294,14 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
     const methodHandler = matched.methods[req.method]
     if (typeof methodHandler === 'function') {
       return (methodHandler as RouteHandler)(req, srv, matched.params)
+    }
+    if (methodHandler instanceof Response) {
+      // Static route (bare Response value). `clone()` tees the body without
+      // consuming the original, so every request gets a fresh, complete body.
+      // A `static` factory is a function and is handled above. The cast bridges
+      // Bun's `Response.clone()` return type (which resolves against the
+      // bundled fetch types) to this module's global `Response`.
+      return methodHandler.clone() as unknown as Response
     }
     // A route matched but this method isn't wired — 405, or a bare OPTIONS 204
     // when the route answers preflights.

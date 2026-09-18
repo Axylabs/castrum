@@ -32,7 +32,7 @@ export type { CorsOptions, CorsStaticStrings } from './headers/cors'
 export type { HeaderTemplate, ResponseBuildContext } from './headers/fast-templates'
 export { buildResponseContext, headersForResult } from './headers/fast-templates'
 export type { SecurityHeadersOptions } from './headers/hsts'
-export { healthHandler, livenessHandler, readinessHandler } from './health'
+export { healthHandler, livenessHandler, readinessHandler, staticLiveness } from './health'
 export type { IngressMetrics } from './metrics'
 // ── Observability (zero-dep): metrics, health probes ─────────────
 export { createIngressMetrics, metricsHandler } from './metrics'
