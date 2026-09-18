@@ -10,7 +10,7 @@ warned about and replaced with the documented default.
 |----------|------|---------|-------------|
 | `INGRESS_TRUST_PROXY` | bool | `false` | **Opt-in.** When `true`, honors `X-Forwarded-For` / `X-Real-IP` for client-IP resolution. Keep **off** unless the server sits behind a trusted edge that strips these headers, otherwise clients can spoof arbitrary IPs for IP-based rate limiting. |
 | `INGRESS_REQUEST_ID_HEADER` | bool | `false` | Emit an `x-request-id` response header per request. The request ID is always generated internally; this only controls whether it is echoed to clients. |
-| `INGRESS_ZERO_COPY` | bool | `false` | Enable zero-copy response bodies (legacy alias `INGRESS_UNSAFE_ZERO_COPY` still honored). **Not recommended** unless per-response output buffers are implemented; leave off for safety (bodies are copied by default). |
+| `INGRESS_ZERO_COPY` | bool | `false` | Enable zero-copy response bodies (legacy alias `INGRESS_UNSAFE_ZERO_COPY` still honored). Off by default; when on, the handler serves a pooled output buffer via `pooledBodyResponse` (per-response output buffers are implemented — `src/shared/buffer-pool.ts`, `baked-response.ts::zeroCopyResponse`). Bound the borrowed set with `maxInFlight`. |
 | `INGRESS_ZERO_COPY_MAX_IN_FLIGHT` | int | `128` | Max pooled output buffers kept in flight for zero-copy responses (min `1`). |
 | `INGRESS_ZERO_COPY_TIMEOUT_MS` | int | `1000` | Timeout before a zero-copy pooled buffer is force-released (min `0`). |
 | `INGRESS_OUTPUT_BUF_BYTES` | int | `131072` | Size of the Rust output buffer (min `65536`). If cookies + query + metadata JSON exceed this, `FLAG_BODY_TRUNCATED` is set and the request fails closed. |

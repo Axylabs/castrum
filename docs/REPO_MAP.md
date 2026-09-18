@@ -37,11 +37,11 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 | Build Rust addon (LOCAL max perf) | `bun run build:perf` | x86-64-v3 + AVX2 — **never for publish** |
 | Build Rust addon (debug) | `bun run build:debug` | |
 | Build compiled JS entry (Node) | `bun run build:js` | bundle + types → `dist/` (gitignored) |
-| TS unit tests | `bun test` | ~760 tests, `test/unit/**` |
-| Rust unit tests | `bun run test:rust` | `cargo test`, ~440 tests |
+| TS unit tests | `bun test test/unit test/property test/compat` | 838 tests (paths are explicit — a bare `bun test` pulls in the Node `.mjs` suites that need `dist/`) |
+| Rust unit tests | `bun run test:rust` | `cargo test`, 628 tests |
 | Node smoke tests | `bun run test:node` | explicit `.mjs` paths (Node 24 rejects dir arg) |
 | Installed-tarball e2e | `bun run verify:install` | pack → install → import from `node_modules` |
-| Typecheck | `bun run typecheck` | `bunx tsc --noEmit` (only `index.ts`, `bench.ts`, `src/`) |
+| Typecheck | `bun run typecheck` | `bunx tsc --noEmit` (`index.ts`, `bench.ts`, `src/`, `bench/`) |
 | CPU benchmark + correctness | `bun run check` | == `bun bench.ts`; writes `bench/results/cpu/` |
 | HTTP bench (all servers) | `bun run bench:http` | |
 | HTTP smoke (fast sanity) | `bun run bench:http:smoke` | **the wire-format guard** (CI-gated) |
@@ -131,7 +131,7 @@ src/
     shared.ts             JS constants + buildHeaderPlan + assertSyncCallback (shared by both paths).
     constants.ts          Binary-layout constants read from Rust at runtime (SINGLE SOURCE).
     status.ts / errors.ts / options.ts / types.ts / body.ts / context.ts
-    packing/              header-packing.ts, input-packer.ts, gather-raw-headers.ts
+    packing/              header-packing.ts, input-packer.ts, gather-raw-headers.ts, select-headers.ts, scratch.ts
     headers/              cors.ts, hsts.ts, security.ts (baked security merge), fast-templates.ts, baked-templates.ts
     decode/               fast-result.ts, baked-result.ts   (TWO decoders — see §4.2)
     response/             terminal.ts, error-bodies.ts, baked-response.ts (pre-baked response builders)
@@ -294,7 +294,9 @@ consumed.
 - **Multi-platform (recommended)**: push a `v*` tag → `.github/workflows/ci.yml`
   builds each platform addon, the `publish` job downloads them into
   `./artifacts`, stages them, and runs `npm publish` (npm Trusted Publishing /
-  OIDC — no token secret; needs the Trusted Publisher configured on npmjs.com).
+  OIDC — preferred, no long-lived token; the job also targets the `NPM_TOKEN`
+  environment as a fallback secret. Needs the Trusted Publisher configured on
+  npmjs.com).
 - **Manual single-platform**: `bun run release:manual`
   (syncs package.json ↔ Cargo.toml ↔ CHANGELOG, tags, builds, publishes with
   `CASTRUM_PUBLISH_ALLOW_PARTIAL=1`). `--dry-run` plans only.

@@ -23,7 +23,7 @@ Both are live; ADR-0001 + AGENTS.md enforce non-unification. Never merge them.
 ## Layer map (`src/ingress/`)
 
 ```
-packing/   frame packing (input-packer, header-packing, scratch)
+packing/   frame packing (input-packer, header-packing, gather-raw-headers, select-headers, scratch)
 headers/   CORS / HSTS / security templates
 decode/    fast-result, baked-result, packed-sections decoders
 response/  terminal, baked-response, error-bodies
@@ -71,7 +71,7 @@ is the LIVE wire consumed by `@ignex/native`'s `createNativeRoute`.
 
 ```bash
 bun run bench:http:smoke          # the CI-gated wire-format guard
-bun test                          # test/unit/ingress/** (20 files)
+bun test test/unit/ingress        # test/unit/ingress/** (25 files)
 cargo test                        # rust/ingress/** + rust/ffi/ ingress tests
 bun run check:clean               # purity + module headers + doc links
 ```

@@ -283,7 +283,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (JS replace-chain wins) — shipped for correctness/single-source semantics;
   pairs with future fused validate+escape ops.
 
-## [Unreleased]
+## [0.9.2–0.9.3] — 2026-08-22
+
+> Archived: this was the active `Unreleased` section at both the `v0.9.2` and
+> `v0.9.3` tags, whose release flow did not insert version headings, so its notes
+> were never split. Kept verbatim; there is exactly one `Unreleased` section now.
 
 ### Changed
 
