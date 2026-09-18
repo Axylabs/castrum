@@ -61,6 +61,17 @@ const KNOWN_FAST_VS_BAKED: Readonly<Record<string, PinnedCase>> = {
     fast: { status: 200, ok: true, errorCode: null },
     baked: { status: 499, ok: null, errorCode: null },
   },
+  // pre-existing route bug: an oversized body with requireJsonBody makes the
+  // jsonWriteHandler null-body re-run terminal, so the baked route answers
+  // 400 invalid_json where the fast path correctly answers 413 body_too_large.
+  // See src/ingress/routes/json-write.ts:100-112. Do NOT fix here; a future fix
+  // must update this pin (a visible test change).
+  'post-oversized-strict': {
+    description:
+      'pre-existing route bug: oversized + requireJsonBody → 400 invalid_json instead of 413',
+    fast: { status: 413, ok: false, errorCode: 'body_too_large' },
+    baked: { status: 400, ok: false, errorCode: 'invalid_json' },
+  },
 }
 
 function caseOf(lane: LaneResult, id: string): LaneResult['cases'][number] {
@@ -75,9 +86,13 @@ test('fast (path 1) and baked (path 2) agree on normalized semantics', async () 
 
   // Every field-level divergence must be one of the explicitly pinned cases.
   const unexpected = diffLaneResults(fast, baked, SEMANTIC_FIELDS).filter(
-    (d) => !(d.id in KNOWN_FAST_VS_BAKED),
+    (d) => !Object.hasOwn(KNOWN_FAST_VS_BAKED, d.id),
   )
   expect(unexpected).toEqual([])
+
+  // A lane that silently ran zero cases must not pass vacuously.
+  expect(fast.cases.length).toBe(CORPUS.length)
+  expect(baked.cases.length).toBe(CORPUS.length)
 
   // And the pinned cases must diverge in EXACTLY the documented way.
   for (const [id, pin] of Object.entries(KNOWN_FAST_VS_BAKED)) {
@@ -91,6 +106,8 @@ test('fast (path 1) and baked (path 2) agree on normalized semantics', async () 
 test('baked copy and zero-copy responses are byte-identical over the corpus', async () => {
   const copy = await runLane('baked', CORPUS)
   const zero = await runLane('zero-copy', CORPUS)
+  expect(copy.cases.length).toBe(CORPUS.length)
+  expect(zero.cases.length).toBe(CORPUS.length)
   assertLanesAgree(copy, zero, FULL_FIELDS, 'copy vs zero-copy')
 })
 
@@ -99,6 +116,15 @@ test.skipIf(!transportAvailable())(
   async () => {
     const ffi = await runLane('transport-ffi', CORPUS)
     const napi = await runLane('transport-napi', CORPUS)
+    expect(ffi.cases.length).toBe(CORPUS.length)
+    expect(napi.cases.length).toBe(CORPUS.length)
+    // Prove the two children actually bound DIFFERENT transports — otherwise
+    // the comparison below could pass vacuously (both on napi, or both ffi).
+    expect(ffi.transport).toBeDefined()
+    expect(napi.transport).toBeDefined()
+    expect(ffi.transport).not.toBe('napi')
+    expect(napi.transport).toBe('napi')
+    expect(ffi.transport).not.toBe(napi.transport)
     assertLanesAgree(ffi, napi, FULL_FIELDS, 'ffi vs napi')
   },
 )
@@ -131,6 +157,7 @@ test('corpus covers the required valid / invalid / edge categories', () => {
   const required = [
     'post-empty-body',
     'post-oversized',
+    'post-oversized-strict',
     'post-bad-json',
     'get-query-bad-percent',
     'get-query-invalid-utf8',

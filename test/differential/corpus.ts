@@ -14,9 +14,8 @@ import type { IngressFastOptions } from '../../src/ingress/options'
 export type CorpusProfile = 'base' | 'schema' | 'cors' | 'bodyGuard'
 
 /**
- * One corpus entry. `lanes`, when present, restricts which lane names may run
- * the case (e.g. the abort case is meaningful only on the route lanes that
- * honor `Request.signal`).
+ * One corpus entry. Every lane runs every case, so a lane can never pass
+ * vacuously by skipping a case.
  */
 export interface CorpusCase {
   /** Stable id used to correlate the same case across lanes. */
@@ -31,8 +30,6 @@ export interface CorpusCase {
   readonly body?: string
   /** Option profile; defaults to `base`. */
   readonly profile?: CorpusProfile
-  /** When set, only these lane names run the case. */
-  readonly lanes?: readonly string[]
   /** Abort `Request.signal` before the lane runs (client disconnect). */
   readonly abort?: boolean
 }
@@ -418,16 +415,26 @@ export const CORPUS: readonly CorpusCase[] = [
   },
   {
     id: 'post-oversized',
-    description: 'body larger than maxBodyBytes',
+    description: 'body larger than maxBodyBytes (size guard in isolation)',
     method: 'POST',
     url: `${HOST}/api/users`,
     headers: [JSON_CT],
     body: exactBody(600),
-    // `bodyGuard` (requireJsonBody off): with requireJsonBody ON the route's
-    // null-body re-run after a BODY_TOO_LARGE is itself terminal (400
-    // invalid_json), short-circuiting the intended 413 — a pre-existing
-    // route-layer behaviour, tracked in the task-7 report, not exercised here.
+    // `bodyGuard` (requireJsonBody off) isolates the native/route size guard.
+    // The `post-oversized-strict` case below covers the with-validation path.
     profile: 'bodyGuard',
+  },
+  {
+    id: 'post-oversized-strict',
+    description: 'oversized body with requireJsonBody (pre-existing route quirk)',
+    method: 'POST',
+    url: `${HOST}/api/users`,
+    headers: [JSON_CT],
+    body: exactBody(600),
+    // Default `base` profile (requireJsonBody: true). Exposes the pre-existing
+    // route bug pinned in differential.test.ts: the baked route returns
+    // 400 invalid_json instead of 413 body_too_large. Do NOT "fix" the
+    // divergence — fixing the production bug must be a visible test change.
   },
   {
     id: 'post-exact-limit',

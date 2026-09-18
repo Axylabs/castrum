@@ -10,7 +10,7 @@
 // Not a `*.test.ts` file, so `bun test` does not pick it up.
 
 import { CORPUS } from './corpus'
-import { runLane } from './lanes'
+import { runLane, transportIdentity } from './lanes'
 
 const result = await runLane('baked', CORPUS)
-process.stdout.write(JSON.stringify(result))
+process.stdout.write(JSON.stringify({ ...result, transport: transportIdentity() }))

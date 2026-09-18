@@ -26,7 +26,9 @@
 
 import { decoder } from '../../src/shared/bytes'
 import { errorCodeName } from '../../src/ingress/errors'
+import { getAddon } from '../../src/native'
 import { ffiBufferMode } from '../../src/native/ffi'
+import { isBun } from '../../src/shared/runtime'
 import { createIngressFast } from '../../src/ingress/fast'
 import {
   createIngressHandler,
@@ -86,6 +88,12 @@ export interface NormalizedCase {
 export interface LaneResult {
   readonly lane: LaneName
   readonly cases: readonly NormalizedCase[]
+  /**
+   * Transport identity reported by the lane's process (`ffiBufferMode()` or
+   * `'napi'`). Only set by the subprocess transport lanes; used to prove the
+   * ffi/napi children actually bound DIFFERENT transports.
+   */
+  readonly transport?: string
 }
 
 /** Optional test-only injection point (used by the divergence self-test). */
@@ -256,7 +264,6 @@ async function runFastLane(corpus: readonly CorpusCase[]): Promise<LaneResult> {
 
   const cases: NormalizedCase[] = []
   for (const c of corpus) {
-    if (c.lanes !== undefined && !c.lanes.includes('fast')) continue
     const profile = c.profile ?? 'base'
     const handler = handlerFor(profile)
     const responseCtx = contextFor(profile)
@@ -363,7 +370,6 @@ async function runRouteLane(
 
   const cases: NormalizedCase[] = []
   for (const c of corpus) {
-    if (c.lanes !== undefined && !c.lanes.includes(lane)) continue
     const profile = c.profile ?? 'base'
     const handler = handlerFor(profile)
     const opts = optionsFor(profile)
@@ -382,12 +388,29 @@ const TRANSPORT_RUNNER = new URL('./transport-runner.ts', import.meta.url)
 const REPO_ROOT = new URL('../../', import.meta.url)
 
 /**
- * Whether the in-process `bun:ffi` transport is live. When `false` (Node, or a
- * forced/failed napi fallback) the ffi/napi transport lane is skipped — there
- * is no second transport to compare against.
+ * Whether this process can exercise the ffi/napi transport lane: Bun plus a
+ * loadable packaged addon. This is deliberately NOT based on the parent's
+ * already-resolved transport mode — a parent forced to `CASTRUM_FFI_MODE=napi`
+ * still spawns children that can bind `=ffi`, so the lane must still run.
  */
 export function transportAvailable(): boolean {
-  return ffiBufferMode() !== null
+  if (!isBun()) return false
+  try {
+    getAddon()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Transport identity of the CURRENT process: the live `bun:ffi` buffer ABI
+ * mode, or `'napi'` when the ffi transport is not bound (`ffiBufferMode()`
+ * returns null). Printed by `transport-runner.ts` so the parent can prove the
+ * two children bound different transports.
+ */
+export function transportIdentity(): string {
+  return ffiBufferMode() ?? 'napi'
 }
 
 function runTransportLane(mode: 'ffi' | 'napi'): LaneResult {
@@ -405,7 +428,7 @@ function runTransportLane(mode: 'ffi' | 'napi'): LaneResult {
     )
   }
   const parsed = JSON.parse(proc.stdout.toString()) as LaneResult
-  return { lane: `transport-${mode}`, cases: parsed.cases }
+  return { lane: `transport-${mode}`, transport: parsed.transport, cases: parsed.cases }
 }
 
 // ── Public entry point ──────────────────────────────────────────────────
