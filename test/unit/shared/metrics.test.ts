@@ -120,4 +120,71 @@ describe('createMetrics cardinality cap', () => {
     m.reset()
     expect(m.render().trim()).toBe('')
   })
+
+  test('does not emit a duplicate family for the reserved dropped counter name', () => {
+    const m = createMetrics()
+    // A caller (mis)registers the reserved name.
+    m.counter('castrum_metrics_series_dropped_total', 'caller owned')
+    const c = m.counter('dup_capped_total', 'capped', ['k'])
+    for (let i = 0; i <= MAX_SERIES_PER_METRIC; i++) c.inc({ k: String(i) })
+
+    const out = m.render()
+    const helpLines = out
+      .split('\n')
+      .filter((l) => l.startsWith('# HELP castrum_metrics_series_dropped_total'))
+    const typeLines = out
+      .split('\n')
+      .filter((l) => l.startsWith('# TYPE castrum_metrics_series_dropped_total'))
+    // Exactly one HELP/TYPE pair — a duplicate family would invalidate the scrape.
+    expect(helpLines).toHaveLength(1)
+    expect(typeLines).toHaveLength(1)
+  })
+})
+
+describe('createMetrics histogram cardinality cap', () => {
+  test('keeps counts and sums in sync on overflow and bounds the family', () => {
+    const m = createMetrics()
+    const h = m.histogram('cap_hist_seconds', 'capped', [0.01, 0.1], ['k'])
+    for (let i = 0; i <= MAX_SERIES_PER_METRIC; i++) h.observe(0.05, { k: String(i) })
+
+    const out = m.render()
+    const lines = out.split('\n')
+
+    // (a) the drop is observable and counted exactly once.
+    expect(out).toContain('castrum_metrics_series_dropped_total 5000')
+
+    // (c) the family is bounded to the oldest-half policy.
+    const bucketKeys = new Set(
+      lines
+        .map((l) => /^cap_hist_seconds_bucket\{k="([^"]+)",le=/.exec(l)?.[1])
+        .filter((k): k is string => k !== undefined),
+    )
+    expect(bucketKeys.size).toBe(Math.ceil(MAX_SERIES_PER_METRIC / 2) + 1)
+    expect(bucketKeys.size).toBeLessThanOrEqual(MAX_SERIES_PER_METRIC)
+
+    // (b) no orphan `sums`/`counts`: every rendered `_sum`/`_count` key must have
+    // a matching `_bucket` series, and the rendered series counts must agree
+    // exactly (a leak or double count fails here).
+    const sumKeys = new Set(
+      lines
+        .map((l) => /^cap_hist_seconds_sum\{k="([^"]+)"\}/.exec(l)?.[1])
+        .filter((k): k is string => k !== undefined),
+    )
+    const countKeys = new Set(
+      lines
+        .map((l) => /^cap_hist_seconds_count\{k="([^"]+)"\}/.exec(l)?.[1])
+        .filter((k): k is string => k !== undefined),
+    )
+    const bucketSorted = [...bucketKeys].sort()
+    expect([...sumKeys].sort()).toEqual(bucketSorted)
+    expect([...countKeys].sort()).toEqual(bucketSorted)
+    expect([...sumKeys]).toHaveLength(bucketKeys.size)
+
+    // Render emits `_sum`/`_count` per surviving `counts` entry, so an orphan
+    // `sums` entry is invisible to the structural check above. Re-observing an
+    // EVICTED key is the real regression probe: if `sums` leaked, the stale sum
+    // is added to the fresh series and this value doubles (0.05 → 0.10).
+    h.observe(0.05, { k: '0' })
+    expect(m.render()).toContain('cap_hist_seconds_sum{k="0"} 0.05')
+  })
 })

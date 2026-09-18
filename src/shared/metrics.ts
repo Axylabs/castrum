@@ -17,11 +17,21 @@ export const DEFAULT_BUCKETS: readonly number[] = [
  * single counter/gauge/histogram. A metrics registry is keyed by caller-supplied
  * label values, so an unbounded label (e.g. a raw path or user id) would grow a
  * `Map` without limit. At the cap the oldest half of that family is evicted
- * (insertion order) and the count is accumulated into
+ * (insertion order) and the count is accumulated into the synthetic counter
  * `castrum_metrics_series_dropped_total`, making the loss observable instead of
- * silent.
+ * silent. That name is RESERVED — a caller declaring a counter/gauge/histogram
+ * with it suppresses the synthetic emission (see {@link SERIES_DROPPED_METRIC}).
  */
 export const MAX_SERIES_PER_METRIC = 10_000
+
+/**
+ * Reserved exposition name of the synthetic counter reporting series evicted by
+ * {@link MAX_SERIES_PER_METRIC}. Callers must not register a metric family with
+ * this name; if one exists, `render()` skips the synthetic emission so the
+ * scrape never carries two `# HELP`/`# TYPE` lines for one family (Prometheus
+ * rejects that).
+ */
+const SERIES_DROPPED_METRIC = 'castrum_metrics_series_dropped_total'
 
 type LabelValues = readonly string[]
 type Labels = Readonly<Record<string, string>>
@@ -176,13 +186,20 @@ export function createMetrics(): MetricsRegistry {
     for (const e of gauges.values()) out.push(...renderGauge(e))
     for (const e of histograms.values()) out.push(...renderHistogram(e))
     // Only emitted once a family has actually overflowed, so the output for a
-    // well-behaved registry is byte-identical to before the cap existed.
-    if (seriesDropped > 0) {
+    // well-behaved registry is byte-identical to before the cap existed. Guard
+    // against a caller-registered family of the same (reserved) name — two
+    // `# HELP`/`# TYPE` lines for one family make the scrape invalid.
+    if (
+      seriesDropped > 0 &&
+      !counters.has(SERIES_DROPPED_METRIC) &&
+      !gauges.has(SERIES_DROPPED_METRIC) &&
+      !histograms.has(SERIES_DROPPED_METRIC)
+    ) {
       out.push(
-        '# HELP castrum_metrics_series_dropped_total Total metric series evicted by the per-family cardinality cap.',
+        `# HELP ${SERIES_DROPPED_METRIC} Total metric series evicted by the per-family cardinality cap.`,
       )
-      out.push('# TYPE castrum_metrics_series_dropped_total counter')
-      out.push(`castrum_metrics_series_dropped_total ${seriesDropped}`)
+      out.push(`# TYPE ${SERIES_DROPPED_METRIC} counter`)
+      out.push(`${SERIES_DROPPED_METRIC} ${seriesDropped}`)
     }
     return `${out.join('\n')}\n`
   }
