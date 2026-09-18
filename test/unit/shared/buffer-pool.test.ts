@@ -148,6 +148,25 @@ describe('BufferPool', () => {
   })
 })
 
+describe('BufferPool prefill', () => {
+  test('allocates the requested buffers up front (capped by maxBuffers - 1)', () => {
+    const pool = new BufferPool({ initialSize: 16, maxBuffers: 8, prefill: 3 })
+    expect(pool.createdCount).toBe(4) // initial + 3
+    expect(pool.freeCount).toBe(4)
+  })
+
+  test('prefillBytes caps the total up-front allocation', () => {
+    const pool = new BufferPool({
+      initialSize: 1_000_000,
+      maxBuffers: 64,
+      prefill: 16,
+      prefillBytes: 4_000_000,
+    })
+    // floor(4e6 / 1e6) = 4 prefilled + the initial buffer.
+    expect(pool.createdCount).toBe(5)
+  })
+})
+
 describe('BufferPool maxInFlight', () => {
   test('unlimited by default (maxInFlight 0)', () => {
     const pool = new BufferPool({ initialSize: 16, maxBuffers: 1 })

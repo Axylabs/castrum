@@ -123,6 +123,14 @@ const MAX_FFI_FAILURES = 3
 const PREWARM_POOL_BUFFERS = 16
 
 /**
+ * Byte budget for the pool prefill. `createIngressRouter` builds one handler
+ * (and therefore one pool) per route, so an unbounded `prefill × outputBufferSize`
+ * could reach ~1 GiB per route at the 64 MiB output clamp. This caps the
+ * per-handler up-front allocation at 4 MiB regardless of buffer size.
+ */
+const PREWARM_POOL_BYTES = 4 * 1024 * 1024
+
+/**
  * Best-effort URL pathname extraction for log/error lines.
  *
  * This runs inside catch/finally paths, so a malformed `req.url` must never
@@ -308,6 +316,7 @@ export function createIngressHandler(
     initialSize: outputBufferSize,
     maxInFlight: runtime.maxInFlight,
     prefill: PREWARM_POOL_BUFFERS,
+    prefillBytes: PREWARM_POOL_BYTES,
   })
 
   // Reusable packed-input builder (same zero-alloc discipline as the fast

@@ -47,6 +47,13 @@
    * `initialSize` (still bounded by `maxBuffers`). Default 0.
    */
   prefill?: number
+  /**
+   * Byte budget for `prefill`: the prefilled count is additionally capped to
+   * `floor(prefillBytes / initialSize)`, so a large `initialSize` (e.g. a
+   * 64 MiB output buffer) cannot multiply into gigabytes when a router creates
+   * one pool per route. Default `Infinity` (only `prefill`/`maxBuffers` apply).
+   */
+  prefillBytes?: number
 }
 
 /** A borrowed buffer handle handed out by a pool; `release()` returns it. */
@@ -149,8 +156,15 @@ export class BufferPool {
     // Pre-fill (memory-for-latency trade, see `prefill` in BufferPoolOptions):
     // spend up-front allocation so a burst ramp never allocates during its
     // first wave. Capped at maxBuffers so the documented retention bound
-    // (free list ≤ maxBuffers) still holds.
-    const prefill = Math.min(Math.max(0, Math.floor(options.prefill ?? 0)), this.maxBuffers - 1)
+    // (free list ≤ maxBuffers) still holds, and by `prefillBytes` so a large
+    // `initialSize` cannot multiply into an unbounded up-front allocation.
+    const prefill = Math.min(
+      Math.max(0, Math.floor(options.prefill ?? 0)),
+      this.maxBuffers - 1,
+      options.prefillBytes !== undefined
+        ? Math.max(0, Math.floor(options.prefillBytes / this.initialSize))
+        : Number.POSITIVE_INFINITY,
+    )
     for (let i = 0; i < prefill; i++) {
       this.free.push(new Uint8Array(this.initialSize))
       this.created++
