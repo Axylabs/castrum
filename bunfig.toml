@@ -1,0 +1,12 @@
+# Bun install configuration.
+#
+# `linker = "hoisted"` (NOT Bun 1.4's default "isolated") is REQUIRED for the
+# nested `overrides` in package.json to take effect. Those nested pins give
+# dts-bundle-generator its own TypeScript 5.9.3 and @napi-rs/cli its own 6.0.3,
+# while the project compiler stays on 7.x. Under the isolated linker the nested
+# pins are ignored, so `build:js:types` resolves TypeScript 7 (whose package
+# root exports only `{ version }`) and fails with
+#   Cannot read properties of undefined (reading 'getCurrentDirectory')
+# See AGENTS.md → "TypeScript stays on 7.x".
+[install]
+linker = "hoisted"
