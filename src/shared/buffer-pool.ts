@@ -204,11 +204,14 @@ export class BufferPool {
     // Learn the observed demand so future allocations pre-size to it.
     this.estimate?.sample(minSize)
 
-    // 1) Reuse a free buffer that is already large enough.
+    // 1) Reuse a free buffer that is already large enough. Free-list ORDER is
+    //    irrelevant, so remove by swap-with-last (O(1), no splice compaction/
+    //    allocation) — this is a per-request hot path.
     for (let i = 0; i < this.free.length; i++) {
       const candidate = this.free[i] as Uint8Array
       if (candidate.byteLength >= minSize) {
-        this.free.splice(i, 1)
+        const last = this.free.pop() as Uint8Array
+        if (i < this.free.length) this.free[i] = last
         return candidate
       }
     }
@@ -227,7 +230,8 @@ export class BufferPool {
       }
     }
     if (largestBuf !== null) {
-      this.free.splice(largest, 1)
+      const last = this.free.pop() as Uint8Array
+      if (largest < this.free.length) this.free[largest] = last
       this.created++
       return new Uint8Array(target)
     }
@@ -241,16 +245,16 @@ export class BufferPool {
   private releaseBuffer(buffer: Uint8Array): void {
     if (this.free.length >= this.maxBuffers) {
       // Free list is full: drop the smallest retained buffer to stay bounded.
-      let smallestBuf: Uint8Array | null = null
       let smallest = 0
-      for (let i = 0; i < this.free.length; i++) {
-        const candidate = this.free[i] as Uint8Array
-        if (smallestBuf === null || candidate.byteLength < smallestBuf.byteLength) {
-          smallestBuf = candidate
+      for (let i = 1; i < this.free.length; i++) {
+        if (
+          (this.free[i] as Uint8Array).byteLength < (this.free[smallest] as Uint8Array).byteLength
+        ) {
           smallest = i
         }
       }
-      this.free.splice(smallest, 1)
+      const last = this.free.pop() as Uint8Array
+      if (smallest < this.free.length) this.free[smallest] = last
     }
     this.free.push(buffer)
   }

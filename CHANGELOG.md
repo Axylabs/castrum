@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (8 workers, 2000 connections, three independent runs): **+14.3% / +15.6% /
   +23.1% median RPS**, p50 −15%, p99 −9…−24%, 0 errors, response fingerprint
   identical. See `docs/BENCHMARKS.md`.
+- **`BufferPool` removes by swap-with-last instead of `Array.splice`.** The
+  pooled output buffer is acquired and released every request, and `take()`
+  used `this.free.splice(i, 1)` — an O(n) shift/compaction (and, on a hot
+  loop, an allocation). Free-list order is an implementation detail, so
+  removal is now O(1) and allocation-free. Measured with a socket-free hot
+  loop over the real pre-baked read handler (`new Request` per iteration,
+  2M iters, interleaved file-swap A/B, two independent runs): **−8.1% /
+  −8.4% handler time (150 ns / 144 ns per request)**. Behavior unchanged
+  (`BufferPool` free-list order is not part of the contract).
 
 ## [0.9.7] — 2026-09-15
 
