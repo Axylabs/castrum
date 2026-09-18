@@ -184,6 +184,10 @@ let trustProxyWarned = false
  * `X-Forwarded-For`/`X-Real-IP`, so a client can forge its IP and bypass
  * IP-based rate limiting. Prefer the `trustedProxies` network-list API and
  * only enable proxy trust behind a trusted edge.
+ *
+ * Precedence: when `trustedProxies` is also set it wins, so
+ * `{ trustProxy: true, trustedProxies: { enabled: false } }` trusts NOTHING —
+ * the safer mode, not the "trust everything" this warning describes.
  */
 export function warnTrustProxyDeprecated(): void {
   if (trustProxyWarned) return
@@ -191,8 +195,8 @@ export function warnTrustProxyDeprecated(): void {
   console.warn(
     '[castrum] WARN: `trustProxy: true` is deprecated and trusts EVERY hop — ' +
       'clients can spoof X-Forwarded-For / X-Real-IP to bypass IP-based rate ' +
-      'limiting. Use `trustedProxies: { enabled: true, networks: [...] }` and ' +
-      'only enable proxy trust behind a trusted edge.',
+      'limiting. Use `trustedProxies: { enabled: true, networks: [...] }` ' +
+      '(which takes precedence) and only enable proxy trust behind a trusted edge.',
   )
 }
 

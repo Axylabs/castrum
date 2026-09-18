@@ -41,6 +41,12 @@ pub fn seal_core(id: &[u8], data_json: &[u8], exp_secs: i64, secret: &[u8]) -> O
 /// Verify a sealed token and extract the envelope fields into the packed
 /// layout: `[u8 ok=1][i64 exp][u32 idLen][id][u32 dataLen][dataJson]`.
 /// Returns `None` on bad signature / malformed envelope.
+///
+/// The returned `exp` is **advisory**: this function does NOT compare it to the
+/// current time, so a correctly signed but expired envelope still opens. The
+/// caller MUST reject it (`exp != 0 && now >= exp`). (Enforcing it here was
+/// considered and rejected: the wire contract is signature + extraction, and
+/// the bind-time self-test seals with fixed historical timestamps.)
 pub fn open_core(token: &[u8], secret: &[u8]) -> Option<(i64, Vec<u8>, Vec<u8>)> {
     if secret.is_empty() {
         return None;

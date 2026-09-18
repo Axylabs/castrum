@@ -47,6 +47,12 @@ export interface RustBatch {
   base64UrlDecode(items: Uint8Array[]): Uint8Array[]
 
   // ── Backend-framework features ──
+  /**
+   * Parallel password hashing. WARNING: the SAME `salt` is applied to every
+   * item. Reusing one salt across real user passwords enables a single
+   * precomputation to attack them all — generate a unique salt per password in
+   * production (this batch form is for precomputed/benchmark workloads).
+   */
   passwordHash(
     passwords: Uint8Array[],
     salt: Uint8Array,

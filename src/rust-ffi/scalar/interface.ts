@@ -215,7 +215,10 @@ export interface RustScalar {
   createMediaTypeMatcher(expected: Uint8Array): MediaTypeMatcherInstance
   /**
    * Sharded fixed-window per-key rate limiter. `maxEntries` clamps internally
-   * (default 1,048,576). Each instance owns an independent budget.
+   * (default 1,048,576) and has an effective floor of 16,384
+   * (`max_per_shard = max(maxEntries / 256, 64)` × 256 shards) — values below
+   * that are silently raised, so don't rely on it to bound a tiny key space.
+   * Each instance owns an independent budget.
    * @remarks Scalar per-check cost: ~3-14x SLOWER than the JS Map baseline —
    * prefer the ingress pipeline (one FFI for all stages) for native rate
    * limiting in a request path. [measured 2026-08]
