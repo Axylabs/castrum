@@ -44,7 +44,7 @@ import { BufferPool, type PooledBuffer } from '../shared/buffer-pool'
 import { decoder, viewForArrayBuffer } from '../shared/bytes'
 import { createStructuredLogger } from '../shared/log'
 import { generateRequestId } from '../shared/request-id'
-import { OUT_DATA_START } from './constants'
+import { OUT_DATA_START, HV_CORS_SIMPLE, HV_JSON, HV_RATE_ACTIVE } from './constants'
 import { BakedIngressResult } from './decode/baked-result'
 import { buildBakedHeaderTemplates } from './headers/baked-templates'
 import { buildBakedSecurityEntries } from './headers/security'
@@ -54,9 +54,13 @@ import {
   type IngressHandlerOptions,
   warnTrustProxyDeprecated,
 } from './options'
-import { gatherRawHeadersPacked } from './packing/gather-raw-headers'
+import { gatherRawHeadersPacked, prewarmOriginBlocks } from './packing/gather-raw-headers'
 import { IngressInputPacker } from './packing/input-packer'
-import { type BakedResponseState, buildBakedResponseBuilders } from './response/baked-response'
+import {
+  type BakedResponseState,
+  buildBakedResponseBuilders,
+  prewarmOriginHeaders,
+} from './response/baked-response'
 import {
   assertSyncCallback,
   buildHeaderPlan,
@@ -109,6 +113,14 @@ export const RATE_LIMIT_U32_MAX = 4_294_967_295
  * transport, high enough that a single transient failure never flips it.
  */
 const MAX_FFI_FAILURES = 3
+
+/**
+ * Number of output buffers pre-allocated into the handler's pool at
+ * construction (`prefill`), so the first burst wave never pays per-request
+ * `new Uint8Array` + GC. Memory trade: `outputBufferSize` × this many bytes
+ * retained per handler (bounded by the pool's `maxBuffers` cap).
+ */
+const PREWARM_POOL_BUFFERS = 16
 
 /**
  * Best-effort URL pathname extraction for log/error lines.
@@ -288,9 +300,14 @@ export function createIngressHandler(
   // Reusable output-buffer pool: eliminates the per-request output-buffer
   // allocation by reusing buffers across requests.
   // `maxInFlight` (when set) bounds zero-copy borrowing under slow consumers.
+  // `prefill` spends up-front memory (`outputBufferSize` × 16 per handler) so
+  // a burst ramp never allocates during its first wave — the packaged
+  // load-test flow, where the pool would otherwise go 1 buffered → allocate
+  // under a 2000-connection flood.
   const outputPool = new BufferPool({
     initialSize: outputBufferSize,
     maxInFlight: runtime.maxInFlight,
+    prefill: PREWARM_POOL_BUFFERS,
   })
 
   // Reusable packed-input builder (same zero-alloc discipline as the fast
@@ -319,10 +336,10 @@ export function createIngressHandler(
   // `access-control-allow-origin` row). Callers treat the returned array as
   // read-only (the `Headers`/`Response` constructors copy entries), so every
   // distinct (variant, origin) is reused after its first hit — removing the
-  // per-request array alloc + copy when an Origin header is present. Only
-  // ALLOWED origins reach the CORS-allowed path (the native pipeline gates the
-  // variant on CORS approval), so the map stays bounded by the configured
-  // allow-origin list (+ a couple of preflight variants).
+  // per-request array alloc + copy when an Origin header is present. The map is
+  // bounded by `ORIGIN_HEADER_CACHE_MAX` in baked-response.ts: with wildcard
+  // CORS the Origin is attacker-controlled, so an unbounded map would be a
+  // remote memory-exhaustion vector.
   const originHeaderCache = new Map<string, [string, string][]>()
 
   // ── Variant-indexed header templates (precomputed once) ──
@@ -378,6 +395,34 @@ export function createIngressHandler(
     originHeaderCache,
     state: responseState,
   })
+
+  // Pre-warm the CORS caches for the configured exact allow-origins
+  // (load-time-for-RPS trade): the FIRST request from each known origin then
+  // hits the baked origin-packed header block AND the cached
+  // origin-augmented header array + memoized `Headers` instead of building
+  // them. Wildcard/pattern entries (e.g. `https://*.example.com`) are skipped
+  // — the concrete resolved origin differs from the pattern string, so
+  // caching the pattern would only waste a slot.
+  if (headerPlan.cors && typeof cors?.allowOrigin === 'object') {
+    const exactOrigins: string[] = []
+    for (const origin of cors.allowOrigin) {
+      if (
+        typeof origin === 'string' &&
+        origin.length > 0 &&
+        origin.length <= 512 &&
+        !origin.includes('*')
+      ) {
+        exactOrigins.push(origin)
+      }
+    }
+    prewarmOriginBlocks(exactOrigins)
+    // Warm the SUCCESS variant the native pipeline actually returns for an
+    // allowed CORS JSON response (HV_JSON | HV_CORS_SIMPLE, plus HV_RATE_ACTIVE
+    // when rate limiting is on) — not HV_CORS_SIMPLE alone, which is a
+    // different cache key and left the warmed entry unreachable.
+    const successVariant = HV_JSON | HV_CORS_SIMPLE | (rateEnabled ? HV_RATE_ACTIVE : 0)
+    prewarmOriginHeaders(responseBuilders.responseHeaders, exactOrigins, successVariant)
+  }
 
   const result = new BakedIngressResult()
   const ctx: BakedContext = {

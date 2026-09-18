@@ -39,6 +39,14 @@
    * converge on one buffer size instead of re-growing each time. Default false.
    */
   adaptive?: boolean
+  /**
+   * Number of buffers (beyond the initial one) to ALLOCATE UP FRONT at
+   * construction, so a burst-ramp (e.g. a load-test connection flood) never
+   * pays per-request `new Uint8Array` + GC during its first wave. A pure
+   * memory-for-latency trade: retained memory becomes `prefill + 1` ×
+   * `initialSize` (still bounded by `maxBuffers`). Default 0.
+   */
+  prefill?: number
 }
 
 /** A borrowed buffer handle handed out by a pool; `release()` returns it. */
@@ -138,6 +146,15 @@ export class BufferPool {
         : null
     this.free.push(new Uint8Array(this.initialSize))
     this.created = 1
+    // Pre-fill (memory-for-latency trade, see `prefill` in BufferPoolOptions):
+    // spend up-front allocation so a burst ramp never allocates during its
+    // first wave. Capped at maxBuffers so the documented retention bound
+    // (free list ≤ maxBuffers) still holds.
+    const prefill = Math.min(Math.max(0, Math.floor(options.prefill ?? 0)), this.maxBuffers - 1)
+    for (let i = 0; i < prefill; i++) {
+      this.free.push(new Uint8Array(this.initialSize))
+      this.created++
+    }
   }
 
   /** Number of buffers currently available for immediate reuse. */
