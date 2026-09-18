@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Native lifecycle safety.** `castrum_task_shutdown` clears the native
+  doorbell before the JS callback closes (and the runtime re-registers it on
+  reuse), so a late completion can no longer call a freed trampoline. The
+  `NativeRoute` and `MetricsRegistry` handles are destroy-idempotent and throw
+  on use-after-destroy, and `panic_guard` now covers the remaining fallible
+  `extern "C"` exports (argon2/bcrypt verify, HTTP/query/cookie parsers,
+  json/regex/hex, ws, task submit, metrics create).
+- **Empty auth secrets are rejected** at the JWT/CSRF/cookie/HMAC-signer and
+  batch jwt/hmac surfaces (a blank secret would mint forgeable tokens); the raw
+  `hmacSha256` primitive keeps its documented empty-input tolerance. Argon2
+  params are capped against a multi-GiB / multi-minute burn.
+- **JWT time claims** enforce a non-integer `NumericDate` (a fractional or
+  string `exp` previously verified as never-expiring) and compare signatures
+  with `aws-lc-rs` `hmac::verify` instead of a hand-rolled loop.
+- **Ingress:** the per-origin header cache is bounded (wildcard-CORS memory DoS),
+  the echo route no longer reflects an active `Content-Type`, a `cstring` NUL
+  can no longer alias rate-limit keys / truncate accept headers, the Node
+  WebSocket handshake validates the subprotocol token, and a native route with
+  `validateBody` (but no `requireJsonBody`) fails closed on an absent body.
+
+### Changed
+
+- **Rate limiting without `getIp`** warns once (every client shares one bucket);
+  duplicate `X-Forwarded-For` uses the last line; `cors: {}` is documented as
+  wildcard allow-all. Pool prefill is capped by a 4 MiB byte budget.
+
+### Fixed
+
+- **CORS prewarm** warms the actual success header variant (`HV_JSON |
+  HV_CORS_SIMPLE`, plus `HV_RATE_ACTIVE`) instead of `HV_CORS_SIMPLE` alone.
+- FFI symbol-count docs (121 total / 109 direct), `buildParse` JSDoc (coverage
+  back to 100%), and the `IGNGEX_SECURITY_HEADERS` typo.
+
 ### Changed
 
 - **Ingress responses pass a memoized `Headers` instead of an array-of-pairs
