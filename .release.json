@@ -5,7 +5,9 @@
     "bun run typecheck",
     "bun run typecheck:test",
     "bun run lint:ci",
-    "bun test",
+    "bun run test",
+    "bun run check:clean",
+    "bun run check:jsdoc",
     "bun run check:version"
   ],
   "versionFiles": [

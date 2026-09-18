@@ -148,6 +148,13 @@ jobs:
       # blocks new lint warnings/errors without requiring a format sweep.
       - name: Lint (Biome, rules only)
         run: bun run lint:ci
+      # Convention guards documented as CI-enforced in RULES.md: module headers,
+      # runtime seam (`typeof Bun` only in detect.ts), the PURE-module purity
+      # boundary, the FFI doc-count, and dangling doc links (check:clean), plus
+      # the JSDoc coverage floor (check:jsdoc). These were missing from CI, so a
+      # structural/JSDoc regression could merge unnoticed.
+      - name: Conventions (check:clean + check:jsdoc)
+        run: bun run check:clean && bun run check:jsdoc
       - name: Correctness checks (native vs baseline)
         run: bun run check
       # Native-vs-JS selection completeness: `scripts/select-native.ts` OPS array
