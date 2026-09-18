@@ -32,6 +32,14 @@ import { ERROR_BODIES, ERROR_CODE_BODIES, rateLimitedBody } from './error-bodies
 
 const EMPTY_BODY = new Uint8Array(0)
 
+/**
+ * Upper bound on the per-`(variant, origin)` memoized header arrays. Under
+ * wildcard CORS EVERY Origin is allowed, so this cache is attacker-keyed —
+ * without a cap a stream of distinct Origins grows it without bound (remote
+ * memory exhaustion). Evicts the oldest entry (Map preserves insertion order).
+ */
+export const ORIGIN_HEADER_CACHE_MAX = 64
+
 /** Shared per-request state between `run()` (handlers.ts) and the builders. */
 export interface BakedResponseState {
   /** The pooled output buffer backing the current `run()` (null outside one). */
@@ -114,6 +122,10 @@ export function buildBakedResponseBuilders(
         entries[i++] = pair
       }
       entries[i] = ['access-control-allow-origin', origin as string]
+      if (originHeaderCache.size >= ORIGIN_HEADER_CACHE_MAX) {
+        const oldest = originHeaderCache.keys().next().value
+        if (oldest !== undefined) originHeaderCache.delete(oldest)
+      }
       originHeaderCache.set(key, entries)
       return entries
     }
