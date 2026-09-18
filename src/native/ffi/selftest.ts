@@ -14,7 +14,7 @@ import { selfTestCodecs } from './build/codecs-selftest'
 import { selfTestCompress } from './build/compress'
 import { selfTestInstances } from './build/instances-selftest'
 import { selfTestMetrics } from './build/metrics'
-import { selfTestParse } from './build/parse'
+import { selfTestParse } from './build/parse-selftest'
 import { selfTestTask } from './build/task'
 import type { BunFFI } from './types'
 
