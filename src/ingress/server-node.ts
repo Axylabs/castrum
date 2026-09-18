@@ -73,8 +73,7 @@ function nodeRequestToWebRequest(req: IncomingMessage): Request {
   // request actually carries one (content-length > 0 or chunked), so DELETE/
   // OPTIONS-with-a-body are no longer dropped.
   const bodyForbidden = method === 'GET' || method === 'HEAD'
-  const hasBody =
-    Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'] !== undefined
+  const hasBody = requestHasBody(req)
 
   const init: RequestInit & { duplex?: 'half' } = { method, headers }
 
@@ -143,7 +142,7 @@ async function writeResponse(res: ServerResponse, response: Response): Promise<v
  */
 function drainUnreadBody(res: ServerResponse): void {
   const req = res.req
-  if (req !== undefined && req !== null && !req.complete && hasBody(req)) {
+  if (req !== undefined && req !== null && !req.complete && requestHasBody(req)) {
     req.resume()
     // Only force-close when the request actually carried a body that was not
     // consumed. A bodiless GET/HEAD is always safe to keep alive (bun's
@@ -156,7 +155,7 @@ function drainUnreadBody(res: ServerResponse): void {
 }
 
 /** Whether an incoming request carried a body (content-length or chunked). */
-function hasBody(req: IncomingMessage): boolean {
+function requestHasBody(req: IncomingMessage): boolean {
   return (
     Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'] !== undefined
   )

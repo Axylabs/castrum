@@ -339,6 +339,14 @@ export function createIngressHandler(
   // flaky FFI path degrades to a correct response instead of a failure storm.
   let ffiFailures = 0
   let ffiDisabled = false
+  // Cold path only (called from a `catch`): counts a recurrence and trips the
+  // circuit breaker. Defined once at construction, so it adds nothing per call.
+  const noteFfiFailure = (): void => {
+    ffiFailures++
+    if (ffiFailures >= MAX_FFI_FAILURES) {
+      ffiDisabled = true
+    }
+  }
 
   // Cache Origin-augmented header arrays keyed by `variant\u0000origin` (the
   // steady-state CORS case: the pre-baked template + one
@@ -517,10 +525,7 @@ export function createIngressHandler(
             )
             ffiFailures = 0
           } catch {
-            ffiFailures++
-            if (ffiFailures >= MAX_FFI_FAILURES) {
-              ffiDisabled = true
-            }
+            noteFfiFailure()
             // napi re-run: crash-safe (napi-rs catch_unwind) and semantically
             // identical — a transient ffi panic still serves the request. The
             // packed frame respects the same url/ip minimal-processing.
@@ -539,10 +544,7 @@ export function createIngressHandler(
             written = bunFFI.ingressHandlePacked(ingressPtr, input, body, handle.buffer)
             ffiFailures = 0
           } catch {
-            ffiFailures++
-            if (ffiFailures >= MAX_FFI_FAILURES) {
-              ffiDisabled = true
-            }
+            noteFfiFailure()
             // napi re-run: crash-safe (napi-rs catch_unwind) and semantically
             // identical — a transient ffi panic still serves the request.
             written = handler.handleRequestPacked(input, body, handle.buffer)
