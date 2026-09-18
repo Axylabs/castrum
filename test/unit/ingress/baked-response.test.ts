@@ -5,10 +5,11 @@
 // attacker can stream distinct Origins — the cache MUST stay bounded.
 
 import { describe, expect, test } from 'bun:test'
-import { HV_CORS_SIMPLE } from '../../../src/ingress/constants'
+import { HV_CORS_SIMPLE, HV_JSON } from '../../../src/ingress/constants'
 import {
   buildBakedResponseBuilders,
   ORIGIN_HEADER_CACHE_MAX,
+  prewarmOriginHeaders,
 } from '../../../src/ingress/response/baked-response'
 
 const TEMPLATES: Array<Array<[string, string]>> = [[['content-type', 'application/json']]]
@@ -42,5 +43,21 @@ describe('baked response — per-origin header cache', () => {
     const second = b.responseHeaders(HV_CORS_SIMPLE, null, origin)
     expect(second).toBe(first)
     expect(cache.size).toBe(1)
+  })
+
+  test('prewarm uses the SUCCESS variant so the first request is a cache hit', () => {
+    const cache = new Map<string, [string, string][]>()
+    const b = makeBuilders(cache)
+    const origin = 'https://app.example.com'
+    const successVariant = HV_JSON | HV_CORS_SIMPLE
+    prewarmOriginHeaders(b.responseHeaders, [origin], successVariant)
+    expect(cache.size).toBe(1)
+
+    // The real success path must be a HIT (no new cache entry).
+    b.responseHeaders(successVariant, null, origin)
+    expect(cache.size).toBe(1)
+    // Regression guard: warming the CORS-only variant (the old bug) left the
+    // success variant uncached.
+    expect(cache.has(`${HV_CORS_SIMPLE}\u0000${origin}`)).toBe(false)
   })
 })

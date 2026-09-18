@@ -65,6 +65,33 @@ export interface BakedResponseBuildersDeps {
 }
 
 /**
+ * Pre-warm the per-origin header-array cache AND the memoized `Headers`
+ * `WeakMap` for the configured exact allow-origins at the success `variant`.
+ *
+ * `variant` MUST be the one the success path actually returns
+ * (`HV_JSON | HV_CORS_SIMPLE`, plus `HV_RATE_ACTIVE` when rate limiting is
+ * enabled). Warming a different variant populates an unreachable cache entry
+ * and buys nothing.
+ *
+ * @param responseHeaders The handler's header builder (from this module).
+ * @param origins Exact, concrete allow-origins (wildcards excluded by caller).
+ * @param variant The success header variant to warm.
+ */
+export function prewarmOriginHeaders(
+  responseHeaders: (
+    variant: number,
+    requestIdHeader: string | null,
+    origin: string | null,
+  ) => [string, string][],
+  origins: readonly string[],
+  variant: number,
+): void {
+  for (const origin of origins) {
+    memoizedHeaders(responseHeaders(variant, null, origin))
+  }
+}
+
+/**
  * Build the seven response-builder methods of `OptimizedIngressHandler`
  * (everything except `run`), bound to this handler's header templates and
  * request-id policy. The returned methods are the exact bodies that lived in
