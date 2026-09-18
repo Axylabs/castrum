@@ -244,6 +244,11 @@ export interface RustScalar {
    * instances keep their own shared reference and are unaffected). Idempotent,
    * and a safe no-op when the native addon is absent or predates the symbol
    * (the public `flushMemory()` relies on that).
+   *
+   * Maintenance-only escape hatch — NOT a benchmarked op, so it is intentionally
+   * exempt from `PROVEN_SELECTION` / `selection.json` (there is no native-vs-JS
+   * winner to classify). `test/unit/contract/proven.test.ts` only requires
+   * registry coverage for selection.json ops + Bun built-ins.
    */
   clearSchemaCache(): void
 

@@ -660,6 +660,8 @@ explicit impurity boundary so the hot path can pool/globalize state:
   - `src/shared/packed/parsers.ts` — lazy `addon` binding (the ONLY non-pure member of `packed/`)
   - `src/loader/index.ts` — dispatch core + configure rebinding
   - `src/rust-ffi/context.ts` — `resolveNative`/`resolvePoolNative` first-use caches
+  - `src/shared/memory.ts` — `flushMemory()` reaches the loader LRU + `rust.*`
+    to drop process-level caches (no state of its own; still an impure boundary)
   - `src/ingress/server.ts` / `server-node.ts` — socket I/O; the rate limiter's
     process-wide `SHARED_LIMITERS` and the FFI `HMAC_KEY_CACHE` live in Rust
 - **Pure (no addon, no module state)** — new code should land here: `wire.ts`
