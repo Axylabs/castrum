@@ -395,7 +395,10 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
       const rejected = taskSubmitError(ffi.taskSubmit(op, args, id))
       if (rejected) {
         inflight.delete(id)
-        release()
+        // Release the keep-alive only when this was the last in-flight task.
+        // An overload/invalid rejection must not tear down the interval (and
+        // its polling safety net) while other tasks are still pending.
+        if (inflight.size === 0) release()
         reject(rejected)
         return
       }
@@ -429,7 +432,10 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
       const rejected = taskSubmitError(ffi.taskSubmitOut(op, args, id, output))
       if (rejected) {
         inflight.delete(id)
-        release()
+        // Release the keep-alive only when this was the last in-flight task.
+        // An overload/invalid rejection must not tear down the interval (and
+        // its polling safety net) while other tasks are still pending.
+        if (inflight.size === 0) release()
         reject(rejected)
         return
       }
@@ -464,7 +470,10 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
       const rejected = taskSubmitError(ffi.taskSubmitSlice(op, hdr, data, id))
       if (rejected) {
         inflight.delete(id)
-        release()
+        // Release the keep-alive only when this was the last in-flight task.
+        // An overload/invalid rejection must not tear down the interval (and
+        // its polling safety net) while other tasks are still pending.
+        if (inflight.size === 0) release()
         reject(rejected)
         return
       }
