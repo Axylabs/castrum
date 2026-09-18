@@ -148,6 +148,28 @@ describe('BufferPool', () => {
   })
 })
 
+describe('BufferPool shrink', () => {
+  test('drops all retained free buffers and stays usable', () => {
+    const pool = new BufferPool({ initialSize: 64, maxBuffers: 4, prefill: 3 })
+    expect(pool.freeCount).toBe(4)
+    pool.shrink()
+    expect(pool.freeCount).toBe(0)
+
+    // Still functional: acquire allocates a fresh buffer sized to the request.
+    const h = pool.acquire(128)
+    expect(h.buffer.byteLength).toBeGreaterThanOrEqual(128)
+    h.release()
+    expect(pool.freeCount).toBe(1)
+  })
+
+  test('shrinking an already-empty pool is a no-op', () => {
+    const pool = new BufferPool({ initialSize: 16 })
+    pool.shrink()
+    pool.shrink()
+    expect(pool.freeCount).toBe(0)
+  })
+})
+
 describe('BufferPool prefill', () => {
   test('allocates the requested buffers up front (capped by maxBuffers - 1)', () => {
     const pool = new BufferPool({ initialSize: 16, maxBuffers: 8, prefill: 3 })

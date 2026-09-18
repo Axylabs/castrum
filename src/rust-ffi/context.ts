@@ -21,6 +21,51 @@ import { normalizeExt, resolveRayonThreads } from './options'
 // batch.ts uses for its packed entries.
 const nativeFnCache = new Map<string, unknown>()
 
+/** Max entries retained per process-wide MIME cache (insertion-order eviction). */
+const MIME_CACHE_MAX = 1024
+
+/**
+ * Process-wide extension-bytes → MIME-bytes cache shared by every client
+ * context: the native addon is a process singleton, so `extension → MIME` is a
+ * global pure lookup. Bounded by `MIME_CACHE_MAX`; on overflow the oldest half
+ * is evicted via {@link evictOldestHalf}. Exported for the memory-flush path
+ * and tests — callers must NOT mutate the returned slices.
+ */
+export const mimeByText = new Map<string, Uint8Array>()
+
+/**
+ * Process-wide extension-string → MIME-string memo (the `text.mimeFromExtension`
+ * fast path). Bounded exactly like {@link mimeByText}.
+ */
+export const mimeStrCache = new Map<string, string>()
+
+/**
+ * Evict the oldest half of a cache map (insertion order) and return the keys
+ * dropped. Generational eviction — halving at the cap amortizes the cost rather
+ * than paying a delete per insertion. Returns an empty array below the cap.
+ */
+export function evictOldestHalf<K, V>(map: Map<K, V>): K[] {
+  if (map.size < MIME_CACHE_MAX) return []
+  const drop = Math.ceil(map.size / 2)
+  const dropped: K[] = []
+  for (const key of map.keys()) {
+    if (dropped.length >= drop) break
+    dropped.push(key)
+  }
+  for (const key of dropped) map.delete(key)
+  return dropped
+}
+
+/**
+ * Clear the process-wide MIME caches (both the bytes and string forms). This is
+ * the impure-boundary hook consumed by the public `flushMemory()`; safe to call
+ * at any time, including before the addon has ever been loaded.
+ */
+export function clearMimeCaches(): void {
+  mimeByText.clear()
+  mimeStrCache.clear()
+}
+
 /**
  * Resolve a native op on first use and cache it for all subsequent calls —
  * FFI-FIRST via the runtime adapter's transport (`bun:ffi` on Bun, napi
@@ -91,7 +136,6 @@ export interface RustClientContext {
   runtime: NativeRuntimeAdapter
   /** Per-instance toggles (mime/hmac caching). */
   state: { mimeCache: boolean; hmacCache: boolean }
-  mimeByText: Map<string, Uint8Array>
   hmacSigners: WeakMap<Uint8Array, HmacSignerInstance>
 
   /** Initialize the process-wide rayon pool exactly once (no-op after). */
@@ -110,7 +154,6 @@ export interface RustClientContext {
 
 /** Build a per-instance context from client options. */
 export function createContext(options: RustOptions): RustClientContext {
-  const mimeByText = new Map<string, Uint8Array>()
   const hmacSigners = new WeakMap<Uint8Array, HmacSignerInstance>()
   const state = {
     mimeCache: options.mimeCache !== false,
@@ -152,6 +195,7 @@ export function createContext(options: RustOptions): RustClientContext {
 
     let val = mimeByText.get(key)
     if (!val) {
+      evictOldestHalf(mimeByText)
       val = addon.mimeFromExtension(ext)
       mimeByText.set(key, val)
     }
@@ -181,7 +225,6 @@ export function createContext(options: RustOptions): RustClientContext {
     addon,
     runtime: runtimeNative,
     state,
-    mimeByText,
     hmacSigners,
     ensurePool,
     isPoolInitialized,

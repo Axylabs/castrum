@@ -7,6 +7,7 @@
 
 import {
   detectedRuntime,
+  forceGc as forceGcDetected,
   isBunRuntime,
   isNodeRuntime,
   nodeMajorVersion as nodeMajorVersionDetected,
@@ -27,3 +28,9 @@ export const runtimeName: () => RuntimeName = () => detectedRuntime
 
 /** The Node.js major version when running under Node, otherwise `null`. */
 export const nodeMajorVersion: () => number | null = nodeMajorVersionDetected
+
+/**
+ * Request a synchronous full GC when the runtime exposes one (`Bun.gc(true)` on
+ * Bun, `globalThis.gc?.()` under Node `--expose-gc`). A no-op otherwise.
+ */
+export const forceGc: () => void = forceGcDetected

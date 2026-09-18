@@ -14,7 +14,7 @@
 // napi fallback) — no inline `isBun()` / `getBunFFI()`.
 
 import { decoder, encoder, hasNul } from '../shared/bytes'
-import { type RustClientContext, resolveNative } from './context'
+import { evictOldestHalf, mimeStrCache, type RustClientContext, resolveNative } from './context'
 
 /**
  * Scratch for the byte-path `Sec-WebSocket-Accept` fallback (28 chars; the
@@ -67,9 +67,9 @@ export function buildText(ctx: RustClientContext): RustText {
   const { builtins, transport } = ctx.runtime
   // String memo: the byte path already caches the native bytes; this avoids the
   // encode → native lookup → slice → decode round-trip for repeated extension
-  // strings (the common case) — 0 allocations on a cache hit.
-  const mimeStrCache = new Map<string, string>()
-
+  // strings (the common case) — 0 allocations on a cache hit. The map is
+  // process-wide and bounded by `evictOldestHalf` (MIME_CACHE_MAX) — see
+  // ./context.ts.
   return {
     mimeFromExtension(ext) {
       let mime = mimeStrCache.get(ext)
@@ -81,6 +81,7 @@ export function buildText(ctx: RustClientContext): RustText {
         mime = f
           ? (f.mimeFromExtension(ext) ?? 'application/octet-stream')
           : decoder.decode(ctx.cachedMime(encoder.encode(ext)))
+        evictOldestHalf(mimeStrCache)
         mimeStrCache.set(ext, mime)
       }
       return mime

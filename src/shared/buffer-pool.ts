@@ -182,6 +182,16 @@ export class BufferPool {
   }
 
   /**
+   * Drop every retained free buffer. In-flight (borrowed) buffers are
+   * unaffected and return to an empty pool on `release()`, so the next
+   * `acquire()` allocates (or grows) as needed. Used by an explicit memory
+   * flush; the pool stays fully functional afterwards.
+   */
+  shrink(): void {
+    this.free.length = 0
+  }
+
+  /**
    * Acquire a buffer of at least `minSize` bytes. The returned handle must be
    * released (directly, or via a zero-copy Response) once the caller is done.
    *

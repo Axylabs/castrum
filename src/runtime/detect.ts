@@ -27,6 +27,20 @@ export function isNodeRuntime(): boolean {
   return detectedRuntime === 'node'
 }
 
+/**
+ * Request a synchronous full garbage collection when the host runtime exposes
+ * one. On Bun this is `Bun.gc(true)`; on Node it is `globalThis.gc?.()`, which
+ * is only defined when the process runs with `--expose-gc`. A no-op otherwise.
+ */
+export function forceGc(): void {
+  if (detectedRuntime === 'bun') {
+    Bun.gc(true)
+    return
+  }
+  // Node only defines `globalThis.gc` under `--expose-gc`.
+  ;(globalThis as { gc?: () => void }).gc?.()
+}
+
 /** The Node.js major version when running under Node, otherwise `null`. */
 export function nodeMajorVersion(): number | null {
   if (detectedRuntime !== 'node') return null

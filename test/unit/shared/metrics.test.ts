@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { createMetrics } from '../../../src/shared/metrics'
+import { createMetrics, MAX_SERIES_PER_METRIC } from '../../../src/shared/metrics'
 
 describe('createMetrics', () => {
   test('counter increments and renders Prometheus text', () => {
@@ -74,5 +74,50 @@ describe('createMetrics', () => {
     const c = m.counter('x_total', 'x', ['method'])
     c.inc({ method: 'we"ird\\path' })
     expect(m.render()).toContain('x_total{method="we\\"ird\\\\path"} 1')
+  })
+})
+
+describe('createMetrics cardinality cap', () => {
+  test('does not render the dropped counter below the cap', () => {
+    const m = createMetrics()
+    const c = m.counter('bounded_total', 'bounded', ['k'])
+    for (let i = 0; i < 100; i++) c.inc({ k: String(i) })
+    expect(m.render()).not.toContain('castrum_metrics_series_dropped_total')
+  })
+
+  test('evicts the oldest half and counts drops on overflow', () => {
+    const m = createMetrics()
+    const c = m.counter('capped_total', 'capped', ['k'])
+    const total = MAX_SERIES_PER_METRIC + 1
+    for (let i = 0; i < total; i++) c.inc({ k: String(i) })
+
+    const out = m.render()
+    // Observable drop counter is rendered with a non-zero value.
+    expect(out).toContain('# TYPE castrum_metrics_series_dropped_total counter')
+    expect(out).toMatch(/castrum_metrics_series_dropped_total ([1-9]\d*)/)
+    // The oldest-half eviction keeps the family bounded (cap + 1 new - half).
+    const renderedSeries = out.split('\n').filter((l) => l.startsWith('capped_total{')).length
+    expect(renderedSeries).toBeLessThanOrEqual(MAX_SERIES_PER_METRIC)
+    expect(renderedSeries).toBe(Math.ceil(MAX_SERIES_PER_METRIC / 2) + 1)
+  })
+
+  test('caps each family independently', () => {
+    const m = createMetrics()
+    const c = m.counter('fam_a_total', 'a', ['k'])
+    const g = m.gauge('fam_b', 'b', ['k'])
+    for (let i = 0; i < MAX_SERIES_PER_METRIC; i++) {
+      c.inc({ k: String(i) })
+      g.set({ k: String(i) }, i)
+    }
+    expect(m.render()).not.toContain('castrum_metrics_series_dropped_total')
+  })
+
+  test('reset clears the dropped counter too', () => {
+    const m = createMetrics()
+    const c = m.counter('reset_capped_total', 'capped', ['k'])
+    for (let i = 0; i <= MAX_SERIES_PER_METRIC; i++) c.inc({ k: String(i) })
+    expect(m.render()).toContain('castrum_metrics_series_dropped_total')
+    m.reset()
+    expect(m.render().trim()).toBe('')
   })
 })

@@ -41,6 +41,11 @@ export { decoder, encoder } from './src/shared/bytes'
 export type { Counter, Gauge, Histogram, MetricsRegistry } from './src/shared/metrics'
 // Zero-dep metrics registry (counters/gauges/histograms + Prometheus render).
 export { createMetrics, DEFAULT_BUCKETS } from './src/shared/metrics'
+export type { FlushMemoryOptions } from './src/shared/memory'
+// Explicit memory-flush escape hatch (drops cached state + optional GC).
+// Deliberately does NOT clear the metrics registry (an observability registry
+// is not a cache).
+export { flushMemory } from './src/shared/memory'
 export type { Pair, ParsedHttpRequestPacked } from './src/shared/packed'
 export {
   packBatch,

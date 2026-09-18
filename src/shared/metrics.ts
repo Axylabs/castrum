@@ -12,6 +12,17 @@ export const DEFAULT_BUCKETS: readonly number[] = [
   0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
 ]
 
+/**
+ * Per-family cap on the number of distinct label sets (series) retained by a
+ * single counter/gauge/histogram. A metrics registry is keyed by caller-supplied
+ * label values, so an unbounded label (e.g. a raw path or user id) would grow a
+ * `Map` without limit. At the cap the oldest half of that family is evicted
+ * (insertion order) and the count is accumulated into
+ * `castrum_metrics_series_dropped_total`, making the loss observable instead of
+ * silent.
+ */
+export const MAX_SERIES_PER_METRIC = 10_000
+
 type LabelValues = readonly string[]
 type Labels = Readonly<Record<string, string>>
 
@@ -27,6 +38,24 @@ function labelKey(names: readonly string[], values: LabelValues): string {
 
 function escapeLabel(v: string): string {
   return v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
+}
+
+/**
+ * Once a series map is at {@link MAX_SERIES_PER_METRIC}, evict its oldest half
+ * (insertion order) and return the keys dropped; returns `[]` below the cap.
+ * Mirrors Elysia's `evictOldestHalf` generational policy: halving at the cap
+ * amortizes the eviction cost instead of paying a delete per insertion.
+ */
+function evictOldestHalf<K, V>(map: Map<K, V>): K[] {
+  if (map.size < MAX_SERIES_PER_METRIC) return []
+  const drop = Math.ceil(map.size / 2)
+  const dropped: K[] = []
+  for (const key of map.keys()) {
+    if (dropped.length >= drop) break
+    dropped.push(key)
+  }
+  for (const key of dropped) map.delete(key)
+  return dropped
 }
 
 /** A single labelled counter value. */
@@ -97,6 +126,8 @@ export function createMetrics(): MetricsRegistry {
   const counters = new Map<string, CounterEntry>()
   const gauges = new Map<string, GaugeEntry>()
   const histograms = new Map<string, HistogramEntry>()
+  /** Series evicted by the per-family cardinality cap, rendered as a counter. */
+  let seriesDropped = 0
 
   const bucketUpper = (buckets: number[]): number[] => [
     ...buckets.map((b) => b),
@@ -144,6 +175,15 @@ export function createMetrics(): MetricsRegistry {
     for (const e of counters.values()) out.push(...renderCounter(e))
     for (const e of gauges.values()) out.push(...renderGauge(e))
     for (const e of histograms.values()) out.push(...renderHistogram(e))
+    // Only emitted once a family has actually overflowed, so the output for a
+    // well-behaved registry is byte-identical to before the cap existed.
+    if (seriesDropped > 0) {
+      out.push(
+        '# HELP castrum_metrics_series_dropped_total Total metric series evicted by the per-family cardinality cap.',
+      )
+      out.push('# TYPE castrum_metrics_series_dropped_total counter')
+      out.push(`castrum_metrics_series_dropped_total ${seriesDropped}`)
+    }
     return `${out.join('\n')}\n`
   }
 
@@ -151,6 +191,7 @@ export function createMetrics(): MetricsRegistry {
     counters.clear()
     gauges.clear()
     histograms.clear()
+    seriesDropped = 0
   }
 
   return {
@@ -172,7 +213,14 @@ export function createMetrics(): MetricsRegistry {
             names,
             names.map((n) => labels?.[n] ?? ''),
           )
-          entry.values.set(key, (entry.values.get(key) ?? 0) + by)
+          const prev = entry.values.get(key)
+          if (prev === undefined) {
+            // New series: make room first (bounded family) and count evictions.
+            seriesDropped += evictOldestHalf(entry.values).length
+            entry.values.set(key, by)
+          } else {
+            entry.values.set(key, prev + by)
+          }
         },
       }
     },
@@ -192,14 +240,27 @@ export function createMetrics(): MetricsRegistry {
           names,
           names.map((n) => labels?.[n] ?? ''),
         )
+      const add = (labels: Labels | undefined, delta: number): void => {
+        const key = keyOf(labels)
+        const prev = entry.values.get(key)
+        if (prev === undefined) {
+          seriesDropped += evictOldestHalf(entry.values).length
+          entry.values.set(key, delta)
+        } else {
+          entry.values.set(key, prev + delta)
+        }
+      }
       return {
         inc(labels, by = 1) {
-          entry.values.set(keyOf(labels), (entry.values.get(keyOf(labels)) ?? 0) + by)
+          add(labels, by)
         },
         dec(labels, by = 1) {
-          entry.values.set(keyOf(labels), (entry.values.get(keyOf(labels)) ?? 0) - by)
+          add(labels, -by)
         },
         set(labels, value) {
+          if (!entry.values.has(keyOf(labels))) {
+            seriesDropped += evictOldestHalf(entry.values).length
+          }
           entry.values.set(keyOf(labels), value)
         },
       }
@@ -225,6 +286,11 @@ export function createMetrics(): MetricsRegistry {
           )
           let counts = entry.counts.get(key)
           if (!counts) {
+            // New series: bound the family and drop the matching sum entries
+            // (counts and sums always share the same key set).
+            const dropped = evictOldestHalf(entry.counts)
+            for (const k of dropped) entry.sums.delete(k)
+            seriesDropped += dropped.length
             // One slot per bucket PLUS the implicit +Inf slot.
             counts = new Array<number>(entry.buckets.length + 1).fill(0)
             entry.counts.set(key, counts)
