@@ -97,7 +97,13 @@ export function guardRouteHandler(
   return (req, srv, params) => {
     try {
       const out = handler(req, srv, params)
-      return out instanceof Promise ? out.catch((e) => onServerError(e, req)) : out
+      // Duck-type thenables (cross-realm Promises/custom thenables fail
+      // `instanceof Promise`). A `Response` never exposes `then`.
+      const thenable = out as Promise<Response> | null | undefined
+      if (thenable !== null && thenable !== undefined && typeof thenable.then === 'function') {
+        return thenable.catch((e) => onServerError(e, req))
+      }
+      return out
     } catch (e) {
       return onServerError(e, req)
     }

@@ -129,6 +129,35 @@ describe('route wiring', () => {
     }
   })
 
+  test('createIngressServer masks an error escaping a built-in factory and fires onError once', async () => {
+    // `getIp` runs inside a BUILT-IN factory (readHandler, unwrapped), so this
+    // escapes to Bun's server-level `error` backstop rather than the route
+    // guard — proving createIngressServer installs the masked-500 trap.
+    const seen: string[] = []
+    const ingress = createIngressHandler({ emitMetadataJson: true })
+    const srv = createIngressServer({
+      port: 0,
+      routes: { '/x': { read: ingress } },
+      getIp: () => {
+        throw new Error('ip-boom-bun')
+      },
+      onError: (info) => {
+        seen.push(info.error.message)
+      },
+    })
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${srv.port}/x`)
+      expect(res.status).toBe(500)
+      const body = await res.text()
+      expect(body).toBe(INTERNAL_BODY)
+      expect(body).not.toContain('ip-boom-bun')
+      expect(seen).toEqual(['ip-boom-bun'])
+    } finally {
+      srv.stop()
+    }
+  })
+
   test('createIngressServerNode emits the same masked 500 and forwards onError', async () => {
     const seen: string[] = []
     const srv = createIngressServerNode({

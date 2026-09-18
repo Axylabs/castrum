@@ -443,6 +443,14 @@ interface BunServerOptions {
   maxRequestBodySize: number
   reusePort?: boolean
   fetch?: (req: Request) => Response | Promise<Response>
+  /**
+   * Bun's server-level error trap. Invoked when an error escapes a route
+   * handler that was NOT already contained by `guardRouteHandler` (e.g. a
+   * built-in factory calling user/config code such as `getIp`). Delegates to
+   * the shared masked-500 responder so Bun's default handler never surfaces
+   * stack/internal detail. See `server-error.ts`.
+   */
+  error?: (error: Error, req: Request) => Response | Promise<Response>
 }
 
 /** Build a Bun.serve config from pre-baked route handlers. */
@@ -458,6 +466,15 @@ export function createIngressServer(options: CreateIngressServerOptions): BakedS
   }
   const { routes: serverRoutes, baseOpts } = buildRouteHandlers(options)
 
+  // Server-level backstop (Bun's `error` option). `buildRouteHandlers` guards
+  // the escape-capable route handlers; this covers everything else — built-in
+  // factories that call user/config code without a try/catch (notably
+  // `resolveIp` → `opts.getIp`) — with the SAME masked 500 + `onError` hook.
+  const onServerError = createServerErrorHandler({
+    onError: options.onError,
+    logger: options.logger,
+  })
+
   const serverOptions: BunServerOptions = {
     hostname: options.hostname ?? '0.0.0.0',
     port: options.port,
@@ -467,6 +484,7 @@ export function createIngressServer(options: CreateIngressServerOptions): BakedS
     // to 16 MiB so an oversized request is rejected at the socket without ever
     // being buffered (route handlers enforce the tighter `maxBodyBytes`).
     maxRequestBodySize: options.maxRequestBodySize ?? DEFAULT_MAX_REQUEST_BODY_SIZE,
+    error: (error, req) => onServerError(error, req),
   }
   if (options.reusePort) {
     serverOptions.reusePort = true
