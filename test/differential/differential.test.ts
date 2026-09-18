@@ -111,6 +111,16 @@ test('baked copy and zero-copy responses are byte-identical over the corpus', as
   assertLanesAgree(copy, zero, FULL_FIELDS, 'copy vs zero-copy')
 })
 
+test('the baked lane dispatches through the production route wiring', async () => {
+  // Fidelity pin: the baked lane builds its route map via `buildRouteHandlers`,
+  // so HEAD is served by `headHandler` (headers only, empty body) rather than
+  // `readHandler`. If the lane regresses to hand-picked factories, this fails.
+  const baked = await runLane('baked', CORPUS)
+  const head = caseOf(baked, 'head-root')
+  expect(head.status).toBe(200)
+  expect(head.body).toBe('')
+})
+
 test.skipIf(!transportAvailable())(
   'bun:ffi and napi transports normalize identically (subprocess)',
   async () => {

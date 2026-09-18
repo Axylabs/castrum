@@ -30,20 +30,15 @@ import { getAddon } from '../../src/native'
 import { ffiBufferMode } from '../../src/native/ffi'
 import { isBun } from '../../src/shared/runtime'
 import { createIngressFast } from '../../src/ingress/fast'
-import {
-  createIngressHandler,
-  jsonWriteHandler,
-  optionsHandler,
-  readHandler,
-} from '../../src/ingress/handlers'
+import { createIngressHandler } from '../../src/ingress/handlers'
 import {
   buildResponseContext,
   headersForResult,
   type ResponseBuildContext,
 } from '../../src/ingress/headers/fast-templates'
-import type { IngressFastHandler, IngressFastOptions } from '../../src/ingress/options'
+import type { IngressFastHandler } from '../../src/ingress/options'
 import { buildTerminalResponse } from '../../src/ingress/response/terminal'
-import type { OptimizedIngressHandler } from '../../src/ingress/types'
+import { type BakedRoute, buildRouteHandlers } from '../../src/ingress/server'
 import {
   buildRequest,
   caseBodyBytes,
@@ -303,20 +298,36 @@ async function runFastLane(corpus: readonly CorpusCase[]): Promise<LaneResult> {
 
 // ── Baked route lanes (path 2; copy vs zero-copy) ───────────────────────
 
-type RouteFn = (req: Request, srv?: unknown) => Response | Promise<Response>
+type RouteFn = (
+  req: Request,
+  srv?: unknown,
+  params?: Record<string, string>,
+) => Response | Promise<Response>
 
-function pickRoute(
-  handler: OptimizedIngressHandler,
-  method: string,
+/**
+ * Build the SAME `path → method → handler` map the real server serves for one
+ * profile, via `buildRouteHandlers` (the shared production wiring). This keeps
+ * the lane honest: HEAD goes through `headHandler` (not `readHandler`), the
+ * OPTIONS fallback is built by `buildRouteHandlers`, and any future guard
+ * wrappers are exercised too. Dispatch is in-process — no socket.
+ */
+function routeMapFor(
+  profile: CorpusProfile,
   copyBody: boolean,
-  maxBodyBytes: number | undefined,
-): RouteFn {
-  const upper = method.toUpperCase()
-  if (upper === 'OPTIONS') return optionsHandler(handler)
-  if (upper === 'POST' || upper === 'PUT' || upper === 'PATCH') {
-    return jsonWriteHandler(handler, { copyBody, maxBodyBytes })
+  corpus: readonly CorpusCase[],
+): Record<string, Record<string, unknown>> {
+  const opts = caseOptions(profile)
+  const handler = createIngressHandler(opts)
+  const specs: Record<string, BakedRoute> = {}
+  const paths = new Set(corpus.map((c) => new URL(c.url).pathname))
+  for (const path of paths) {
+    specs[path] = {
+      read: handler,
+      write: handler,
+      maxBodyBytes: opts.maxBodyBytes,
+    }
   }
-  return readHandler(handler, { copyBody })
+  return buildRouteHandlers({ routes: specs, copyBody }).routes
 }
 
 function normalizeBakedResponse(id: string, res: Response, text: string): NormalizedCase {
@@ -348,33 +359,30 @@ async function runRouteLane(
   corpus: readonly CorpusCase[],
 ): Promise<LaneResult> {
   const copyBody = lane === 'baked'
-  const handlers = new Map<CorpusProfile, OptimizedIngressHandler>()
-  const optionsByProfile = new Map<CorpusProfile, IngressFastOptions>()
+  const routesByProfile = new Map<CorpusProfile, Record<string, Record<string, unknown>>>()
 
-  const handlerFor = (profile: CorpusProfile): OptimizedIngressHandler => {
-    let handler = handlers.get(profile)
-    if (handler === undefined) {
-      handler = createIngressHandler(caseOptions(profile))
-      handlers.set(profile, handler)
+  const routesFor = (profile: CorpusProfile): Record<string, Record<string, unknown>> => {
+    let routes = routesByProfile.get(profile)
+    if (routes === undefined) {
+      routes = routeMapFor(profile, copyBody, corpus)
+      routesByProfile.set(profile, routes)
     }
-    return handler
-  }
-  const optionsFor = (profile: CorpusProfile): IngressFastOptions => {
-    let opts = optionsByProfile.get(profile)
-    if (opts === undefined) {
-      opts = caseOptions(profile)
-      optionsByProfile.set(profile, opts)
-    }
-    return opts
+    return routes
   }
 
   const cases: NormalizedCase[] = []
   for (const c of corpus) {
     const profile = c.profile ?? 'base'
-    const handler = handlerFor(profile)
-    const opts = optionsFor(profile)
     const req = buildRequest(c)
-    const route = pickRoute(handler, req.method, copyBody, opts.maxBodyBytes)
+    const pathname = new URL(req.url).pathname
+    const methodRoutes = routesFor(profile)[pathname]
+    if (methodRoutes === undefined) {
+      throw new Error(`baked lane: no route for path '${pathname}' (case '${c.id}')`)
+    }
+    const route = methodRoutes[req.method.toUpperCase()] as RouteFn | undefined
+    if (route === undefined) {
+      throw new Error(`baked lane: no route for ${req.method} ${pathname} (case '${c.id}')`)
+    }
     const res = await route(req)
     const text = await res.text()
     cases.push(normalizeBakedResponse(c.id, res, text))
