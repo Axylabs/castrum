@@ -54,6 +54,13 @@ pub fn set_doorbell(cb: usize) {
     DOORBELL.store(cb, Ordering::Release);
 }
 
+/// Disable the doorbell trampoline (`0`). Called on shutdown BEFORE the JS
+/// owner closes the `JSCallback`, so a completion that lands late can never
+/// call a freed trampoline (poll-only mode drains it instead).
+pub fn clear_doorbell() {
+    DOORBELL.store(0, Ordering::Release);
+}
+
 /// Push a completion and ring the doorbell at most once per armed window.
 ///
 /// The ring lock is released BEFORE the trampoline is called: the JS callback

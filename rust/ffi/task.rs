@@ -158,8 +158,12 @@ pub extern "C" fn castrum_task_set_doorbell(cb: *const std::os::raw::c_void) -> 
 }
 
 /// Stop the pool and drop pending completions. Returns `0`.
+///
+/// The doorbell trampoline is cleared FIRST: a worker completing after this
+/// point must not call a JS callback the owner is about to close.
 #[no_mangle]
 pub extern "C" fn castrum_task_shutdown() -> u32 {
+    task::completion::clear_doorbell();
     task::shutdown();
     task::completion::clear();
     0

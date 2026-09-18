@@ -167,7 +167,9 @@ describe('task runtime', () => {
     expect(new DataView(args.buffer, args.byteOffset, 4).getUint32(0, true)).toBe(password.length)
 
     expect(await tasks.argon2Verify(password, new TextEncoder().encode(phc))).toBe(true)
-    expect(await tasks.argon2Verify(new TextEncoder().encode('wrong'), new TextEncoder().encode(phc))).toBe(false)
+    expect(
+      await tasks.argon2Verify(new TextEncoder().encode('wrong'), new TextEncoder().encode(phc)),
+    ).toBe(false)
     // A malformed PHC string is a non-match, never a rejection.
     expect(await tasks.argon2Verify(password, new TextEncoder().encode('not-a-phc'))).toBe(false)
     // Parity with the synchronous surface.
@@ -223,7 +225,8 @@ describe('task runtime', () => {
     expect(after.maxBatch).toBeGreaterThan(1)
   })
 
-  test('rejects on invalid input instead of throwing across FFI', async () => {    const tasks = createTaskRuntime()
+  test('rejects on invalid input instead of throwing across FFI', async () => {
+    const tasks = createTaskRuntime()
     await expect(tasks.gzipDecompress(new Uint8Array([1, 2, 3, 4]))).rejects.toThrow()
   })
 
@@ -300,5 +303,17 @@ describe('task runtime', () => {
     // The whole point: ~100-300 ms of CPU with a 32-byte result must not stall
     // the event loop. Synchronous PBKDF2 would show a gap of the full duration.
     expect(maxGap).toBeLessThan(20)
+  })
+
+  // Shutdown closes the doorbell `JSCallback`; reusing the runtime must NOT
+  // leave the native doorbell pointed at that freed trampoline (calling it is
+  // a use-after-free that crashes the process). The runtime must zero the
+  // native doorbell and re-register a fresh one on the next submit.
+  test('shutdown then reuse restarts safely with a fresh doorbell', async () => {
+    const tasks = createTaskRuntime()
+    await tasks.gzipCompress(new TextEncoder().encode('before shutdown'))
+    tasks.shutdown()
+    const out = await tasks.gzipCompress(new TextEncoder().encode('after shutdown'))
+    expect(out.length).toBeGreaterThan(0)
   })
 })

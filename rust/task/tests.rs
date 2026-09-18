@@ -224,6 +224,36 @@ fn doorbell_coalesces_a_batch() {
 }
 
 #[test]
+fn clear_doorbell_suppresses_the_ring() {
+    let _g = LOCK.lock();
+    completion::clear();
+    completion::set_doorbell(bell as *const () as usize);
+    BELLS.store(0, Ordering::SeqCst);
+    completion::push(Completion {
+        id: 1,
+        status: STATUS_OK,
+        body: vec![0],
+    });
+    assert_eq!(BELLS.load(Ordering::SeqCst), 1);
+    // Disarm by draining, then clear the trampoline. A later completion must
+    // NOT call the (now closed) trampoline address.
+    let mut buf = vec![0u8; 4096];
+    completion::drain(&mut buf);
+    completion::clear_doorbell();
+    completion::push(Completion {
+        id: 2,
+        status: STATUS_OK,
+        body: vec![0],
+    });
+    assert_eq!(
+        BELLS.load(Ordering::SeqCst),
+        1,
+        "a cleared doorbell must never be called"
+    );
+    completion::clear();
+}
+
+#[test]
 fn pool_starts_with_a_nonzero_thread_count() {
     let _g = LOCK.lock();
     runtime::init(None);

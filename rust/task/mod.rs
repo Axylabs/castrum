@@ -22,7 +22,7 @@ pub mod runtime;
 #[cfg(test)]
 mod tests;
 
-pub use completion::{drain, pending, set_doorbell};
+pub use completion::{clear_doorbell, drain, pending, set_doorbell};
 pub use ops::{mark_cancelled, STATUS_CANCELLED, STATUS_ERROR, STATUS_OK};
 pub use runtime::{init, shutdown, threads};
 

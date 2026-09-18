@@ -75,11 +75,7 @@ export interface TaskRuntime {
   /** gzip-compress `data` on a pool thread. */
   gzipCompress(data: Uint8Array, options?: TaskRunOptions): Promise<Uint8Array>
   /** Verify a password against a PHC string on a pool thread (10-200 ms CPU). */
-  argon2Verify(
-    password: Uint8Array,
-    phc: Uint8Array,
-    options?: TaskRunOptions,
-  ): Promise<boolean>
+  argon2Verify(password: Uint8Array, phc: Uint8Array, options?: TaskRunOptions): Promise<boolean>
   /** PBKDF2-HMAC-SHA256 on a pool thread (10-200 ms CPU, 1-64 B output). */
   pbkdf2Sha256(
     password: Uint8Array,
@@ -345,9 +341,7 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
         } else if (status === TASK_STATUS_CANCELLED) {
           deferred.reject(cancelledError())
         } else {
-          deferred.reject(
-            new Error(decodeUtf8(bodyOf(buf, bodyOff, len, pooled)) || 'task failed'),
-          )
+          deferred.reject(new Error(decodeUtf8(bodyOf(buf, bodyOff, len, pooled)) || 'task failed'))
         }
         completed++
       }
@@ -361,11 +355,8 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
     queueMicrotask(drainNow)
   }
 
-  function submit(
-    op: number,
-    args: Uint8Array,
-    runOptions?: TaskRunOptions,
-  ): Promise<Uint8Array> {
+  function submit(op: number, args: Uint8Array, runOptions?: TaskRunOptions): Promise<Uint8Array> {
+    ensureDoorbell()
     const id = nextId++
     return new Promise<Uint8Array>((resolve, reject) => {
       inflight.set(id, { out: null, keep: null, resolve, reject })
@@ -398,6 +389,7 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
     output: Uint8Array,
     runOptions?: TaskRunOptions,
   ): Promise<Uint8Array> {
+    ensureDoorbell()
     const id = nextId++
     return new Promise<Uint8Array>((resolve, reject) => {
       inflight.set(id, { out: output, keep: null, resolve, reject })
@@ -431,6 +423,7 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
     data: Uint8Array,
     runOptions?: TaskRunOptions,
   ): Promise<Uint8Array> {
+    ensureDoorbell()
     const id = nextId++
     return new Promise<Uint8Array>((resolve, reject) => {
       inflight.set(id, { out: null, keep: data, resolve, reject })
@@ -453,19 +446,26 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
   }
 
   // One process-wide trampoline; Bun marshals calls from pool threads onto the
-  // JS thread. Rust coalesces so a burst rings it once.
+  // JS thread. Rust coalesces so a burst rings it once. Created lazily (and
+  // re-created after a shutdown) so the native side NEVER holds the address of
+  // a closed `JSCallback` — calling a freed trampoline is a use-after-free.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { JSCallback } = require('bun:ffi') as typeof import('bun:ffi')
-  const cb = new JSCallback(
-    () => {
-      drainNow()
-    },
-    { args: [], returns: 'void', threadsafe: true } as unknown as ConstructorParameters<
-      typeof JSCallback
-    >[1],
-  )
-  doorbell = cb
-  ffi.taskSetDoorbell(Number(cb.ptr))
+  function ensureDoorbell(): void {
+    if (doorbell !== null) return
+    const cb = new JSCallback(
+      () => {
+        drainNow()
+      },
+      { args: [], returns: 'void', threadsafe: true } as unknown as ConstructorParameters<
+        typeof JSCallback
+      >[1],
+    )
+    doorbell = cb
+    ffi.taskSetDoorbell(Number(cb.ptr))
+  }
+
+  ensureDoorbell()
 
   // A zero-copy result handoff via `toArrayBuffer(ptr, 0, len, dealloc)` was
   // prototyped here and REVERTED: Bun 1.4.2's deallocator hook segfaults
@@ -492,8 +492,7 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
       // UNSUPPORTED from an older addon) fall back, so behavior can't regress.
       // Args are re-submitted on the retry step, so they own their memory.
       const args = encodeGzipDecompressArgs(data, runOptions?.maxDecompressed)
-      const copyPath = (): Promise<Uint8Array> =>
-        submit(TASK_OP.gzipDecompress, args, runOptions)
+      const copyPath = (): Promise<Uint8Array> => submit(TASK_OP.gzipDecompress, args, runOptions)
       const zeroCopyOnce = (cap: number): Promise<Uint8Array> =>
         submitInto(TASK_OP.gzipDecompressInto, args, Buffer.allocUnsafe(cap), runOptions)
       return zeroCopyOnce(size)
@@ -521,8 +520,7 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
     },
     brotliDecompress(data, runOptions) {
       const args = encodeBrotliDecompressArgs(data, runOptions?.maxDecompressed)
-      const copyPath = (): Promise<Uint8Array> =>
-        submit(TASK_OP.brotliDecompress, args, runOptions)
+      const copyPath = (): Promise<Uint8Array> => submit(TASK_OP.brotliDecompress, args, runOptions)
       // Brotli has no ISIZE trailer, so there is no exact size hint: start from
       // a ratio guess and let the needed-size retry land it exactly (at most
       // one extra pass; on anything but TOO_SMALL, fall back to the copy op).
@@ -557,6 +555,9 @@ export function createTaskRuntime(options: TaskRuntimeOptions = {}): TaskRuntime
         deferred.reject(cancelledError())
       }
       inflight.clear()
+      // Zero the native doorbell BEFORE closing the JS trampoline: a worker
+      // completing after this point must never call a freed callback.
+      ffi.taskSetDoorbell(0)
       ffi.taskShutdown()
       release()
       doorbell?.close()
