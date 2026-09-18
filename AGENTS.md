@@ -553,12 +553,14 @@ success and `error.code` / `error.message` on errors (path 2's format).
   into a flat `"typescript"` override (that downgrades the project compiler) and
   do NOT delete them when bumping TypeScript.
   The nested overrides only resolve under Bun's **hoisted** linker — Bun 1.4's
-  default *isolated* linker ignores them, so `build:js:types` fails again
-  (`... reading 'getCurrentDirectory'`) even with the overrides present. The
-  repo pins `[install] linker = "hoisted"` in `bunfig.toml`; keep it. After any
-  dependency change run `bun install` with a clean `node_modules` (a leftover
-  isolated/pnpm tree keeps a nested `typescript` at the wrong version and keeps
-  failing even after the override is restored).
+  default *isolated* linker (and pnpm) ignores them. The repo therefore pins
+  `[install] linker = "hoisted"` in `bunfig.toml` AND keeps a linker-agnostic
+  safety net: a `typescript-dts` (`npm:typescript@5.9.3`) devDependency plus
+  `scripts/ensure-dts-typescript.mjs`, which `build:js:types` runs first to copy
+  the pinned compiler into `dts-bundle-generator/node_modules` whenever the tree
+  resolved the wrong one (otherwise the tool throws
+  `... reading 'getCurrentDirectory'`). After any dependency change run
+  `bun install` with a clean `node_modules`; both linkers now work.
 - **CI cross builds (`build` matrix) — three load-bearing rules**:
   1. The Rust toolchain comes from `rust-toolchain.toml`: the workflow reads the
      channel out of that file and passes it to `dtolnay/rust-toolchain`. A
