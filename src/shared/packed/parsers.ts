@@ -56,26 +56,33 @@ function parsePackedInto(
   return pairsToObject(readPairsPacked(out.subarray(0, w)))
 }
 
+/** Shared FFI-first parse with an napi fallback (one encode, per kind). */
+function parseVia(
+  kind: 'query' | 'cookie' | 'form',
+  input: Uint8Array,
+): Record<string, string | string[]> {
+  const fast = parsePackedInto(kind, input)
+  if (fast) return fast
+  const packed =
+    kind === 'query'
+      ? addon.queryParsePacked(input)
+      : kind === 'cookie'
+        ? addon.cookieParsePacked(input)
+        : addon.formParsePacked(input)
+  return pairsToObject(readPairsPacked(packed))
+}
+
 /** Parse a query string (`a=1&b=2`) into an object via the native parser. */
 export function parseQueryString(query: string): Record<string, string | string[]> {
-  const fast = parsePackedInto('query', encoder.encode(query))
-  if (fast) return fast
-  const packed = addon.queryParsePacked(encoder.encode(query))
-  return pairsToObject(readPairsPacked(packed))
+  return parseVia('query', encoder.encode(query))
 }
 
 /** Parse a cookie header (`a=1; b=2`) into an object via the native parser. */
 export function parseCookieHeader(header: string): Record<string, string | string[]> {
-  const fast = parsePackedInto('cookie', encoder.encode(header))
-  if (fast) return fast
-  const packed = addon.cookieParsePacked(encoder.encode(header))
-  return pairsToObject(readPairsPacked(packed))
+  return parseVia('cookie', encoder.encode(header))
 }
 
 /** Parse an application/x-www-form-urlencoded body into a key/value object. */
 export function parseFormBody(body: Uint8Array): Record<string, string | string[]> {
-  const fast = parsePackedInto('form', body)
-  if (fast) return fast
-  const packed = addon.formParsePacked(body)
-  return pairsToObject(readPairsPacked(packed))
+  return parseVia('form', body)
 }
