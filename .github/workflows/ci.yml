@@ -73,7 +73,7 @@ jobs:
         if: ${{ github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') }}
         run: cargo test --release
       - name: Dependency audit
-        uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
 
   # ── Software supply-chain scanning (OSV) ─────────────────────────
   # Scans the JS + Rust lockfiles against the OSV vulnerability database
