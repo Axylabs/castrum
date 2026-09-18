@@ -305,6 +305,12 @@ export function createIngressHandler(
     logger
   )
 
+  // Hoisted observer-presence flags: the hot path skips the response-status
+  // computation (an `instanceof` + `safeTerminalStatus`) and the per-request
+  // hook call entirely when nothing observes the outcome.
+  const hasOnRequest = runtime.onRequest !== undefined
+  const hasOnResponse = runtime.onResponse !== undefined
+
   // Reusable output-buffer pool: eliminates the per-request output-buffer
   // allocation by reusing buffers across requests.
   // `maxInFlight` (when set) bounds zero-copy borrowing under slow consumers.
@@ -461,7 +467,7 @@ export function createIngressHandler(
     ctx.requestIdHeader = emitRequestIdHeader ? requestIdStr : null
     ctx.origin = headerPlan.cors ? req.headers.get('origin') : null
 
-    runtime.onRequest?.(req, requestIdStr, ip)
+    if (hasOnRequest) runtime.onRequest?.(req, requestIdStr, ip)
 
     const ipStr = ip ?? EMPTY_IP
 
@@ -585,18 +591,21 @@ export function createIngressHandler(
         assertSyncCallback(out, 'createIngressHandler().run()')
         // Report observability for every outcome. Non-Response callbacks
         // (e.g. echoHandler's object return) fall back to the decoded terminal
-        // status so they are not silently invisible to onResponse/logging.
-        const status = out instanceof Response ? out.status : safeTerminalStatus(result)
-        runtime.onResponse?.(req, result, status, requestIdStr)
-        if (logger) {
-          logger.request({
-            requestId: requestIdStr,
-            method: req.method,
-            path: pathForLog(req),
-            status,
-            durationMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
-            ip: ipStr,
-          })
+        // status so they are not silently invisible to onResponse/logging. The
+        // status is computed ONLY when something observes it.
+        if (hasOnResponse || logger !== null) {
+          const status = out instanceof Response ? out.status : safeTerminalStatus(result)
+          if (hasOnResponse) runtime.onResponse?.(req, result, status, requestIdStr)
+          if (logger !== null) {
+            logger.request({
+              requestId: requestIdStr,
+              method: req.method,
+              path: pathForLog(req),
+              status,
+              durationMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
+              ip: ipStr,
+            })
+          }
         }
         return out
       } finally {
