@@ -52,12 +52,21 @@ export interface RustBatch {
     salt: Uint8Array,
     options?: PasswordHashOptions | null,
   ): Uint8Array[]
+  /**
+   * Parallel AEAD encrypt. `nonce` MUST be exactly 12 bytes and MUST be fresh
+   * for every batch call with the same key: a unique per-item nonce is derived
+   * by XOR-ing the item index into the low 8 bytes, so reusing a base nonce
+   * across calls reuses keystream/tag material for colliding indices
+   * (catastrophic for AES-GCM / ChaCha20-Poly1305). A non-12-byte nonce is
+   * rejected with an error.
+   */
   aeadEncrypt(
     key: Uint8Array,
     nonce: Uint8Array,
     items: Uint8Array[],
     algorithm?: string | null,
   ): Uint8Array[]
+  /** Parallel AEAD decrypt. Pass the SAME base nonce and item order as the encrypt call. */
   aeadDecrypt(
     key: Uint8Array,
     nonce: Uint8Array,

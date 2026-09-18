@@ -36,6 +36,18 @@ fn batch_nonce(base: &[u8], index: usize) -> [u8; NONCE_LEN] {
     nonce
 }
 
+/// Reject a nonce that is not exactly [`NONCE_LEN`] bytes. Guards the batch
+/// entry points, whose `copy_from_slice` would otherwise panic.
+fn validate_nonce(nonce: &[u8]) -> Result<()> {
+    if nonce.len() != NONCE_LEN {
+        return Err(Error::from_reason(format!(
+            "aead nonce must be {NONCE_LEN} bytes, got {}",
+            nonce.len()
+        )));
+    }
+    Ok(())
+}
+
 fn resolve_algorithm(name: Option<&str>) -> Result<&'static aead::Algorithm> {
     match name {
         None | Some("aes-256-gcm") => Ok(&aead::AES_256_GCM),
@@ -197,6 +209,7 @@ pub fn aead_encrypt_batch_packed(
     algorithm: Option<String>,
 ) -> Result<Buffer> {
     let alg = resolve_algorithm(algorithm.as_deref())?;
+    validate_nonce(nonce.as_ref())?;
 
     let enc_for = |plaintext: &[u8], index: usize| -> Vec<u8> {
         let n = batch_nonce(nonce.as_ref(), index);
@@ -220,6 +233,7 @@ pub fn aead_decrypt_batch_packed(
     algorithm: Option<String>,
 ) -> Result<Buffer> {
     let alg = resolve_algorithm(algorithm.as_deref())?;
+    validate_nonce(nonce.as_ref())?;
 
     let dec_for = |ciphertext: &[u8], index: usize| -> Vec<u8> {
         let n = batch_nonce(nonce.as_ref(), index);
@@ -315,6 +329,36 @@ mod tests {
                 "nonce reused at item {i}"
             );
         }
+    }
+
+    fn packed_one(bytes: &[u8]) -> Uint8Array {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        data.extend_from_slice(bytes);
+        Uint8Array::new(data)
+    }
+
+    #[test]
+    fn batch_rejects_a_non_12_byte_nonce() {
+        // A wrong-length nonce used to panic inside `copy_from_slice` (and the
+        // napi sync trampoline unwinds through extern "C" → abort). It must be
+        // a normal JS error instead.
+        let key = key_bytes();
+        assert!(aead_encrypt_batch_packed(
+            packed_one(b"abc"),
+            Uint8Array::new(key.to_vec()),
+            Uint8Array::new(vec![0u8; 16]),
+            None,
+        )
+        .is_err());
+        assert!(aead_decrypt_batch_packed(
+            packed_one(b"abc"),
+            Uint8Array::new(key.to_vec()),
+            Uint8Array::new(vec![0u8; 8]),
+            None,
+        )
+        .is_err());
     }
 
     #[test]
