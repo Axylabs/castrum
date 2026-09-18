@@ -9,6 +9,14 @@
 //
 // Key = a stable 64-bit hash of the raw serialized schema bytes (exact bytes:
 // a different key order is a different key and simply compiles a second time).
+// The hash only selects a bucket — it is NOT the identity: each entry stores
+// its serialized bytes alongside the compiled schema, and a hit is returned
+// only when those bytes EQUAL the requested bytes. `xxh3_64` is
+// non-cryptographic, so trusting the hash alone would let a craftable collision
+// reuse the wrong validator (a validation-bypass class bug); the byte compare
+// makes collisions a safe miss (compile + replace the colliding bucket) rather
+// than a wrong-schema hit.
+//
 // Only SUCCESSFUL compiles are cached. `IngressSchema` is immutable after
 // compile (`Arc<jsonschema::Validator>` + optional `Arc<FastNode>`), so sharing
 // the `Arc` across routes and threads is sound; mutable state is per-call
@@ -28,23 +36,33 @@ use super::pipeline::IngressSchema;
 
 /// Default cache capacity (distinct schema byte strings).
 const DEFAULT_SCHEMA_CACHE_MAX: usize = 128;
+/// Upper clamp on the configured capacity — an absurd env value must not size
+/// an unbounded LRU (each entry retains a compiled validator + its bytes).
+const MAX_SCHEMA_CACHE_MAX: usize = 4096;
 
-/// Cache map: schema-hash → shared compiled schema.
-type SchemaMap = Mutex<LruCache<u64, Arc<IngressSchema>>>;
+/// Cache entry: the exact serialized schema bytes (collision disambiguation)
+/// plus the shared compiled schema.
+type CacheEntry = (Vec<u8>, Arc<IngressSchema>);
+
+/// Cache map: schema-hash → (schema bytes, shared compiled schema).
+type SchemaMap = Mutex<LruCache<u64, CacheEntry>>;
 
 /// Process-wide compiled-schema cache (lazily initialized on first compile).
 static SCHEMA_CACHE: OnceLock<SchemaMap> = OnceLock::new();
 
-/// Resolve the configured cache capacity (`CASTRUM_SCHEMA_CACHE_MAX`).
-///
-/// Falls back to [`DEFAULT_SCHEMA_CACHE_MAX`] for an unset, unparseable, or
-/// zero value (an LRU needs a nonzero capacity).
-fn cache_cap() -> usize {
-    std::env::var("CASTRUM_SCHEMA_CACHE_MAX")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
+/// Resolve a capacity from the raw env value: unset/unparseable/zero →
+/// [`DEFAULT_SCHEMA_CACHE_MAX`], otherwise clamped to
+/// `1..=MAX_SCHEMA_CACHE_MAX` (an LRU needs a nonzero capacity).
+fn resolve_cap(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|n| *n > 0)
+        .map(|n| n.min(MAX_SCHEMA_CACHE_MAX))
         .unwrap_or(DEFAULT_SCHEMA_CACHE_MAX)
+}
+
+/// Resolve the configured cache capacity (`CASTRUM_SCHEMA_CACHE_MAX`).
+fn cache_cap() -> usize {
+    resolve_cap(std::env::var("CASTRUM_SCHEMA_CACHE_MAX").ok().as_deref())
 }
 
 /// Hash the serialized schema bytes with the crate's XXH3-64 helper (stable and
@@ -66,9 +84,12 @@ fn get_or_compile_in(
     let bytes = serde_json::to_vec(schema_value).map_err(|e| e.to_string())?;
     let key = schema_key(&bytes);
 
-    // Fast path: a hit returns the existing shared Arc.
-    if let Some(existing) = cache.lock().get(&key) {
-        return Ok(Arc::clone(existing));
+    // Fast path: a hash hit is only trusted when the bytes MATCH (a colliding
+    // hash falls through to a real compile, never a wrong-schema hit).
+    if let Some((stored, existing)) = cache.lock().get(&key) {
+        if stored.as_slice() == bytes.as_slice() {
+            return Ok(Arc::clone(existing));
+        }
     }
 
     // Miss: compile WITHOUT holding the lock (a slow compile must not block
@@ -76,13 +97,16 @@ fn get_or_compile_in(
     let compiled = Arc::new(IngressSchema::compile(schema_value)?);
 
     // Re-check under the lock: a concurrent thread may have compiled the same
-    // schema while we were outside it — prefer the first inserter's Arc so all
-    // callers share one instance.
+    // schema while we were outside it — prefer the first inserter's Arc (same
+    // bytes) so all callers share one instance. A colliding entry with
+    // different bytes is REPLACED (the bucket holds exactly one schema).
     let mut guard = cache.lock();
-    if let Some(existing) = guard.get(&key) {
-        return Ok(Arc::clone(existing));
+    if let Some((stored, existing)) = guard.get(&key) {
+        if stored.as_slice() == bytes.as_slice() {
+            return Ok(Arc::clone(existing));
+        }
     }
-    let _ = guard.put(key, Arc::clone(&compiled));
+    let _ = guard.put(key, (bytes, Arc::clone(&compiled)));
     drop(guard);
     Ok(compiled)
 }
@@ -182,6 +206,43 @@ mod tests {
         let second = get_or_compile_in(&cache, &schema).unwrap();
         // A cleared cache recompiles: a fresh Arc, not the old shared one.
         assert!(!Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn cap_defaults_clamps_and_rejects_bad_values() {
+        assert_eq!(resolve_cap(None), DEFAULT_SCHEMA_CACHE_MAX);
+        assert_eq!(resolve_cap(Some("")), DEFAULT_SCHEMA_CACHE_MAX);
+        assert_eq!(resolve_cap(Some("abc")), DEFAULT_SCHEMA_CACHE_MAX);
+        assert_eq!(resolve_cap(Some("0")), DEFAULT_SCHEMA_CACHE_MAX);
+        assert_eq!(resolve_cap(Some("256")), 256);
+        assert_eq!(resolve_cap(Some(" 64 ")), 64);
+        // Absurd values are clamped so the LRU cannot be sized unboundedly.
+        assert_eq!(resolve_cap(Some("999999999")), MAX_SCHEMA_CACHE_MAX);
+    }
+
+    #[test]
+    fn hash_collision_returns_the_correct_schema() {
+        let cache = local_cache(4);
+        let schema_a = json!({ "type": "object", "required": ["a"] });
+        let schema_b = json!({ "type": "object", "required": ["b"] });
+        let bytes_b = serde_json::to_vec(&schema_b).unwrap();
+        let key_b = schema_key(&bytes_b);
+
+        // Simulate an xxh3 collision: an entry under B's key that actually holds
+        // A's bytes + compiled validator. Under a hash-only cache this would be
+        // returned for B (wrong-schema validation bypass).
+        let a = get_or_compile_in(&cache, &schema_a).unwrap();
+        let bytes_a = serde_json::to_vec(&schema_a).unwrap();
+        let _ = cache.lock().put(key_b, (bytes_a, Arc::clone(&a)));
+
+        // The byte compare must reject the collision and compile the REAL B.
+        let b = get_or_compile_in(&cache, &schema_b).unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert!(b.validate(br#"{"b":1}"#));
+        assert!(!b.validate(br#"{"a":1}"#));
+        // A itself still resolves correctly (its own bucket is intact).
+        let a_again = get_or_compile_in(&cache, &schema_a).unwrap();
+        assert!(Arc::ptr_eq(&a, &a_again));
     }
 
     #[test]

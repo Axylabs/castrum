@@ -41,6 +41,12 @@ for false; anything else is warned about and falls back to the default.
 | `CASTRUM_TASK_QUEUE_MAX` | int | `4096` | Admission bound on the off-thread task work queue. Read when the pool first starts (minimum 1). A submit that would exceed it is rejected rather than growing memory: the native submit returns `2` and the task promise rejects with a typed `OVERLOADED` error. |
 | `CASTRUM_TASK_PIN_CORES` | (presence) | — | When set (Linux), pin each task worker to its own core (core 0 is skipped so the JS event loop keeps it). `CASTRUM_PIN_CORES` enables it too. Off by default: pinning competes with the JS/rayon threads for the same box. |
 
+## Compiled-schema cache (`rust/ingress/schema_cache.rs`)
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `CASTRUM_SCHEMA_CACHE_MAX` | int | `128` | Max distinct request-body schemas retained process-wide. `Ingress`/`NativeRoute` share one compiled `IngressSchema` per distinct schema byte string; this bounds that LRU. Read at first schema compile (the cache is process-wide and cannot be resized afterwards). Values below 1 (unset, unparseable, `0`) fall back to the default; values are clamped to `4096`. Call `flushMemory()` to drop the cache explicitly. |
+
 ## Native transport selection (`src/native/ffi.ts`)
 
 `bun:ffi` is the PRIMARY transport under Bun; NAPI is the fallback (Node,
