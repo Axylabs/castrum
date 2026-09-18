@@ -7,6 +7,7 @@
 // context to the app's own handler. `handleRequest` is a fetch-compatible
 // convenience that serves the terminal response or a rendered OK response.
 
+import { abortResponse, isAbortError } from '../ingress/abort'
 import { readBodyWithLimit } from '../ingress/body'
 import type { BakedIngressResult } from '../ingress/decode/baked-result'
 import {
@@ -172,6 +173,11 @@ export function createPipeline(opts: CreatePipelineOptions = {}): IngressPipelin
       try {
         body = await readBodyWithLimit(req, maxBodyBytes, true, bodyTimeoutMs)
       } catch (err) {
+        // Client disconnect is the cancelled response, never the
+        // `bodyErrorResponse` 400/408/413 fallback.
+        if (isAbortError(err)) {
+          return { terminal: true, response: abortResponse(), result: null, ctx }
+        }
         return {
           terminal: true,
           response: bodyErrorResponse(ingress, req, requestId, err),

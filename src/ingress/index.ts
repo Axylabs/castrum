@@ -22,6 +22,8 @@ export {
   serializeTraceParent,
 } from '../shared/trace'
 // ── Re-export the full public ingress API ─────────────────────────
+// Request cancellation helpers (client-disconnect → 499).
+export { ABORT_CODE, abortResponse, isAbortError } from './abort'
 export * from './constants'
 export * from './errors'
 export { createIngressFast, FastIngressResult } from './fast'

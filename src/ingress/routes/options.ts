@@ -1,5 +1,6 @@
 // src/ingress/routes/options.ts — Pre-baked OPTIONS handler (CORS preflight).
 
+import { abortResponse } from '../abort'
 import type { OptimizedIngressHandler } from '../types'
 import { type BakedHandlerOptions, buildSuccessInit, resolveIp } from './common'
 
@@ -16,11 +17,14 @@ export function optionsHandler(
   ingress: OptimizedIngressHandler,
   opts: BakedHandlerOptions = {},
 ): (req: Request, srv?: unknown) => Response {
-  return (req, srv) =>
-    ingress.run<Response>(req, resolveIp(req, srv, opts), null, (result, ctx) => {
+  return (req, srv) => {
+    // Client already gone: no pipeline run, no pooled output buffer.
+    if (req.signal?.aborted) return abortResponse()
+    return ingress.run<Response>(req, resolveIp(req, srv, opts), null, (result, ctx) => {
       const terminal = ingress.terminalResponse(req, result, ctx)
       if (terminal) return terminal
 
       return new Response(null, buildSuccessInit(ingress, result, ctx, 204))
     })
+  }
 }

@@ -53,8 +53,20 @@ export interface NodeIngressServer extends BakedServer {
   ready: Promise<number>
 }
 
-/** Convert a Node IncomingMessage into a web-standard Request. */
-function nodeRequestToWebRequest(req: IncomingMessage): Request {
+/**
+ * Convert a Node IncomingMessage into a web-standard `Request`.
+ *
+ * Node's `IncomingMessage` has no web `AbortSignal`, so this bridges one to
+ * `Request.signal`: the request aborts when the client disconnects — on the
+ * explicit `'aborted'` event, or on `'close'` while the request has NOT
+ * completed (`close` after a fully-received request is normal socket
+ * teardown and must not abort). Exported so the adapter's signal wiring is
+ * unit-testable without a socket.
+ *
+ * @param req - The Node incoming request.
+ * @returns A web `Request` whose `signal` tracks client disconnect.
+ */
+export function nodeRequestToWebRequest(req: IncomingMessage): Request {
   const host = req.headers.host ?? 'localhost'
   const url = new URL(req.url ?? '/', `http://${host}`)
 
@@ -77,6 +89,16 @@ function nodeRequestToWebRequest(req: IncomingMessage): Request {
   const hasBody = requestHasBody(req)
 
   const init: RequestInit & { duplex?: 'half' } = { method, headers }
+
+  // Client-disconnect bridge (Node-only code — the Bun path uses Bun's native
+  // `Request.signal`). `abort()` is idempotent, so the two listeners may both
+  // fire on a premature close.
+  const abort = new AbortController()
+  req.on('aborted', () => abort.abort())
+  req.on('close', () => {
+    if (!req.complete) abort.abort()
+  })
+  init.signal = abort.signal
 
   // Stream the request body through (the route handlers call
   // `req.arrayBuffer()` which drains this stream).
