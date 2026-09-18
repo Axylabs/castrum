@@ -92,7 +92,7 @@ needed).
 
 ## Phase A — Security / fault containment
 
-### Task A1: Server-level error trap for escaped handlers (Bun + Node parity)
+### Task 1 (A1): Server-level error trap for escaped handlers (Bun + Node parity)
 
 **Why:** `nativeResponderRoute` (`src/ingress/routes/responder.ts:157`) and
 `nativeRouteHandler` (`src/ingress/routes/native.ts:129`) call the user
@@ -260,7 +260,7 @@ git commit -m "feat(ingress): contain escaped handler errors with a masked 500 o
 
 ---
 
-### Task A2: Prototype-pollution audit + guards on JS object materialization
+### Task 2 (A2): Prototype-pollution audit + guards on JS object materialization
 
 **Why:** Elysia treats `__proto__`/`constructor`/`prototype` as inert data and
 builds null-prototype containers (`src/parse-query.ts:25`,
@@ -323,7 +323,7 @@ git commit -m "fix(ingress): make request-derived object keys prototype-safe"
 
 ---
 
-### Task A3: ReDoS / resource-limit regression test for schema `pattern`
+### Task 3 (A3): ReDoS / resource-limit regression test for schema `pattern`
 
 **Why:** Elysia pins a linear-time `${t.Numeric}` check against a 200 KB attack
 because a naive numeric regex can backtrack catastrophically
@@ -355,7 +355,7 @@ boundary + cap input".
 
 ## Phase B — Stability / reliability
 
-### Task B1: Plumb `Request.signal` cancellation through the request path
+### Task 4 (B1): Plumb `Request.signal` cancellation through the request path
 
 **Why:** Elysia checks `context['~sig'].aborted` between lifecycle stages and
 returns early (`handler/fetch.ts:263-287`), so a disconnected client stops work.
@@ -390,7 +390,7 @@ running after the client is gone, and pooled buffers stay held.
 
 ---
 
-### Task B2: Bounded caches + public `flushMemory()`
+### Task 5 (B2): Bounded caches + public `flushMemory()`
 
 **Why:** Elysia ships `flushMemory()` (clear caches + `Bun.gc()`) and bounds
 every cache with generational eviction (`src/memory.ts:7-14`,
@@ -436,7 +436,7 @@ structures:
 
 ---
 
-### Task B3: Bound the task runtime work queue (admission control)
+### Task 6 (B3): Bound the task runtime work queue (admission control)
 
 **Why:** `rust/task/runtime.rs:193-206` documents "the queue is unbounded;
 admission/backpressure is a later milestone", and the JS `inflight` Map grows
@@ -461,7 +461,7 @@ symbol — `[verify]` against `docs/FFI_BUN_GUIDE.md` §14 ABI rule).
 
 ---
 
-### Task B4: Differential transport-lane test harness
+### Task 7 (B4): Differential transport-lane test harness
 
 **Why:** Elysia's strongest assurance mechanism is running one corpus through
 every lane (JIT / precompile / real socket / AOT-reconstruct) and byte-comparing
@@ -497,7 +497,7 @@ equality and pins known-divergent fields explicitly.
 
 ## Phase C — Performance
 
-### Task C1: Static route promotion (serve prebuilt `Response`s from Bun's native table)
+### Task 8 (C1): Static route promotion (serve prebuilt `Response`s from Bun's native table)
 
 **Why:** Elysia pre-maps static `Response`/`Error`/HTML routes and hands them to
 `Bun.serve.routes`, so Bun serves them **without entering JS**
@@ -531,7 +531,7 @@ value, wrap in `() => staticResponse`.
 
 ---
 
-### Task C2: Process-wide schema compile cache (dedupe identical schemas)
+### Task 9 (C2): Process-wide schema compile cache (dedupe identical schemas)
 
 **Why:** Elysia's `TypeBoxValidatorCache` compiles a schema once and shares it
 across routes/apps (`src/type/validator/validator-cache.ts:263-489`), including
