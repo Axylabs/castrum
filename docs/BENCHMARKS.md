@@ -162,6 +162,19 @@ Current medians (static path, 2000 connections, pipelining 1, single instance):
   per-request `ReadableStream` construction is the cost, not the native body
   write. Both servers default to copy mode; `INGRESS_ZERO_COPY=1` opts back in
   for large-payload deployments.
+- **Response construction dominates the JS-side cost — and is now memoized.**
+  A Bun CPU profile of the ingress route under load attributed ~80% of sampled
+  JS time to `new Response(...)` (the whole `run()` ~7%, the FFI pipeline call
+  ~4%): passing an array-of-pairs makes Bun re-parse every header on every
+  response, measured **1832 ns vs 398 ns** for a persistent `Headers` instance
+  with the full security + CORS set. `buildSuccessInit` and the terminal
+  builders now pass a memoized `Headers`
+  (`src/ingress/headers/memoized-headers.ts`, keyed by the header array's
+  identity; the baked templates and per-origin cache return the same array
+  across requests, fresh per-request arrays are never retained). Interleaved
+  autocannon A/B (static `GET /api/users`, 8 workers, 2000 connections, three
+  independent runs): **+14.3% / +15.6% / +23.1% median RPS**, p50 −15%,
+  p99 −9…−24%, 0 errors, wire output byte-identical.
 - Per-request cost breakdown (`bun bench/cost/router-cost.ts` +
   `router-minimal-breakdown.ts`, min-of-5): the router's minimal route `run()`
   is ~310ns (native pruned pipeline ~115ns + response/run machinery ~150ns +

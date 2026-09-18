@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Ingress responses pass a memoized `Headers` instead of an array-of-pairs
+  (≈1.4 µs/response).** The pre-baked success/terminal/preflight paths handed a
+  `[name, value][]` array to `new Response(...)`, which Bun re-parses on every
+  construction; they now pass a `Headers` instance memoized by the header
+  array's identity (`src/ingress/headers/memoized-headers.ts`). The arrays are
+  themselves cached by the handler (pre-baked templates + the per-origin cache),
+  so the same instance recurs and the memo hits; fresh per-request arrays
+  (rate-limit / request-id extras) are never retained (`WeakMap`). Byte-identical
+  wire output. Interleaved autocannon A/B on static `GET /api/users`
+  (8 workers, 2000 connections, three independent runs): **+14.3% / +15.6% /
+  +23.1% median RPS**, p50 −15%, p99 −9…−24%, 0 errors, response fingerprint
+  identical. See `docs/BENCHMARKS.md`.
+
 ## [0.9.7] — 2026-09-15
 
 ## [0.9.6] — 2026-09-11

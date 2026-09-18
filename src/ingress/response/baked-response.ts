@@ -24,6 +24,7 @@ import {
   HV_RATE_LIMITED,
 } from '../constants'
 import type { BakedIngressResult } from '../decode/baked-result'
+import { memoizedHeaders } from '../headers/memoized-headers'
 import { secondsFromMs } from '../shared'
 import { safeTerminalStatus } from '../status'
 import type { BakedContext, OptimizedIngressHandler } from '../types'
@@ -210,13 +211,15 @@ export function buildBakedResponseBuilders(
     if (preflightAllowed) {
       return new Response(null, {
         status: 204,
-        headers: responseHeaders(
-          result.headerVariant,
-          ctx.requestIdHeader,
-          ctx.origin,
-          result.rateRemaining,
-          result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
-          result.retryAfterMs > 0 ? secondsFromMs(result.retryAfterMs) : undefined,
+        headers: memoizedHeaders(
+          responseHeaders(
+            result.headerVariant,
+            ctx.requestIdHeader,
+            ctx.origin,
+            result.rateRemaining,
+            result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
+            result.retryAfterMs > 0 ? secondsFromMs(result.retryAfterMs) : undefined,
+          ),
         ),
       })
     }
@@ -230,7 +233,7 @@ export function buildBakedResponseBuilders(
 
     return new Response(body, {
       status,
-      headers: terminalHeaders(result.headerVariant, ctx, result),
+      headers: memoizedHeaders(terminalHeaders(result.headerVariant, ctx, result)),
     })
   }
 
@@ -247,14 +250,16 @@ export function buildBakedResponseBuilders(
 
     return new Response(body, {
       status,
-      headers: terminalHeaders(result?.headerVariant ?? HV_JSON, ctx, result),
+      headers: memoizedHeaders(terminalHeaders(result?.headerVariant ?? HV_JSON, ctx, result)),
     })
   }
 
   function internalErrorResponse(ctx: BakedContext, result?: BakedIngressResult): Response {
     return new Response(ERROR_BODIES.internal, {
       status: 500,
-      headers: terminalHeaders(result?.headerVariant ?? HV_JSON, ctx, result ?? null),
+      headers: memoizedHeaders(
+        terminalHeaders(result?.headerVariant ?? HV_JSON, ctx, result ?? null),
+      ),
     })
   }
 
