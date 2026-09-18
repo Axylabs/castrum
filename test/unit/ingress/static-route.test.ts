@@ -52,16 +52,26 @@ describe('buildRouteHandlers: static promotion', () => {
     expect(routes['/livez'].OPTIONS).toBeUndefined()
   })
 
-  test('a factory static value is stored verbatim (fresh Response per call)', () => {
+  test('a factory static value is guarded (fresh Response per call)', () => {
     const factory = () => prebuilt('from-factory', 200, { 'x-factory': 'yes' })
     const { routes } = buildRouteHandlers({
       routes: { '/livez': { static: factory } },
     })
-    expect(routes['/livez'].GET).toBe(factory)
+    const wired = routes['/livez'].GET as (req: Request) => Response
+    // A function-valued factory is user code → guarded (like a raw `read`),
+    // never stored verbatim.
+    expect(wired).not.toBe(factory)
 
-    const first = (routes['/livez'].GET as () => Response)()
-    const second = (routes['/livez'].GET as () => Response)()
+    const first = wired(new Request('http://localhost/livez'))
+    const second = wired(new Request('http://localhost/livez'))
     expect(first).not.toBe(second)
+    expect(first.headers.get('x-factory')).toBe('yes')
+  })
+
+  test('a bare Response static value is stored verbatim (zero-JS Bun path)', () => {
+    const bare = prebuilt('bare')
+    const { routes } = buildRouteHandlers({ routes: { '/livez': { static: bare } } })
+    expect(routes['/livez'].GET).toBe(bare)
   })
 })
 
@@ -174,6 +184,29 @@ describe('createIngressServer (Bun): static route', () => {
       srv.stop()
     }
   })
+
+  test('a throwing static factory yields a masked 500 (guarded)', async () => {
+    const srv = createIngressServer({
+      port: 0,
+      routes: {
+        '/livez': {
+          static: () => {
+            throw new Error('factory boom')
+          },
+        },
+      },
+    })
+
+    const base = `http://127.0.0.1:${srv.port}`
+    try {
+      const res = await fetch(`${base}/livez`)
+      expect(res.status).toBe(500)
+      // The thrown message must never reach the wire.
+      expect(await res.text()).not.toContain('factory boom')
+    } finally {
+      srv.stop()
+    }
+  })
 })
 
 describe('createIngressServerNode: static route', () => {
@@ -253,6 +286,36 @@ describe('createIngressServerNode: static route', () => {
       // so it is chunked and exposes no content-length).
       expect(res.headers.get('content-length')).not.toBe('999')
       expect(await res.text()).toBe(body)
+    } finally {
+      srv.stop()
+    }
+  })
+
+  test('a factory returning the SAME Response does not deliver the body again (documented hazard)', async () => {
+    // Locks in the `StaticRoute` guidance: a factory MUST return a fresh
+    // Response per request. Observed on the Bun 1.4.2 node:http shim: the
+    // second request is 200 with an EMPTY body (the shared Response was
+    // consumed by request #1). Under `Bun.serve` the second request instead
+    // fails (500 / rejected fetch). Either way it does not re-deliver the body.
+    const body = `same-instance-${'w'.repeat(1024)}`
+    const shared = prebuilt(body)
+    const srv = createIngressServerNode({
+      port: 0,
+      routes: { '/livez': { static: () => shared } },
+    })
+
+    const port = await srv.ready
+    try {
+      const first = await fetch(`http://127.0.0.1:${port}/livez`, {
+        headers: { connection: 'close' },
+      })
+      expect(first.status).toBe(200)
+      expect(await first.text()).toBe(body)
+
+      const second = await fetch(`http://127.0.0.1:${port}/livez`, {
+        headers: { connection: 'close' },
+      })
+      expect(await second.text()).not.toBe(body)
     } finally {
       srv.stop()
     }

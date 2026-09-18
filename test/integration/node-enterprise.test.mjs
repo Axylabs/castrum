@@ -648,3 +648,37 @@ test('adapter drains an unread body so the keep-alive socket stays clean', async
     srv.stop(true)
   }
 })
+
+// ── 4c. static route promotion over real node:http ────────────────
+test('adapter serves a bare-Response static route with a full multi-KiB body twice', async () => {
+  // The compiled dist path runs the real node:http adapter. A web Response body
+  // is one-shot; the adapter must re-materialize a fresh body per request.
+  const body = `static-node-enterprise-${'s'.repeat(8192)}`
+  const expectedBytes = Buffer.byteLength(body)
+  const srv = castrum.createIngressServerNode({
+    port: 0,
+    routes: {
+      '/livez': {
+        static: new Response(body, {
+          status: 200,
+          headers: { 'content-type': 'text/plain', 'x-static': 'node-enterprise' },
+        }),
+      },
+    },
+  })
+  const p = await srv.ready
+  try {
+    for (let i = 0; i < 2; i++) {
+      const res = await fetch(`http://127.0.0.1:${p}/livez`, {
+        headers: { connection: 'close' },
+      })
+      assert.equal(res.status, 200)
+      assert.equal(res.headers.get('x-static'), 'node-enterprise')
+      const text = await res.text()
+      assert.equal(Buffer.byteLength(text), expectedBytes, `request ${i + 1} body length`)
+      assert.equal(text, body, `request ${i + 1} body content`)
+    }
+  } finally {
+    srv.stop(true)
+  }
+})

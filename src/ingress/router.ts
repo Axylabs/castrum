@@ -90,9 +90,16 @@ export interface RouterRouteSpec {
   terminalStyle?: TerminalStyle
   /**
    * A prebuilt constant response served directly for GET, OUTSIDE the ingress
-   * pipeline (static route promotion). Takes precedence over `read`/`write`/
-   * etc. — like `raw`, it owns the route. See `BakedRoute.static` in
-   * src/ingress/server.ts for the one-shot-body contract.
+   * pipeline (static route promotion). Like `raw`, it OWNS THE WHOLE SPEC: the
+   * router compiles no `IngressInner` for a `static` route, so `read`/`write`/
+   * `echo`/etc. on the same spec are ignored.
+   *
+   * This differs from `BakedRoute.static` in src/ingress/server.ts, where
+   * `static` only takes GET precedence and leaves `write`/`echo`/`delete`
+   * wired — the router cannot mirror that because a `static`-only spec has no
+   * compiled ingress to hand those methods. Do not unify the two semantics.
+   *
+   * See `BakedRoute.static` for the one-shot-body contract.
    */
   static?: StaticRoute
   /**
@@ -296,11 +303,13 @@ export function createIngressRouter(options: CreateIngressRouterOptions): Ingres
       return (methodHandler as RouteHandler)(req, srv, matched.params)
     }
     if (methodHandler instanceof Response) {
-      // Static route (bare Response value). `clone()` tees the body without
-      // consuming the original, so every request gets a fresh, complete body.
-      // A `static` factory is a function and is handled above. The cast bridges
-      // Bun's `Response.clone()` return type (which resolves against the
-      // bundled fetch types) to this module's global `Response`.
+      // Static route (bare Response value). `instanceof Response` assumes the
+      // value was built with the global `Response` constructor (the one this
+      // router also uses). `clone()` tees the body without consuming the
+      // original, so every request gets a fresh, complete body. A `static`
+      // factory is a function and is handled above. The cast bridges Bun's
+      // `Response.clone()` return type (which resolves against the bundled
+      // fetch types) to this module's global `Response`.
       return methodHandler.clone() as unknown as Response
     }
     // A route matched but this method isn't wired — 405, or a bare OPTIONS 204

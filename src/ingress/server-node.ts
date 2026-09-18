@@ -289,6 +289,8 @@ function makeRequestListener(
         } else if (entry instanceof Response) {
           // Bare static route value (Bun's native-table path). Node cannot
           // replay a consumed body, so build a fresh Response per request.
+          // `instanceof Response` assumes the value was built with the global
+          // `Response` constructor (the one this adapter also uses).
           response = await materializeStaticResponse(entry)
         } else if (options.fallback !== undefined) {
           const fallback = fallbackHandler(options.fallback, baseOpts)

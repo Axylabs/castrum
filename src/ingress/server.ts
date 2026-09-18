@@ -61,6 +61,17 @@ export interface BakedRoute {
    * pipeline entirely. Takes precedence over `read`/`cookies` for GET (the
    * pipeline handler is never wired); other methods (`write`/`echo`/`delete`)
    * are unaffected. See {@link StaticRoute} for the one-shot-body contract.
+   *
+   * HEAD is intentionally NOT wired for `static` (a bare `Response` carries a
+   * body; static responses are probes/constants served over GET). This matches
+   * the raw-`read` probe behavior — but note that a route which previously
+   * served HEAD via a native `read` now 405s (Node) on HEAD once `static` is
+   * set. When `static` is combined with `write`/`echo`/`delete`, those dynamic
+   * methods remain wired.
+   *
+   * Runtime note: `createIngressRouter` treats `static` differently — there,
+   * like `raw`, it OWNS THE WHOLE SPEC (the router has no compiled ingress for
+   * the other methods; see `RouterRouteSpec.static` in src/ingress/router.ts).
    */
   static?: StaticRoute
   /**
@@ -302,8 +313,14 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
       // Static promotion: `static` owns GET and is placed in the route table
       // verbatim (a bare Response relies on Bun's native table; see
       // BakedRoute.static). The read/cookies GET wiring below is skipped so
-      // the ingress pipeline is NEVER entered for a static route.
-      methods.GET = spec.static
+      // the ingress pipeline is NEVER entered for a static route. A
+      // function-valued factory is user code with no built-in fault
+      // containment, so guard it like a raw `read` function (a bare Response
+      // cannot throw and is placed verbatim for zero-copy Bun serving).
+      methods.GET =
+        typeof spec.static === 'function'
+          ? guardRouteHandler(spec.static, onServerError)
+          : spec.static
     } else if (spec.read) {
       if (typeof spec.read === 'function') {
         // Raw request→Response handler (probes, /metrics): serve GET directly,
@@ -391,8 +408,10 @@ export function buildRouteHandlers(options: BuildRouteHandlersOptions): {
     // CORS preflight (OPTIONS) is served for EVERY route with a NATIVE handler
     // (not just write routes with a fallback), so read-only routes also answer
     // preflights with 204/403 from the native pipeline. Raw probe handlers
-    // (plain functions) and static routes are excluded — browsers don't
-    // preflight probes, and a static route has no pipeline to answer with.
+    // (plain functions) and the GET that `static` replaced are excluded from
+    // `primary` — browsers don't preflight probes, and a static route has no
+    // pipeline to answer with. A static route that ALSO wires `write`/`echo`/
+    // `delete` still gets OPTIONS from that other native handler.
     const primary =
       spec.delete ??
       (!hasStatic && spec.read && typeof spec.read !== 'function' ? spec.read : undefined) ??
