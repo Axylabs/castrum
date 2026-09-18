@@ -109,6 +109,72 @@ export function buildBakedResponseBuilders(
     state,
   } = deps
 
+  /**
+   * The cacheable base entries for a `(variant, origin)`: the baked template
+   * plus the reflected `access-control-allow-origin`. Memoized per origin so
+   * the Origin-present case (the common browser/bench case) stays
+   * allocation-free after the first hit for EACH distinct origin (a single-slot
+   * memo thrashed when clients alternated between allowed origins). Bounded by
+   * `ORIGIN_HEADER_CACHE_MAX`.
+   */
+  function originBaseEntries(variant: number, origin: string): [string, string][] {
+    const key = `${variant & 31}\u0000${origin}`
+    const cached = originHeaderCache.get(key)
+    if (cached !== undefined) {
+      return cached
+    }
+    const template = headerTemplates[variant & 31] ?? headerTemplates[0] ?? []
+    const entries = new Array<[string, string]>(template.length + 1)
+    let i = 0
+    for (const pair of template) {
+      entries[i++] = pair
+    }
+    entries[i] = ['access-control-allow-origin', origin]
+    if (originHeaderCache.size >= ORIGIN_HEADER_CACHE_MAX) {
+      const oldest = originHeaderCache.keys().next().value
+      if (oldest !== undefined) originHeaderCache.delete(oldest)
+    }
+    originHeaderCache.set(key, entries)
+    return entries
+  }
+
+  /**
+   * Success-path headers as a `Headers` instance. Uses the memoized base
+   * (template + reflected origin) so the memoized-`Headers` fast path is kept
+   * even when per-request rate / request-id extras are present — a fresh array
+   * there would force a `new Headers` on every response. Extras are applied to
+   * a CLONE of the base, so the memoized instance is never mutated.
+   */
+  function successHeaders(
+    variant: number,
+    requestIdHeader: string | null,
+    origin: string | null,
+    rateRemaining?: number,
+    rateResetSecs?: number,
+  ): Headers {
+    const needsRequestId = emitRequestIdHeader && requestIdHeader !== null
+    const needsOrigin =
+      ((variant & HV_CORS_SIMPLE) !== 0 || (variant & HV_CORS_PREFLIGHT) !== 0) && origin !== null
+    const needsRate = (variant & HV_RATE_ACTIVE) !== 0
+
+    const base = needsOrigin
+      ? memoizedHeaders(originBaseEntries(variant, origin as string))
+      : memoizedHeaders(headerTemplates[variant & 31] ?? headerTemplates[0] ?? [])
+
+    if (!needsRequestId && !needsRate) {
+      return base
+    }
+    const headers = new Headers(base)
+    if (needsRequestId) {
+      headers.set('x-request-id', requestIdHeader as string)
+    }
+    if (needsRate) {
+      headers.set('ratelimit-remaining', String(rateRemaining ?? 0))
+      headers.set('ratelimit-reset', String(rateResetSecs ?? 0))
+    }
+    return headers
+  }
+
   function responseHeaders(
     variant: number,
     requestIdHeader: string | null,
@@ -133,28 +199,7 @@ export function buildBakedResponseBuilders(
     }
 
     if (!needsRequestId && !needsRate && !needsRetry && needsOrigin) {
-      // Steady-state CORS: only the origin varies — cache the augmented array
-      // per (variant, origin) so the Origin-present case (the common
-      // browser/bench case) stays allocation-free after the first hit for EACH
-      // distinct origin (a single-slot memo thrashed when clients alternate
-      // between allowed origins, allocating a fresh array on every switch).
-      const key = `${variant & 31}\u0000${origin as string}`
-      const cached = originHeaderCache.get(key)
-      if (cached !== undefined) {
-        return cached
-      }
-      const entries = new Array<[string, string]>(template.length + 1)
-      let i = 0
-      for (const pair of template) {
-        entries[i++] = pair
-      }
-      entries[i] = ['access-control-allow-origin', origin as string]
-      if (originHeaderCache.size >= ORIGIN_HEADER_CACHE_MAX) {
-        const oldest = originHeaderCache.keys().next().value
-        if (oldest !== undefined) originHeaderCache.delete(oldest)
-      }
-      originHeaderCache.set(key, entries)
-      return entries
+      return originBaseEntries(variant, origin as string)
     }
 
     let extra = 0
@@ -336,6 +381,7 @@ export function buildBakedResponseBuilders(
 
   return {
     responseHeaders,
+    successHeaders,
     terminalHeaders,
     terminalResponse,
     errorResponse,

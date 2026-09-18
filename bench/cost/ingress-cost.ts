@@ -157,26 +157,29 @@ const tRefresh = measure(
 )
 
 // The response-build phase the REAL server pays on top of `run`: the exact
-// `readHandler` success path — responseHeaders (origin-cached template or
-// rate-extras array) → memoizedHeaders (memo HIT in steady state) →
-// `new Response(body.slice(), init)`. `buildSuccessInit` is not exported, so
-// this replicates it inline with the same pieces.
+// success path — `successHeaders` (memoized base, cloned only when per-request
+// rate/request-id extras are present) → `new Response(bodyJson, init)`.
 const tRespond = measure(
   () => {
     result.refresh(used, EMPTY_BODY, viewForArrayBuffer(used.buffer, used.byteOffset))
-    const init = {
-      status: 200,
-      headers: memoizedHeaders(
-        handler.responseHeaders(
+    const headers = handler.successHeaders
+      ? handler.successHeaders(
           result.headerVariant,
           null,
           'https://app.example.com',
           result.rateRemaining,
           result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
-        ),
-      ),
-    }
-    return new Response(result.bodyJson(true), init)
+        )
+      : memoizedHeaders(
+          handler.responseHeaders(
+            result.headerVariant,
+            null,
+            'https://app.example.com',
+            result.rateRemaining,
+            result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
+          ),
+        )
+    return new Response(result.bodyJson(true), { status: 200, headers })
   },
   50_000,
 )

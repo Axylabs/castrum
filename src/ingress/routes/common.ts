@@ -65,18 +65,27 @@ export function buildSuccessInit(
   ctx: BakedContext,
   status = 200,
 ): ResponseInit {
-  return {
-    status,
-    headers: memoizedHeaders(
-      ingress.responseHeaders(
+  const rateResetSecs = result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined
+  // Prefer the `Headers`-producing path (keeps the memoized base even with
+  // per-request extras); mocks that only implement `responseHeaders` fall back.
+  const headers = ingress.successHeaders
+    ? ingress.successHeaders(
         result.headerVariant,
         ctx.requestIdHeader,
         ctx.origin,
         result.rateRemaining,
-        result.rateResetMs > 0 ? secondsFromMs(result.rateResetMs) : undefined,
-      ),
-    ),
-  }
+        rateResetSecs,
+      )
+    : memoizedHeaders(
+        ingress.responseHeaders(
+          result.headerVariant,
+          ctx.requestIdHeader,
+          ctx.origin,
+          result.rateRemaining,
+          rateResetSecs,
+        ),
+      )
+  return { status, headers }
 }
 
 /**

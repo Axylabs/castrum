@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WebSocket handshake validates the subprotocol token, and a native route with
   `validateBody` (but no `requireJsonBody`) fails closed on an absent body.
 
+### Performance
+
+- **Success responses keep the memoized `Headers` fast path when rate limiting
+  is active.** The success path used to build a fresh header array whenever
+  per-request rate (or request-id) extras were present, which forced
+  `new Headers` on every response (the `WeakMap` memo keys on array identity).
+  `successHeaders` now serves the memoized base (template + reflected origin)
+  and, only when extras exist, clones it and `set()`s the few dynamic fields.
+  Focused A/B with rate limiting ON: **1978 → 793 ns per response (−1185 ns)**.
+  The no-extras path is unchanged (memo hit). `responseHeaders` keeps its array
+  API; mocks without `successHeaders` fall back to the old path.
+
 ### Changed
 
 - **Rate limiting without `getIp`** warns once (every client shares one bucket);

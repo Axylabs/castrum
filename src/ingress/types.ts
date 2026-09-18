@@ -120,6 +120,21 @@ export interface OptimizedIngressHandler {
     retryAfterSecs?: number,
   ): [string, string][]
 
+  /**
+   * Success-path headers as a ready `Headers` instance: the memoized base
+   * (template + reflected origin) plus per-request rate/request-id extras,
+   * without rebuilding `Headers` from an array on every response. Optional so
+   * hand-rolled mocks need not provide it; callers fall back to
+   * `memoizedHeaders(responseHeaders(...))`.
+   */
+  successHeaders?(
+    variant: number,
+    requestIdHeader: string | null,
+    origin: string | null,
+    rateRemaining?: number,
+    rateResetSecs?: number,
+  ): Headers
+
   terminalHeaders(
     variant: number,
     ctx: BakedContext,
