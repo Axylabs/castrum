@@ -24,6 +24,18 @@ function defaultJsonValid(bytes: Uint8Array): boolean {
 }
 
 /**
+ * Whether a `Content-Type` header denotes JSON: the media type (the part before
+ * any parameters) is exactly `application/json`, or a `+json` structured suffix
+ * (e.g. `application/vnd.api+json`). A plain substring test would wrongly
+ * accept `text/plain; application/json`.
+ */
+function isJsonContentType(contentType: string): boolean {
+  const semi = contentType.indexOf(';')
+  const mediaType = (semi >= 0 ? contentType.slice(0, semi) : contentType).trim().toLowerCase()
+  return mediaType === 'application/json' || mediaType.endsWith('+json')
+}
+
+/**
  * Pre-baked JSON-write handler (POST/PUT/PATCH): enforces Content-Type,
  * content-length/body-size limits, JSON validity and (optionally) schema
  * validation, then returns the ingress body JSON on success.
@@ -47,20 +59,21 @@ export function jsonWriteHandler(
     const ip = resolveIp(req, srv, opts)
 
     const contentType = req.headers.get('content-type') ?? ''
-    if (!contentType.includes('application/json')) {
-      return fallback.run(req, ip, null, (result, ctx) => {
-        const terminal = fallback.terminalResponse(req, result, ctx)
-        if (terminal) return terminal
-
-        return fallback.errorResponse(
+    if (!isJsonContentType(contentType)) {
+      // Always 415 for an unsupported media type. Do NOT short-circuit on the
+      // native terminal first: running with no body yields a "body required"
+      // 400, which previously masked the 415 (the native pipeline still applied
+      // rate limiting / CORS headers to this run).
+      return fallback.run(req, ip, null, (result, ctx) =>
+        fallback.errorResponse(
           req,
           result,
           415,
           'unsupported_media_type',
           'Content-Type must be application/json',
           ctx,
-        )
-      })
+        ),
+      )
     }
 
     // Content-Length / body-size enforcement happens INSIDE readBodyWithLimit

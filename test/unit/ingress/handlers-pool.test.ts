@@ -91,6 +91,32 @@ describe('pooled ingress output buffers (handlers.ts)', () => {
     expect(parsed.ok).toBe(true)
   })
 
+  test('pooled jsonWriteHandler parses the media type (no substring confusion)', async () => {
+    const h = createIngressHandler({ ...baseOptions, requireJsonBody: true }, {})
+    const write = jsonWriteHandler(h, { maxBodyBytes: 1024 })
+
+    // A non-JSON media type that merely CONTAINS the substring must be 415.
+    const confused = await write(
+      req('/api/users', {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain; application/json' },
+        body: '{"name":"ada"}',
+      }),
+    )
+    expect(confused.status).toBe(415)
+
+    // A `+json` structured-suffix media type IS JSON.
+    const suffix = await write(
+      req('/api/users', {
+        method: 'POST',
+        headers: { 'content-type': 'application/vnd.api+json' },
+        body: '{"name":"ada"}',
+      }),
+    )
+    expect(suffix.status).toBe(200)
+    await suffix.text()
+  })
+
   test('pooled jsonWriteHandler enforces a configured schema', async () => {
     const schema = new TextEncoder().encode(
       JSON.stringify({
