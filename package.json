@@ -74,6 +74,7 @@
     "test:coverage": "node scripts/check-coverage.mjs",
     "setup": "bun install && bun run build",
     "test:node": "node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs",
+    "test:differential": "bun test test/differential",
     "verify:install": "node scripts/verify-install.mjs",
     "build:debug": "napi build --platform",
     "lint": "bunx biome check .",

@@ -13,6 +13,7 @@ module finds it in the same relative location.
 | `unit/integration/` | Framework-agnostic helpers (`createPipeline`, batch, streaming, websocket) | `src/integration/` |
 | `compat/` | Cross-version compatibility contracts (`flux-contract`) | — |
 | `property/` | Property-based / adversarial parsers (round-trip + no-panic guarantees) | `rust/` + `src/shared/packed` |
+| `differential/` | The differential transport-lane harness: one corpus through the fast vs baked paths, copy vs zero-copy, and ffi vs napi (subprocess) — `bun run test:differential` | `src/ingress/` |
 
 ## Where does a NEW test go?
 
@@ -23,6 +24,9 @@ module finds it in the same relative location.
   subfolder when it exists: `decode/`, `headers/`, `response/`, `routes/`,
   `packing/`).
 - A test for a shared helper → `unit/shared/`.
+- A cross-lane parity test (same corpus through multiple transports/wire
+  formats) → `differential/`; it lives outside the default `test` path because
+  the ffi/napi lane spawns a Bun subprocess and needs a built addon.
 
 ## Conventions
 
