@@ -66,7 +66,11 @@ export interface NativeRoute {
   runFrame(frame: Uint8Array): RouteWireResult
   /** Convenience: pack a `(query, cookie, body)` frame then {@link runFrame}. */
   run(query: string, cookie: string, body: Uint8Array | null): RouteWireResult
-  /** Free the native handle (idempotent; safe to call once at shutdown). */
+  /**
+   * Free the native handle. Idempotent: a second call is a no-op. After it,
+   * {@link runFrame}/{@link run} throw rather than pass a freed handle into the
+   * native stack.
+   */
   destroy(): void
 }
 
@@ -109,16 +113,21 @@ export function createNativeRoute(plan: NativeRoutePlan = {}): NativeRoute {
   const parseQuery = plan.parseQuery === true
   const parseCookies = plan.parseCookies === true
 
-  // Transport: bun:ffi PRIMARY on Bun; napi `Route` on Node / fallback. The
+  // Transport: bun:ffi PRIMARY on Bun; napi `Route` on Node / fallback. An FFI
+  // compile failure (invalid/unsupported descriptor) ALSO falls back to napi so
+  // the route stays usable instead of throwing "no active transport". The
   // compiled route owns exactly one handle; `destroy` frees it.
   const bunFFI: BunFFI | null = getBunFFI()
-  const ffiHandle = bunFFI !== null ? compileFfi(bunFFI, descriptor) : 0
-  const napiRoute = bunFFI === null ? compileNapi(descriptor) : null
+  let ffiHandle = bunFFI !== null ? compileFfi(bunFFI, descriptor) : 0
+  let napiRoute = bunFFI === null || ffiHandle === 0 ? compileNapi(descriptor) : null
 
   // Reusable output buffer for the needed-size convention (grow once, retry).
   let out = new Uint8Array(256)
 
   const runFrame = (frame: Uint8Array): RouteWireResult => {
+    if (ffiHandle === 0 && napiRoute === null) {
+      throw new Error('native route: already destroyed')
+    }
     let written: number
     if (ffiHandle !== 0 && bunFFI !== null) {
       written = bunFFI.routeRun(ffiHandle, frame, out)
@@ -153,7 +162,10 @@ export function createNativeRoute(plan: NativeRoutePlan = {}): NativeRoute {
     destroy: () => {
       if (ffiHandle !== 0 && bunFFI !== null) {
         bunFFI.routeDestroy(ffiHandle)
+        ffiHandle = 0
       }
+      napiRoute?.destroy?.()
+      napiRoute = null
     },
   }
 }
@@ -170,10 +182,17 @@ function compileFfi(bunFFI: BunFFI, descriptor: Uint8Array): number {
 /** Compile through the napi `Route` class (Node / fallback transport). */
 function compileNapi(
   descriptor: Uint8Array,
-): { run: (frame: Uint8Array, out: Uint8Array) => number } | null {
+): { run: (frame: Uint8Array, out: Uint8Array) => number; destroy?: () => void } | null {
   const addon = getAddon()
   const Route = (
-    addon as { Route?: new (d: Uint8Array) => { run: (f: Uint8Array, o: Uint8Array) => number } }
+    addon as {
+      Route?: new (
+        d: Uint8Array,
+      ) => {
+        run: (f: Uint8Array, o: Uint8Array) => number
+        destroy?: () => void
+      }
+    }
   ).Route
   if (typeof Route !== 'function') {
     return null // addon without the route stack (pre-rebuild) — caller falls back

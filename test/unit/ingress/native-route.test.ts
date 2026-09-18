@@ -12,6 +12,7 @@
 import { describe, expect, test } from 'bun:test'
 import { getAddon } from '../../../src/native'
 import { getBunFFI } from '../../../src/native/ffi'
+import { createNativeRoute } from '../../../src/ingress/native-route'
 import { encoder } from '../../../src/shared/bytes'
 import { isBun } from '../../../src/shared/runtime'
 
@@ -310,5 +311,20 @@ describe('native route stack', () => {
     const needed = ffi.routeRun(handle, frame, small)
     expect(needed).toBe(w)
     ffi.routeDestroy(handle)
+  })
+})
+
+describe('createNativeRoute lifecycle', () => {
+  test('destroy is idempotent and run after destroy throws', () => {
+    const route = createNativeRoute({ parseQuery: true })
+    // A live run works before destroy.
+    expect(route.run('a=1', '', null).errorCode).toBe(0)
+
+    route.destroy()
+    // A second destroy must be a safe no-op, not a double-free of the handle.
+    expect(() => route.destroy()).not.toThrow()
+    // Once destroyed, running must fail loudly instead of passing a freed
+    // handle into the native stack.
+    expect(() => route.run('a=1', '', null)).toThrow()
   })
 })
