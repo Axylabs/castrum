@@ -32,12 +32,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     ~2× Bun gap at ≥ 1 KiB is Bun's AVX2 width, not scaling. Consumers keep
     delegating to `Bun.hash.xxHash3` under Bun (see
     `docs/bun-builtins-decision-matrix.md`).
+  - **SSE encode** replaces the two scalar passes over the payload (the
+    `filter().count()` size pass and the `split()` write pass, ~1 cycle/byte
+    each) with SIMD `memchr` line finding in both: 1.76×–3.56× over the JS
+    reference at every size (was a 2.2× win at 64 B collapsing to **0.10× at
+    16 KiB+**, ~650 ns/KB steady state). `data.split` semantics are preserved
+    exactly (trailing empty segment after a final `\n` still emitted) and
+    `encode_event_size` is now exact (it previously over-counted the newline
+    separators, so every "needed size" retry allocated `count` slack bytes).
+    A whole-HTTP-core multi-size re-sweep (query/cookie/etag/ws-frames/
+    http-parse/multipart/template/jsonValid) confirmed the remaining hot
+    cores scale linearly with payload size — no other collapse found. The
+    baked selection keeps `sseEncode` on js: the selection bench measures
+    the napi consumer path (`sseEncodeEvent`, event/id marshaling) on a
+    tiny 2-line payload, where js still wins (0.56×); the fix targets the
+    large many-line payloads where napi overhead amortizes and the core is
+    now 3.5× faster than the JS reference.
 - **Regression net** for the above: exhaustive hex pair matrix (65,536
   byte-pairs), encode/decode length sweeps across the SSE/AVX2 chunk
   boundaries, 2 MiB roundtrips, large-input invalid rejection, regex
   reference-parity at every length plus 256 KiB all-meta / all-safe / dense
   edge payloads, and xxh3 known-vector locks crossing the engine's 240-byte
-  threshold.
+  threshold. SSE adds a 4k-line/96 B multi-line parity test, a single 1 MiB
+  line test (both past the SIMD threshold), trailing-newline `split`-
+  semantics locks, and embedded-CRLF coverage.
 
 ## [0.9.9] — 2026-09-18
 
