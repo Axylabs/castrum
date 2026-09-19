@@ -56,6 +56,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   threshold. SSE adds a 4k-line/96 B multi-line parity test, a single 1 MiB
   line test (both past the SIMD threshold), trailing-newline `split`-
   semantics locks, and embedded-CRLF coverage.
+- **Validator surface swept against per-op consumers.** The four validators
+  were re-measured on the fair C-ABI shape (pre-allocated pools, vertebrate
+  interleaved medians): `validate_ipv6` (2.7–9× over `net.isIP`) and
+  `validate_uuid` (~1.5× over the regex) are native wins and remain on
+  ignex's `FFI_WINS`; `validate_email` / `validate_ipv4` lose to their JS
+  references on this host even at the C-ABI (`email` ~2.4–3×, `ipv4` ~1.15×)
+  so the js binding stands — their cores were left untouched (the FFI_WINS
+  doc's "don't optimize these back into native" note is confirmed, not stale).
+  A per-core uuid micro-A/B (old 36-byte skip-loop vs contiguous run-split,
+  both in-process and across the C-ABI) measured **perf-nil** (8.2 ns/op
+  each) — the core is LUT-bound with perfectly predictable branches, so the
+  run-split rewrite was reverted rather than adopted. Added the byte-pinning
+  `validate_uuid_hex_run_coverage` regression test (all 32 hex positions ×
+  uppercase/lowercase + version/variant rejects) so any future SIMD rewrite
+  starts from a spec-lock net.
 
 ## [0.9.9] — 2026-09-18
 

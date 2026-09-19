@@ -317,6 +317,40 @@ mod tests {
         assert!(!validate_uuid_bytes(b"550e8400e29b41d4a716446655440000")); // no dashes
     }
 
+    /// Byte-for-byte pins the accept set: replacing ANY single hex position
+    /// (0..7, 9..12, 15..17, 20..22, 24..35) with a non-hex digit must reject,
+    /// and every one of the 32 hex positions must accept uppercase + lowercase
+    /// digits. Guards against a future rewrite (e.g. SIMD/run-split) silently
+    /// dropping or mis-scoping a position — measured perf-neutral, kept as a
+    /// spec-lock regression net.
+    #[test]
+    fn validate_uuid_hex_run_coverage() {
+        let dash = |i: usize| matches!(i, 8 | 13 | 18 | 23);
+        for pos in 0..36 {
+            let mut valid = b"550e8400-e29b-41d4-a716-446655440000";
+            if dash(pos) {
+                continue; // dash positions are pinned by their own check
+            }
+            // every non-dash position is a hex position (version/variant cols
+            // included — 14 must stay '4', 19 must stay in 8/9/a/b set)
+            if valid[pos].is_ascii_hexdigit() {
+                let mut upper = *valid;
+                upper[pos] = valid[pos].to_ascii_uppercase();
+                assert!(validate_uuid_bytes(&upper), "uppercase at {pos}");
+            }
+            let mut bad = *valid;
+            bad[pos] = b'g'; // 'g' is not a hex digit
+            assert!(!validate_uuid_bytes(&bad), "g at {pos}");
+        }
+        // and the version / variant columns still reject wrong values
+        let mut v = *b"550e8400-e29b-41d4-a716-446655440000";
+        v[14] = b'5';
+        assert!(!validate_uuid_bytes(&v));
+        v = *b"550e8400-e29b-41d4-a716-446655440000";
+        v[19] = b'c';
+        assert!(!validate_uuid_bytes(&v));
+    }
+
     #[test]
     fn validate_ipv4_cases() {
         assert!(validate_ipv4_bytes(b"192.168.0.1"));
