@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.10] — 2026-09-19
+
 ### Performance
 
 - **Length-sweep SIMD hardening for the raw-byte cores.** Re-swept the hot
