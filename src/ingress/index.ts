@@ -39,7 +39,10 @@ export { createIngressMetrics, metricsHandler } from './metrics'
 export type { NativeRoute, NativeRoutePlan } from './native-route'
 export { createNativeRoute } from './native-route'
 export type { IngressFastHandler, IngressFastOptions } from './options'
-// ── Route-wire v3 byte contract (PURE wire helpers) ───────────────
+// ── Native op-program plan builder (route-wire v5) ────────────────
+export type { ProgramPlanOptions } from './pre-effects'
+export { buildProgramPlan } from './pre-effects'
+// ── Route-wire byte contract (PURE wire helpers) ──────────────────
 export * from './packing/route-wire'
 export { buildTerminalResponse } from './response/terminal'
 export type { CreateIngressRouterOptions, IngressRouter, RouterRouteSpec } from './router'

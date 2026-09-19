@@ -108,7 +108,7 @@ describe('createNativeRoute (public route-wire v4 surface)', () => {
     )
     const view = new DataView(desc.buffer)
     expect(view.getUint32(0, true)).toBe(0x524f5554) // ROUT
-    expect(view.getUint32(4, true)).toBe(4) // version 4
+    expect(view.getUint32(4, true)).toBe(5) // version 5
     expect(view.getUint32(24, true)).toBe(4) // stageCount
     expect(desc[28]).toBe(0)
     expect(desc[29]).toBe(1)

@@ -19,7 +19,7 @@ import { isBun } from '../../../src/shared/runtime'
 // ── Wire helpers (mirror @ignex/native route-wire.ts) ──────────────
 
 const ROUTE_DESC_MAGIC = 0x524f5554
-const ROUTE_DESC_VERSION = 4
+const ROUTE_DESC_VERSION = 5
 const STAGE = {
   parseQuery: 0,
   parseCookies: 1,

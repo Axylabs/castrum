@@ -17,14 +17,18 @@
 import { getAddon } from '../native'
 import { getBunFFI } from '../native/ffi'
 import type { BunFFI } from '../native/ffi/types'
+import { buildProgramPlan, type ProgramPlanOptions } from './pre-effects'
 import {
   decodeRouteResult,
+  encodeProgram,
   encodeRouteDescriptor,
   packRouteFrame,
   ROUTE_PART,
   ROUTE_STAGE,
+  type RouteFramePre,
   type RouteStageTag,
   type RouteWireLimits,
+  type RouteWireResponse,
   type RouteWireResult,
 } from './packing/route-wire'
 
@@ -40,6 +44,15 @@ export interface NativeRoutePlan {
   validateBody?: boolean
   /** Draft-07 JSON schema bytes for the body (`validateBody`). */
   schema?: Uint8Array
+  /** Native 2xx response projection (v4 `response` part). */
+  response?: RouteWireResponse
+  /**
+   * Native op-program config (v5 `program` part): parse, CORS / rate-limit /
+   * security / IP trust, and body validation lowered to registered ops.
+   * Requires `response` (the OK body/headers the class templates derive from).
+   * Built with `buildProgramPlan`, which reuses the JS header/body builders.
+   */
+  program?: ProgramPlanOptions
   /** Max body bytes before `requireJsonBody`/`validateBody` fail (default 2 MiB). */
   maxBodyBytes?: number
   /** Max query bytes before the parse VALID bit clears (default 8192). */
@@ -50,23 +63,35 @@ export interface NativeRoutePlan {
   maxPairs?: number
 }
 
-/** A compiled per-route native stack (route-wire v4). */
+/** A compiled per-route native stack (route-wire v4/v5). */
 export interface NativeRoute {
   /** Whether the plan compiled `parseQuery` (the result carries a query section). */
   readonly parseQuery: boolean
   /** Whether the plan compiled `parseCookies` (the result carries a cookie section). */
   readonly parseCookies: boolean
+  /** Whether the plan compiled a native response projection (`response`/`program`). */
+  readonly hasResponse: boolean
   /**
    * Run one request frame through the compiled stack and return the decoded
    * verdict. The frame is
-   * `[flags u32][qLen][query][cLen][cookie]([bLen][body])([ridLen][rid])` —
-   * build it with {@link packRouteFrame}. Reuses one growable output buffer
-   * (the needed-size convention: `0` = real error → throws; `> out.length` =
-   * exact required size → retry once).
+   * `[flags u32][qLen][query][cLen][cookie]([bLen][body])([ridLen][rid])`
+   * followed by the optional v5 `[method][ip][headers]` sections — build it
+   * with {@link packRouteFrame}. Reuses one growable output buffer (the
+   * needed-size convention: `0` = real error → throws; `> out.length` = exact
+   * required size → retry once).
    */
   runFrame(frame: Uint8Array): RouteWireResult
-  /** Convenience: pack a `(query, cookie, body)` frame then {@link runFrame}. */
-  run(query: string, cookie: string, body: Uint8Array | null): RouteWireResult
+  /**
+   * Convenience: pack a `(query, cookie, body)` frame then {@link runFrame}.
+   * `pre` carries the v5 method/ip/headers inputs a program route reads.
+   */
+  run(
+    query: string,
+    cookie: string,
+    body: Uint8Array | null,
+    pre?: RouteFramePre | null,
+    requestId?: string | null,
+  ): RouteWireResult
   /**
    * Free the native handle. Idempotent: a second call is a no-op. After it,
    * {@link runFrame}/{@link run} throw rather than pass a freed handle into the
@@ -110,9 +135,21 @@ export function createNativeRoute(plan: NativeRoutePlan = {}): NativeRoute {
     schemas.push({ part: ROUTE_PART.body, bytes: plan.schema })
   }
 
-  const descriptor = encodeRouteDescriptor(stages, schemas, limits)
-  const parseQuery = plan.parseQuery === true
-  const parseCookies = plan.parseCookies === true
+  // v5 op program: lower the config + parse/validate + response projection into
+  // an op program (reusing the JS header/body builders for the class templates).
+  let program: Uint8Array | undefined
+  if (plan.program) {
+    if (!plan.response) {
+      throw new Error('createNativeRoute: a `program` plan requires a `response` projection')
+    }
+    const built = buildProgramPlan(plan.program, plan.response)
+    program = encodeProgram(built.consts, built.ops)
+  }
+
+  const descriptor = encodeRouteDescriptor(stages, schemas, limits, program)
+  const parseQuery = plan.program?.parseQuery === true || plan.parseQuery === true
+  const parseCookies = plan.program?.parseCookies === true || plan.parseCookies === true
+  const hasResponse = plan.response !== undefined || program !== undefined
 
   // Transport: bun:ffi PRIMARY on Bun; napi `Route` on Node / fallback. An FFI
   // compile failure (invalid/unsupported descriptor) ALSO falls back to napi so
@@ -158,8 +195,10 @@ export function createNativeRoute(plan: NativeRoutePlan = {}): NativeRoute {
   return {
     parseQuery,
     parseCookies,
+    hasResponse,
     runFrame,
-    run: (query, cookie, body) => runFrame(packRouteFrame(query, cookie, body)),
+    run: (query, cookie, body, pre, requestId) =>
+      runFrame(packRouteFrame(query, cookie, body, requestId ?? null, pre ?? null)),
     destroy: () => {
       if (ffiHandle !== 0 && bunFFI !== null) {
         bunFFI.routeDestroy(ffiHandle)

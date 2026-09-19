@@ -54,7 +54,7 @@ const tRouter = measure(() => {
 const desc = new Uint8Array(34)
 const dv = new DataView(desc.buffer)
 dv.setUint32(0, 0x524f5554, true) // ROUTE_DESC_MAGIC
-dv.setUint32(4, 4, true) // ROUTE_DESC_VERSION
+dv.setUint32(4, 5, true) // ROUTE_DESC_VERSION
 dv.setUint32(8, 2 * 1024 * 1024, true) // maxBodyBytes
 dv.setUint32(12, 8192, true) // maxQueryBytes
 dv.setUint32(16, 8192, true) // maxCookieBytes

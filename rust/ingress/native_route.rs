@@ -36,24 +36,69 @@
 // from the frame's request-id section (frame flag `HAS_REQUEST_ID`, appended
 // after the optional body section as `[ridLen u32][rid]`). Templating from
 // query/cookies/derive is a later phase.
+//
+// v4 → v5 (op PROGRAM): a descriptor may also carry a `program` part (part tag
+// 7) that REPLACES the ad-hoc pre-effect parts with an open **op program**: an
+// ordered, fixed-width op stream interpreted by a tight loop. An op is
+// `(tag, operands, out-slot)` addressed by a stable tag in a versioned registry
+// (`PROGRAM_REGISTRY_VERSION`); ops compose in any order/number. Each op's
+// result drives the next step through the outcome model `NEXT | JUMP(target) |
+// HALT(terminal)` (callouts are rejected at compile — see below), so control
+// flow is data, not a fixed stage list. The program's constants (`const` table)
+// carry pre-baked response class sets, CORS config, security header lists,
+// body schemas, etc.
+//
+// The op implementations REUSE the ingress cores (`CorsEngine`,
+// `KeyedRateLimiter`, `ProxyTrustMode`, `HeaderRefs`, `IngressSchema`,
+// `json_valid_bytes`) and the SAME TS header/body builders the JS path uses,
+// with `{placeholder}` substitution. Rust makes the DECISION and substitutes;
+// it does NOT re-implement header/CORS/security assembly.
+//
+// `PART_PRE` (tag 6) is GONE — a v5 descriptor carrying it is a hard reject
+// (the pre-effect WIP is resolved into THIS one v5 layout; one v5, not two).
+// `OP_CALLOUT` (tag 16) is a hard reject at compile: the compiler must fall
+// back to JS for routes that need a JS callout rather than run a broken frame.
+//
+// Frame v5 adds optional method/ip/packed-headers sections (flag-gated,
+// appended after the request-id section) so the ops can read HTTP method,
+// socket IP, and Origin/ACRM/ACRH/XFF/XFP.
 
 use std::sync::Arc;
 
 use super::packed::{read_section, read_u32_at};
 use super::IngressSchema;
+use crate::http::headers::HeaderRefs;
+use crate::http::method::MethodKind;
+use crate::ingress::cors::{CorsEngine, CorsOptions};
+use crate::ingress::ip_trust::{resolve_client_ip, ProxyTrustMode};
+use crate::ingress::rate_limit::{shared_limiter, KeyedRateLimiter};
+use crate::ingress::time::rate_now_ms;
 use crate::util::bytes::cookie_pairs;
+use crate::util::trim_ascii_whitespace;
 
 // ── Wire constants (MUST match @ignex/native route-wire.ts) ──────
 /// Magic that identifies a route descriptor (`"ROUT"` LE).
 pub(crate) const ROUTE_DESC_MAGIC: u32 = 0x524f5554;
 /// Wire version — bump on ANY layout change (descriptor, frame, or result).
-pub(crate) const ROUTE_DESC_VERSION: u32 = 4;
+pub(crate) const ROUTE_DESC_VERSION: u32 = 5;
 
 /// Frame flag: the body section is present (bit 0 of the frame flags word).
 pub(crate) const ROUTE_FRAME_FLAG_HAS_BODY: u32 = 1 << 0;
 /// Frame flag: the request-id section is present (bit 1). The section is
 /// appended after the optional body section: `[ridLen u32][rid]`.
 pub(crate) const ROUTE_FRAME_FLAG_HAS_REQUEST_ID: u32 = 1 << 1;
+/// Frame flag (v5): a one-byte HTTP method section is present.
+pub(crate) const ROUTE_FRAME_FLAG_HAS_METHOD: u32 = 1 << 2;
+/// Frame flag (v5): a `[ipLen u32][ip]` section is present (socket peer IP).
+pub(crate) const ROUTE_FRAME_FLAG_HAS_IP: u32 = 1 << 3;
+/// Frame flag (v5): a `[headersLen u32][packed headers]` section is present
+/// (`HeaderRefs` packed layout: `[u16 count] { [u16 nameLen][name][u32 valLen][value] }`).
+pub(crate) const ROUTE_FRAME_FLAG_HAS_HEADERS: u32 = 1 << 4;
+/// Frame flag (v5): the connection is HTTPS (drives dynamic HSTS).
+pub(crate) const ROUTE_FRAME_FLAG_HTTPS: u32 = 1 << 5;
+
+/// Upper bound on the packed request-header count the route stack parses.
+const MAX_ROUTE_HEADERS: usize = 128;
 
 /// Result flag: the route stack succeeded (else `errorCode` is meaningful).
 pub(crate) const ROUTE_RESULT_FLAG_OK: u32 = 1 << 0;
@@ -90,10 +135,75 @@ const PART_BODY: u8 = 3;
 /// The native response projection (`[status][headers][body]`). Only the BODY
 /// schema and this part are supported; any other part tag fails compilation.
 const PART_RESPONSE: u8 = 5;
+/// Legacy v5 native PRE-effects plan — REMOVED. A descriptor carrying it is a
+/// hard reject (the WIP's v5 was resolved into the op-program layout below).
+const PART_PRE_LEGACY: u8 = 6;
+/// v5 op PROGRAM (replaces the pre-effect parts). See the module header.
+const PART_PROGRAM: u8 = 7;
 
-/// The single accepted body placeholder, substituted from the frame's
+/// Program IR sub-version (`programVersion`). Bump on any op-encoding change.
+pub(crate) const PROGRAM_REGISTRY_VERSION: u8 = 1;
+
+// ── Open op registry (stable tags; NEVER renumber a shipped tag) ────
+/// Registry tags. The tag identifies the op's semantics; operands are op-specific
+/// small integers (const index, out-slot, literal). The set is EXTENSIBLE: a new
+/// native capability adds a tag (and bumps `PROGRAM_REGISTRY_VERSION` only if the
+/// fixed-width operand encoding changes).
+pub(crate) const OP_PARSE_QUERY: u8 = 1;
+pub(crate) const OP_PARSE_COOKIES: u8 = 2;
+pub(crate) const OP_LIMITS: u8 = 3;
+pub(crate) const OP_IP_TRUST: u8 = 4;
+pub(crate) const OP_CORS: u8 = 5;
+pub(crate) const OP_RATE_LIMIT: u8 = 6;
+pub(crate) const OP_SECURITY_HEADERS: u8 = 7;
+pub(crate) const OP_SET_HEADER: u8 = 8;
+pub(crate) const OP_JSON_VALID: u8 = 9;
+pub(crate) const OP_SCHEMA_VALIDATE: u8 = 10;
+pub(crate) const OP_RESPONSE_PROJECTION: u8 = 11;
+pub(crate) const OP_HALT: u8 = 12;
+pub(crate) const OP_JUMP: u8 = 13;
+pub(crate) const OP_BRANCH: u8 = 14;
+/// Callout is part of the registry (so the wire is documented) but this executor
+/// does NOT implement the resume protocol: a program containing it is a HARD
+/// REJECT at compile so the compiler falls back to JS. Never silently skip it.
+pub(crate) const OP_CALLOUT: u8 = 15;
+
+/// `OP_SET_HEADER` value source: the value is a constant in the const table.
+const SET_VALUE_CONST: u32 = 0;
+/// `OP_SET_HEADER` value source: the frame's request id.
+const SET_VALUE_REQUEST_ID: u32 = 1;
+
+/// Sentinel `const`-index operand meaning "no constant" (ip trust = none).
+const NO_CONST: u32 = u32::MAX;
+
+/// Response class tags (the pre-effect outcomes a `pre` plan can select).
+const CLASS_OK_NO_ORIGIN: u8 = 0;
+const CLASS_OK_WITH_ORIGIN: u8 = 1;
+const CLASS_PREFLIGHT_OK: u8 = 2;
+const CLASS_PREFLIGHT_FORBIDDEN: u8 = 3;
+const CLASS_RATE_LIMITED: u8 = 4;
+const CLASS_INVALID_JSON: u8 = 5;
+const CLASS_SCHEMA_FAILED: u8 = 6;
+const CLASS_BODY_TOO_LARGE: u8 = 7;
+/// Terminal classes 8..15 are the `+ WITH_ORIGIN` variants of classes 0..7
+/// (selected when a simple CORS request was allowed, so the error response
+/// still carries the CORS headers — matching the baked path).
+const CLASS_WITH_ORIGIN_OFFSET: u8 = 8;
+/// Number of distinct class slots (0..=15).
+const CLASS_SLOTS: usize = 16;
+
+/// Placeholder tokens substituted in class templates. JSON braces that do not
+/// start one of these are left literal (so constant JSON bodies are safe).
+const PH_REQUEST_ID: &[u8] = b"{requestId}";
+const PH_ORIGIN: &[u8] = b"{origin}";
+const PH_REMAINING: &[u8] = b"{remaining}";
+const PH_RESET_SECS: &[u8] = b"{resetSecs}";
+const PH_RETRY_SECS: &[u8] = b"{retryAfterSecs}";
+const PH_RETRY_MS: &[u8] = b"{retryAfterMs}";
+
+/// The single accepted response-body placeholder, substituted from the frame's
 /// request-id section. Byte-exact ASCII (`{requestId}`).
-const RID_PLACEHOLDER: &[u8] = b"{requestId}";
+const RID_PLACEHOLDER: &[u8] = PH_REQUEST_ID;
 
 /// Body-rejected error codes reported in the result header (0 = ok).
 const ERR_BODY_NOT_JSON: u32 = 400;
@@ -108,6 +218,269 @@ struct ResponseProjection {
     body: Vec<u8>,
     /// Byte offset of the single `{requestId}` placeholder in `body`, if any.
     rid_at: Option<usize>,
+}
+
+/// A precomputed response class template (v5 `pre` plan): status + headers +
+/// body, with `{placeholder}` tokens substituted at run time. Built by the
+/// SAME TS header/body builders the JS path uses, so emitting it is byte-parity
+/// by construction — Rust only makes the decision and substitutes.
+#[derive(Debug, Clone)]
+struct ClassTemplate {
+    status: u16,
+    headers: Vec<(Vec<u8>, Vec<u8>)>,
+    body: Vec<u8>,
+}
+
+impl ClassTemplate {
+    /// Whether any header value or the body references `{requestId}`.
+    fn needs_request_id(&self) -> bool {
+        contains(self.body.as_slice(), PH_REQUEST_ID)
+            || self
+                .headers
+                .iter()
+                .any(|(_, v)| contains(v.as_slice(), PH_REQUEST_ID))
+    }
+}
+
+/// A pre-parsed response class set (`ResponseSet` const): class templates
+/// indexed by tag (0..=15) plus the compile-time size-bound inputs. Built by the
+/// SAME TS header/body builders the JS path uses, so emitting it is byte-parity
+/// by construction — Rust only decides and substitutes.
+struct ResponseSet {
+    classes: [Option<ClassTemplate>; CLASS_SLOTS],
+    /// The largest template's RAW size (status + header count + headers + body),
+    /// plus per-placeholder occurrence maxima, so the output bound is O(1).
+    max_skeleton: usize,
+    origin_uses: usize,
+    rid_uses: usize,
+    numeric_uses: usize,
+}
+
+/// A runtime halt reason. Drives which class template a terminal op emits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HaltReason {
+    Ok,
+    PreflightOk,
+    PreflightForbidden,
+    RateLimited,
+    InvalidJson,
+    SchemaFailed,
+    BodyTooLarge,
+}
+
+/// Value source for `OP_SET_HEADER` (resolved at compile time).
+enum SetValue {
+    /// A constant value blob.
+    Const(Vec<u8>),
+    /// The value is the frame's request id (empty when absent).
+    RequestId,
+}
+
+/// One registered, pre-parsed op. Operands are resolved at COMPILE time into
+/// typed data so the interpreter loop never parses config or allocates.
+enum Op {
+    /// Lenient query parse + cap/size verdict → `out` slot + `query_valid`.
+    ParseQuery { out: u32 },
+    /// Lenient cookie parse + cap/size verdict → `out` slot + `cookie_valid`.
+    ParseCookies { out: u32 },
+    /// Body size + parse-size limits verdict → `out` slot; 413 halt on overflow.
+    Limits { out: u32, set: usize },
+    /// Resolve the client IP (reuses `ip_trust`) → `out` slot.
+    IpTrust { out: u32, mode: ProxyTrustMode },
+    /// CORS evaluate (reuses `CorsEngine`); halts 204/403 on preflight.
+    Cors {
+        out: u32,
+        engine: CorsEngine,
+        set: usize,
+    },
+    /// Rate limit check (reuses the shared `KeyedRateLimiter`); may halt 429.
+    RateLimit {
+        out: u32,
+        limiter: Arc<KeyedRateLimiter>,
+        set: usize,
+    },
+    /// Merge a pre-baked security header list into the response.
+    SecurityHeaders { headers: Vec<(Vec<u8>, Vec<u8>)> },
+    /// Accumulate one response header (const value or the frame request id).
+    SetHeader { name: Vec<u8>, value: SetValue },
+    /// Body well-formed-JSON verdict; `require` halts 400 when invalid.
+    JsonValid {
+        out: u32,
+        require: bool,
+        set: Option<usize>,
+    },
+    /// Schema validate (`IngressSchema`) → `out` slot; halts 422/400 on failure.
+    SchemaValidate {
+        out: u32,
+        schema: Option<Arc<IngressSchema>>,
+        halt: bool,
+        set: Option<usize>,
+    },
+    /// Emit the OK response from a `ResponseSet` (selects the with-origin
+    /// variant when a simple CORS request was allowed) and finish.
+    ResponseProjection { set: usize },
+    /// Emit a terminal class (`reason`) from a `ResponseSet` and finish.
+    Halt { set: usize, reason: HaltReason },
+    /// Unconditional forward jump.
+    Jump { target: usize },
+    /// Conditional forward jump: if `state.slots[slot] != 0`.
+    Branch { slot: u32, target: usize },
+}
+
+/// A compiled op program (the `program` part). Immutable `&self` at run time.
+struct CompiledProgram {
+    ops: Vec<Op>,
+    /// `ResponseSet` consts, indexed by const index (`None` = other const kind).
+    sets: Vec<Option<ResponseSet>>,
+    /// Any emitted header/body value references `{requestId}` — the run fails
+    /// closed when the frame carries no request id.
+    needs_request_id: bool,
+    /// True when any op has an external side effect (rate limiting). Gates the
+    /// pre-execution output-bound check so a needed-size retry cannot consume a
+    /// rate-limit token twice (a bypass).
+    has_side_effects: bool,
+    /// Conservative response-frame size bound inputs (see `output_bound`).
+    max_skeleton: usize,
+    origin_uses: usize,
+    rid_uses: usize,
+    numeric_uses: usize,
+}
+
+impl CompiledProgram {
+    /// An UPPER BOUND on the result-frame size for this request, computed in
+    /// O(1) from compile-time counts (no per-request template scan). Returned
+    /// when the output buffer is too small, so the needed-size retry never runs
+    /// a stateful op (the rate limiter) twice.
+    fn output_bound(&self, frame: &RouteFrame<'_>) -> usize {
+        let origin_len = frame.headers.origin().map(|o| o.len()).unwrap_or(0);
+        let rid_len = if frame.has_request_id {
+            frame.request_id.len()
+        } else {
+            0
+        };
+        // 20 = the maximum decimal width of a u64 placeholder value.
+        let response = RESULT_HEADER_LEN
+            + self.max_skeleton
+            + self.origin_uses * origin_len
+            + self.rid_uses * rid_len
+            + self.numeric_uses * 20
+            + 64; // slack for substituted-value length variance
+                  // A side-effecting program that falls through without a response op
+                  // emits pair sections; bound those conservatively too.
+        let pairs =
+            RESULT_HEADER_LEN + 4 + 8 * (frame.query.len() + 1) + 8 * (frame.cookie.len() + 1) + 64;
+        response.max(pairs)
+    }
+}
+
+/// Per-request interpreter state ("slab"). Fixed-size: no allocation in the
+/// loop. Values that reference frame bytes carry the frame lifetime.
+struct ProgState<'a> {
+    slots: [u64; 8],
+    origin: Option<&'a [u8]>,
+    origin_allowed: bool,
+    reason: HaltReason,
+    remaining: u32,
+    reset_secs: u64,
+    retry_secs: u64,
+    retry_ms: u64,
+    resolved_ip: Option<crate::ingress::ip_trust::ResolvedIp<'a>>,
+    peer_trusted: bool,
+    /// Const indices of `SecurityHeaders` ops that ran, in order.
+    security: [usize; 4],
+    security_count: usize,
+    /// Op indices of `SetHeader` ops that ran, in order.
+    set_ops: [usize; 8],
+    set_count: usize,
+    error_code: u32,
+    body_valid_json: bool,
+    body_valid: bool,
+    query_valid: bool,
+    cookie_valid: bool,
+    emit_query: bool,
+    emit_cookie: bool,
+    /// The `ResponseSet` const selected by the terminal op.
+    response_set: Option<usize>,
+}
+
+impl ProgState<'_> {
+    fn new() -> Self {
+        Self {
+            slots: [0; 8],
+            origin: None,
+            origin_allowed: false,
+            reason: HaltReason::Ok,
+            remaining: 0,
+            reset_secs: 0,
+            retry_secs: 0,
+            retry_ms: 0,
+            resolved_ip: None,
+            peer_trusted: false,
+            security: [0; 4],
+            security_count: 0,
+            set_ops: [0; 8],
+            set_count: 0,
+            error_code: 0,
+            body_valid_json: false,
+            body_valid: false,
+            query_valid: false,
+            cookie_valid: false,
+            emit_query: false,
+            emit_cookie: false,
+            response_set: None,
+        }
+    }
+}
+
+/// Count occurrences of each placeholder kind in `bytes` (compile-time only).
+fn count_placeholders(bytes: &[u8], origin: &mut usize, rid: &mut usize, numeric: &mut usize) {
+    *origin += occurrences(bytes, PH_ORIGIN);
+    *rid += occurrences(bytes, PH_REQUEST_ID);
+    *numeric += occurrences(bytes, PH_REMAINING)
+        + occurrences(bytes, PH_RESET_SECS)
+        + occurrences(bytes, PH_RETRY_SECS)
+        + occurrences(bytes, PH_RETRY_MS);
+}
+
+/// Number of non-overlapping occurrences of `needle` in `haystack`.
+fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return 0;
+    }
+    let mut count = 0;
+    let mut i = 0;
+    while i + needle.len() <= haystack.len() {
+        if &haystack[i..i + needle.len()] == needle {
+            count += 1;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
+/// Whether `haystack` contains `needle` (small fixed needles only).
+#[inline]
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// An immutable view of one request frame, borrowed for the whole program run.
+struct RouteFrame<'a> {
+    mk: MethodKind,
+    query: &'a [u8],
+    cookie: &'a [u8],
+    body: &'a [u8],
+    request_id: &'a [u8],
+    has_request_id: bool,
+    ip: &'a [u8],
+    headers: &'a HeaderRefs<'a>,
+    #[allow(dead_code)]
+    https: bool,
 }
 
 /// A compiled, pre-baked per-route native stack.
@@ -125,6 +498,9 @@ pub(crate) struct NativeRoute {
     /// Optional native response projection (route-wire v4). When present and the
     /// pipeline is OK, `run` emits the framed response instead of pair sections.
     response: Option<ResponseProjection>,
+    /// Optional native op program (route-wire v5). When present, `run` executes
+    /// the program (which owns order + control flow) instead of the pair path.
+    program: Option<CompiledProgram>,
 }
 
 impl NativeRoute {
@@ -181,6 +557,7 @@ impl NativeRoute {
         let schema_count = read_u32_at(desc, &mut pos)?;
         let mut body_schema_bytes: Option<Vec<u8>> = None;
         let mut response: Option<ResponseProjection> = None;
+        let mut program: Option<CompiledProgram> = None;
         for _ in 0..schema_count {
             let part = *desc
                 .get(pos)
@@ -207,6 +584,21 @@ impl NativeRoute {
                         return Err("route descriptor: duplicate response part".to_string());
                     }
                     response = Some(parse_response(bytes)?);
+                }
+                PART_PRE_LEGACY => {
+                    // The ad-hoc pre-effect part was resolved into the op
+                    // program. A stale v5 descriptor carrying it must be a hard
+                    // reject (never a silent misparse).
+                    return Err(
+                        "route descriptor: legacy `pre` part (tag 6) is gone — use the op program (tag 7)"
+                            .to_string(),
+                    );
+                }
+                PART_PROGRAM => {
+                    if program.is_some() {
+                        return Err("route descriptor: duplicate program part".to_string());
+                    }
+                    program = Some(parse_program(bytes)?);
                 }
                 other => {
                     // This stack validates the BODY only and builds a RESPONSE
@@ -238,6 +630,9 @@ impl NativeRoute {
             None => None,
         };
 
+        // A `program` part owns validation/order entirely; compile-time
+        // validation lives in `parse_program` (unknown tag / bad version /
+        // callout / non-forward jump are all hard rejects).
         Ok(Self {
             parse_query,
             parse_cookies,
@@ -249,6 +644,7 @@ impl NativeRoute {
             max_pairs,
             body_schema,
             response,
+            program,
         })
     }
 
@@ -265,6 +661,10 @@ impl NativeRoute {
         let flags = read_u32_at(frame, &mut pos)?;
         let has_body = (flags as u32) & ROUTE_FRAME_FLAG_HAS_BODY != 0;
         let has_request_id = (flags as u32) & ROUTE_FRAME_FLAG_HAS_REQUEST_ID != 0;
+        let has_method = (flags as u32) & ROUTE_FRAME_FLAG_HAS_METHOD != 0;
+        let has_ip = (flags as u32) & ROUTE_FRAME_FLAG_HAS_IP != 0;
+        let has_headers = (flags as u32) & ROUTE_FRAME_FLAG_HAS_HEADERS != 0;
+        let frame_https = (flags as u32) & ROUTE_FRAME_FLAG_HTTPS != 0;
         let query = read_section(frame, &mut pos, usize::MAX)?;
         let cookie = read_section(frame, &mut pos, usize::MAX)?;
         let body: &[u8] = if has_body {
@@ -279,6 +679,49 @@ impl NativeRoute {
         } else {
             &[]
         };
+        // v5 optional pre-effect inputs, in a FIXED order after the request-id:
+        // `[method u8]?[ip]?[packed headers]?`.
+        let mk = if has_method {
+            let byte = *frame
+                .get(pos)
+                .ok_or_else(|| "route frame: truncated method byte".to_string())?;
+            pos += 1;
+            MethodKind::from_u8(byte)
+        } else {
+            MethodKind::Get
+        };
+        let ip: &[u8] = if has_ip {
+            read_section(frame, &mut pos, usize::MAX)?
+        } else {
+            &[]
+        };
+        let headers_packed: &[u8] = if has_headers {
+            read_section(frame, &mut pos, usize::MAX)?
+        } else {
+            &[]
+        };
+        let headers =
+            HeaderRefs::parse(headers_packed, mk == MethodKind::Options, MAX_ROUTE_HEADERS)
+                .map_err(|e| format!("route frame: malformed packed headers: {e}"))?;
+
+        // ── v5 op PROGRAM ───────────────────────────────────────────
+        // When the descriptor carries a program, it owns order, validation and
+        // control flow (the stage list is vestigial). Build the frame view and
+        // execute it in ONE native call.
+        if let Some(program) = self.program.as_ref() {
+            let rf = RouteFrame {
+                mk,
+                query,
+                cookie,
+                body,
+                request_id,
+                has_request_id,
+                ip,
+                headers: &headers,
+                https: frame_https,
+            };
+            return self.run_program(program, &rf, out);
+        }
 
         // ── Body verdicts (first-failure-wins, in stage order) ──────
         let mut error_code: u32 = 0;
@@ -409,6 +852,1073 @@ impl NativeRoute {
         header[4..].copy_from_slice(&error_code.to_le_bytes());
         Ok(w.commit(header))
     }
+
+    /// Execute the compiled op program for one request frame.
+    ///
+    /// The program owns order + control flow: ops run sequentially, a decision
+    /// op may `HALT` (selecting a terminal class from its `ResponseSet`), and
+    /// `JUMP`/`BRANCH` are forward-only so execution terminates in at most
+    /// `ops.len()` steps. Nothing is allocated in the loop: operands/config are
+    /// pre-parsed at compile time and the per-request state is a fixed slab.
+    fn run_program(
+        &self,
+        prog: &CompiledProgram,
+        frame: &RouteFrame<'_>,
+        out: &mut [u8],
+    ) -> std::result::Result<usize, String> {
+        // Side-effect-free sizing: a program containing a rate-limit op must
+        // report a conservative bound BEFORE the limiter runs, so a needed-size
+        // retry cannot consume a token twice (a rate-limit bypass). The bound is
+        // an upper bound; the writer still reports the exact size on success.
+        if prog.has_side_effects {
+            let bound = prog.output_bound(frame);
+            if out.len() < bound {
+                return Ok(bound);
+            }
+        }
+
+        let mut st = ProgState::new();
+        let mut pc = 0usize;
+        while pc < prog.ops.len() {
+            match &prog.ops[pc] {
+                Op::ParseQuery { out: slot } => {
+                    let capped = query_pairs_capped(frame.query, self.max_pairs);
+                    st.query_valid = !capped && frame.query.len() <= self.max_query_bytes;
+                    st.emit_query = true;
+                    st.slots[slot_index(*slot, st.slots.len())] = st.query_valid as u64;
+                    pc += 1;
+                }
+                Op::ParseCookies { out: slot } => {
+                    let capped = cookie_pairs_capped(frame.cookie, self.max_pairs);
+                    st.cookie_valid = !capped && frame.cookie.len() <= self.max_cookie_bytes;
+                    st.emit_cookie = true;
+                    st.slots[slot_index(*slot, st.slots.len())] = st.cookie_valid as u64;
+                    pc += 1;
+                }
+                Op::Limits { out: slot, set } => {
+                    if frame.body.len() > self.max_body_bytes {
+                        st.reason = HaltReason::BodyTooLarge;
+                        st.response_set = Some(*set);
+                        break;
+                    }
+                    if frame.query.len() > self.max_query_bytes {
+                        st.query_valid = false;
+                    }
+                    if frame.cookie.len() > self.max_cookie_bytes {
+                        st.cookie_valid = false;
+                    }
+                    st.slots[slot_index(*slot, st.slots.len())] = 1;
+                    pc += 1;
+                }
+                Op::IpTrust { out: slot, mode } => {
+                    let (resolved, trusted) = resolve_client_ip(
+                        mode,
+                        frame.ip,
+                        frame.headers.xff(),
+                        frame.headers.x_real_ip(),
+                    );
+                    st.resolved_ip = Some(resolved);
+                    st.peer_trusted = trusted;
+                    st.slots[slot_index(*slot, st.slots.len())] = 1;
+                    pc += 1;
+                }
+                Op::Cors {
+                    out: slot,
+                    engine,
+                    set,
+                } => {
+                    if let Some(origin) = frame.headers.origin() {
+                        let eval = engine.evaluate(frame.mk, frame.headers);
+                        if eval.preflight {
+                            // A preflight terminates 204 / 403 (it never
+                            // reaches the response projection).
+                            st.reason = if eval.allowed {
+                                HaltReason::PreflightOk
+                            } else {
+                                HaltReason::PreflightForbidden
+                            };
+                            st.response_set = Some(*set);
+                            break;
+                        } else if eval.allowed {
+                            st.origin = Some(origin);
+                            st.origin_allowed = true;
+                        }
+                    }
+                    st.slots[slot_index(*slot, st.slots.len())] = st.origin_allowed as u64;
+                    pc += 1;
+                }
+                Op::RateLimit {
+                    out: slot,
+                    limiter,
+                    set,
+                } => {
+                    let now = rate_now_ms();
+                    let key = match st.resolved_ip.as_ref() {
+                        Some(ip) => ip.rate_key(limiter.seed()),
+                        None => crate::ingress::ip_trust::ResolvedIp::Raw(trim_ascii_whitespace(
+                            frame.ip,
+                        ))
+                        .rate_key(limiter.seed()),
+                    };
+                    let outcome = limiter.check_key(key, now);
+                    st.remaining = outcome.remaining;
+                    st.reset_secs = rate_secs(outcome.reset_ms);
+                    if !outcome.allowed {
+                        st.retry_ms = outcome.reset_ms.saturating_sub(now);
+                        st.retry_secs = rate_secs(st.retry_ms);
+                        st.reason = HaltReason::RateLimited;
+                        st.response_set = Some(*set);
+                        break;
+                    }
+                    st.slots[slot_index(*slot, st.slots.len())] = 1;
+                    pc += 1;
+                }
+                Op::SecurityHeaders { .. } => {
+                    if st.security_count < st.security.len() {
+                        st.security[st.security_count] = pc;
+                        st.security_count += 1;
+                    }
+                    pc += 1;
+                }
+                Op::SetHeader { .. } => {
+                    if st.set_count < st.set_ops.len() {
+                        st.set_ops[st.set_count] = pc;
+                        st.set_count += 1;
+                    }
+                    pc += 1;
+                }
+                Op::JsonValid {
+                    out: slot,
+                    require,
+                    set,
+                } => {
+                    let valid = !frame.body.is_empty()
+                        && frame.body.len() <= self.max_body_bytes
+                        && crate::json::json_ops::json_valid_bytes(frame.body);
+                    st.body_valid_json = valid;
+                    st.slots[slot_index(*slot, st.slots.len())] = valid as u64;
+                    if *require && !valid {
+                        st.reason = HaltReason::InvalidJson;
+                        if let Some(s) = set {
+                            st.response_set = Some(*s);
+                            break;
+                        }
+                    }
+                    pc += 1;
+                }
+                Op::SchemaValidate {
+                    out: slot,
+                    schema,
+                    halt,
+                    set,
+                } => {
+                    let valid = if !st.body_valid_json {
+                        false
+                    } else {
+                        match schema {
+                            Some(s) => s.validate(frame.body),
+                            None => true,
+                        }
+                    };
+                    st.body_valid = valid;
+                    st.slots[slot_index(*slot, st.slots.len())] = valid as u64;
+                    if *halt && !valid {
+                        // A well-formed body failing its schema is 422; a
+                        // non-JSON body (defensive) is 400.
+                        st.reason = if st.body_valid_json {
+                            HaltReason::SchemaFailed
+                        } else {
+                            HaltReason::InvalidJson
+                        };
+                        if let Some(s) = set {
+                            st.response_set = Some(*s);
+                            break;
+                        }
+                    }
+                    pc += 1;
+                }
+                Op::ResponseProjection { set } => {
+                    st.reason = HaltReason::Ok;
+                    st.response_set = Some(*set);
+                    break;
+                }
+                Op::Halt { set, reason } => {
+                    st.reason = *reason;
+                    st.response_set = Some(*set);
+                    break;
+                }
+                Op::Jump { target } => {
+                    pc = *target;
+                }
+                Op::Branch { slot, target } => {
+                    pc = if st.slots[slot_index(*slot, st.slots.len())] != 0 {
+                        *target
+                    } else {
+                        pc + 1
+                    };
+                }
+            }
+        }
+
+        match st.response_set {
+            Some(set_idx) => self.emit_program_response(prog, set_idx, &st, frame, out),
+            None => self.emit_program_verdict(&st, frame, out),
+        }
+    }
+
+    /// Emit the terminal/OK response frame selected by the program state,
+    /// merging any security headers and `set_header` entries ahead of the class
+    /// template's own headers (matching the baked JS template order).
+    fn emit_program_response(
+        &self,
+        prog: &CompiledProgram,
+        set_idx: usize,
+        st: &ProgState<'_>,
+        frame: &RouteFrame<'_>,
+        out: &mut [u8],
+    ) -> std::result::Result<usize, String> {
+        let set = prog
+            .sets
+            .get(set_idx)
+            .and_then(|s| s.as_ref())
+            .ok_or_else(|| format!("route program: response set {set_idx} is not compiled"))?;
+        let tag = select_class_tag(st.reason, st.origin_allowed, set);
+        let tmpl = set.classes[tag as usize]
+            .as_ref()
+            .ok_or_else(|| format!("route program: class {tag} is not compiled"))?;
+        if prog.needs_request_id && !frame.has_request_id {
+            return Err(
+                "route frame: program response template needs a request-id section".to_string(),
+            );
+        }
+
+        let values = SubValues {
+            request_id: if frame.has_request_id {
+                Some(frame.request_id)
+            } else {
+                None
+            },
+            origin: st.origin,
+            remaining: st.remaining,
+            reset_secs: st.reset_secs,
+            retry_secs: st.retry_secs,
+            retry_ms: st.retry_ms,
+        };
+
+        // The header count must be known before writing; security/set entries
+        // are small fixed sets, so this is a cheap walk (no allocation).
+        let mut header_count = tmpl.headers.len();
+        for i in 0..st.security_count {
+            if let Some(Op::SecurityHeaders { headers }) = prog.ops.get(st.security[i]) {
+                header_count += headers.len();
+            }
+        }
+        header_count += st.set_count;
+
+        let mut w = ResultWriter::new(out, RESULT_HEADER_LEN);
+        w.u16(tmpl.status);
+        w.u32(header_count as u32);
+        for i in 0..st.security_count {
+            if let Some(Op::SecurityHeaders { headers }) = prog.ops.get(st.security[i]) {
+                for (name, value) in headers {
+                    write_header_pair(&mut w, name, value, &values);
+                }
+            }
+        }
+        for i in 0..st.set_count {
+            if let Some(Op::SetHeader { name, value }) = prog.ops.get(st.set_ops[i]) {
+                match value {
+                    SetValue::Const(bytes) => write_header_pair(&mut w, name, bytes, &values),
+                    SetValue::RequestId => {
+                        write_header_pair(&mut w, name, PH_REQUEST_ID, &values);
+                    }
+                }
+            }
+        }
+        for (name, value) in &tmpl.headers {
+            write_header_pair(&mut w, name, value, &values);
+        }
+        w.u32(substituted_len(&tmpl.body, &values) as u32);
+        write_substituted(&mut w, &tmpl.body, &values);
+
+        let code = reason_code(st.reason);
+        let mut flags = ROUTE_RESULT_FLAG_HAS_RESPONSE;
+        if code == 0 {
+            flags |= ROUTE_RESULT_FLAG_OK;
+        }
+        if st.body_valid_json {
+            flags |= ROUTE_RESULT_FLAG_BODY_VALID_JSON;
+        }
+        if st.body_valid {
+            flags |= ROUTE_RESULT_FLAG_BODY_VALID;
+        }
+        if st.query_valid {
+            flags |= ROUTE_RESULT_FLAG_QUERY_VALID;
+        }
+        if st.cookie_valid {
+            flags |= ROUTE_RESULT_FLAG_COOKIE_VALID;
+        }
+        let mut header = [0u8; RESULT_HEADER_LEN];
+        header[..4].copy_from_slice(&flags.to_le_bytes());
+        header[4..].copy_from_slice(&code.to_le_bytes());
+        Ok(w.commit(header))
+    }
+
+    /// Emit a pair-section verdict result (a program that fell through without a
+    /// terminal response op). Mirrors the non-program pair path.
+    fn emit_program_verdict(
+        &self,
+        st: &ProgState<'_>,
+        frame: &RouteFrame<'_>,
+        out: &mut [u8],
+    ) -> std::result::Result<usize, String> {
+        let mut w = ResultWriter::new(out, RESULT_HEADER_LEN);
+        let mut scratch: Vec<u8> = Vec::new();
+        let mut query_capped = false;
+        let mut cookie_capped = false;
+        if st.emit_query {
+            query_capped = write_query_section(&mut w, &mut scratch, frame.query, self.max_pairs);
+        }
+        if st.emit_cookie {
+            cookie_capped = write_cookie_section(&mut w, frame.cookie, self.max_pairs);
+        }
+        let query_valid =
+            st.emit_query && !query_capped && frame.query.len() <= self.max_query_bytes;
+        let cookie_valid =
+            st.emit_cookie && !cookie_capped && frame.cookie.len() <= self.max_cookie_bytes;
+        let mut flags = 0u32;
+        if st.error_code == 0 {
+            flags |= ROUTE_RESULT_FLAG_OK;
+        }
+        if st.body_valid_json {
+            flags |= ROUTE_RESULT_FLAG_BODY_VALID_JSON;
+        }
+        if st.body_valid {
+            flags |= ROUTE_RESULT_FLAG_BODY_VALID;
+        }
+        if query_valid {
+            flags |= ROUTE_RESULT_FLAG_QUERY_VALID;
+        }
+        if cookie_valid {
+            flags |= ROUTE_RESULT_FLAG_COOKIE_VALID;
+        }
+        let mut header = [0u8; RESULT_HEADER_LEN];
+        header[..4].copy_from_slice(&flags.to_le_bytes());
+        header[4..].copy_from_slice(&st.error_code.to_le_bytes());
+        Ok(w.commit(header))
+    }
+}
+
+// ── Pre-effect plan parsing + class substitution (route-wire v5) ────
+
+/// Runtime values substituted into a class template's `{placeholder}` tokens.
+struct SubValues<'a> {
+    request_id: Option<&'a [u8]>,
+    origin: Option<&'a [u8]>,
+    remaining: u32,
+    reset_secs: u64,
+    retry_secs: u64,
+    retry_ms: u64,
+}
+
+/// A known placeholder token.
+enum Ph {
+    Rid,
+    Origin,
+    Remaining,
+    ResetSecs,
+    RetrySecs,
+    RetryMs,
+}
+
+/// Ceil milliseconds → whole seconds (matches the TS `secondsFromMs`).
+#[inline]
+fn rate_secs(ms: u64) -> u64 {
+    ms.saturating_add(999) / 1000
+}
+
+/// Append one `[nameLen][name][valueLen][substituted value]` header pair.
+#[inline]
+fn write_header_pair(w: &mut ResultWriter<'_>, name: &[u8], value: &[u8], vals: &SubValues<'_>) {
+    w.u32(name.len() as u32);
+    w.bytes(name);
+    w.u32(substituted_len(value, vals) as u32);
+    write_substituted(w, value, vals);
+}
+
+/// Decimal digit count (for the substituted-length prepass).
+#[inline]
+fn dec_len(mut v: u64) -> usize {
+    if v == 0 {
+        return 1;
+    }
+    let mut n = 0;
+    while v > 0 {
+        v /= 10;
+        n += 1;
+    }
+    n
+}
+
+/// Match a known placeholder at `at` (which must point at `{`). Returns the
+/// placeholder and its consumed token length. Unknown `{…}` sequences return
+/// `None` and are written literally, so constant JSON bodies stay intact.
+#[inline]
+fn match_placeholder(bytes: &[u8], at: usize) -> Option<(Ph, usize)> {
+    let rest = bytes.get(at..)?;
+    let table: [(&[u8], Ph); 6] = [
+        (PH_REQUEST_ID, Ph::Rid),
+        (PH_ORIGIN, Ph::Origin),
+        (PH_REMAINING, Ph::Remaining),
+        (PH_RESET_SECS, Ph::ResetSecs),
+        (PH_RETRY_SECS, Ph::RetrySecs),
+        (PH_RETRY_MS, Ph::RetryMs),
+    ];
+    for (token, ph) in table {
+        if rest.starts_with(token) {
+            return Some((ph, token.len()));
+        }
+    }
+    None
+}
+
+#[inline]
+fn ph_len(ph: &Ph, vals: &SubValues<'_>) -> usize {
+    match ph {
+        Ph::Rid => vals.request_id.map(|v| v.len()).unwrap_or(0),
+        Ph::Origin => vals.origin.map(|v| v.len()).unwrap_or(0),
+        Ph::Remaining => dec_len(vals.remaining as u64),
+        Ph::ResetSecs => dec_len(vals.reset_secs),
+        Ph::RetrySecs => dec_len(vals.retry_secs),
+        Ph::RetryMs => dec_len(vals.retry_ms),
+    }
+}
+
+fn write_ph(w: &mut ResultWriter<'_>, ph: &Ph, vals: &SubValues<'_>) {
+    match ph {
+        Ph::Rid => {
+            if let Some(v) = vals.request_id {
+                w.bytes(v);
+            }
+        }
+        Ph::Origin => {
+            if let Some(v) = vals.origin {
+                w.bytes(v);
+            }
+        }
+        Ph::Remaining => w.num(vals.remaining as u64),
+        Ph::ResetSecs => w.num(vals.reset_secs),
+        Ph::RetrySecs => w.num(vals.retry_secs),
+        Ph::RetryMs => w.num(vals.retry_ms),
+    }
+}
+
+/// Length of `bytes` after placeholder substitution (sizing prepass).
+fn substituted_len(bytes: &[u8], vals: &SubValues<'_>) -> usize {
+    let mut len = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            if let Some((ph, token_len)) = match_placeholder(bytes, i) {
+                len += ph_len(&ph, vals);
+                i += token_len;
+                continue;
+            }
+        }
+        len += 1;
+        i += 1;
+    }
+    len
+}
+
+/// Write `bytes` with placeholder substitution.
+fn write_substituted(w: &mut ResultWriter<'_>, bytes: &[u8], vals: &SubValues<'_>) {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            if let Some((ph, token_len)) = match_placeholder(bytes, i) {
+                write_ph(w, &ph, vals);
+                i += token_len;
+                continue;
+            }
+        }
+        let start = i;
+        i += 1;
+        while i < bytes.len() && bytes[i] != b'{' {
+            i += 1;
+        }
+        w.bytes(&bytes[start..i]);
+    }
+}
+
+/// Read a u8le, advancing `pos` (bounds-checked).
+#[inline]
+fn read_u8_at(input: &[u8], pos: &mut usize) -> std::result::Result<u8, String> {
+    let b = *input
+        .get(*pos)
+        .ok_or_else(|| "route descriptor: truncated u8".to_string())?;
+    *pos += 1;
+    Ok(b)
+}
+
+/// Read a `[count u32]{[len u32][utf8]}` string list (bounds + allocation
+/// guarded).
+fn read_string_list(input: &[u8], pos: &mut usize) -> std::result::Result<Vec<String>, String> {
+    let count = read_u32_at(input, pos)?;
+    // Each entry needs at least a 4-byte length prefix.
+    if count > input.len() / 4 + 1 {
+        return Err("route descriptor: string list count exceeds descriptor size".to_string());
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let s = read_section(input, pos, usize::MAX)?;
+        let s = std::str::from_utf8(s)
+            .map_err(|_| "route descriptor: config string is not valid UTF-8".to_string())?;
+        out.push(s.to_string());
+    }
+    Ok(out)
+}
+
+/// Parse one class template payload (`[status][headers][body]`).
+fn parse_class_template(bytes: &[u8]) -> std::result::Result<ClassTemplate, String> {
+    let mut pos = 0usize;
+    let status = read_u16_at(bytes, &mut pos)?;
+    if !(100..=599).contains(&status) {
+        return Err(format!(
+            "route descriptor: class status {status} out of range"
+        ));
+    }
+    let header_count = read_u32_at(bytes, &mut pos)?;
+    if header_count > bytes.len() / 8 + 1 {
+        return Err("route descriptor: class header count exceeds descriptor size".to_string());
+    }
+    let mut headers: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(header_count);
+    for _ in 0..header_count {
+        let name = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+        let value = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+        headers.push((name, value));
+    }
+    let body = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+    Ok(ClassTemplate {
+        status,
+        headers,
+        body,
+    })
+}
+
+/// Parse the v5 `pre` part: `[flags u32][classCount u32]{[tag u8][len u32]
+/// [class payload]}…` followed by the CORS / rate / IP-trust evaluation config
+/// (each gated by its flag). Reuses the ingress cores for evaluation.
+/// The stable registry name for an op tag (`None` = unknown → hard reject).
+/// Kept public(crate) so tests can pin the registry surface.
+#[allow(dead_code)]
+pub(crate) fn op_name(tag: u8) -> Option<&'static str> {
+    Some(match tag {
+        OP_PARSE_QUERY => "parse_query",
+        OP_PARSE_COOKIES => "parse_cookies",
+        OP_LIMITS => "limits",
+        OP_IP_TRUST => "ip_trust",
+        OP_CORS => "cors",
+        OP_RATE_LIMIT => "rate_limit",
+        OP_SECURITY_HEADERS => "security_headers",
+        OP_SET_HEADER => "set_header",
+        OP_JSON_VALID => "json_valid",
+        OP_SCHEMA_VALIDATE => "schema_validate",
+        OP_RESPONSE_PROJECTION => "response_projection",
+        OP_HALT => "halt",
+        OP_JUMP => "jump",
+        OP_BRANCH => "branch",
+        OP_CALLOUT => "callout",
+        _ => return None,
+    })
+}
+
+/// Clamp a slot operand into the fixed state slab (a malformed slot cannot
+/// index out of bounds; it aliases slot 0).
+#[inline]
+fn slot_index(slot: u32, len: usize) -> usize {
+    (slot as usize).min(len - 1)
+}
+
+/// Map a `HALT` reason operand to its `HaltReason`.
+fn reason_from_u32(value: u32) -> std::result::Result<HaltReason, String> {
+    Ok(match value {
+        0 => HaltReason::Ok,
+        1 => HaltReason::PreflightOk,
+        2 => HaltReason::PreflightForbidden,
+        3 => HaltReason::RateLimited,
+        4 => HaltReason::InvalidJson,
+        5 => HaltReason::SchemaFailed,
+        6 => HaltReason::BodyTooLarge,
+        other => return Err(format!("route program: unknown halt reason {other}")),
+    })
+}
+
+/// The HTTP/verdict code for a halt reason (`0` = OK/preflight-ok).
+#[inline]
+fn reason_code(reason: HaltReason) -> u32 {
+    match reason {
+        HaltReason::Ok | HaltReason::PreflightOk => 0,
+        HaltReason::PreflightForbidden => 403,
+        HaltReason::RateLimited => 429,
+        HaltReason::InvalidJson => 400,
+        HaltReason::SchemaFailed => 422,
+        HaltReason::BodyTooLarge => 413,
+    }
+}
+
+/// Pick the class tag a terminal op emits: the base class for `reason`, with
+/// the `+ WITH_ORIGIN` error variant preferred when a simple CORS request was
+/// allowed and that variant is compiled (matching the baked JS path).
+fn select_class_tag(reason: HaltReason, origin_allowed: bool, set: &ResponseSet) -> u8 {
+    let base = match reason {
+        HaltReason::Ok => {
+            if origin_allowed {
+                CLASS_OK_WITH_ORIGIN
+            } else {
+                CLASS_OK_NO_ORIGIN
+            }
+        }
+        HaltReason::PreflightOk => CLASS_PREFLIGHT_OK,
+        HaltReason::PreflightForbidden => CLASS_PREFLIGHT_FORBIDDEN,
+        HaltReason::RateLimited => CLASS_RATE_LIMITED,
+        HaltReason::InvalidJson => CLASS_INVALID_JSON,
+        HaltReason::SchemaFailed => CLASS_SCHEMA_FAILED,
+        HaltReason::BodyTooLarge => CLASS_BODY_TOO_LARGE,
+    };
+    if origin_allowed
+        && matches!(
+            reason,
+            HaltReason::RateLimited
+                | HaltReason::InvalidJson
+                | HaltReason::SchemaFailed
+                | HaltReason::BodyTooLarge
+        )
+    {
+        let alt = base.saturating_add(CLASS_WITH_ORIGIN_OFFSET);
+        if set.classes[alt as usize].is_some() {
+            return alt;
+        }
+    }
+    base
+}
+
+/// Resolve a const-table index (`what` names the op for error messages).
+fn const_at<'a>(
+    consts: &[&'a [u8]],
+    idx: u32,
+    what: &str,
+) -> std::result::Result<&'a [u8], String> {
+    consts
+        .get(idx as usize)
+        .copied()
+        .ok_or_else(|| format!("route program: {what} const index {idx} out of range"))
+}
+
+/// Parse a `[credentials u8][list][list][list]` CORS config const.
+fn parse_cors_config(bytes: &[u8]) -> std::result::Result<CorsEngine, String> {
+    let mut pos = 0usize;
+    let credentials = read_u8_at(bytes, &mut pos)? != 0;
+    let origins = read_string_list(bytes, &mut pos)?;
+    let methods = read_string_list(bytes, &mut pos)?;
+    let headers = read_string_list(bytes, &mut pos)?;
+    let opts = CorsOptions {
+        allow_origin: Some(origins),
+        allow_methods: Some(methods),
+        allow_headers: Some(headers),
+        allow_credentials: Some(credentials),
+    };
+    CorsEngine::from_options(Some(opts)).map_err(|e| format!("route program: cors config: {e}"))
+}
+
+/// Parse a `[limit u32][windowMs u32][maxEntries u32]` rate-limit config const.
+fn parse_rate_config(bytes: &[u8]) -> std::result::Result<(u32, u32, u32), String> {
+    let mut pos = 0usize;
+    let limit = read_u32_at(bytes, &mut pos)? as u32;
+    let window = read_u32_at(bytes, &mut pos)? as u32;
+    let max = read_u32_at(bytes, &mut pos)? as u32;
+    Ok((limit, window, max))
+}
+
+/// Parse a `[mode u8]([networks list])` IP-trust config const.
+/// mode: 0 = trust nothing, 1 = trust every hop, 2 = network list.
+fn parse_ip_trust_config(bytes: &[u8]) -> std::result::Result<ProxyTrustMode, String> {
+    let mut pos = 0usize;
+    let mode = read_u8_at(bytes, &mut pos)?;
+    match mode {
+        0 => Ok(ProxyTrustMode::None),
+        1 => Ok(ProxyTrustMode::All),
+        2 => {
+            let nets = read_string_list(bytes, &mut pos)?;
+            ProxyTrustMode::from_config(true, Some(nets))
+                .map_err(|e| format!("route program: ip trust config: {e}"))
+        }
+        other => Err(format!("route program: unknown ip trust mode {other}")),
+    }
+}
+
+/// Parse a `[count u32]{[nameLen][name][valueLen][value]}` header-list const.
+#[allow(clippy::type_complexity)]
+fn parse_header_list(bytes: &[u8]) -> std::result::Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    let mut pos = 0usize;
+    let count = read_u32_at(bytes, &mut pos)?;
+    if count > bytes.len() / 8 + 1 {
+        return Err("route program: header list count exceeds const size".to_string());
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+        let value = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+        out.push((name, value));
+    }
+    Ok(out)
+}
+
+/// Parse a `ResponseSet` const: `[classCount u32]{[tag u8][len u32][class
+/// payload]}…`. Reuses the v4 class-template layout.
+fn build_response_set(bytes: &[u8]) -> std::result::Result<ResponseSet, String> {
+    let mut pos = 0usize;
+    let class_count = read_u32_at(bytes, &mut pos)?;
+    if class_count > CLASS_SLOTS {
+        return Err(format!(
+            "route program: response set class count exceeds {CLASS_SLOTS}"
+        ));
+    }
+    let mut classes: [Option<ClassTemplate>; CLASS_SLOTS] = std::array::from_fn(|_| None);
+    for _ in 0..class_count {
+        let tag = read_u8_at(bytes, &mut pos)?;
+        let len = read_u32_at(bytes, &mut pos)?;
+        let end = pos
+            .checked_add(len)
+            .ok_or_else(|| "route program: class length overflow".to_string())?;
+        if end > bytes.len() {
+            return Err("route program: truncated class payload".to_string());
+        }
+        let payload = &bytes[pos..end];
+        pos = end;
+        let slot = classes
+            .get_mut(tag as usize)
+            .ok_or_else(|| format!("route program: unknown class tag {tag}"))?;
+        if slot.is_some() {
+            return Err(format!("route program: duplicate class tag {tag}"));
+        }
+        *slot = Some(parse_class_template(payload)?);
+    }
+
+    let mut max_skeleton = 0usize;
+    let mut origin_uses = 0usize;
+    let mut rid_uses = 0usize;
+    let mut numeric_uses = 0usize;
+    for template in classes.iter().flatten() {
+        let mut size = 2 + 4 + 4; // status + header count + body length
+        let mut o = 0usize;
+        let mut r = 0usize;
+        let mut n = 0usize;
+        for (name, value) in &template.headers {
+            size += 4 + name.len() + 4 + value.len();
+            count_placeholders(value, &mut o, &mut r, &mut n);
+        }
+        size += template.body.len();
+        count_placeholders(&template.body, &mut o, &mut r, &mut n);
+        max_skeleton = max_skeleton.max(size);
+        origin_uses = origin_uses.max(o);
+        rid_uses = rid_uses.max(r);
+        numeric_uses = numeric_uses.max(n);
+    }
+    Ok(ResponseSet {
+        classes,
+        max_skeleton,
+        origin_uses,
+        rid_uses,
+        numeric_uses,
+    })
+}
+
+/// Require a class tag to be compiled in a referenced response set (a decision
+/// op whose terminal class is absent must fail compilation, never at run time).
+fn require_class(set: &ResponseSet, tag: u8, what: &str) -> std::result::Result<(), String> {
+    if set.classes[tag as usize].is_none() {
+        return Err(format!(
+            "route program: {what} requires class {tag}, which the response set does not compile"
+        ));
+    }
+    Ok(())
+}
+
+/// Compile the v5 `program` part into a `CompiledProgram`. Every unknown/bad
+/// operand is a hard reject → the caller falls back to JS.
+fn parse_program(bytes: &[u8]) -> std::result::Result<CompiledProgram, String> {
+    let mut pos = 0usize;
+    let version = read_u8_at(bytes, &mut pos)?;
+    if version != PROGRAM_REGISTRY_VERSION {
+        return Err(format!(
+            "route program: unsupported program version {version} (this build supports {PROGRAM_REGISTRY_VERSION})"
+        ));
+    }
+    let const_count = read_u32_at(bytes, &mut pos)?;
+    if const_count > bytes.len() / 4 + 1 {
+        return Err("route program: const count exceeds descriptor size".to_string());
+    }
+    let mut consts: Vec<&[u8]> = Vec::with_capacity(const_count);
+    for _ in 0..const_count {
+        consts.push(read_section(bytes, &mut pos, usize::MAX)?);
+    }
+    let op_count = read_u32_at(bytes, &mut pos)?;
+    // Each op is 1 + 12 fixed bytes; a larger count can only be malformed.
+    if op_count > bytes.len() / 13 + 1 {
+        return Err("route program: op count exceeds descriptor size".to_string());
+    }
+
+    let mut ops: Vec<Op> = Vec::with_capacity(op_count);
+    let mut sets: Vec<Option<ResponseSet>> = (0..const_count).map(|_| None).collect();
+    let mut has_side_effects = false;
+    let mut needs_request_id = false;
+
+    for i in 0..op_count {
+        let tag = read_u8_at(bytes, &mut pos)?;
+        let a = read_u32_at(bytes, &mut pos)? as u32;
+        let b = read_u32_at(bytes, &mut pos)? as u32;
+        let c = read_u32_at(bytes, &mut pos)? as u32;
+        let op = match tag {
+            OP_PARSE_QUERY => Op::ParseQuery { out: a },
+            OP_PARSE_COOKIES => Op::ParseCookies { out: a },
+            OP_LIMITS => {
+                let set = const_index(consts.len(), b, "limits")?;
+                let raw = const_at(&consts, b, "limits")?;
+                let parsed = build_response_set(raw)?;
+                require_class(&parsed, CLASS_BODY_TOO_LARGE, "limits")?;
+                sets[b as usize] = Some(parsed);
+                Op::Limits { out: a, set }
+            }
+            OP_IP_TRUST => {
+                let mode = parse_ip_trust_config(const_at(&consts, a, "ip_trust")?)?;
+                Op::IpTrust { out: b, mode }
+            }
+            OP_CORS => {
+                let engine = parse_cors_config(const_at(&consts, a, "cors")?)?;
+                let set = const_index(consts.len(), b, "cors")?;
+                let parsed = build_response_set(const_at(&consts, b, "cors")?)?;
+                require_class(&parsed, CLASS_PREFLIGHT_OK, "cors")?;
+                require_class(&parsed, CLASS_PREFLIGHT_FORBIDDEN, "cors")?;
+                sets[b as usize] = Some(parsed);
+                Op::Cors {
+                    out: c,
+                    engine,
+                    set,
+                }
+            }
+            OP_RATE_LIMIT => {
+                let (limit, window, max) = parse_rate_config(const_at(&consts, a, "rate_limit")?)?;
+                let set = const_index(consts.len(), b, "rate_limit")?;
+                let parsed = build_response_set(const_at(&consts, b, "rate_limit")?)?;
+                require_class(&parsed, CLASS_RATE_LIMITED, "rate_limit")?;
+                sets[b as usize] = Some(parsed);
+                let limiter = shared_limiter(limit, window, Some(max as usize))
+                    .map_err(|e| format!("route program: rate config: {e}"))?;
+                has_side_effects = true;
+                Op::RateLimit {
+                    out: c,
+                    limiter,
+                    set,
+                }
+            }
+            OP_SECURITY_HEADERS => {
+                let headers = parse_header_list(const_at(&consts, a, "security_headers")?)?;
+                for (_, value) in &headers {
+                    needs_request_id |= contains(value, PH_REQUEST_ID);
+                }
+                Op::SecurityHeaders { headers }
+            }
+            OP_SET_HEADER => {
+                let name = const_at(&consts, a, "set_header")?.to_vec();
+                let value = match c {
+                    SET_VALUE_CONST => {
+                        let bytes = const_at(&consts, b, "set_header")?.to_vec();
+                        needs_request_id |= contains(&bytes, PH_REQUEST_ID);
+                        SetValue::Const(bytes)
+                    }
+                    SET_VALUE_REQUEST_ID => {
+                        needs_request_id = true;
+                        SetValue::RequestId
+                    }
+                    other => {
+                        return Err(format!(
+                            "route program: set_header unknown value source {other}"
+                        ));
+                    }
+                };
+                Op::SetHeader { name, value }
+            }
+            OP_JSON_VALID => {
+                let require = c != 0;
+                let set = if require {
+                    let set = const_index(consts.len(), b, "json_valid")?;
+                    let parsed = build_response_set(const_at(&consts, b, "json_valid")?)?;
+                    require_class(&parsed, CLASS_INVALID_JSON, "json_valid")?;
+                    sets[b as usize] = Some(parsed);
+                    Some(set)
+                } else {
+                    None
+                };
+                Op::JsonValid {
+                    out: a,
+                    require,
+                    set,
+                }
+            }
+            OP_SCHEMA_VALIDATE => {
+                let schema = if a == NO_CONST {
+                    None
+                } else {
+                    let raw = const_at(&consts, a, "schema_validate")?;
+                    Some(parse_schema_const(raw)?)
+                };
+                let set = const_index(consts.len(), b, "schema_validate")?;
+                let parsed = build_response_set(const_at(&consts, b, "schema_validate")?)?;
+                require_class(&parsed, CLASS_SCHEMA_FAILED, "schema_validate")?;
+                require_class(&parsed, CLASS_INVALID_JSON, "schema_validate")?;
+                sets[b as usize] = Some(parsed);
+                Op::SchemaValidate {
+                    out: c,
+                    schema,
+                    halt: true,
+                    set: Some(set),
+                }
+            }
+            OP_RESPONSE_PROJECTION => {
+                let parsed = build_response_set(const_at(&consts, a, "response_projection")?)?;
+                require_class(&parsed, CLASS_OK_NO_ORIGIN, "response_projection")?;
+                needs_request_id |= parsed
+                    .classes
+                    .iter()
+                    .flatten()
+                    .any(ClassTemplate::needs_request_id);
+                sets[a as usize] = Some(parsed);
+                Op::ResponseProjection { set: a as usize }
+            }
+            OP_HALT => {
+                let reason = reason_from_u32(b)?;
+                let parsed = build_response_set(const_at(&consts, a, "halt")?)?;
+                let base = match reason {
+                    HaltReason::Ok => CLASS_OK_NO_ORIGIN,
+                    HaltReason::PreflightOk => CLASS_PREFLIGHT_OK,
+                    HaltReason::PreflightForbidden => CLASS_PREFLIGHT_FORBIDDEN,
+                    HaltReason::RateLimited => CLASS_RATE_LIMITED,
+                    HaltReason::InvalidJson => CLASS_INVALID_JSON,
+                    HaltReason::SchemaFailed => CLASS_SCHEMA_FAILED,
+                    HaltReason::BodyTooLarge => CLASS_BODY_TOO_LARGE,
+                };
+                require_class(&parsed, base, "halt")?;
+                needs_request_id |= parsed
+                    .classes
+                    .iter()
+                    .flatten()
+                    .any(ClassTemplate::needs_request_id);
+                sets[a as usize] = Some(parsed);
+                Op::Halt {
+                    set: a as usize,
+                    reason,
+                }
+            }
+            OP_JUMP => {
+                if a as usize <= i || (a as usize) >= op_count {
+                    return Err(format!(
+                        "route program: forward-only jump target {a} out of range at op {i}"
+                    ));
+                }
+                Op::Jump { target: a as usize }
+            }
+            OP_BRANCH => {
+                if b as usize <= i || (b as usize) >= op_count {
+                    return Err(format!(
+                        "route program: forward-only branch target {b} out of range at op {i}"
+                    ));
+                }
+                Op::Branch {
+                    slot: a,
+                    target: b as usize,
+                }
+            }
+            OP_CALLOUT => {
+                return Err(
+                    "route program: callout op is not supported by this executor (hard reject → JS fallback)"
+                        .to_string(),
+                );
+            }
+            other => {
+                return Err(format!(
+                    "route program: unknown op tag {other} (registry v{PROGRAM_REGISTRY_VERSION})"
+                ));
+            }
+        };
+        ops.push(op);
+    }
+
+    // Compile-time output-bound inputs: the largest referenced class set plus
+    // all pre-baked security/set-header skeletons (placeholder uses summed).
+    let mut max_skeleton = 0usize;
+    let mut origin_uses = 0usize;
+    let mut rid_uses = 0usize;
+    let mut numeric_uses = 0usize;
+    for set in sets.iter().flatten() {
+        max_skeleton = max_skeleton.max(set.max_skeleton);
+        origin_uses = origin_uses.max(set.origin_uses);
+        rid_uses = rid_uses.max(set.rid_uses);
+        numeric_uses = numeric_uses.max(set.numeric_uses);
+    }
+    for op in &ops {
+        match op {
+            Op::SecurityHeaders { headers } => {
+                for (name, value) in headers {
+                    max_skeleton += 4 + name.len() + 4 + value.len();
+                    count_placeholders(value, &mut origin_uses, &mut rid_uses, &mut numeric_uses);
+                    needs_request_id |= contains(value, PH_REQUEST_ID);
+                }
+            }
+            Op::SetHeader { name, value } => {
+                max_skeleton += 4 + name.len() + 4;
+                if let SetValue::Const(bytes) = value {
+                    max_skeleton += bytes.len();
+                    count_placeholders(bytes, &mut origin_uses, &mut rid_uses, &mut numeric_uses);
+                } else {
+                    max_skeleton += PH_REQUEST_ID.len();
+                    rid_uses += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(CompiledProgram {
+        ops,
+        sets,
+        needs_request_id,
+        has_side_effects,
+        max_skeleton,
+        origin_uses,
+        rid_uses,
+        numeric_uses,
+    })
+}
+
+/// Validate a `ResponseSet` const index.
+fn const_index(const_count: usize, idx: u32, what: &str) -> std::result::Result<usize, String> {
+    if (idx as usize) >= const_count {
+        return Err(format!(
+            "route program: {what} const index {idx} out of range"
+        ));
+    }
+    Ok(idx as usize)
+}
+
+/// Compile a draft-07 schema const (shared process-wide cache).
+fn parse_schema_const(bytes: &[u8]) -> std::result::Result<Arc<IngressSchema>, String> {
+    let schema_str = std::str::from_utf8(bytes)
+        .map_err(|_| "route program: schema is not valid UTF-8".to_string())?;
+    let schema_value: serde_json::Value = sonic_rs::from_str(schema_str)
+        .map_err(|e| format!("route program: schema JSON error: {e}"))?;
+    super::schema_cache::get_or_compile(&schema_value)
+        .map_err(|e| format!("route program: schema compile error: {e}"))
 }
 
 // ── Response projection (route-wire v4) ─────────────────────────────
@@ -595,6 +2105,23 @@ impl<'a> ResultWriter<'a> {
     #[inline]
     fn u32(&mut self, value: u32) {
         self.bytes(&value.to_le_bytes());
+    }
+
+    /// Append the decimal ASCII form of `value` (no allocation).
+    #[inline]
+    fn num(&mut self, mut value: u64) {
+        if value == 0 {
+            self.bytes(b"0");
+            return;
+        }
+        let mut buf = [0u8; 20];
+        let mut i = buf.len();
+        while value > 0 {
+            i -= 1;
+            buf[i] = b'0' + (value % 10) as u8;
+            value /= 10;
+        }
+        self.bytes(&buf[i..]);
     }
 
     /// Append `[u32 len][bytes]` — the pair-section element layout.
@@ -1152,5 +2679,626 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("unsupported version 3"), "got: {err}");
+    }
+
+    // ── v5 op program ───────────────────────────────────────────
+
+    /// `[count u32]{[len u32][utf8]}…`
+    fn push_str_list(p: &mut Vec<u8>, list: &[&[u8]]) {
+        p.extend_from_slice(&(list.len() as u32).to_le_bytes());
+        for s in list {
+            p.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            p.extend_from_slice(s);
+        }
+    }
+
+    /// Encode a v5 request frame (mirror of `packRouteFrame`).
+    #[allow(clippy::too_many_arguments)]
+    fn frame_pre(
+        query: &[u8],
+        cookie: &[u8],
+        body: Option<&[u8]>,
+        rid: Option<&[u8]>,
+        method: Option<u8>,
+        ip: Option<&[u8]>,
+        headers: Option<&[u8]>,
+        https: bool,
+    ) -> Vec<u8> {
+        let has_body = body.map(|b| !b.is_empty()).unwrap_or(false);
+        let mut flags = 0u32;
+        if has_body {
+            flags |= ROUTE_FRAME_FLAG_HAS_BODY;
+        }
+        if rid.is_some() {
+            flags |= ROUTE_FRAME_FLAG_HAS_REQUEST_ID;
+        }
+        if method.is_some() {
+            flags |= ROUTE_FRAME_FLAG_HAS_METHOD;
+        }
+        if ip.is_some() {
+            flags |= ROUTE_FRAME_FLAG_HAS_IP;
+        }
+        if headers.is_some() {
+            flags |= ROUTE_FRAME_FLAG_HAS_HEADERS;
+        }
+        if https {
+            flags |= ROUTE_FRAME_FLAG_HTTPS;
+        }
+        let mut f = Vec::new();
+        f.extend_from_slice(&flags.to_le_bytes());
+        f.extend_from_slice(&(query.len() as u32).to_le_bytes());
+        f.extend_from_slice(query);
+        f.extend_from_slice(&(cookie.len() as u32).to_le_bytes());
+        f.extend_from_slice(cookie);
+        if has_body {
+            let b = body.unwrap_or(&[]);
+            f.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            f.extend_from_slice(b);
+        }
+        if let Some(r) = rid {
+            f.extend_from_slice(&(r.len() as u32).to_le_bytes());
+            f.extend_from_slice(r);
+        }
+        if let Some(m) = method {
+            f.push(m);
+        }
+        if let Some(i) = ip {
+            f.extend_from_slice(&(i.len() as u32).to_le_bytes());
+            f.extend_from_slice(i);
+        }
+        if let Some(h) = headers {
+            f.extend_from_slice(&(h.len() as u32).to_le_bytes());
+            f.extend_from_slice(h);
+        }
+        f
+    }
+
+    /// Encode a program part payload:
+    /// `[version u8][constCount u32]{[len u32][bytes]}…`
+    /// `[opCount u32]{[tag u8][a u32][b u32][c u32]}…`
+    fn program_payload(version: u8, consts: &[&[u8]], ops: &[(u8, u32, u32, u32)]) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.push(version);
+        p.extend_from_slice(&(consts.len() as u32).to_le_bytes());
+        for c in consts {
+            p.extend_from_slice(&(c.len() as u32).to_le_bytes());
+            p.extend_from_slice(c);
+        }
+        p.extend_from_slice(&(ops.len() as u32).to_le_bytes());
+        for (tag, a, b, c) in ops {
+            p.push(*tag);
+            p.extend_from_slice(&a.to_le_bytes());
+            p.extend_from_slice(&b.to_le_bytes());
+            p.extend_from_slice(&c.to_le_bytes());
+        }
+        p
+    }
+
+    /// `[count u32]{[tag u8][len u32][class payload]}…`
+    fn response_set(classes: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&(classes.len() as u32).to_le_bytes());
+        for (tag, payload) in classes {
+            p.push(*tag);
+            p.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            p.extend_from_slice(payload);
+        }
+        p
+    }
+
+    fn cors_config(
+        creds: bool,
+        origins: &[&[u8]],
+        methods: &[&[u8]],
+        headers: &[&[u8]],
+    ) -> Vec<u8> {
+        let mut p = vec![creds as u8];
+        push_str_list(&mut p, origins);
+        push_str_list(&mut p, methods);
+        push_str_list(&mut p, headers);
+        p
+    }
+
+    fn rate_config(limit: u32, window: u32, max: u32) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&limit.to_le_bytes());
+        p.extend_from_slice(&window.to_le_bytes());
+        p.extend_from_slice(&max.to_le_bytes());
+        p
+    }
+
+    fn ip_trust_config(mode: u8, nets: &[&[u8]]) -> Vec<u8> {
+        let mut p = vec![mode];
+        if mode == 2 {
+            push_str_list(&mut p, nets);
+        }
+        p
+    }
+
+    fn header_list(headers: &[(&[u8], &[u8])]) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&(headers.len() as u32).to_le_bytes());
+        for (n, v) in headers {
+            p.extend_from_slice(&(n.len() as u32).to_le_bytes());
+            p.extend_from_slice(n);
+            p.extend_from_slice(&(v.len() as u32).to_le_bytes());
+            p.extend_from_slice(v);
+        }
+        p
+    }
+
+    /// A CORS-aware OK response set: classes 0..=3 as the TS builder emits.
+    fn cors_ok_set(body: &[u8]) -> Vec<u8> {
+        response_set(&[
+            (
+                CLASS_OK_NO_ORIGIN,
+                response_payload(200, &[(b"content-type", b"application/json")], body),
+            ),
+            (
+                CLASS_OK_WITH_ORIGIN,
+                response_payload(
+                    200,
+                    &[
+                        (b"content-type", b"application/json"),
+                        (b"vary", b"Origin"),
+                        (b"access-control-allow-origin", b"{origin}"),
+                    ],
+                    body,
+                ),
+            ),
+            (CLASS_PREFLIGHT_OK, response_payload(204, &[], b"")),
+            (
+                CLASS_PREFLIGHT_FORBIDDEN,
+                response_payload(403, &[], b"forbidden"),
+            ),
+        ])
+    }
+
+    /// A minimal OK-only response set (class 0).
+    fn ok_set(body: &[u8]) -> Vec<u8> {
+        response_set(&[(
+            CLASS_OK_NO_ORIGIN,
+            response_payload(200, &[(b"content-type", b"application/json")], body),
+        )])
+    }
+
+    fn run_out(r: &NativeRoute, f: &[u8], cap: usize) -> Vec<u8> {
+        let mut out = vec![0u8; cap];
+        let w = r.run(f, &mut out).unwrap();
+        out.truncate(w);
+        out
+    }
+
+    #[test]
+    fn program_registry_tags_are_stable() {
+        let expected = [
+            (OP_PARSE_QUERY, "parse_query"),
+            (OP_PARSE_COOKIES, "parse_cookies"),
+            (OP_LIMITS, "limits"),
+            (OP_IP_TRUST, "ip_trust"),
+            (OP_CORS, "cors"),
+            (OP_RATE_LIMIT, "rate_limit"),
+            (OP_SECURITY_HEADERS, "security_headers"),
+            (OP_SET_HEADER, "set_header"),
+            (OP_JSON_VALID, "json_valid"),
+            (OP_SCHEMA_VALIDATE, "schema_validate"),
+            (OP_RESPONSE_PROJECTION, "response_projection"),
+            (OP_HALT, "halt"),
+            (OP_JUMP, "jump"),
+            (OP_BRANCH, "branch"),
+            (OP_CALLOUT, "callout"),
+        ];
+        for (tag, name) in expected {
+            assert_eq!(op_name(tag), Some(name), "tag {tag}");
+        }
+        assert_eq!(op_name(0), None, "tag 0 is not allocated");
+        assert_eq!(op_name(200), None);
+    }
+
+    #[test]
+    fn program_unknown_tag_is_rejected() {
+        let set = ok_set(b"{}");
+        let ops = [
+            (OP_RESPONSE_PROJECTION, 0, 0, 0),
+            (200u8, 0, 0, 0), // unknown tag
+        ];
+        let prog = program_payload(PROGRAM_REGISTRY_VERSION, &[&set], &ops);
+        let err = match NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])) {
+            Ok(_) => panic!("unknown tag must reject"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unknown op tag 200"), "got: {err}");
+    }
+
+    #[test]
+    fn program_version_and_callout_are_rejected() {
+        let set = ok_set(b"{}");
+        let prog = program_payload(99, &[&set], &[(OP_RESPONSE_PROJECTION, 0, 0, 0)]);
+        let err = match NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])) {
+            Ok(_) => panic!("bad program version must reject"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unsupported program version 99"), "got: {err}");
+
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set],
+            &[(OP_CALLOUT, 7, 1, 0), (OP_RESPONSE_PROJECTION, 0, 0, 0)],
+        );
+        let err = match NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])) {
+            Ok(_) => panic!("callout must reject"),
+            Err(e) => e,
+        };
+        assert!(err.contains("callout op is not supported"), "got: {err}");
+    }
+
+    #[test]
+    fn program_legacy_pre_part_is_rejected() {
+        // Tag 6 is the removed pre-effect part: a stale v5 descriptor must be a
+        // hard reject, never a silent misparse.
+        assert!(NativeRoute::compile(&descriptor(&[], &[(PART_PRE_LEGACY, b"anything")])).is_err());
+    }
+
+    #[test]
+    fn program_forward_only_jump_is_enforced() {
+        let set = ok_set(b"{}");
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set],
+            &[(OP_JUMP, 0, 0, 0), (OP_RESPONSE_PROJECTION, 0, 0, 0)],
+        );
+        assert!(NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).is_err());
+    }
+
+    #[test]
+    fn program_zero_callout_response_round_trips() {
+        let set = cors_ok_set(b"{\"ok\":true,\"requestId\":\"{requestId}\"}");
+        let cors = cors_config(false, &[b"*"], &[], &[]);
+        let sec = header_list(&[(b"x-content-type-options", b"nosniff")]);
+        let ops = [
+            (OP_PARSE_QUERY, 0, 0, 0),
+            (OP_CORS, 1, 0, 0),
+            (OP_SECURITY_HEADERS, 2, 0, 0),
+            (OP_RESPONSE_PROJECTION, 0, 0, 0),
+        ];
+        let prog = program_payload(PROGRAM_REGISTRY_VERSION, &[&set, &cors, &sec], &ops);
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+        let packed = crate::test_support::pack_headers([("Origin", "https://app.example.com")]);
+        let f = frame_pre(
+            b"a=1&b=2",
+            b"",
+            None,
+            Some(b"rid-1"),
+            Some(0),
+            Some(b"203.0.113.5"),
+            Some(&packed),
+            false,
+        );
+        let wire = run_out(&r, &f, 1024);
+        let flags = u32::from_le_bytes(wire[0..4].try_into().unwrap());
+        assert_ne!(flags & ROUTE_RESULT_FLAG_OK, 0);
+        assert_ne!(flags & ROUTE_RESULT_FLAG_HAS_RESPONSE, 0);
+        assert_ne!(flags & ROUTE_RESULT_FLAG_QUERY_VALID, 0);
+        let (status, headers, body) = decode_response(&wire);
+        assert_eq!(status, 200);
+        assert_eq!(
+            headers,
+            vec![
+                (b"x-content-type-options".to_vec(), b"nosniff".to_vec()),
+                (b"content-type".to_vec(), b"application/json".to_vec()),
+                (b"vary".to_vec(), b"Origin".to_vec()),
+                (
+                    b"access-control-allow-origin".to_vec(),
+                    b"https://app.example.com".to_vec()
+                ),
+            ]
+        );
+        assert_eq!(body, b"{\"ok\":true,\"requestId\":\"rid-1\"}");
+    }
+
+    #[test]
+    fn program_parse_ops_drive_pair_verdict_without_a_terminal() {
+        let ops = [(OP_PARSE_QUERY, 0, 0, 0), (OP_PARSE_COOKIES, 1, 0, 0)];
+        let prog = program_payload(PROGRAM_REGISTRY_VERSION, &[], &ops);
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+        let wire = run_out(&r, &frame(b"a=1&b=2", b"s=v", None), 512);
+        let flags = u32::from_le_bytes(wire[0..4].try_into().unwrap());
+        assert_ne!(flags & ROUTE_RESULT_FLAG_QUERY_VALID, 0);
+        assert_ne!(flags & ROUTE_RESULT_FLAG_COOKIE_VALID, 0);
+        let mut pos = 8;
+        let q = decode_pairs(&wire, &mut pos);
+        let c = decode_pairs(&wire, &mut pos);
+        assert_eq!(
+            q,
+            vec![
+                (b"a".to_vec(), b"1".to_vec()),
+                (b"b".to_vec(), b"2".to_vec())
+            ]
+        );
+        assert_eq!(c, vec![(b"s".to_vec(), b"v".to_vec())]);
+    }
+
+    #[test]
+    fn program_cors_preflight_halts_204_and_403() {
+        let set = cors_ok_set(b"{\"ok\":true}");
+        let cors = cors_config(false, &[b"*"], &[], &[]);
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set, &cors],
+            &[(OP_CORS, 1, 0, 0), (OP_RESPONSE_PROJECTION, 0, 0, 0)],
+        );
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+
+        let allowed = crate::test_support::pack_headers([
+            ("Origin", "https://app.example.com"),
+            ("access-control-request-method", "POST"),
+        ]);
+        let wire = run_out(
+            &r,
+            &frame_pre(
+                b"",
+                b"",
+                None,
+                None,
+                Some(6),
+                Some(b"1.2.3.4"),
+                Some(&allowed),
+                false,
+            ),
+            512,
+        );
+        assert_eq!(decode_response(&wire).0, 204);
+
+        let denied = crate::test_support::pack_headers([
+            ("Origin", "https://app.example.com"),
+            ("access-control-request-method", "DELETE"),
+        ]);
+        let wire = run_out(
+            &r,
+            &frame_pre(
+                b"",
+                b"",
+                None,
+                None,
+                Some(6),
+                Some(b"1.2.3.4"),
+                Some(&denied),
+                false,
+            ),
+            512,
+        );
+        let (status, _, body) = decode_response(&wire);
+        assert_eq!(status, 403);
+        assert_eq!(body, b"forbidden");
+    }
+
+    #[test]
+    fn program_rate_limit_halts_429_and_needed_size_does_not_consume() {
+        let rl = response_payload(
+            429,
+            &[
+                (b"content-type", b"application/json"),
+                (b"ratelimit-remaining", b"{remaining}"),
+                (b"retry-after", b"{retryAfterSecs}"),
+            ],
+            b"{\"retry_after_ms\":{retryAfterMs}}",
+        );
+        let set = response_set(&[
+            (
+                CLASS_OK_NO_ORIGIN,
+                response_payload(200, &[(b"content-type", b"application/json")], b"{}"),
+            ),
+            (CLASS_RATE_LIMITED, rl),
+        ]);
+        let rate = rate_config(2, 60_000, 100_000);
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set, &rate],
+            &[(OP_RATE_LIMIT, 1, 0, 0), (OP_RESPONSE_PROJECTION, 0, 0, 0)],
+        );
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+        let f = frame_pre(
+            b"",
+            b"",
+            None,
+            None,
+            Some(0),
+            Some(b"10.9.8.7"),
+            None,
+            false,
+        );
+
+        // Sizing pass: tiny buffer reports a bound and consumes no token.
+        let mut small = [0u8; 8];
+        let bound = r.run(&f, &mut small).unwrap();
+        assert!(bound > 8);
+        assert_eq!(small, [0u8; 8]);
+
+        let w1 = run_out(&r, &f, bound);
+        assert_eq!(u32::from_le_bytes(w1[4..8].try_into().unwrap()), 0);
+        let w2 = run_out(&r, &f, bound);
+        assert_eq!(u32::from_le_bytes(w2[4..8].try_into().unwrap()), 0);
+        let w3 = run_out(&r, &f, bound);
+        assert_eq!(u32::from_le_bytes(w3[4..8].try_into().unwrap()), 429);
+        let (_, headers, _) = decode_response(&w3);
+        assert_eq!(
+            headers
+                .iter()
+                .find(|(n, _)| n == b"ratelimit-remaining")
+                .unwrap()
+                .1,
+            b"0"
+        );
+    }
+
+    #[test]
+    fn program_json_and_schema_validation_halt() {
+        let schema = br#"{"type":"object","required":["x"],"properties":{"x":{"type":"number"}}}"#;
+        let mut classes = vec![
+            (CLASS_OK_NO_ORIGIN, response_payload(200, &[], b"{}")),
+            (CLASS_INVALID_JSON, response_payload(400, &[], b"bad")),
+            (CLASS_SCHEMA_FAILED, response_payload(422, &[], b"schema")),
+        ];
+        classes.sort_by_key(|(t, _)| *t);
+        let set = response_set(&classes);
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set, &schema[..]],
+            &[
+                (OP_JSON_VALID, 0, 0, 1),
+                (OP_SCHEMA_VALIDATE, 1, 0, 1),
+                (OP_RESPONSE_PROJECTION, 0, 0, 0),
+            ],
+        );
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+
+        assert_eq!(
+            decode_response(&run_out(&r, &frame(b"", b"", Some(b"nope")), 256)).0,
+            400
+        );
+        assert_eq!(
+            decode_response(&run_out(&r, &frame(b"", b"", Some(br#"{"x":"s"}"#)), 256)).0,
+            422
+        );
+        assert_eq!(
+            decode_response(&run_out(&r, &frame(b"", b"", Some(br#"{"x":1}"#)), 256)).0,
+            200
+        );
+    }
+
+    #[test]
+    fn program_branch_selects_a_runtime_variant() {
+        let set_a = response_set(&[(CLASS_OK_NO_ORIGIN, response_payload(200, &[], b"A"))]);
+        let set_b = response_set(&[(CLASS_OK_NO_ORIGIN, response_payload(200, &[], b"B"))]);
+        // json_valid(out 0, require 0); branch(slot 0 -> op 3);
+        // op 2 -> set_a ("A"); op 3 -> set_b ("B"). Valid jumps to B.
+        let ops = [
+            (OP_JSON_VALID, 0, 0, 0),
+            (OP_BRANCH, 0, 3, 0),
+            (OP_RESPONSE_PROJECTION, 0, 0, 0),
+            (OP_RESPONSE_PROJECTION, 1, 0, 0),
+        ];
+        let prog = program_payload(PROGRAM_REGISTRY_VERSION, &[&set_a, &set_b], &ops);
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+        assert_eq!(
+            decode_response(&run_out(&r, &frame(b"", b"", Some(b"{}")), 128)).2,
+            b"B"
+        );
+        assert_eq!(
+            decode_response(&run_out(&r, &frame(b"", b"", None), 128)).2,
+            b"A"
+        );
+    }
+
+    #[test]
+    fn program_set_header_and_security_merge() {
+        let set = ok_set(b"{}");
+        let sec = header_list(&[(b"x-content-type-options", b"nosniff")]);
+        let name = b"x-custom";
+        let value = b"v-{requestId}";
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set, &sec, name, value],
+            &[
+                (OP_SECURITY_HEADERS, 1, 0, 0),
+                (OP_SET_HEADER, 2, 3, SET_VALUE_CONST),
+                (OP_RESPONSE_PROJECTION, 0, 0, 0),
+            ],
+        );
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+        let f = frame_pre(b"", b"", None, Some(b"abc"), Some(0), None, None, false);
+        let wire = run_out(&r, &f, 512);
+        let (_, headers, _) = decode_response(&wire);
+        assert_eq!(
+            headers,
+            vec![
+                (b"x-content-type-options".to_vec(), b"nosniff".to_vec()),
+                (b"x-custom".to_vec(), b"v-abc".to_vec()),
+                (b"content-type".to_vec(), b"application/json".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn program_needed_size_convention_response() {
+        let set = ok_set(b"{\"ok\":true,\"requestId\":\"{requestId}\"}");
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set],
+            &[(OP_RESPONSE_PROJECTION, 0, 0, 0)],
+        );
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+        let f = frame_with_rid(b"", b"", None, b"0193f2c4-0000-7000-8000-000000000000");
+        let mut small = [0u8; 8];
+        let needed = r.run(&f, &mut small).unwrap();
+        assert!(needed > 8);
+        assert_eq!(small, [0u8; 8]);
+        let mut big = vec![0u8; needed];
+        assert_eq!(r.run(&f, &mut big).unwrap(), needed);
+    }
+
+    #[test]
+    fn program_missing_required_class_is_rejected() {
+        // `schema_validate` references a set without the 422 class.
+        let set = response_set(&[(CLASS_OK_NO_ORIGIN, response_payload(200, &[], b"{}"))]);
+        let schema = br#"{"type":"object"}"#;
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set, &schema[..]],
+            &[
+                (OP_JSON_VALID, 0, 0, 0),
+                (OP_SCHEMA_VALIDATE, 1, 0, 1),
+                (OP_RESPONSE_PROJECTION, 0, 0, 0),
+            ],
+        );
+        assert!(NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).is_err());
+    }
+
+    #[test]
+    fn program_ip_trust_and_limits_run() {
+        // A program that resolves the client IP, enforces the body limit, then
+        // projects. Exercises the ip_trust + limits ops.
+        let set = response_set(&[
+            (CLASS_OK_NO_ORIGIN, response_payload(200, &[], b"ok")),
+            (CLASS_BODY_TOO_LARGE, response_payload(413, &[], b"big")),
+        ]);
+        let ipcfg = ip_trust_config(2, &[b"10.0.0.0/8"]);
+        let prog = program_payload(
+            PROGRAM_REGISTRY_VERSION,
+            &[&set, &ipcfg],
+            &[
+                (OP_IP_TRUST, 1, 0, 0),
+                (OP_LIMITS, 1, 0, 0),
+                (OP_RESPONSE_PROJECTION, 0, 0, 0),
+            ],
+        );
+        // maxBodyBytes from `descriptor` is 2 MiB, so a small body passes.
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+        let wire = run_out(
+            &r,
+            &frame_pre(
+                b"",
+                b"",
+                Some(b"{}"),
+                None,
+                Some(0),
+                Some(b"10.1.2.3"),
+                None,
+                false,
+            ),
+            256,
+        );
+        assert_eq!(decode_response(&wire).0, 200);
+    }
+
+    #[test]
+    fn compile_rejects_v4_descriptor_with_version_error() {
+        let mut d = descriptor(&[STAGE_PARSE_QUERY], &[]);
+        d[4..8].copy_from_slice(&4u32.to_le_bytes());
+        let err = match NativeRoute::compile(&d) {
+            Ok(_) => panic!("a v4 descriptor must be rejected by the v5 stack"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unsupported version 4"), "got: {err}");
     }
 }
