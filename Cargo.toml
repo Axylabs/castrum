@@ -45,8 +45,11 @@ sonic-rs = { version = "0.5", features = ["sort_keys"] }
 # validators (email etc.) are built-in and NOT feature-gated in 0.48.
 jsonschema = { version = "0.49", default-features = false, features = ["resolve-file"] }
 aws-lc-rs = "1"
-# NOTE: base64 0.23 enables SIMD (SSE/AVX) by default via the `simd-unsafe`
-# feature (part of `default`); no explicit feature is needed.
+# NOTE: base64 0.23 compiles its SIMD `engine::simd::Simd` (AVX2/NEON, Muła
+# kernels) by default via the `simd-unsafe` feature (part of `default`). Our
+# `rust/crypto/base64.rs` selects that engine for the hot cores on x86_64 /
+# aarch64, with the scalar `GeneralPurpose` fallback elsewhere; the wire
+# contract (PAD/NO_PAD configs, byte-identical output) is unchanged.
 base64 = "0.23"
 crc32fast = "1"
 httparse = "1"

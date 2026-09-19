@@ -1,8 +1,15 @@
 // rust/crypto/base64.rs — base64 (standard/url-safe) + hex encode/decode.
 //
-// Uses the `base64` crate engines (Cargo dep already present). The
-// `Base64Codec` higher-order instance precompiles the alphabet/decoding
-// configuration once in its constructor and reuses it across calls.
+// Uses the `base64` crate engines (Cargo dep already present). On the shipped
+// targets (x86_64 / aarch64) the hot cores dispatch to the crate's
+// runtime-detected SIMD engine (`engine::simd::Simd` — AVX2 / NEON kernels):
+// payloads ≥ 64 B (decode) / ≥ 128 B (encode) go through the wide kernels,
+// anything smaller falls back to the scalar engine internally, so both length
+// regimes stay efficient and output stays byte-identical to the scalar path.
+// Other targets keep the scalar `GeneralPurpose` engine (not a shipped
+// castrum target — local dev / test builds only). The `Base64Codec`
+// higher-order instance precompiles the alphabet/decoding configuration once
+// in its constructor and reuses it across calls.
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -10,15 +17,50 @@ use napi_derive::napi;
 use crate::util::bytes::{hex_val, HEX_LOWER};
 use base64::Engine as _;
 
-fn engine(url_safe: bool, padding: bool) -> base64::engine::general_purpose::GeneralPurpose {
-    use base64::engine::general_purpose::*;
-    match (url_safe, padding) {
-        (false, true) => STANDARD,
-        (false, false) => STANDARD_NO_PAD,
-        (true, true) => URL_SAFE,
-        (true, false) => URL_SAFE_NO_PAD,
+/// Engine selection for a base64 call.
+///
+/// SIMD branch (x86_64 / aarch64 — every shipped castrum target): the
+/// `engine::simd::Simd` engine detects AVX2 / NEON once at construction and
+/// falls back to the scalar `GeneralPurpose` when the CPU (or a payload below
+/// the 64 B decode / 128 B encode thresholds) doesn't benefit, so small
+/// payloads keep the same fixed costs while large ones get wide kernels. The
+/// `PAD` / `NO_PAD` `GeneralPurposeConfig` consts are the exact configs the
+/// preconfigured scalar engines use, so the wire contract is unchanged.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+mod engine_sel {
+    use base64::engine::general_purpose::{NO_PAD, PAD};
+    use base64::engine::simd::Simd;
+
+    pub(super) type Engine = Simd;
+
+    pub(super) fn engine(url_safe: bool, padding: bool) -> Simd {
+        match (url_safe, padding) {
+            (false, true) => Simd::standard(PAD),
+            (false, false) => Simd::standard(NO_PAD),
+            (true, true) => Simd::url_safe(PAD),
+            (true, false) => Simd::url_safe(NO_PAD),
+        }
     }
 }
+
+/// Scalar fallback (non-x86_64 / non-aarch64 targets only).
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+mod engine_sel {
+    use base64::engine::general_purpose::*;
+
+    pub(super) type Engine = GeneralPurpose;
+
+    pub(super) fn engine(url_safe: bool, padding: bool) -> GeneralPurpose {
+        match (url_safe, padding) {
+            (false, true) => STANDARD,
+            (false, false) => STANDARD_NO_PAD,
+            (true, true) => URL_SAFE,
+            (true, false) => URL_SAFE_NO_PAD,
+        }
+    }
+}
+
+use engine_sel::engine;
 
 #[napi]
 pub fn base64_encode(input: Uint8Array, url_safe: Option<bool>, padding: Option<bool>) -> Buffer {
@@ -40,16 +82,12 @@ pub fn base64_decode(
 
 #[napi]
 pub fn base64url_encode(input: Uint8Array) -> Buffer {
-    Buffer::from(
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(input.as_ref())
-            .into_bytes(),
-    )
+    Buffer::from(engine(true, false).encode(input.as_ref()).into_bytes())
 }
 
 #[napi]
 pub fn base64url_decode(input: Uint8Array) -> Result<Buffer> {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
+    engine(true, false)
         .decode(input.as_ref())
         .map(Buffer::from)
         .map_err(|e| Error::from_reason(e.to_string()))
@@ -76,9 +114,7 @@ pub fn base64_decode_bytes(input: &[u8], url_safe: bool, padding: bool) -> Resul
 /// one place.
 #[inline]
 pub fn base64url_encode_bytes(data: &[u8]) -> Vec<u8> {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(data)
-        .into_bytes()
+    engine(true, false).encode(data).into_bytes()
 }
 
 /// Base64url (RFC 7515 §2 — URL-safe alphabet, NO padding) decode from raw
@@ -86,9 +122,7 @@ pub fn base64url_encode_bytes(data: &[u8]) -> Vec<u8> {
 #[inline]
 pub fn base64url_decode_bytes(data: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(data).ok()?;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(text)
-        .ok()
+    engine(true, false).decode(text).ok()
 }
 
 // ── hex ──────────────────────────────────────────────────────────
@@ -255,10 +289,11 @@ pub fn base64_decode_into(
 
 /// Higher-order instance: the alphabet/padding engine is selected ONCE at
 /// construction and stored concretely, so `encode`/`decode` never re-run the
-/// 4-way engine match on the per-call path.
+/// 4-way engine match on the per-call path. On x86_64/aarch64 this holds the
+/// SIMD runtime-dispatched engine, so large payloads also get AVX2/NEON.
 #[napi]
 pub struct Base64Codec {
-    engine: base64::engine::general_purpose::GeneralPurpose,
+    engine: engine_sel::Engine,
 }
 
 #[napi]
@@ -333,6 +368,81 @@ mod tests {
         let c = Base64Codec::new(Some(true), Some(false));
         let enc = c.encode(Uint8Array::new(b"\xfb".to_vec()));
         assert_eq!(enc.as_ref(), b"-w");
+    }
+
+    // ── SIMD engine (x86_64 / aarch64: AVX2 / NEON kernels) ──
+    //
+    // The SIMD engine must be a drop-in for the scalar one: byte-identical
+    // output, identical validity/padding errors, on payloads both above the
+    // SIMD thresholds (decode ≥ 64 B, encode ≥ 128 B) and below them.
+
+    fn deterministic(n: usize) -> Vec<u8> {
+        (0..n)
+            .map(|i| (i.wrapping_mul(31) ^ (i >> 3)) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn simd_large_payload_roundtrip_into_slice() {
+        // 16 KiB: well above both SIMD thresholds — exercises the wide kernels
+        // end-to-end and must round-trip byte-identically.
+        let data = deterministic(16 * 1024);
+        let mut enc = vec![0u8; data.len().div_ceil(3) * 4];
+        let w = base64_encode_into_slice(&data, &mut enc, false, true).unwrap();
+        assert_eq!(w, enc.len());
+        let mut dec = vec![0u8; data.len()];
+        let m = base64_decode_into_slice(&enc, &mut dec, false, true).unwrap();
+        assert_eq!(&dec[..m], &data[..]);
+    }
+
+    #[test]
+    fn simd_output_byte_identical_to_scalar() {
+        // Large payload: SIMD encode/decode must match the scalar engines
+        // exactly (alphabet + padding wire contract unchanged).
+        let data = deterministic(2048);
+        // standard w/ padding
+        let mut enc = vec![0u8; data.len().div_ceil(3) * 4];
+        let w = base64_encode_into_slice(&data, &mut enc, false, true).unwrap();
+        let scalar_exp = base64::engine::general_purpose::STANDARD.encode(&data);
+        assert_eq!(&enc[..w], scalar_exp.as_bytes());
+        // url-safe, no padding
+        let mut encu = vec![0u8; data.len().div_ceil(3) * 4];
+        let wu = base64_encode_into_slice(&data, &mut encu, true, false).unwrap();
+        let scalar_expu = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&data);
+        assert_eq!(&encu[..wu], scalar_expu.as_bytes());
+        // decode path parity
+        let mut dec = vec![0u8; data.len()];
+        let m = base64_decode_into_slice(scalar_exp.as_bytes(), &mut dec, false, true).unwrap();
+        assert_eq!(&dec[..m], &data[..]);
+        let mut decu = vec![0u8; data.len()];
+        let mu = base64_decode_into_slice(scalar_expu.as_bytes(), &mut decu, true, false).unwrap();
+        assert_eq!(&decu[..mu], &data[..]);
+    }
+
+    #[test]
+    fn simd_large_decode_rejects_invalid() {
+        // Invalid base64 symbol mid-buffer above the SIMD threshold: the wide
+        // kernel breaks out and the scalar decoder reports the error — parity
+        // with the scalar engine's rejection.
+        let mut bad = vec![b'A'; 4096];
+        bad[2048] = b'!';
+        let mut out = vec![0u8; 4096];
+        assert!(base64_decode_into_slice(&bad, &mut out, false, true).is_err());
+        let scalar = base64::engine::general_purpose::STANDARD.decode(bad.as_slice());
+        assert!(scalar.is_err());
+    }
+
+    #[test]
+    fn simd_small_payload_matches_scalar() {
+        // Below the SIMD thresholds the engine is scalar internally; output
+        // and errors must match the preconfigured engines.
+        let data = b"hello world!";
+        let mut enc = [0u8; 32];
+        let w = base64_encode_into_slice(data, &mut enc, false, true).unwrap();
+        assert_eq!(&enc[..w], b"aGVsbG8gd29ybGQh");
+        let mut dec = [0u8; 16];
+        let m = base64_decode_into_slice(b"aGVsbG8gd29ybGQh", &mut dec, false, true).unwrap();
+        assert_eq!(&dec[..m], data);
     }
 
     // ── reusable-output (_into) variants ──
