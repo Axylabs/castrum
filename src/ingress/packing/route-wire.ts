@@ -26,7 +26,8 @@
 // PURE: no addon import, no module state — safe for any consumer. The
 // addon-touching factory lives in `src/ingress/native-route.ts`.
 
-import { decoder, encoder } from '../../shared/bytes'
+import { encoder } from '../../shared/bytes'
+import { decodeUtf8RangeView } from '../../shared/codec'
 
 /** Route descriptor magic (`"ROUT"` LE). Must match `ROUTE_DESC_MAGIC` in Rust. */
 export const ROUTE_DESC_MAGIC = 0x524f5554
@@ -614,6 +615,11 @@ export interface RouteWireResponseResult {
  */
 export function decodeRouteResponse(buf: Uint8Array, offset = 8): RouteWireResponseResult {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  // One zero-copy Buffer view for the whole result: ranged decode at absolute
+  // offsets (ASCII latin1 fast path, UTF-8 fallback) instead of one
+  // `decoder.decode`/`CString` allocation per header name+value. The bounded
+  // DataView above stays so out-of-bounds reads still throw on malformed wire.
+  const bview = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength)
   let pos = offset
   const status = view.getUint16(pos, true)
   pos += 2
@@ -623,11 +629,11 @@ export function decodeRouteResponse(buf: Uint8Array, offset = 8): RouteWireRespo
   for (let i = 0; i < count; i++) {
     const nameLen = view.getUint32(pos, true)
     pos += 4
-    const name = decoder.decode(buf.subarray(pos, pos + nameLen))
+    const name = decodeUtf8RangeView(bview, pos, pos + nameLen)
     pos += nameLen
     const valueLen = view.getUint32(pos, true)
     pos += 4
-    const value = decoder.decode(buf.subarray(pos, pos + valueLen))
+    const value = decodeUtf8RangeView(bview, pos, pos + valueLen)
     pos += valueLen
     headers.push([name, value])
   }
@@ -676,6 +682,8 @@ export function decodeRouteResult(
   if ((flags & ROUTE_FLAG.HAS_RESPONSE) !== 0) {
     return { flags, errorCode, query: [], cookie: [], response: decodeRouteResponse(buf) }
   }
+  // One zero-copy Buffer view shared by both pair sections (ranged decode).
+  const bview = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength)
   let pos = 8
   const readPairs = (): RouteWirePair[] => {
     const count = view.getUint32(pos, true)
@@ -684,11 +692,11 @@ export function decodeRouteResult(
     for (let i = 0; i < count; i++) {
       const nameLen = view.getUint32(pos, true)
       pos += 4
-      const name = decoder.decode(buf.subarray(pos, pos + nameLen))
+      const name = decodeUtf8RangeView(bview, pos, pos + nameLen)
       pos += nameLen
       const valueLen = view.getUint32(pos, true)
       pos += 4
-      const value = decoder.decode(buf.subarray(pos, pos + valueLen))
+      const value = decodeUtf8RangeView(bview, pos, pos + valueLen)
       pos += valueLen
       out.push([name, value])
     }
