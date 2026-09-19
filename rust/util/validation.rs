@@ -327,7 +327,7 @@ mod tests {
     fn validate_uuid_hex_run_coverage() {
         let dash = |i: usize| matches!(i, 8 | 13 | 18 | 23);
         for pos in 0..36 {
-            let mut valid = b"550e8400-e29b-41d4-a716-446655440000";
+            let valid = b"550e8400-e29b-41d4-a716-446655440000";
             if dash(pos) {
                 continue; // dash positions are pinned by their own check
             }
