@@ -1,38 +1,41 @@
-// src/ingress/packing/route-wire.ts — route-wire v4 byte helpers (PURE).
+// src/ingress/packing/route-wire.ts — route-wire v6 byte helpers (PURE).
 //
 // The per-route native stack (`rust/ingress/native_route.rs`,
 // `castrum_route_*` / napi `Route`) compiles a descriptor ONCE and runs each
 // request frame in ONE native call. This module owns the WIRE on the JS side:
-// descriptor encoding, frame packing, and result decoding — byte-layout
-// constants MUST match `rust/ingress/native_route.rs` and `@ignex/native`
-// `route-wire.ts` EXACTLY (`ROUTE_DESC_VERSION` bumps on any layout change; a
-// mismatched compiler/addon must be a hard reject, never a silent misparse).
+// descriptor encoding, frame packing, result decoding, and the compile-time
+// response template the JS responder assembles against — byte-layout constants
+// MUST match `rust/ingress/native_route.rs` (`ROUTE_DESC_VERSION` bumps on any
+// layout change; a mismatched compiler/addon must be a hard reject, never a
+// silent misparse).
 //
-// v4 adds the optional `response` projection part: when a descriptor carries it
-// AND the pipeline is OK, the native result payload is a framed HTTP response
-// `[status u16][hdrCount u32]{[name][value]}…[bodyLen u32][body]` instead of the
-// pair sections, with a single `{requestId}` placeholder substituted from the
-// frame's request-id section. See `encodeResponseProjection` /
-// `decodeRouteResponse`.
+// v5 added the optional `program` part (tag 7): an OPEN op program — an ordered,
+// fixed-width op stream interpreted by the native executor. Ops are
+// `(tag, operands, out-slot)` in a versioned registry (`ROUTE_PROGRAM_VERSION` +
+// `ROUTE_OP`); the program carries its own const table (response class sets,
+// CORS/rate/IP-trust config, security header lists, body schemas).
 //
-// v5 adds the optional `program` part (tag 7): an OPEN op program — an ordered,
-// fixed-width op stream interpreted by the native executor (`rust/ingress/
-// native_route.rs`). Ops are `(tag, operands, out-slot)` in a versioned registry
-// (`ROUTE_PROGRAM_VERSION` + `ROUTE_OP`); the program carries its own const
-// table (response class sets, CORS/rate/IP-trust config, security header lists,
-// body schemas). `PART_PRE` (tag 6) is GONE — one v5, not two. The frame gains
-// optional method/ip/packed-headers sections. See `encodeProgram`.
+// v6 (this version): the native side NO LONGER returns an assembled response
+// frame. A `response`/class template (status + STATIC headers + a body with
+// explicit substitution slots) is owned by JS and compiled ONCE (see
+// `compileResponseTemplate`); the run result carries the verdict + selected
+// class tag (in the flags' high byte) + a compact substitution section
+// `[subCount u16]{[slot u16][len u32][bytes]}…`. JS assembles the `Response`
+// against the memoized template: static headers are a prebuilt `Headers` reused
+// verbatim when no dynamic header is present, and the body is spliced from
+// pre-encoded static segments. Nothing but the few dynamic values crosses the
+// boundary on the hot path.
 //
 // PURE: no addon import, no module state — safe for any consumer. The
 // addon-touching factory lives in `src/ingress/native-route.ts`.
 
-import { encoder } from '../../shared/bytes'
+import { decoder, encoder } from '../../shared/bytes'
 import { decodeUtf8RangeView } from '../../shared/codec'
 
 /** Route descriptor magic (`"ROUT"` LE). Must match `ROUTE_DESC_MAGIC` in Rust. */
 export const ROUTE_DESC_MAGIC = 0x524f5554
 /** Wire version — bump on ANY descriptor/frame/result layout change. */
-export const ROUTE_DESC_VERSION = 5
+export const ROUTE_DESC_VERSION = 6
 
 /** Descriptor stage tags (the ordered pipeline a route instance runs). */
 export const ROUTE_STAGE = {
@@ -111,9 +114,39 @@ export const ROUTE_FLAG = {
   QUERY_VALID: 1 << 2,
   COOKIE_VALID: 1 << 3,
   BODY_VALID: 1 << 4,
-  /** v4: the payload is a framed native response, not pair sections. */
+  /**
+   * v4/v6: the payload after the verdict header is the response substitution
+   * section, not query/cookie pair sections.
+   */
   HAS_RESPONSE: 1 << 7,
+  /**
+   * v6: the selected response class tag occupies the flags' high byte. Read it
+   * with `(flags >>> ROUTE_FLAG.CLASS_SHIFT) & 0xff`.
+   */
+  CLASS_SHIFT: 8,
 } as const
+
+/**
+ * Substitution slot ids (route-wire v6). A response template references its
+ * dynamic values through these ids; the native result carries only the slots
+ * the selected class references. Must match `SLOT_*` in Rust.
+ */
+export const ROUTE_SLOT = {
+  /** The frame's request id bytes. */
+  requestId: 0,
+  /** The allowed CORS origin (echoed into `access-control-allow-origin`). */
+  origin: 1,
+  /** Rate-limit remaining count (decimal). */
+  remaining: 2,
+  /** Rate-limit reset seconds (decimal). */
+  resetSecs: 3,
+  /** Retry-after seconds (decimal, rate-limited only). */
+  retryAfterSecs: 4,
+  /** Retry-after milliseconds (decimal, rate-limited only). */
+  retryAfterMs: 5,
+} as const
+/** A substitution slot id (`ROUTE_SLOT` values). */
+export type RouteSlot = (typeof ROUTE_SLOT)[keyof typeof ROUTE_SLOT]
 
 /** Frame flag: the body section is present (bit 0 of the frame flags word). */
 export const ROUTE_FRAME_FLAG_HAS_BODY = 1 << 0
@@ -223,6 +256,13 @@ export interface RouteFramePre {
   ip?: string
   /** Request headers to pack (`HeaderRefs` reads Origin/ACRM/ACRH/XFF/XFP/Cookie). */
   headers?: ReadonlyArray<readonly [string, string]>
+  /**
+   * A pre-packed `[u16 count]{...}` header block. When set, `headers` is
+   * ignored — lets the impure caller memoize the block for a repeating header
+   * set (the origin echoes per request; encoding it once kills the per-request
+   * re-encode).
+   */
+  packedHeaders?: Uint8Array
   /** The connection is HTTPS (drives dynamic HSTS). */
   https?: boolean
 }
@@ -266,18 +306,24 @@ export function packRouteFrame(
   query: string,
   cookie: string,
   body: Uint8Array | null,
-  requestId: string | null = null,
+  requestId: string | Uint8Array | null = null,
   pre: RouteFramePre | null = null,
 ): Uint8Array {
   const q = encoder.encode(query)
   const c = encoder.encode(cookie)
-  const r = requestId !== null ? encoder.encode(requestId) : null
+  const r =
+    requestId === null
+      ? null
+      : typeof requestId === 'string'
+        ? encoder.encode(requestId)
+        : requestId
   const hasBody = body !== null && body.byteLength > 0
   const hasRequestId = r !== null
   const hasMethod = pre?.methodKind !== undefined
   const ip = pre?.ip !== undefined ? encoder.encode(pre.ip) : null
   const hasIp = ip !== null
-  const packedHeaders = pre?.headers !== undefined ? packRawHeadersPacked(pre.headers) : null
+  const packedHeaders =
+    pre?.packedHeaders ?? (pre?.headers !== undefined ? packRawHeadersPacked(pre.headers) : null)
   const hasHeaders = packedHeaders !== null
   const https = pre?.https === true
   let flags = 0
@@ -500,9 +546,7 @@ export function encodeIpTrustConfig(cfg: RouteWireIpTrustConfig): Uint8Array {
  * Encode a header-list const: `[count u32]{[nameLen u32][name][valueLen u32]
  * [value]}…` (the `security_headers` op's payload).
  */
-export function encodeHeaderList(
-  headers: ReadonlyArray<readonly [string, string]>,
-): Uint8Array {
+export function encodeHeaderList(headers: ReadonlyArray<readonly [string, string]>): Uint8Array {
   const encoded = headers.map(([n, v]) => [encoder.encode(n), encoder.encode(v)] as const)
   let total = 4
   for (const [n, v] of encoded) total += 4 + n.byteLength + 4 + v.byteLength
@@ -528,9 +572,7 @@ export function encodeHeaderList(
  * `[classCount u32]{[tag u8][len u32][class payload]}…` (tags sorted). Each
  * class payload uses the {@link encodeResponseProjection} layout.
  */
-export function encodeResponseSet(
-  classes: Partial<Record<number, RouteWireResponse>>,
-): Uint8Array {
+export function encodeResponseSet(classes: Partial<Record<number, RouteWireResponse>>): Uint8Array {
   const encoded = (Object.entries(classes) as Array<[string, RouteWireResponse]>)
     .map(([tag, resp]) => [Number(tag), encodeResponseProjection(resp)] as const)
     .sort((a, b) => a[0] - b[0])
@@ -596,56 +638,255 @@ export function encodeProgram(
   return out
 }
 
+// ── v6 response template (compile once) + assembly (per response) ────
 
-/** A decoded native response frame. */
-export interface RouteWireResponseResult {
+/** One segment of a compiled template value: static bytes or a slot. */
+export type RouteTemplateSegment = { readonly bytes: Uint8Array } | { readonly slot: number }
+
+/** A header whose value references at least one substitution slot. */
+export interface RouteDynamicHeader {
+  readonly name: string
+  readonly segments: readonly RouteTemplateSegment[]
+}
+
+/**
+ * A compile-time response template. Built ONCE per class from the plan (or the
+ * `response` projection) and reused for every response:
+ * - `baseHeaders` is a `Headers` of the fully-static header pairs, reused
+ *   verbatim when the class has no dynamic headers (Bun copies it into the
+ *   `Response`, so sharing the instance is safe).
+ * - `dynamicHeaders` are spliced per response from the native substitution
+ *   slots.
+ * - `body` is the pre-encoded static segments with slots in between.
+ */
+export interface RouteWireTemplate {
   /** HTTP status. */
+  readonly status: number
+  /** The memoized static-header `Headers` (reused when `dynamicHeaders` is empty). */
+  readonly baseHeaders: Headers
+  /** The static `[name, value]` pairs `baseHeaders` was built from. */
+  readonly baseHeaderPairs: readonly [string, string][]
+  /** Headers with at least one substitution slot, in emit order. */
+  readonly dynamicHeaders: readonly RouteDynamicHeader[]
+  /** Body segments (static bytes interspersed with slots). */
+  readonly body: readonly RouteTemplateSegment[]
+  /** Every slot id referenced by this template. */
+  readonly slots: readonly number[]
+}
+
+/** The compiled template for one response class tag. */
+export type RouteWireTemplateSet = ReadonlyMap<number, RouteWireTemplate>
+
+const PH_REQUEST_ID_BYTES = encoder.encode('{requestId}')
+const PH_ORIGIN_BYTES = encoder.encode('{origin}')
+const PH_REMAINING_BYTES = encoder.encode('{remaining}')
+const PH_RESET_SECS_BYTES = encoder.encode('{resetSecs}')
+const PH_RETRY_SECS_BYTES = encoder.encode('{retryAfterSecs}')
+const PH_RETRY_MS_BYTES = encoder.encode('{retryAfterMs}')
+
+const PH_TOKENS: ReadonlyArray<{ token: Uint8Array; slot: number }> = [
+  { token: PH_REQUEST_ID_BYTES, slot: ROUTE_SLOT.requestId },
+  { token: PH_ORIGIN_BYTES, slot: ROUTE_SLOT.origin },
+  { token: PH_REMAINING_BYTES, slot: ROUTE_SLOT.remaining },
+  { token: PH_RESET_SECS_BYTES, slot: ROUTE_SLOT.resetSecs },
+  { token: PH_RETRY_SECS_BYTES, slot: ROUTE_SLOT.retryAfterSecs },
+  { token: PH_RETRY_MS_BYTES, slot: ROUTE_SLOT.retryAfterMs },
+]
+
+/** Match a known placeholder token at `at` in `src` (`null` = literal `{`). */
+function matchTemplateToken(src: Uint8Array, at: number): { slot: number; length: number } | null {
+  for (const { token, slot } of PH_TOKENS) {
+    if (at + token.byteLength > src.byteLength) continue
+    let ok = true
+    for (let i = 0; i < token.byteLength; i++) {
+      if (src[at + i] !== token[i]) {
+        ok = false
+        break
+      }
+    }
+    if (ok) return { slot, length: token.byteLength }
+  }
+  return null
+}
+
+/** Split a template value into static segments + substitution slots. */
+function splitTemplate(src: Uint8Array): {
+  segments: RouteTemplateSegment[]
+  slots: number[]
+} {
+  const segments: RouteTemplateSegment[] = []
+  const slots: number[] = []
+  let i = 0
+  let start = 0
+  while (i < src.byteLength) {
+    if (src[i] === 0x7b /* { */) {
+      const match = matchTemplateToken(src, i)
+      if (match !== null) {
+        if (i > start) segments.push({ bytes: src.subarray(start, i) })
+        segments.push({ slot: match.slot })
+        if (!slots.includes(match.slot)) slots.push(match.slot)
+        i += match.length
+        start = i
+        continue
+      }
+    }
+    i += 1
+  }
+  if (start < src.byteLength) segments.push({ bytes: src.subarray(start) })
+  return { segments, slots }
+}
+
+/** The bytes of a segment (empty when the slot is absent). */
+function segmentBytes(
+  seg: RouteTemplateSegment,
+  slots: ReadonlyArray<Uint8Array | undefined>,
+): Uint8Array | undefined {
+  return 'slot' in seg ? slots[seg.slot] : seg.bytes
+}
+
+/** Concatenate a value's segments into a fresh buffer. */
+function assembleSegments(
+  segments: readonly RouteTemplateSegment[],
+  slots: ReadonlyArray<Uint8Array | undefined>,
+): Uint8Array {
+  let total = 0
+  for (const seg of segments) total += segmentBytes(seg, slots)?.byteLength ?? 0
+  const out = new Uint8Array(total)
+  let pos = 0
+  for (const seg of segments) {
+    const bytes = segmentBytes(seg, slots)
+    if (bytes !== undefined && bytes.byteLength > 0) {
+      out.set(bytes, pos)
+      pos += bytes.byteLength
+    }
+  }
+  return out
+}
+
+/** Assemble one header value into a string (single-segment fast path). */
+function assembleHeaderValue(
+  segments: readonly RouteTemplateSegment[],
+  slots: ReadonlyArray<Uint8Array | undefined>,
+): string {
+  if (segments.length === 1) {
+    const bytes = segmentBytes(segments[0]!, slots)
+    return bytes === undefined ? '' : decoder.decode(bytes)
+  }
+  return decoder.decode(assembleSegments(segments, slots))
+}
+
+/**
+ * Compile one response projection into a reusable template. Fully-static
+ * headers become the memoized `baseHeaders`; header/body values with
+ * placeholders are split into static segments + slots.
+ */
+export function compileResponseTemplate(resp: RouteWireResponse): RouteWireTemplate {
+  const baseHeaderPairs: [string, string][] = []
+  const dynamicHeaders: RouteDynamicHeader[] = []
+  const allSlots: number[] = []
+  for (const header of resp.headers) {
+    const { segments, slots } = splitTemplate(encoder.encode(header.value))
+    if (slots.length === 0) {
+      baseHeaderPairs.push([header.name, header.value])
+    } else {
+      dynamicHeaders.push({ name: header.name, segments })
+      for (const slot of slots) if (!allSlots.includes(slot)) allSlots.push(slot)
+    }
+  }
+  const { segments: body, slots: bodySlots } = splitTemplate(resp.body)
+  for (const slot of bodySlots) if (!allSlots.includes(slot)) allSlots.push(slot)
+  return {
+    status: resp.status,
+    baseHeaders: new Headers(baseHeaderPairs),
+    baseHeaderPairs,
+    dynamicHeaders,
+    body,
+    slots: allSlots,
+  }
+}
+
+/** Compile a class-tagged response template map (program response set). */
+export function compileResponseTemplates(
+  classes: Partial<Record<number, RouteWireResponse>>,
+): RouteWireTemplateSet {
+  const out = new Map<number, RouteWireTemplate>()
+  for (const [tag, resp] of Object.entries(classes)) {
+    if (resp !== undefined) out.set(Number(tag), compileResponseTemplate(resp))
+  }
+  return out
+}
+
+/** A response assembled against a compile-time template. */
+export interface RouteAssembledResponse {
+  /** HTTP status from the template. */
   status: number
-  /** Emitted headers in order. */
-  headers: RouteWirePair[]
-  /** The body bytes (a subarray view of the result buffer — no copy). */
+  /** Static headers (reused instance) or a clone with dynamic headers set. */
+  headers: Headers
+  /** The fresh body buffer. */
   body: Uint8Array
 }
 
 /**
- * Decode the v4/v5 native response frame from a route result whose flags
- * include {@link ROUTE_FLAG.HAS_RESPONSE}: `[status u16][hdrCount u32]
- * {[nameLen u32][name][valueLen u32][value]}…[bodyLen u32][body]`, starting
- * after the 8-byte verdict header (`offset`, default 8).
+ * Assemble a response from a compile-time template + the native substitution
+ * slots. When the class has no dynamic headers the memoized `baseHeaders` is
+ * reused verbatim (no parse/clone); otherwise it is cloned once and the dynamic
+ * values set. The body is built by splicing the substitution bytes into the
+ * pre-encoded static segments — no full-frame decode.
  */
-export function decodeRouteResponse(buf: Uint8Array, offset = 8): RouteWireResponseResult {
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
-  // One zero-copy Buffer view for the whole result: ranged decode at absolute
-  // offsets (ASCII latin1 fast path, UTF-8 fallback) instead of one
-  // `decoder.decode`/`CString` allocation per header name+value. The bounded
-  // DataView above stays so out-of-bounds reads still throw on malformed wire.
-  const bview = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength)
-  let pos = offset
-  const status = view.getUint16(pos, true)
-  pos += 2
-  const count = view.getUint32(pos, true)
-  pos += 4
-  const headers: RouteWirePair[] = []
-  for (let i = 0; i < count; i++) {
-    const nameLen = view.getUint32(pos, true)
-    pos += 4
-    const name = decodeUtf8RangeView(bview, pos, pos + nameLen)
-    pos += nameLen
-    const valueLen = view.getUint32(pos, true)
-    pos += 4
-    const value = decodeUtf8RangeView(bview, pos, pos + valueLen)
-    pos += valueLen
-    headers.push([name, value])
+export function assembleRouteResponse(
+  tmpl: RouteWireTemplate,
+  slots: ReadonlyArray<Uint8Array | undefined>,
+): RouteAssembledResponse {
+  let headers: Headers
+  if (tmpl.dynamicHeaders.length === 0) {
+    headers = tmpl.baseHeaders
+  } else {
+    headers = new Headers(tmpl.baseHeaders)
+    for (const dyn of tmpl.dynamicHeaders) {
+      headers.set(dyn.name, assembleHeaderValue(dyn.segments, slots))
+    }
   }
-  const bodyLen = view.getUint32(pos, true)
-  pos += 4
-  return { status, headers, body: buf.subarray(pos, pos + bodyLen) }
+  return { status: tmpl.status, headers, body: assembleSegments(tmpl.body, slots) }
 }
 
 /** A decoded `[name, value]` pair from a result section. */
 export type RouteWirePair = [string, string]
 
-/** The decoded route result: the verdict header + optional pair sections. */
+/** The decoded v6 substitution section of a response-mode result. */
+export interface RouteWireSubstitutions {
+  /** The selected response class tag (`0..15`). */
+  classTag: number
+  /** Slot bytes indexed by slot id; absent slots stay `undefined`. */
+  slots: (Uint8Array | undefined)[]
+}
+
+const EMPTY_SLOTS: readonly (Uint8Array | undefined)[] = Object.freeze([])
+
+/**
+ * Decode the v6 substitution section from a response-mode result whose flags
+ * include {@link ROUTE_FLAG.HAS_RESPONSE}: `[subCount u16]{[slot u16][len u32]
+ * [bytes]}…`, starting after the 8-byte verdict header (`offset`, default 8).
+ * The class tag is read from the flags' high byte.
+ */
+export function decodeRouteSubstitutions(buf: Uint8Array, offset = 8): RouteWireSubstitutions {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  const flags = view.getUint32(0, true)
+  const classTag = (flags >>> ROUTE_FLAG.CLASS_SHIFT) & 0xff
+  const count = view.getUint16(offset, true)
+  let pos = offset + 2
+  const slots: (Uint8Array | undefined)[] = []
+  for (let i = 0; i < count; i++) {
+    const slot = view.getUint16(pos, true)
+    pos += 2
+    const len = view.getUint32(pos, true)
+    pos += 4
+    slots[slot] = buf.subarray(pos, pos + len)
+    pos += len
+  }
+  return { classTag, slots }
+}
+
+/** The decoded route result: the verdict header + optional sections. */
 export interface RouteWireResult {
   /** `ROUTE_FLAG_*` bits from the result header. */
   flags: number
@@ -656,11 +897,16 @@ export interface RouteWireResult {
   /** Decoded cookie pairs (present iff the plan compiled `parseCookies`). */
   cookie: RouteWirePair[]
   /**
-   * The native response frame (v4 `response` / v5 `pre` route) when the result
-   * carries {@link ROUTE_FLAG.HAS_RESPONSE}. In that mode the pair sections are
-   * empty.
+   * The selected response class tag when {@link ROUTE_FLAG.HAS_RESPONSE} is set
+   * (`-1` otherwise). Use it to select the compile-time template.
    */
-  response?: RouteWireResponseResult
+  classTag: number
+  /**
+   * Native substitution slots (indexed by slot id) when the result is
+   * response-mode; empty otherwise. The bytes are zero-copy subarrays of the
+   * output buffer.
+   */
+  slots: readonly (Uint8Array | undefined)[]
 }
 
 /**
@@ -668,9 +914,10 @@ export interface RouteWireResult {
  * iff `query` and a cookie pair section iff `cookie` (the caller knows its own
  * plan). Sections are `[count u32] { [nameLen u32][name][valueLen u32][value] }`.
  *
- * When {@link ROUTE_FLAG.HAS_RESPONSE} is set (a `response` or `pre` route), the
- * payload after the verdict header is the framed response — it is decoded into
- * `response` and the pair sections are empty (they are not emitted).
+ * When {@link ROUTE_FLAG.HAS_RESPONSE} is set (a `response`/`program` route),
+ * the payload after the verdict header is the v6 substitution section — it is
+ * decoded into `classTag` + `slots` and the pair sections are empty (they are
+ * not emitted).
  */
 export function decodeRouteResult(
   buf: Uint8Array,
@@ -680,7 +927,8 @@ export function decodeRouteResult(
   const flags = view.getUint32(0, true)
   const errorCode = view.getUint32(4, true)
   if ((flags & ROUTE_FLAG.HAS_RESPONSE) !== 0) {
-    return { flags, errorCode, query: [], cookie: [], response: decodeRouteResponse(buf) }
+    const { classTag, slots } = decodeRouteSubstitutions(buf)
+    return { flags, errorCode, query: [], cookie: [], classTag, slots }
   }
   // One zero-copy Buffer view shared by both pair sections (ranged decode).
   const bview = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength)
@@ -707,5 +955,7 @@ export function decodeRouteResult(
     errorCode,
     query: opts.query ? readPairs() : [],
     cookie: opts.cookie ? readPairs() : [],
+    classTag: -1,
+    slots: EMPTY_SLOTS,
   }
 }

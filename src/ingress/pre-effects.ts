@@ -1,4 +1,4 @@
-// src/ingress/pre-effects.ts — native op-program plan builder (route-wire v5).
+// src/ingress/pre-effects.ts — native op-program plan builder (route-wire v6).
 //
 // `buildProgramPlan` lowers a route's pre-effect CONFIG (CORS / rate-limit /
 // security / IP trust), its parse/validate steps, and its OK response
@@ -37,7 +37,6 @@ import {
   type RouteWireResponse,
   type RouteWireResponseHeader,
   encodeCorsConfig,
-  encodeHeaderList,
   encodeIpTrustConfig,
   encodeRateConfig,
   encodeResponseSet,
@@ -94,6 +93,12 @@ export interface RouteWireProgramPlan {
   consts: Uint8Array[]
   /** The ordered ops. */
   ops: RouteWireOp[]
+  /**
+   * The per-class response templates (v6). JS compiles these once into
+   * `RouteWireTemplate`s and assembles the `Response` against the native
+   * substitution result — the class tag the native side selects indexes them.
+   */
+  classes: Partial<Record<number, RouteWireResponse>>
 }
 
 /**
@@ -153,10 +158,12 @@ export function buildProgramPlan(
     options.https,
     options.rawSecurityHeaders,
   )
-  // Class templates are built WITHOUT security: the `security_headers` op merges
-  // the pre-baked list at emission, matching the baked template order.
+  // v6: security headers are BAKED into the class templates (they are static),
+  // so the JS-owned template carries them and no `security_headers` op is
+  // emitted — the native side only decides and returns substitutions. The
+  // resulting header order matches the baked JS path.
   const templates = buildBakedHeaderTemplates({
-    securityEntries: [],
+    securityEntries,
     cors: options.cors,
     corsAllowMethods: corsStatic?.allowMethodsJoined ?? '',
     corsAllowHeaders: corsStatic?.allowHeadersJoined ?? '',
@@ -290,11 +297,7 @@ export function buildProgramPlan(
   if (options.parseCookies) ops.push({ tag: ROUTE_OP.parseCookies, a: 1 })
 
   const trustMode: 0 | 1 | 2 =
-    options.trustProxy === true
-      ? 1
-      : options.trustedProxies?.networks?.length
-        ? 2
-        : 0
+    options.trustProxy === true ? 1 : options.trustedProxies?.networks?.length ? 2 : 0
   if (trustMode !== 0) {
     const cfgIdx = addConst(
       encodeIpTrustConfig({ mode: trustMode, networks: options.trustedProxies?.networks }),
@@ -333,12 +336,10 @@ export function buildProgramPlan(
     ops.push({ tag: ROUTE_OP.schemaValidate, a: schemaIdx, b: setIdx, c: 6 })
   }
 
-  if (securityEnforced && securityEntries.length > 0) {
-    const secIdx = addConst(encodeHeaderList(securityEntries))
-    ops.push({ tag: ROUTE_OP.securityHeaders, a: secIdx })
-  }
+  // v6: security headers are baked into `classes` (above), not emitted as an
+  // op. `securityEnforced`/`securityEntries` still drive which list is baked.
 
   ops.push({ tag: ROUTE_OP.responseProjection, a: setIdx })
 
-  return { consts, ops }
+  return { consts, ops, classes }
 }

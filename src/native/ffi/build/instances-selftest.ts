@@ -72,7 +72,7 @@ export function selfTestInstances(b: BunFFI): boolean {
   const routeDesc = new Uint8Array(33)
   const rd = new DataView(routeDesc.buffer)
   rd.setUint32(0, 0x524f5554, true) // ROUTE_DESC_MAGIC "ROUT"
-  rd.setUint32(4, 5, true) // ROUTE_DESC_VERSION
+  rd.setUint32(4, 6, true) // ROUTE_DESC_VERSION
   rd.setUint32(8, 2 * 1024 * 1024, true) // maxBodyBytes
   rd.setUint32(12, 8192, true) // maxQueryBytes
   rd.setUint32(16, 8192, true) // maxCookieBytes

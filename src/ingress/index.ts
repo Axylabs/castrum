@@ -39,7 +39,7 @@ export { createIngressMetrics, metricsHandler } from './metrics'
 export type { NativeRoute, NativeRoutePlan } from './native-route'
 export { createNativeRoute } from './native-route'
 export type { IngressFastHandler, IngressFastOptions } from './options'
-// ── Native op-program plan builder (route-wire v5) ────────────────
+// ── Native op-program plan builder (route-wire v6) ────────────────
 export type { ProgramPlanOptions } from './pre-effects'
 export { buildProgramPlan } from './pre-effects'
 // ── Route-wire byte contract (PURE wire helpers) ──────────────────

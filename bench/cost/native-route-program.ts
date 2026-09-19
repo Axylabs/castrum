@@ -1,10 +1,12 @@
-// bench/cost/native-route-program.ts — route-wire v5 zero-callout OP PROGRAM vs
+// bench/cost/native-route-program.ts — route-wire v6 zero-callout OP PROGRAM vs
 // the JS-equivalent framework work (the decisive native-lane spike).
 //
 // Headline (task shape): a declarative GET route lowered to a zero-callout
-// program of parse_query → CORS → security_headers → response_projection, run in
-// ONE `castrum_route_run`. The JS baselines do the same decisions and assemble
-// the same wire bytes:
+// program of parse_query → CORS → security headers (baked) →
+// response_projection, run in ONE `castrum_route_run`. The run returns the
+// verdict + selected class + substitution slots; JS assembles the `Response`
+// against the compile-time template. The JS baselines do the same decisions and
+// assemble the same wire bytes:
 //   1. `jsArray`   — decisions + `[name, value][]` (castrum's pre-baked path;
 //                    the LEANEST possible JS).
 //   2. `jsHeaders` — decisions + `new Headers()` + `.set(...)` per header (the
@@ -51,23 +53,22 @@ const RATE_OPTIONS = {
 
 const ffi = getBunFFI()
 if (ffi === null) throw new Error('bun:ffi not active')
+const ffiActive = ffi
 
-const LIMITS = {
-  maxBodyBytes: 2 * 1024 * 1024,
-  maxQueryBytes: 8192,
-  maxCookieBytes: 8192,
-  maxPairs: 0,
-}
-
-function makeNative(options: typeof BASE_OPTIONS, withRate: boolean) {
+function makeNative(options: typeof BASE_OPTIONS) {
   const built = buildProgramPlan(options, OK_RESPONSE)
   const descriptor = encodeRouteDescriptor(
     [],
     [],
-    LIMITS,
+    {
+      maxBodyBytes: 2 * 1024 * 1024,
+      maxQueryBytes: 8192,
+      maxCookieBytes: 8192,
+      maxPairs: 0,
+    },
     encodeProgram(built.consts, built.ops),
   )
-  const handle = ffi.routeCompile(descriptor)
+  const handle = ffiActive.routeCompile(descriptor)
   if (handle === 0) throw new Error('routeCompile failed')
   const route = createNativeRoute({ response: OK_RESPONSE, program: options })
   return { built, handle, route }
@@ -123,44 +124,59 @@ const pct = (a: number, b: number): string => `${(((a - b) / a) * 100).toFixed(0
 const verdict = (a: number, b: number): string =>
   a < b ? `CHEAPER by ${pct(b, a)}` : `NOT cheaper (${pct(a, b)} slower)`
 
-function runBlock(label: string, options: typeof BASE_OPTIONS, withRate: boolean) {
-  const { built, handle, route } = makeNative(options, withRate)
+async function runBlock(label: string, options: typeof BASE_OPTIONS, withRate: boolean) {
+  const { built, handle, route } = makeNative(options)
   const nativeOut = new Uint8Array(4096)
 
-  // Parity: native static headers must equal the JS-assembled ones.
-  const w = ffi.routeRun(handle, frame, nativeOut)
+  // Parity: the assembled native response must equal the JS-assembled one.
+  const w = ffiActive.routeRun(handle, frame, nativeOut)
   const r = decodeRouteResult(nativeOut.subarray(0, w), { query: true, cookie: false })
-  if (r.response === undefined) throw new Error('no native response frame')
+  const assembled = route.assembleResponse(r)
+  if (assembled === null) throw new Error('no assembled native response')
+  const nativePairs = [...assembled.headers] as Array<[string, string]>
   const dynamic = new Set(['ratelimit-remaining', 'ratelimit-reset'])
-  const nativeStatic = r.response.headers.filter(([n]) => !dynamic.has(n))
-  const jsStatic = jsArray(withRate).filter(([n]) => !dynamic.has(n))
-  if (JSON.stringify(nativeStatic) !== JSON.stringify(jsStatic)) {
+  // `Headers` iteration is sorted; normalize both sides before comparing.
+  const key = (pairs: ReadonlyArray<[string, string]>): string =>
+    JSON.stringify(
+      pairs
+        .filter(([n]) => !dynamic.has(n))
+        .slice()
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+    )
+  if (key(nativePairs) !== key(jsArray(withRate))) {
     throw new Error(
-      `${label} native/JS header mismatch:\n  native=${JSON.stringify(nativeStatic)}\n  js=${JSON.stringify(jsStatic)}`,
+      `${label} native/JS header mismatch:\n  native=${key(nativePairs)}\n  js=${key(jsArray(withRate))}`,
     )
   }
-  const body = new TextDecoder().decode(r.response.body)
+  const body = await assembled.text()
   if (body !== `{"ok":true,"requestId":"${RID}"}`) {
     throw new Error(`${label} native body mismatch: ${body}`)
   }
 
-  const tNative = measure(() => ffi.routeRun(handle, frame, nativeOut), ITER)
+  const tNative = measure(() => ffiActive.routeRun(handle, frame, nativeOut), ITER)
   const tNativeDecode = measure(() => route.runFrame(frame), ITER)
+  const tNativeServe = measure(() => {
+    const rr = route.runFrame(frame)
+    const resp = route.assembleResponse(rr)
+    if (resp === null) throw new Error('no response')
+    return resp
+  }, ITER)
   const tArray = measure(() => jsArray(withRate), ITER)
   const tHeaders = measure(() => jsHeaders(withRate), ITER)
 
   console.log(`═══ ${label} (ns/op, min-of-5) ═══`)
   console.log(`  ops: ${built.ops.length} (${built.consts.length} consts)`)
-  console.log(`  native raw call: program + class frame  : ${tNative.toFixed(0).padStart(7)}`)
-  console.log(`  native lane: raw call + JS decode       : ${tNativeDecode.toFixed(0).padStart(7)}`)
-  console.log(`  JS lean: decisions + pair array         : ${tArray.toFixed(0).padStart(7)}`)
-  console.log(`  JS plugin: decisions + Headers writes   : ${tHeaders.toFixed(0).padStart(7)}`)
+  console.log(`  native raw call: program + substitution  : ${tNative.toFixed(0).padStart(7)}`)
+  console.log(`  native lane: raw call + JS decode        : ${tNativeDecode.toFixed(0).padStart(7)}`)
+  console.log(`  native lane: decode + assemble Response  : ${tNativeServe.toFixed(0).padStart(7)}`)
+  console.log(`  JS lean: decisions + pair array          : ${tArray.toFixed(0).padStart(7)}`)
+  console.log(`  JS plugin: decisions + Headers writes    : ${tHeaders.toFixed(0).padStart(7)}`)
   console.log('  ──────────────────────────────────────────────────────────')
   console.log(`  native raw call vs JS lean array        : ${verdict(tNative, tArray)}`)
   console.log(`  native raw call vs JS Headers writes    : ${verdict(tNative, tHeaders)}`)
-  console.log(`  native full lane vs JS Headers writes   : ${verdict(tNativeDecode, tHeaders)}`)
+  console.log(`  native full lane vs JS Headers writes   : ${verdict(tNativeServe, tHeaders)}`)
   console.log('')
 }
 
-runBlock('zero-callout program: parse + CORS + security + response', BASE_OPTIONS, false)
-runBlock('with rate_limit (stateful op)', RATE_OPTIONS, true)
+await runBlock('zero-callout program: parse + CORS + security + response', BASE_OPTIONS, false)
+await runBlock('with rate_limit (stateful op)', RATE_OPTIONS, true)

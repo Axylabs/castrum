@@ -80,12 +80,13 @@ fn route_compile_rejects_bad_magic() {
     assert_eq!(handle, 0, "bad magic must fail compilation");
 }
 
-/// v4 response projection through the C ABI: the same `castrum_route_*`
-/// symbols must emit `[flags][errorCode]` + the framed response (status +
-/// headers + requestId-substituted body) with NO new symbol.
+/// v6 response projection through the C ABI: the same `castrum_route_*`
+/// symbols must emit `[flags][errorCode]` + the substitution section
+/// (`[subCount u16]{[slot u16][len u32][bytes]}`) with NO new symbol — the
+/// request-id value is echoed as slot 0 and no headers/body are assembled.
 #[test]
 fn route_response_projection_c_abi() {
-    // Response part payload: [status u16][hdrCount u32]{[name][value]}[body].
+    // Response template payload: [status u16][hdrCount u32]{[name][value]}[body].
     let body = b"{\"ok\":true,\"requestId\":\"{requestId}\"}";
     let mut resp = Vec::new();
     resp.extend_from_slice(&200u16.to_le_bytes());
@@ -112,7 +113,7 @@ fn route_response_projection_c_abi() {
     desc.extend_from_slice(&resp);
 
     let handle = unsafe { castrum_route_compile(desc.as_ptr(), desc.len()) };
-    assert_ne!(handle, 0, "v4 response descriptor must compile");
+    assert_ne!(handle, 0, "response descriptor must compile");
 
     // Frame with a request-id section (flag bit 1) and no body.
     let rid = b"0193f2c4-0000-7000-8000-000000000000";
@@ -130,20 +131,16 @@ fn route_response_projection_c_abi() {
         rflags & crate::ingress::native_route::ROUTE_RESULT_FLAG_HAS_RESPONSE,
         0
     );
-    // status u16 at offset 8.
-    assert_eq!(u16::from_le_bytes(out[8..10].try_into().unwrap()), 200);
-    // The substituted body must appear verbatim near the tail.
+    // class 0 (OK, no origin).
+    assert_eq!((rflags >> 8) & 0xff, 0);
+    // Substitution section: [count u16][slot u16=0][len u32][rid].
     let wire = &out[..w];
-    assert!(
-        wire.windows(rid.len()).any(|x| x == rid),
-        "request id must be substituted into the body"
-    );
-    assert!(
-        !wire
-            .windows(b"{requestId}".len())
-            .any(|x| x == b"{requestId}"),
-        "placeholder must be gone"
-    );
+    let count = u16::from_le_bytes(wire[8..10].try_into().unwrap());
+    assert_eq!(count, 1, "exactly the request-id slot");
+    let slot = u16::from_le_bytes(wire[10..12].try_into().unwrap());
+    assert_eq!(slot, 0);
+    let len = u32::from_le_bytes(wire[12..16].try_into().unwrap()) as usize;
+    assert_eq!(&wire[16..16 + len], rid);
     unsafe { castrum_route_destroy(handle) };
 }
 

@@ -1,5 +1,5 @@
 // test/unit/ingress/native-route-public.test.ts — Public `createNativeRoute`
-// surface + the router `native` route kind (route-wire v4 in castrum).
+// surface + the router `native` route kind (route-wire v6 in castrum).
 //
 // The lean per-route native stack (`rust/ingress/native_route.rs`) is now a
 // first-class castrum surface: `createNativeRoute` compiles a plan once and
@@ -108,7 +108,7 @@ describe('createNativeRoute (public route-wire v4 surface)', () => {
     )
     const view = new DataView(desc.buffer)
     expect(view.getUint32(0, true)).toBe(0x524f5554) // ROUT
-    expect(view.getUint32(4, true)).toBe(5) // version 5
+    expect(view.getUint32(4, true)).toBe(6) // version 6
     expect(view.getUint32(24, true)).toBe(4) // stageCount
     expect(desc[28]).toBe(0)
     expect(desc[29]).toBe(1)
@@ -159,6 +159,45 @@ describe('router native route kind (lean responder)', () => {
       new Request('http://localhost:0/api/native?page=2', { method: 'POST' }),
     )
     expect(res.status).toBe(405)
+  })
+})
+
+describe('router native route with a response projection (v6)', () => {
+  const RID_BODY = '0193f2c4-0000-7000-8000-000000000000'
+  const router = createIngressRouter({
+    routes: {
+      '/api/projected': {
+        native: {
+          plan: {
+            response: {
+              status: 200,
+              headers: [{ name: 'content-type', value: 'application/json' }],
+              body: enc.encode('{"ok":true,"requestId":"{requestId}"}'),
+            },
+            program: { parseQuery: true, cors: { allowOrigin: ['*'] }, security: {} },
+          },
+          // A projection route never calls the JS responder.
+          handler: () => {
+            throw new Error('responder must not run for a projection route')
+          },
+        },
+      },
+    },
+  })
+
+  test('serves the native projection (no JS responder)', async () => {
+    const res = await router.fetch(
+      new Request('http://localhost:0/api/projected?page=2', {
+        headers: { origin: 'https://app.example.com' },
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/json')
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com')
+    const body = (await res.json()) as { ok: boolean; requestId: string }
+    expect(body.ok).toBe(true)
+    expect(typeof body.requestId).toBe('string')
+    expect(body.requestId).not.toBe(RID_BODY)
   })
 })
 

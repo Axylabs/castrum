@@ -26,16 +26,22 @@
 // `parseQuery` + a cookie pair section iff `parseCookies`. Pair sections are
 // `[count u32] { [nameLen u32][name][valueLen u32][value] }`.
 //
-// v3 → v4 (Phase 1, native response projection): a descriptor may carry a
-// `response` projection part (part tag 5). When it does AND the pipeline is OK,
-// the result payload after the verdict header is a framed HTTP response
-// `[status u16][hdrCount u32]{[nameLen u32][name][valueLen u32][value]}…`
-// `[bodyLen u32][body]` INSTEAD of the pair sections, and the
-// `ROUTE_RESULT_FLAG_HAS_RESPONSE` bit is set. The body is a pre-encoded
-// constant that may contain ONE literal `{requestId}` placeholder, substituted
-// from the frame's request-id section (frame flag `HAS_REQUEST_ID`, appended
-// after the optional body section as `[ridLen u32][rid]`). Templating from
-// query/cookies/derive is a later phase.
+// v4 added the optional `response` projection part (tag 5); v5 added the op
+// program (tag 7). v6 (this version) changes what a response result IS: the
+// native side NO LONGER assembles the framed response. The descriptor still
+// carries the status + static headers + body template, but those live for the
+// JS-owned compile-time template; Rust reduces each class to the set of dynamic
+// substitution SLOTS it references. When a terminal class is selected, the
+// result payload after the verdict header is a compact substitution section
+// `[subCount u16]{[slot u16][len u32][bytes]}…` INSTEAD of the pair sections,
+// and the `ROUTE_RESULT_FLAG_HAS_RESPONSE` bit is set. The selected class tag
+// is packed into the flags' high byte (`ROUTE_RESULT_CLASS_SHIFT`). JS splices
+// the substitution bytes into its prebuilt `Headers` + pre-encoded body
+// segments — nothing else crosses the boundary on the hot path.
+//
+// Frame: the request-id section (frame flag `HAS_REQUEST_ID`, appended after
+// the optional body as `[ridLen u32][rid]`) is the source of the request-id
+// slot; the v5 method/ip/packed-headers sections drive the program ops.
 //
 // v4 → v5 (op PROGRAM): a descriptor may also carry a `program` part (part tag
 // 7) that REPLACES the ad-hoc pre-effect parts with an open **op program**: an
@@ -80,7 +86,13 @@ use crate::util::trim_ascii_whitespace;
 /// Magic that identifies a route descriptor (`"ROUT"` LE).
 pub(crate) const ROUTE_DESC_MAGIC: u32 = 0x524f5554;
 /// Wire version — bump on ANY layout change (descriptor, frame, or result).
-pub(crate) const ROUTE_DESC_VERSION: u32 = 5;
+///
+/// v6 (native response lane): the native side no longer assembles the response
+/// frame. A compiled response template (status + static headers + a body with
+/// explicit substitution slots) is owned by JS; the run result carries the
+/// verdict + selected class + a compact substitution section only. See the
+/// module header.
+pub(crate) const ROUTE_DESC_VERSION: u32 = 6;
 
 /// Frame flag: the body section is present (bit 0 of the frame flags word).
 pub(crate) const ROUTE_FRAME_FLAG_HAS_BODY: u32 = 1 << 0;
@@ -117,10 +129,39 @@ pub(crate) const ROUTE_RESULT_FLAG_BODY_VALID: u32 = 1 << 4;
 pub(crate) const ROUTE_RESULT_FLAG_PARAMS_VALID: u32 = 1 << 5;
 #[allow(dead_code)]
 pub(crate) const ROUTE_RESULT_FLAG_HEADERS_VALID: u32 = 1 << 6;
-/// Result flag: the payload is a framed native response projection
-/// (`[status u16][headers][body]`) rather than query/cookie pair sections.
-/// Set only when the descriptor carries a `response` part AND the pipeline is OK.
+/// Result flag: the payload is a native response SUBSTITUTION section
+/// (`[subCount u16]{[slot u16][len u32][bytes]}…`) rather than query/cookie
+/// pair sections. Set only when the descriptor carries a `response`/`program`
+/// response AND the pipeline reached a terminal class.
 pub(crate) const ROUTE_RESULT_FLAG_HAS_RESPONSE: u32 = 1 << 7;
+
+/// The result flags' high byte carries the selected response class tag
+/// (`0..=15`, see `CLASS_*`). The low byte is the verdict flags above.
+pub(crate) const ROUTE_RESULT_CLASS_SHIFT: u32 = 8;
+
+// ── Substitution slots (route-wire v6) ──────────────────────────────
+// A response template references dynamic values through slot ids. The native
+// side emits only the slots the selected class references (plus the frame's
+// values), and JS splices them into its compile-time template.
+/// Slot: the frame's request id.
+const SLOT_REQUEST_ID: u16 = 0;
+/// Slot: the allowed CORS origin (echoed into `access-control-allow-origin`).
+const SLOT_ORIGIN: u16 = 1;
+/// Slot: rate-limit remaining count (decimal).
+const SLOT_REMAINING: u16 = 2;
+/// Slot: rate-limit reset seconds (decimal).
+const SLOT_RESET_SECS: u16 = 3;
+/// Slot: retry-after seconds (decimal, rate-limited only).
+const SLOT_RETRY_SECS: u16 = 4;
+/// Slot: retry-after milliseconds (decimal, rate-limited only).
+const SLOT_RETRY_MS: u16 = 5;
+/// Number of substitution slots (0..SLOT_COUNT).
+const SLOT_COUNT: usize = 6;
+
+/// Bit for a slot id (`1 << slot`), used as a per-class slot mask.
+const fn slot_bit(slot: u16) -> u16 {
+    1u16 << slot
+}
 
 /// Descriptor stage tags (the ordered pipeline a route instance runs).
 pub(crate) const STAGE_PARSE_QUERY: u8 = 0;
@@ -201,59 +242,37 @@ const PH_RESET_SECS: &[u8] = b"{resetSecs}";
 const PH_RETRY_SECS: &[u8] = b"{retryAfterSecs}";
 const PH_RETRY_MS: &[u8] = b"{retryAfterMs}";
 
-/// The single accepted response-body placeholder, substituted from the frame's
-/// request-id section. Byte-exact ASCII (`{requestId}`).
-const RID_PLACEHOLDER: &[u8] = PH_REQUEST_ID;
-
 /// Body-rejected error codes reported in the result header (0 = ok).
 const ERR_BODY_NOT_JSON: u32 = 400;
 const ERR_BODY_SCHEMA: u32 = 422;
 
-/// A compiled 2xx response projection: the status, static headers, and a
-/// pre-encoded body that may contain ONE `{requestId}` placeholder.
+/// A compiled standalone 2xx response template (route-wire v4 `response` part).
+/// The native side no longer assembles the response: it records which dynamic
+/// substitution slots the template references (so it can emit exactly those)
+/// and the run result carries substitutions only. JS owns the template bytes.
 #[derive(Debug)]
 struct ResponseProjection {
-    status: u16,
-    headers: Vec<(Vec<u8>, Vec<u8>)>,
-    body: Vec<u8>,
-    /// Byte offset of the single `{requestId}` placeholder in `body`, if any.
-    rid_at: Option<usize>,
+    /// Bitmask of `SLOT_*` ids referenced by the template's headers/body.
+    slot_mask: u16,
 }
 
-/// A precomputed response class template (v5 `pre` plan): status + headers +
-/// body, with `{placeholder}` tokens substituted at run time. Built by the
-/// SAME TS header/body builders the JS path uses, so emitting it is byte-parity
-/// by construction — Rust only makes the decision and substitutes.
-#[derive(Debug, Clone)]
+/// A precomputed response class template (program response set): the class'
+/// dynamic substitution slots + whether it references the request id. The
+/// static headers/body live in the JS-owned compile-time template; Rust only
+/// needs to know which slots to emit for the selected class.
 struct ClassTemplate {
-    status: u16,
-    headers: Vec<(Vec<u8>, Vec<u8>)>,
-    body: Vec<u8>,
-}
-
-impl ClassTemplate {
+    /// Bitmask of `SLOT_*` ids referenced by this class' headers/body.
+    slot_mask: u16,
     /// Whether any header value or the body references `{requestId}`.
-    fn needs_request_id(&self) -> bool {
-        contains(self.body.as_slice(), PH_REQUEST_ID)
-            || self
-                .headers
-                .iter()
-                .any(|(_, v)| contains(v.as_slice(), PH_REQUEST_ID))
-    }
+    needs_request_id: bool,
 }
 
 /// A pre-parsed response class set (`ResponseSet` const): class templates
-/// indexed by tag (0..=15) plus the compile-time size-bound inputs. Built by the
-/// SAME TS header/body builders the JS path uses, so emitting it is byte-parity
-/// by construction — Rust only decides and substitutes.
+/// indexed by tag (0..=15). Built by the SAME TS header/body builders the JS
+/// path uses, so the JS-assembled bytes are byte-parity by construction — Rust
+/// only decides and substitutes.
 struct ResponseSet {
     classes: [Option<ClassTemplate>; CLASS_SLOTS],
-    /// The largest template's RAW size (status + header count + headers + body),
-    /// plus per-placeholder occurrence maxima, so the output bound is O(1).
-    max_skeleton: usize,
-    origin_uses: usize,
-    rid_uses: usize,
-    numeric_uses: usize,
 }
 
 /// A runtime halt reason. Drives which class template a terminal op emits.
@@ -266,14 +285,6 @@ enum HaltReason {
     InvalidJson,
     SchemaFailed,
     BodyTooLarge,
-}
-
-/// Value source for `OP_SET_HEADER` (resolved at compile time).
-enum SetValue {
-    /// A constant value blob.
-    Const(Vec<u8>),
-    /// The value is the frame's request id (empty when absent).
-    RequestId,
 }
 
 /// One registered, pre-parsed op. Operands are resolved at COMPILE time into
@@ -299,10 +310,12 @@ enum Op {
         limiter: Arc<KeyedRateLimiter>,
         set: usize,
     },
-    /// Merge a pre-baked security header list into the response.
-    SecurityHeaders { headers: Vec<(Vec<u8>, Vec<u8>)> },
-    /// Accumulate one response header (const value or the frame request id).
-    SetHeader { name: Vec<u8>, value: SetValue },
+    /// Accepted + const-validated for wire compatibility. v6 bakes static
+    /// security headers into the JS-owned class templates, so this op emits
+    /// nothing — kept so a program containing it still compiles.
+    SecurityHeaders,
+    /// Accepted + const-validated for wire compatibility (v6 emits nothing).
+    SetHeader,
     /// Body well-formed-JSON verdict; `require` halts 400 when invalid.
     JsonValid {
         out: u32,
@@ -332,25 +345,17 @@ struct CompiledProgram {
     ops: Vec<Op>,
     /// `ResponseSet` consts, indexed by const index (`None` = other const kind).
     sets: Vec<Option<ResponseSet>>,
-    /// Any emitted header/body value references `{requestId}` — the run fails
-    /// closed when the frame carries no request id.
-    needs_request_id: bool,
     /// True when any op has an external side effect (rate limiting). Gates the
     /// pre-execution output-bound check so a needed-size retry cannot consume a
     /// rate-limit token twice (a bypass).
     has_side_effects: bool,
-    /// Conservative response-frame size bound inputs (see `output_bound`).
-    max_skeleton: usize,
-    origin_uses: usize,
-    rid_uses: usize,
-    numeric_uses: usize,
 }
 
 impl CompiledProgram {
-    /// An UPPER BOUND on the result-frame size for this request, computed in
-    /// O(1) from compile-time counts (no per-request template scan). Returned
-    /// when the output buffer is too small, so the needed-size retry never runs
-    /// a stateful op (the rate limiter) twice.
+    /// An UPPER BOUND on the result size for this request, computed in O(1)
+    /// from the frame (no per-request template scan). Returned when the output
+    /// buffer is too small, so the needed-size retry never runs a stateful op
+    /// (the rate limiter) twice.
     fn output_bound(&self, frame: &RouteFrame<'_>) -> usize {
         let origin_len = frame.headers.origin().map(|o| o.len()).unwrap_or(0);
         let rid_len = if frame.has_request_id {
@@ -358,15 +363,12 @@ impl CompiledProgram {
         } else {
             0
         };
-        // 20 = the maximum decimal width of a u64 placeholder value.
-        let response = RESULT_HEADER_LEN
-            + self.max_skeleton
-            + self.origin_uses * origin_len
-            + self.rid_uses * rid_len
-            + self.numeric_uses * 20
-            + 64; // slack for substituted-value length variance
-                  // A side-effecting program that falls through without a response op
-                  // emits pair sections; bound those conservatively too.
+        // substitution section: count(2) + up to SLOT_COUNT entries of
+        // (slot u16 + len u32 + value). 20 = max decimal width of a u64.
+        let response =
+            RESULT_HEADER_LEN + 2 + SLOT_COUNT * (2 + 4) + rid_len + origin_len + 4 * 20 + 64; // slack
+                                                                                               // A side-effecting program that falls through without a response op
+                                                                                               // emits pair sections; bound those conservatively too.
         let pairs =
             RESULT_HEADER_LEN + 4 + 8 * (frame.query.len() + 1) + 8 * (frame.cookie.len() + 1) + 64;
         response.max(pairs)
@@ -386,12 +388,9 @@ struct ProgState<'a> {
     retry_ms: u64,
     resolved_ip: Option<crate::ingress::ip_trust::ResolvedIp<'a>>,
     peer_trusted: bool,
-    /// Const indices of `SecurityHeaders` ops that ran, in order.
-    security: [usize; 4],
-    security_count: usize,
-    /// Op indices of `SetHeader` ops that ran, in order.
-    set_ops: [usize; 8],
-    set_count: usize,
+    /// A `rate_limit` op ran, so `remaining`/`reset_secs` (and, on a halt,
+    /// `retry_secs`/`retry_ms`) are meaningful substitution values.
+    rate_ran: bool,
     error_code: u32,
     body_valid_json: bool,
     body_valid: bool,
@@ -416,10 +415,7 @@ impl ProgState<'_> {
             retry_ms: 0,
             resolved_ip: None,
             peer_trusted: false,
-            security: [0; 4],
-            security_count: 0,
-            set_ops: [0; 8],
-            set_count: 0,
+            rate_ran: false,
             error_code: 0,
             body_valid_json: false,
             body_valid: false,
@@ -430,34 +426,6 @@ impl ProgState<'_> {
             response_set: None,
         }
     }
-}
-
-/// Count occurrences of each placeholder kind in `bytes` (compile-time only).
-fn count_placeholders(bytes: &[u8], origin: &mut usize, rid: &mut usize, numeric: &mut usize) {
-    *origin += occurrences(bytes, PH_ORIGIN);
-    *rid += occurrences(bytes, PH_REQUEST_ID);
-    *numeric += occurrences(bytes, PH_REMAINING)
-        + occurrences(bytes, PH_RESET_SECS)
-        + occurrences(bytes, PH_RETRY_SECS)
-        + occurrences(bytes, PH_RETRY_MS);
-}
-
-/// Number of non-overlapping occurrences of `needle` in `haystack`.
-fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return 0;
-    }
-    let mut count = 0;
-    let mut i = 0;
-    while i + needle.len() <= haystack.len() {
-        if &haystack[i..i + needle.len()] == needle {
-            count += 1;
-            i += needle.len();
-        } else {
-            i += 1;
-        }
-    }
-    count
 }
 
 /// Whether `haystack` contains `needle` (small fixed needles only).
@@ -785,28 +753,18 @@ impl NativeRoute {
                 .expect("response_mode implies a projection");
             // A template placeholder needs the caller-supplied request id. Fail
             // BEFORE writing anything so `out` stays untouched on error.
-            if proj.rid_at.is_some() && !has_request_id {
+            let needs_rid = proj.slot_mask & slot_bit(SLOT_REQUEST_ID) != 0;
+            if needs_rid && !has_request_id {
                 return Err("route frame: response template needs a request-id section".to_string());
             }
-            w.u16(proj.status);
-            w.u32(proj.headers.len() as u32);
-            for (name, value) in &proj.headers {
-                w.len_prefixed(name);
-                w.len_prefixed(value);
-            }
-            match proj.rid_at {
-                Some(at) => {
-                    let before = &proj.body[..at];
-                    let after = &proj.body[at + RID_PLACEHOLDER.len()..];
-                    w.u32((before.len() + request_id.len() + after.len()) as u32);
-                    w.bytes(before);
-                    w.bytes(request_id);
-                    w.bytes(after);
-                }
-                None => {
-                    w.u32(proj.body.len() as u32);
-                    w.bytes(&proj.body);
-                }
+            // v6: substitutions only — the standalone projection has no
+            // CORS/rate ops, so the request id is the only available slot.
+            let emit_rid = needs_rid && has_request_id;
+            w.u16(emit_rid as u16);
+            if emit_rid {
+                w.u16(SLOT_REQUEST_ID);
+                w.u32(request_id.len() as u32);
+                w.bytes(request_id);
             }
             result_flags |= ROUTE_RESULT_FLAG_HAS_RESPONSE;
         } else {
@@ -961,6 +919,7 @@ impl NativeRoute {
                         .rate_key(limiter.seed()),
                     };
                     let outcome = limiter.check_key(key, now);
+                    st.rate_ran = true;
                     st.remaining = outcome.remaining;
                     st.reset_secs = rate_secs(outcome.reset_ms);
                     if !outcome.allowed {
@@ -973,18 +932,13 @@ impl NativeRoute {
                     st.slots[slot_index(*slot, st.slots.len())] = 1;
                     pc += 1;
                 }
-                Op::SecurityHeaders { .. } => {
-                    if st.security_count < st.security.len() {
-                        st.security[st.security_count] = pc;
-                        st.security_count += 1;
-                    }
-                    pc += 1;
-                }
-                Op::SetHeader { .. } => {
-                    if st.set_count < st.set_ops.len() {
-                        st.set_ops[st.set_count] = pc;
-                        st.set_count += 1;
-                    }
+                // v6: security headers are baked into the JS-owned class
+                // templates by the program builder, and `set_header` is not
+                // emitted by it. Both ops stay accepted by the executor (they
+                // are validated + const-checked at compile) but no longer
+                // contribute to the output — the native side returns
+                // substitutions only.
+                Op::SecurityHeaders | Op::SetHeader => {
                     pc += 1;
                 }
                 Op::JsonValid {
@@ -1061,88 +1015,74 @@ impl NativeRoute {
         }
 
         match st.response_set {
-            Some(set_idx) => self.emit_program_response(prog, set_idx, &st, frame, out),
+            Some(set_idx) => self.emit_program_response(set_idx, &st, frame, out),
             None => self.emit_program_verdict(&st, frame, out),
         }
     }
 
-    /// Emit the terminal/OK response frame selected by the program state,
-    /// merging any security headers and `set_header` entries ahead of the class
-    /// template's own headers (matching the baked JS template order).
+    /// Emit the v6 substitution result selected by the program state: the
+    /// verdict header (with the class tag packed into the flags' high byte)
+    /// followed by `[subCount u16]{[slot u16][len u32][bytes]}…`. The static
+    /// headers/body live in the JS-owned compile-time template — the native
+    /// side emits only the dynamic values the selected class references.
     fn emit_program_response(
         &self,
-        prog: &CompiledProgram,
         set_idx: usize,
         st: &ProgState<'_>,
         frame: &RouteFrame<'_>,
         out: &mut [u8],
     ) -> std::result::Result<usize, String> {
-        let set = prog
-            .sets
-            .get(set_idx)
+        let set = self
+            .program
+            .as_ref()
+            .and_then(|prog| prog.sets.get(set_idx))
             .and_then(|s| s.as_ref())
             .ok_or_else(|| format!("route program: response set {set_idx} is not compiled"))?;
         let tag = select_class_tag(st.reason, st.origin_allowed, set);
         let tmpl = set.classes[tag as usize]
             .as_ref()
             .ok_or_else(|| format!("route program: class {tag} is not compiled"))?;
-        if prog.needs_request_id && !frame.has_request_id {
+        if tmpl.needs_request_id && !frame.has_request_id {
             return Err(
                 "route frame: program response template needs a request-id section".to_string(),
             );
         }
 
-        let values = SubValues {
-            request_id: if frame.has_request_id {
-                Some(frame.request_id)
-            } else {
-                None
-            },
-            origin: st.origin,
-            remaining: st.remaining,
-            reset_secs: st.reset_secs,
-            retry_secs: st.retry_secs,
-            retry_ms: st.retry_ms,
-        };
-
-        // The header count must be known before writing; security/set entries
-        // are small fixed sets, so this is a cheap walk (no allocation).
-        let mut header_count = tmpl.headers.len();
-        for i in 0..st.security_count {
-            if let Some(Op::SecurityHeaders { headers }) = prog.ops.get(st.security[i]) {
-                header_count += headers.len();
+        let mask = tmpl.slot_mask;
+        // The count must precede the entries; slots are a fixed 0..SLOT_COUNT
+        // set, so this is a cheap bounded walk (no allocation).
+        let mut count = 0u16;
+        for slot in 0..SLOT_COUNT as u16 {
+            if mask & slot_bit(slot) != 0 && slot_value(slot, st, frame).is_some() {
+                count += 1;
             }
         }
-        header_count += st.set_count;
 
         let mut w = ResultWriter::new(out, RESULT_HEADER_LEN);
-        w.u16(tmpl.status);
-        w.u32(header_count as u32);
-        for i in 0..st.security_count {
-            if let Some(Op::SecurityHeaders { headers }) = prog.ops.get(st.security[i]) {
-                for (name, value) in headers {
-                    write_header_pair(&mut w, name, value, &values);
+        w.u16(count);
+        if count > 0 {
+            for slot in 0..SLOT_COUNT as u16 {
+                if mask & slot_bit(slot) == 0 {
+                    continue;
                 }
-            }
-        }
-        for i in 0..st.set_count {
-            if let Some(Op::SetHeader { name, value }) = prog.ops.get(st.set_ops[i]) {
-                match value {
-                    SetValue::Const(bytes) => write_header_pair(&mut w, name, bytes, &values),
-                    SetValue::RequestId => {
-                        write_header_pair(&mut w, name, PH_REQUEST_ID, &values);
+                match slot_value(slot, st, frame) {
+                    Some(SlotVal::Bytes(bytes)) => {
+                        w.u16(slot);
+                        w.u32(bytes.len() as u32);
+                        w.bytes(bytes);
                     }
+                    Some(SlotVal::Num(value)) => {
+                        w.u16(slot);
+                        w.u32(dec_len(value) as u32);
+                        w.num(value);
+                    }
+                    None => {}
                 }
             }
         }
-        for (name, value) in &tmpl.headers {
-            write_header_pair(&mut w, name, value, &values);
-        }
-        w.u32(substituted_len(&tmpl.body, &values) as u32);
-        write_substituted(&mut w, &tmpl.body, &values);
 
         let code = reason_code(st.reason);
-        let mut flags = ROUTE_RESULT_FLAG_HAS_RESPONSE;
+        let mut flags = ROUTE_RESULT_FLAG_HAS_RESPONSE | ((tag as u32) << ROUTE_RESULT_CLASS_SHIFT);
         if code == 0 {
             flags |= ROUTE_RESULT_FLAG_OK;
         }
@@ -1209,17 +1149,7 @@ impl NativeRoute {
     }
 }
 
-// ── Pre-effect plan parsing + class substitution (route-wire v5) ────
-
-/// Runtime values substituted into a class template's `{placeholder}` tokens.
-struct SubValues<'a> {
-    request_id: Option<&'a [u8]>,
-    origin: Option<&'a [u8]>,
-    remaining: u32,
-    reset_secs: u64,
-    retry_secs: u64,
-    retry_ms: u64,
-}
+// ── Response substitution slots (route-wire v6) ─────────────────────
 
 /// A known placeholder token.
 enum Ph {
@@ -1231,22 +1161,21 @@ enum Ph {
     RetryMs,
 }
 
+/// A runtime substitution value for one slot.
+enum SlotVal<'a> {
+    /// Borrowed bytes (request id / origin).
+    Bytes(&'a [u8]),
+    /// A decimal numeric value (rate counters).
+    Num(u64),
+}
+
 /// Ceil milliseconds → whole seconds (matches the TS `secondsFromMs`).
 #[inline]
 fn rate_secs(ms: u64) -> u64 {
     ms.saturating_add(999) / 1000
 }
 
-/// Append one `[nameLen][name][valueLen][substituted value]` header pair.
-#[inline]
-fn write_header_pair(w: &mut ResultWriter<'_>, name: &[u8], value: &[u8], vals: &SubValues<'_>) {
-    w.u32(name.len() as u32);
-    w.bytes(name);
-    w.u32(substituted_len(value, vals) as u32);
-    write_substituted(w, value, vals);
-}
-
-/// Decimal digit count (for the substituted-length prepass).
+/// Decimal digit count (for the substitution length prefix).
 #[inline]
 fn dec_len(mut v: u64) -> usize {
     if v == 0 {
@@ -1262,7 +1191,7 @@ fn dec_len(mut v: u64) -> usize {
 
 /// Match a known placeholder at `at` (which must point at `{`). Returns the
 /// placeholder and its consumed token length. Unknown `{…}` sequences return
-/// `None` and are written literally, so constant JSON bodies stay intact.
+/// `None` (treated as literal bytes by the JS-owned template).
 #[inline]
 fn match_placeholder(bytes: &[u8], at: usize) -> Option<(Ph, usize)> {
     let rest = bytes.get(at..)?;
@@ -1282,72 +1211,62 @@ fn match_placeholder(bytes: &[u8], at: usize) -> Option<(Ph, usize)> {
     None
 }
 
+/// The slot bit for a placeholder kind.
 #[inline]
-fn ph_len(ph: &Ph, vals: &SubValues<'_>) -> usize {
+fn ph_slot_bit(ph: &Ph) -> u16 {
     match ph {
-        Ph::Rid => vals.request_id.map(|v| v.len()).unwrap_or(0),
-        Ph::Origin => vals.origin.map(|v| v.len()).unwrap_or(0),
-        Ph::Remaining => dec_len(vals.remaining as u64),
-        Ph::ResetSecs => dec_len(vals.reset_secs),
-        Ph::RetrySecs => dec_len(vals.retry_secs),
-        Ph::RetryMs => dec_len(vals.retry_ms),
+        Ph::Rid => slot_bit(SLOT_REQUEST_ID),
+        Ph::Origin => slot_bit(SLOT_ORIGIN),
+        Ph::Remaining => slot_bit(SLOT_REMAINING),
+        Ph::ResetSecs => slot_bit(SLOT_RESET_SECS),
+        Ph::RetrySecs => slot_bit(SLOT_RETRY_SECS),
+        Ph::RetryMs => slot_bit(SLOT_RETRY_MS),
     }
 }
 
-fn write_ph(w: &mut ResultWriter<'_>, ph: &Ph, vals: &SubValues<'_>) {
-    match ph {
-        Ph::Rid => {
-            if let Some(v) = vals.request_id {
-                w.bytes(v);
-            }
-        }
-        Ph::Origin => {
-            if let Some(v) = vals.origin {
-                w.bytes(v);
-            }
-        }
-        Ph::Remaining => w.num(vals.remaining as u64),
-        Ph::ResetSecs => w.num(vals.reset_secs),
-        Ph::RetrySecs => w.num(vals.retry_secs),
-        Ph::RetryMs => w.num(vals.retry_ms),
-    }
-}
-
-/// Length of `bytes` after placeholder substitution (sizing prepass).
-fn substituted_len(bytes: &[u8], vals: &SubValues<'_>) -> usize {
-    let mut len = 0usize;
+/// OR the slot bit for every known placeholder in `bytes` into `mask`.
+fn collect_slots(bytes: &[u8], mask: &mut u16) {
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'{' {
             if let Some((ph, token_len)) = match_placeholder(bytes, i) {
-                len += ph_len(&ph, vals);
+                *mask |= ph_slot_bit(&ph);
                 i += token_len;
                 continue;
             }
         }
-        len += 1;
         i += 1;
     }
-    len
 }
 
-/// Write `bytes` with placeholder substitution.
-fn write_substituted(w: &mut ResultWriter<'_>, bytes: &[u8], vals: &SubValues<'_>) {
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some((ph, token_len)) = match_placeholder(bytes, i) {
-                write_ph(w, &ph, vals);
-                i += token_len;
-                continue;
+/// Whether `bytes` references the request id placeholder.
+#[inline]
+fn references_request_id(bytes: &[u8]) -> bool {
+    contains(bytes, PH_REQUEST_ID)
+}
+
+/// The runtime value for a substitution slot, or `None` when it is not
+/// available for this request (so the emitted slot count is exact).
+#[inline]
+fn slot_value<'a>(slot: u16, st: &ProgState<'a>, frame: &RouteFrame<'a>) -> Option<SlotVal<'a>> {
+    match slot {
+        SLOT_REQUEST_ID => {
+            if frame.has_request_id {
+                Some(SlotVal::Bytes(frame.request_id))
+            } else {
+                None
             }
         }
-        let start = i;
-        i += 1;
-        while i < bytes.len() && bytes[i] != b'{' {
-            i += 1;
+        SLOT_ORIGIN => st.origin.map(SlotVal::Bytes),
+        SLOT_REMAINING if st.rate_ran => Some(SlotVal::Num(st.remaining as u64)),
+        SLOT_RESET_SECS if st.rate_ran => Some(SlotVal::Num(st.reset_secs)),
+        SLOT_RETRY_SECS if st.rate_ran && matches!(st.reason, HaltReason::RateLimited) => {
+            Some(SlotVal::Num(st.retry_secs))
         }
-        w.bytes(&bytes[start..i]);
+        SLOT_RETRY_MS if st.rate_ran && matches!(st.reason, HaltReason::RateLimited) => {
+            Some(SlotVal::Num(st.retry_ms))
+        }
+        _ => None,
     }
 }
 
@@ -1379,7 +1298,9 @@ fn read_string_list(input: &[u8], pos: &mut usize) -> std::result::Result<Vec<St
     Ok(out)
 }
 
-/// Parse one class template payload (`[status][headers][body]`).
+/// Parse one class template payload (`[status][headers][body]`) and reduce it
+/// to the dynamic substitution slots it references. The static headers/body
+/// stay in the JS-owned compile-time template; Rust only needs the slot mask.
 fn parse_class_template(bytes: &[u8]) -> std::result::Result<ClassTemplate, String> {
     let mut pos = 0usize;
     let status = read_u16_at(bytes, &mut pos)?;
@@ -1392,17 +1313,21 @@ fn parse_class_template(bytes: &[u8]) -> std::result::Result<ClassTemplate, Stri
     if header_count > bytes.len() / 8 + 1 {
         return Err("route descriptor: class header count exceeds descriptor size".to_string());
     }
-    let mut headers: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(header_count);
+    let mut slot_mask = 0u16;
+    let mut needs_request_id = false;
     for _ in 0..header_count {
-        let name = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
-        let value = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
-        headers.push((name, value));
+        // Names are never substituted; values may reference slots.
+        let _name = read_section(bytes, &mut pos, usize::MAX)?;
+        let value = read_section(bytes, &mut pos, usize::MAX)?;
+        collect_slots(value, &mut slot_mask);
+        needs_request_id |= references_request_id(value);
     }
-    let body = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
+    let body = read_section(bytes, &mut pos, usize::MAX)?;
+    collect_slots(body, &mut slot_mask);
+    needs_request_id |= references_request_id(body);
     Ok(ClassTemplate {
-        status,
-        headers,
-        body,
+        slot_mask,
+        needs_request_id,
     })
 }
 
@@ -1605,33 +1530,7 @@ fn build_response_set(bytes: &[u8]) -> std::result::Result<ResponseSet, String> 
         *slot = Some(parse_class_template(payload)?);
     }
 
-    let mut max_skeleton = 0usize;
-    let mut origin_uses = 0usize;
-    let mut rid_uses = 0usize;
-    let mut numeric_uses = 0usize;
-    for template in classes.iter().flatten() {
-        let mut size = 2 + 4 + 4; // status + header count + body length
-        let mut o = 0usize;
-        let mut r = 0usize;
-        let mut n = 0usize;
-        for (name, value) in &template.headers {
-            size += 4 + name.len() + 4 + value.len();
-            count_placeholders(value, &mut o, &mut r, &mut n);
-        }
-        size += template.body.len();
-        count_placeholders(&template.body, &mut o, &mut r, &mut n);
-        max_skeleton = max_skeleton.max(size);
-        origin_uses = origin_uses.max(o);
-        rid_uses = rid_uses.max(r);
-        numeric_uses = numeric_uses.max(n);
-    }
-    Ok(ResponseSet {
-        classes,
-        max_skeleton,
-        origin_uses,
-        rid_uses,
-        numeric_uses,
-    })
+    Ok(ResponseSet { classes })
 }
 
 /// Require a class tag to be compiled in a referenced response set (a decision
@@ -1672,7 +1571,6 @@ fn parse_program(bytes: &[u8]) -> std::result::Result<CompiledProgram, String> {
     let mut ops: Vec<Op> = Vec::with_capacity(op_count);
     let mut sets: Vec<Option<ResponseSet>> = (0..const_count).map(|_| None).collect();
     let mut has_side_effects = false;
-    let mut needs_request_id = false;
 
     for i in 0..op_count {
         let tag = read_u8_at(bytes, &mut pos)?;
@@ -1723,31 +1621,25 @@ fn parse_program(bytes: &[u8]) -> std::result::Result<CompiledProgram, String> {
                 }
             }
             OP_SECURITY_HEADERS => {
-                let headers = parse_header_list(const_at(&consts, a, "security_headers")?)?;
-                for (_, value) in &headers {
-                    needs_request_id |= contains(value, PH_REQUEST_ID);
-                }
-                Op::SecurityHeaders { headers }
+                // Validate the const list, then discard: v6 bakes static
+                // security headers into the JS-owned class templates.
+                let _ = parse_header_list(const_at(&consts, a, "security_headers")?)?;
+                Op::SecurityHeaders
             }
             OP_SET_HEADER => {
-                let name = const_at(&consts, a, "set_header")?.to_vec();
-                let value = match c {
+                let _ = const_at(&consts, a, "set_header")?;
+                match c {
                     SET_VALUE_CONST => {
-                        let bytes = const_at(&consts, b, "set_header")?.to_vec();
-                        needs_request_id |= contains(&bytes, PH_REQUEST_ID);
-                        SetValue::Const(bytes)
+                        let _ = const_at(&consts, b, "set_header")?;
                     }
-                    SET_VALUE_REQUEST_ID => {
-                        needs_request_id = true;
-                        SetValue::RequestId
-                    }
+                    SET_VALUE_REQUEST_ID => {}
                     other => {
                         return Err(format!(
                             "route program: set_header unknown value source {other}"
                         ));
                     }
-                };
-                Op::SetHeader { name, value }
+                }
+                Op::SetHeader
             }
             OP_JSON_VALID => {
                 let require = c != 0;
@@ -1788,11 +1680,6 @@ fn parse_program(bytes: &[u8]) -> std::result::Result<CompiledProgram, String> {
             OP_RESPONSE_PROJECTION => {
                 let parsed = build_response_set(const_at(&consts, a, "response_projection")?)?;
                 require_class(&parsed, CLASS_OK_NO_ORIGIN, "response_projection")?;
-                needs_request_id |= parsed
-                    .classes
-                    .iter()
-                    .flatten()
-                    .any(ClassTemplate::needs_request_id);
                 sets[a as usize] = Some(parsed);
                 Op::ResponseProjection { set: a as usize }
             }
@@ -1809,11 +1696,6 @@ fn parse_program(bytes: &[u8]) -> std::result::Result<CompiledProgram, String> {
                     HaltReason::BodyTooLarge => CLASS_BODY_TOO_LARGE,
                 };
                 require_class(&parsed, base, "halt")?;
-                needs_request_id |= parsed
-                    .classes
-                    .iter()
-                    .flatten()
-                    .any(ClassTemplate::needs_request_id);
                 sets[a as usize] = Some(parsed);
                 Op::Halt {
                     set: a as usize,
@@ -1854,50 +1736,10 @@ fn parse_program(bytes: &[u8]) -> std::result::Result<CompiledProgram, String> {
         ops.push(op);
     }
 
-    // Compile-time output-bound inputs: the largest referenced class set plus
-    // all pre-baked security/set-header skeletons (placeholder uses summed).
-    let mut max_skeleton = 0usize;
-    let mut origin_uses = 0usize;
-    let mut rid_uses = 0usize;
-    let mut numeric_uses = 0usize;
-    for set in sets.iter().flatten() {
-        max_skeleton = max_skeleton.max(set.max_skeleton);
-        origin_uses = origin_uses.max(set.origin_uses);
-        rid_uses = rid_uses.max(set.rid_uses);
-        numeric_uses = numeric_uses.max(set.numeric_uses);
-    }
-    for op in &ops {
-        match op {
-            Op::SecurityHeaders { headers } => {
-                for (name, value) in headers {
-                    max_skeleton += 4 + name.len() + 4 + value.len();
-                    count_placeholders(value, &mut origin_uses, &mut rid_uses, &mut numeric_uses);
-                    needs_request_id |= contains(value, PH_REQUEST_ID);
-                }
-            }
-            Op::SetHeader { name, value } => {
-                max_skeleton += 4 + name.len() + 4;
-                if let SetValue::Const(bytes) = value {
-                    max_skeleton += bytes.len();
-                    count_placeholders(bytes, &mut origin_uses, &mut rid_uses, &mut numeric_uses);
-                } else {
-                    max_skeleton += PH_REQUEST_ID.len();
-                    rid_uses += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-
     Ok(CompiledProgram {
         ops,
         sets,
-        needs_request_id,
         has_side_effects,
-        max_skeleton,
-        origin_uses,
-        rid_uses,
-        numeric_uses,
     })
 }
 
@@ -1934,53 +1776,28 @@ fn read_u16_at(input: &[u8], pos: &mut usize) -> std::result::Result<u16, String
     Ok(v)
 }
 
-/// Parse the `response` projection part bytes:
+/// Parse the `response` projection template bytes:
 /// `[status u16][hdrCount u32]{[nameLen u32][name][valueLen u32][value]}…`
-/// `[bodyLen u32][body]`. Rejects duplicate `{requestId}` placeholders and an
-/// absurd header count (allocation guard). All reads are bounds-checked.
+/// `[bodyLen u32][body]` and reduce it to the dynamic substitution slot mask.
+/// All reads are bounds-checked; the header-count guard caps allocation.
 fn parse_response(bytes: &[u8]) -> std::result::Result<ResponseProjection, String> {
     let mut pos = 0usize;
-    let status = read_u16_at(bytes, &mut pos)?;
+    let _status = read_u16_at(bytes, &mut pos)?;
     let header_count = read_u32_at(bytes, &mut pos)?;
     // Each header costs at least 8 bytes (two u32 length prefixes), so a count
-    // larger than the remaining descriptor can only be malformed. This caps the
-    // `Vec::with_capacity` below so a hostile descriptor cannot force a huge
-    // allocation.
+    // larger than the remaining descriptor can only be malformed.
     if header_count > bytes.len() / 8 + 1 {
         return Err("route descriptor: response header count exceeds descriptor size".to_string());
     }
-    let mut headers: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(header_count);
+    let mut slot_mask = 0u16;
     for _ in 0..header_count {
-        let name = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
-        let value = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
-        headers.push((name, value));
+        let _name = read_section(bytes, &mut pos, usize::MAX)?;
+        let value = read_section(bytes, &mut pos, usize::MAX)?;
+        collect_slots(value, &mut slot_mask);
     }
-    let body = read_section(bytes, &mut pos, usize::MAX)?.to_vec();
-    if body.len() > u32::MAX as usize {
-        return Err("route descriptor: response body too large".to_string());
-    }
-    let mut rid_at = None;
-    if let Some(at) = body
-        .windows(RID_PLACEHOLDER.len())
-        .position(|w| w == RID_PLACEHOLDER)
-    {
-        if body[at + RID_PLACEHOLDER.len()..]
-            .windows(RID_PLACEHOLDER.len())
-            .any(|w| w == RID_PLACEHOLDER)
-        {
-            return Err(
-                "route descriptor: response body has more than one {requestId} placeholder"
-                    .to_string(),
-            );
-        }
-        rid_at = Some(at);
-    }
-    Ok(ResponseProjection {
-        status,
-        headers,
-        body,
-        rid_at,
-    })
+    let body = read_section(bytes, &mut pos, usize::MAX)?;
+    collect_slots(body, &mut slot_mask);
+    Ok(ResponseProjection { slot_mask })
 }
 
 // ── Lenient query parsing (byte-parity with ignex `decodePairList`) ──
@@ -2305,31 +2122,35 @@ mod tests {
         r
     }
 
-    /// Decoded response frame: (status, headers, body).
-    type DecodedResponse = (u16, Vec<(Vec<u8>, Vec<u8>)>, Vec<u8>);
+    /// The verdict error code (bytes 4..8 of the result header).
+    fn result_code(wire: &[u8]) -> u32 {
+        u32::from_le_bytes(wire[4..8].try_into().unwrap())
+    }
 
-    /// Decode the v4 response frame payload (after the 8-byte verdict header).
-    fn decode_response(wire: &[u8]) -> DecodedResponse {
+    /// Decode the v6 substitution section: (class tag, [(slot, bytes)]).
+    fn decode_subs(wire: &[u8]) -> (u8, Vec<(u16, Vec<u8>)>) {
+        let flags = u32::from_le_bytes(wire[0..4].try_into().unwrap());
+        let class = ((flags >> ROUTE_RESULT_CLASS_SHIFT) & 0xff) as u8;
         let mut pos = RESULT_HEADER_LEN;
-        let status = u16::from_le_bytes(wire[pos..pos + 2].try_into().unwrap());
+        let count = u16::from_le_bytes(wire[pos..pos + 2].try_into().unwrap()) as usize;
         pos += 2;
-        let count = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        let mut headers = Vec::with_capacity(count);
+        let mut out = Vec::with_capacity(count);
         for _ in 0..count {
-            let nl = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
+            let slot = u16::from_le_bytes(wire[pos..pos + 2].try_into().unwrap());
+            pos += 2;
+            let len = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
-            let name = wire[pos..pos + nl].to_vec();
-            pos += nl;
-            let vl = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
-            pos += 4;
-            let value = wire[pos..pos + vl].to_vec();
-            pos += vl;
-            headers.push((name, value));
+            out.push((slot, wire[pos..pos + len].to_vec()));
+            pos += len;
         }
-        let bl = u32::from_le_bytes(wire[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        (status, headers, wire[pos..pos + bl].to_vec())
+        (class, out)
+    }
+
+    /// The bytes emitted for one substitution slot (`None` = absent).
+    fn slot_of(subs: &[(u16, Vec<u8>)], slot: u16) -> Option<&[u8]> {
+        subs.iter()
+            .find(|(s, _)| *s == slot)
+            .map(|(_, b)| b.as_slice())
     }
 
     fn decode_pairs(wire: &[u8], pos: &mut usize) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -2557,7 +2378,7 @@ mod tests {
         assert!(r.run(&bad, &mut out).is_err());
     }
 
-    // ── v4 response projection ─────────────────────────────────
+    // ── v6 response projection (substitutions only) ─────────────
 
     #[test]
     fn response_projection_constant_body_round_trips() {
@@ -2572,15 +2393,11 @@ mod tests {
         let flags = u32::from_le_bytes(out[0..4].try_into().unwrap());
         assert_ne!(flags & ROUTE_RESULT_FLAG_OK, 0);
         assert_ne!(flags & ROUTE_RESULT_FLAG_HAS_RESPONSE, 0);
-        let (status, headers, body) = decode_response(&out[..w]);
-        assert_eq!(status, 200);
-        assert_eq!(
-            headers,
-            vec![(b"content-type".to_vec(), b"application/json".to_vec())]
-        );
-        assert_eq!(body, b"{\"ok\":true}");
-        // header 8 + status 2 + count 4 + (4+12)+(4+16) + len 4 + body 11.
-        assert_eq!(w, 65);
+        // No dynamic slots → class 0 + an empty substitution section only.
+        let (class, subs) = decode_subs(&out[..w]);
+        assert_eq!(class, CLASS_OK_NO_ORIGIN);
+        assert!(subs.is_empty());
+        assert_eq!(w, RESULT_HEADER_LEN + 2);
     }
 
     #[test]
@@ -2590,13 +2407,9 @@ mod tests {
         let f = frame_with_rid(b"", b"", None, b"rid-abc-123");
         let mut out = vec![0u8; 256];
         let w = r.run(&f, &mut out).unwrap();
-        let (status, headers, decoded) = decode_response(&out[..w]);
-        assert_eq!(status, 201);
-        assert!(headers.is_empty());
-        assert_eq!(decoded, b"{\"ok\":true,\"requestId\":\"rid-abc-123\"}");
-        assert!(!decoded
-            .windows(RID_PLACEHOLDER.len())
-            .any(|x| x == RID_PLACEHOLDER));
+        let (class, subs) = decode_subs(&out[..w]);
+        assert_eq!(class, CLASS_OK_NO_ORIGIN);
+        assert_eq!(slot_of(&subs, SLOT_REQUEST_ID), Some(&b"rid-abc-123"[..]));
     }
 
     #[test]
@@ -2650,9 +2463,16 @@ mod tests {
 
     #[test]
     fn response_projection_malformed_is_rejected() {
-        // Two placeholders (the phase-1 spec allows at most one).
+        // Two request-id placeholders are fine in v6 (one slot value fills
+        // both) — only the wire structure is validated.
         let two = response_payload(200, &[], b"{requestId}{requestId}");
-        assert!(NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &two)])).is_err());
+        let r = NativeRoute::compile(&descriptor(&[], &[(PART_RESPONSE, &two)])).unwrap();
+        let mut out = vec![0u8; 64];
+        let w = r
+            .run(&frame_with_rid(b"", b"", None, b"rid"), &mut out)
+            .unwrap();
+        let (_, subs) = decode_subs(&out[..w]);
+        assert_eq!(slot_of(&subs, SLOT_REQUEST_ID), Some(&b"rid"[..]));
         // Truncated header value.
         let mut trunc = response_payload(200, &[(b"x", b"y")], b"");
         trunc.truncate(trunc.len() - 1);
@@ -2979,21 +2799,16 @@ mod tests {
         assert_ne!(flags & ROUTE_RESULT_FLAG_OK, 0);
         assert_ne!(flags & ROUTE_RESULT_FLAG_HAS_RESPONSE, 0);
         assert_ne!(flags & ROUTE_RESULT_FLAG_QUERY_VALID, 0);
-        let (status, headers, body) = decode_response(&wire);
-        assert_eq!(status, 200);
+        // CORS allowed + origin present → the with-origin class, with the
+        // request-id + origin substitution slots. The `security_headers` op is
+        // accepted but emits nothing in v6 (security is baked JS-side).
+        let (class, subs) = decode_subs(&wire);
+        assert_eq!(class, CLASS_OK_WITH_ORIGIN);
+        assert_eq!(slot_of(&subs, SLOT_REQUEST_ID), Some(&b"rid-1"[..]));
         assert_eq!(
-            headers,
-            vec![
-                (b"x-content-type-options".to_vec(), b"nosniff".to_vec()),
-                (b"content-type".to_vec(), b"application/json".to_vec()),
-                (b"vary".to_vec(), b"Origin".to_vec()),
-                (
-                    b"access-control-allow-origin".to_vec(),
-                    b"https://app.example.com".to_vec()
-                ),
-            ]
+            slot_of(&subs, SLOT_ORIGIN),
+            Some(&b"https://app.example.com"[..])
         );
-        assert_eq!(body, b"{\"ok\":true,\"requestId\":\"rid-1\"}");
     }
 
     #[test]
@@ -3047,7 +2862,9 @@ mod tests {
             ),
             512,
         );
-        assert_eq!(decode_response(&wire).0, 204);
+        let (allowed_class, _) = decode_subs(&wire);
+        assert_eq!(allowed_class, CLASS_PREFLIGHT_OK);
+        assert_eq!(result_code(&wire), 0);
 
         let denied = crate::test_support::pack_headers([
             ("Origin", "https://app.example.com"),
@@ -3067,9 +2884,9 @@ mod tests {
             ),
             512,
         );
-        let (status, _, body) = decode_response(&wire);
-        assert_eq!(status, 403);
-        assert_eq!(body, b"forbidden");
+        let (class, _) = decode_subs(&wire);
+        assert_eq!(class, CLASS_PREFLIGHT_FORBIDDEN);
+        assert_eq!(result_code(&wire), 403);
     }
 
     #[test]
@@ -3115,20 +2932,15 @@ mod tests {
         assert_eq!(small, [0u8; 8]);
 
         let w1 = run_out(&r, &f, bound);
-        assert_eq!(u32::from_le_bytes(w1[4..8].try_into().unwrap()), 0);
+        assert_eq!(result_code(&w1), 0);
         let w2 = run_out(&r, &f, bound);
-        assert_eq!(u32::from_le_bytes(w2[4..8].try_into().unwrap()), 0);
+        assert_eq!(result_code(&w2), 0);
         let w3 = run_out(&r, &f, bound);
-        assert_eq!(u32::from_le_bytes(w3[4..8].try_into().unwrap()), 429);
-        let (_, headers, _) = decode_response(&w3);
-        assert_eq!(
-            headers
-                .iter()
-                .find(|(n, _)| n == b"ratelimit-remaining")
-                .unwrap()
-                .1,
-            b"0"
-        );
+        assert_eq!(result_code(&w3), 429);
+        let (class, subs) = decode_subs(&w3);
+        assert_eq!(class, CLASS_RATE_LIMITED);
+        assert_eq!(slot_of(&subs, SLOT_REMAINING), Some(&b"0"[..]));
+        assert!(slot_of(&subs, SLOT_RETRY_MS).is_some());
     }
 
     #[test]
@@ -3152,24 +2964,26 @@ mod tests {
         );
         let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
 
-        assert_eq!(
-            decode_response(&run_out(&r, &frame(b"", b"", Some(b"nope")), 256)).0,
-            400
-        );
-        assert_eq!(
-            decode_response(&run_out(&r, &frame(b"", b"", Some(br#"{"x":"s"}"#)), 256)).0,
-            422
-        );
-        assert_eq!(
-            decode_response(&run_out(&r, &frame(b"", b"", Some(br#"{"x":1}"#)), 256)).0,
-            200
-        );
+        let bad_json = run_out(&r, &frame(b"", b"", Some(b"nope")), 256);
+        assert_eq!(result_code(&bad_json), 400);
+        assert_eq!(decode_subs(&bad_json).0, CLASS_INVALID_JSON);
+        let schema_fail = run_out(&r, &frame(b"", b"", Some(br#"{"x":"s"}"#)), 256);
+        assert_eq!(result_code(&schema_fail), 422);
+        assert_eq!(decode_subs(&schema_fail).0, CLASS_SCHEMA_FAILED);
+        let ok = run_out(&r, &frame(b"", b"", Some(br#"{"x":1}"#)), 256);
+        assert_eq!(result_code(&ok), 0);
+        assert_eq!(decode_subs(&ok).0, CLASS_OK_NO_ORIGIN);
     }
 
     #[test]
     fn program_branch_selects_a_runtime_variant() {
+        // set_b references the request id (a slot), set_a does not — so the
+        // branch is observable on the v6 substitution wire.
         let set_a = response_set(&[(CLASS_OK_NO_ORIGIN, response_payload(200, &[], b"A"))]);
-        let set_b = response_set(&[(CLASS_OK_NO_ORIGIN, response_payload(200, &[], b"B"))]);
+        let set_b = response_set(&[(
+            CLASS_OK_NO_ORIGIN,
+            response_payload(200, &[], b"B{requestId}"),
+        )]);
         // json_valid(out 0, require 0); branch(slot 0 -> op 3);
         // op 2 -> set_a ("A"); op 3 -> set_b ("B"). Valid jumps to B.
         let ops = [
@@ -3180,18 +2994,22 @@ mod tests {
         ];
         let prog = program_payload(PROGRAM_REGISTRY_VERSION, &[&set_a, &set_b], &ops);
         let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
+        // Valid JSON → branch taken → set_b → the request-id slot is present.
+        let b = run_out(&r, &frame_with_rid(b"", b"", Some(b"{}"), b"rid-b"), 128);
         assert_eq!(
-            decode_response(&run_out(&r, &frame(b"", b"", Some(b"{}")), 128)).2,
-            b"B"
+            slot_of(&decode_subs(&b).1, SLOT_REQUEST_ID),
+            Some(&b"rid-b"[..])
         );
-        assert_eq!(
-            decode_response(&run_out(&r, &frame(b"", b"", None), 128)).2,
-            b"A"
-        );
+        // No body → not valid → set_a → no slots.
+        let a = run_out(&r, &frame_with_rid(b"", b"", None, b"rid-a"), 128);
+        assert!(decode_subs(&a).1.is_empty());
     }
 
     #[test]
-    fn program_set_header_and_security_merge() {
+    fn program_security_and_set_header_ops_are_accepted_but_emit_nothing() {
+        // v6: static security headers + set_header are baked into the JS class
+        // templates by the program builder. The executor still accepts and
+        // const-validates both ops; they contribute no wire output.
         let set = ok_set(b"{}");
         let sec = header_list(&[(b"x-content-type-options", b"nosniff")]);
         let name = b"x-custom";
@@ -3208,15 +3026,9 @@ mod tests {
         let r = NativeRoute::compile(&descriptor(&[], &[(PART_PROGRAM, &prog)])).unwrap();
         let f = frame_pre(b"", b"", None, Some(b"abc"), Some(0), None, None, false);
         let wire = run_out(&r, &f, 512);
-        let (_, headers, _) = decode_response(&wire);
-        assert_eq!(
-            headers,
-            vec![
-                (b"x-content-type-options".to_vec(), b"nosniff".to_vec()),
-                (b"x-custom".to_vec(), b"v-abc".to_vec()),
-                (b"content-type".to_vec(), b"application/json".to_vec()),
-            ]
-        );
+        let (class, subs) = decode_subs(&wire);
+        assert_eq!(class, CLASS_OK_NO_ORIGIN);
+        assert!(subs.is_empty());
     }
 
     #[test]
@@ -3288,17 +3100,19 @@ mod tests {
             ),
             256,
         );
-        assert_eq!(decode_response(&wire).0, 200);
+        let (class, _) = decode_subs(&wire);
+        assert_eq!(class, CLASS_OK_NO_ORIGIN);
+        assert_eq!(result_code(&wire), 0);
     }
 
     #[test]
-    fn compile_rejects_v4_descriptor_with_version_error() {
+    fn compile_rejects_v5_descriptor_with_version_error() {
         let mut d = descriptor(&[STAGE_PARSE_QUERY], &[]);
-        d[4..8].copy_from_slice(&4u32.to_le_bytes());
+        d[4..8].copy_from_slice(&5u32.to_le_bytes());
         let err = match NativeRoute::compile(&d) {
-            Ok(_) => panic!("a v4 descriptor must be rejected by the v5 stack"),
+            Ok(_) => panic!("a v5 descriptor must be rejected by the v6 stack"),
             Err(e) => e,
         };
-        assert!(err.contains("unsupported version 4"), "got: {err}");
+        assert!(err.contains("unsupported version 5"), "got: {err}");
     }
 }

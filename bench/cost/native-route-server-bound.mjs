@@ -7,8 +7,7 @@
 // AC_PIPELINING=1, AC_WORKERS=4, median-of-N with run-major interleaving.
 //
 // Participants (all single-process Bun.serve on localhost):
-//   native    bench/http/servers/native-program-server.ts  (program lane)
-//   nativeMemo  same, NATIVE_ROUTE_MEMO=1                  (fix candidate)
+//   native    bench/http/servers/native-program-server.ts  (v6 program lane)
 //   jsnative  bench/http/servers/js-native-server.ts       (JS equivalent)
 //   ingress   bench/http/servers/ingress-server.ts         (current ceiling)
 //   router    bench/http/servers/router-server.ts          (current ceiling)
@@ -23,7 +22,6 @@ import autocannon from "autocannon";
 
 const PORTS = {
   native: 9130,
-  nativeMemo: 9130, // same server, different env — measured as a separate run
   jsnative: 9131,
   ingress: 9122,
   router: 9123,
@@ -31,10 +29,6 @@ const PORTS = {
 
 const SCRIPTS = {
   native: { script: "bench/http/servers/native-program-server.ts", env: {} },
-  nativeMemo: {
-    script: "bench/http/servers/native-program-server.ts",
-    env: { NATIVE_ROUTE_MEMO: "1" },
-  },
   jsnative: { script: "bench/http/servers/js-native-server.ts", env: {} },
   ingress: { script: "bench/http/servers/ingress-server.ts", env: {} },
   router: { script: "bench/http/servers/router-server.ts", env: {} },
@@ -46,11 +40,8 @@ const WORKERS = Number(process.env.AC_WORKERS ?? 4);
 const PIPELINING = Number(process.env.AC_PIPELINING ?? 1);
 const RUNS = Math.max(1, Number(process.env.AC_RUNS ?? 3));
 const PATH = process.env.AC_PATH ?? "/api/users";
-const REPEAT_NATIVE_MEMO = process.env.MEASURE_MEMO === "1";
 
-const allKinds = REPEAT_NATIVE_MEMO
-  ? ["native", "nativeMemo", "jsnative", "ingress", "router"]
-  : ["native", "jsnative", "ingress", "router"];
+const allKinds = ["native", "jsnative", "ingress", "router"];
 const KINDS = process.env.SERVERS
   ? allKinds.filter((k) => process.env.SERVERS.split(",").includes(k))
   : allKinds;
@@ -121,7 +112,7 @@ function median(values) {
 }
 
 const procs = [];
-const PER_RUN = new Set(["native", "nativeMemo"]); // share a port → start/stop per run
+const PER_RUN = new Set(); // all participants use distinct ports now
 
 try {
   console.log(

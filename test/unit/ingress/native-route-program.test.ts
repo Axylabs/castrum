@@ -63,36 +63,40 @@ const GET_PROGRAM = {
 }
 
 describe('route-wire v5 op program', () => {
-  test('OK with a simple CORS origin echoes the origin + security headers', () => {
+  test('OK with a simple CORS origin echoes the origin + security headers', async () => {
     if (!nativeAvailable()) return
     const route = programRoute()
     const r = route.run('a=1', '', null, GET_PROGRAM, RID)
-    expect(r.response).toBeDefined()
-    const resp = r.response!
-    expect(resp.status).toBe(200)
-    expect(resp.headers).toEqual([
-      ['x-content-type-options', 'nosniff'],
-      ['x-frame-options', 'DENY'],
-      ['referrer-policy', 'no-referrer'],
-      ['content-type', 'application/json'],
-      ['vary', 'Origin'],
-      ['access-control-allow-origin', 'https://app.example.com'],
-    ])
-    expect(new TextDecoder().decode(resp.body)).toBe(`{"ok":true,"requestId":"${RID}"}`)
     expect(r.flags & ROUTE_FLAG.HAS_RESPONSE).toBe(ROUTE_FLAG.HAS_RESPONSE)
     expect(r.flags & ROUTE_FLAG.OK).toBe(ROUTE_FLAG.OK)
+    const resp = route.assembleResponse(r)
+    expect(resp).not.toBeNull()
+    expect(resp!.status).toBe(200)
+    // `Headers` iteration is sorted; compare as a map.
+    const got = Object.fromEntries([...resp!.headers]) as Record<string, string>
+    expect(got).toEqual({
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+      'referrer-policy': 'no-referrer',
+      'content-type': 'application/json',
+      vary: 'Origin',
+      'access-control-allow-origin': 'https://app.example.com',
+    })
+    expect(await resp!.text()).toBe(`{"ok":true,"requestId":"${RID}"}`)
   })
 
   test('OK without an Origin omits CORS headers', () => {
     if (!nativeAvailable()) return
     const route = programRoute()
     const r = route.run('', '', null, { methodKind: METHOD_KIND.GET, ip: '203.0.113.6' }, RID)
-    expect(r.response!.headers).toEqual([
-      ['x-content-type-options', 'nosniff'],
-      ['x-frame-options', 'DENY'],
-      ['referrer-policy', 'no-referrer'],
-      ['content-type', 'application/json'],
-    ])
+    const resp = route.assembleResponse(r)
+    expect(resp).not.toBeNull()
+    expect(Object.fromEntries([...resp!.headers])).toEqual({
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+      'referrer-policy': 'no-referrer',
+      'content-type': 'application/json',
+    })
   })
 
   test('CORS preflight: allowed -> 204, disallowed -> 403', () => {
@@ -114,12 +118,9 @@ describe('route-wire v5 op program', () => {
       RID,
     )
     expect(allowed.errorCode).toBe(0)
-    expect(allowed.response!.status).toBe(204)
-    expect(allowed.response!.body.byteLength).toBe(0)
-    expect(allowed.response!.headers).toContainEqual([
-      'access-control-allow-methods',
-      'GET, HEAD, POST',
-    ])
+    const allowedResp = route.assembleResponse(allowed)
+    expect(allowedResp!.status).toBe(204)
+    expect(allowedResp!.headers.get('access-control-allow-methods')).toBe('GET, HEAD, POST')
 
     const denied = route.run(
       '',
@@ -136,20 +137,22 @@ describe('route-wire v5 op program', () => {
     )
     expect(denied.errorCode).toBe(403)
     expect(denied.flags & ROUTE_FLAG.OK).toBe(0)
-    expect(denied.response!.status).toBe(403)
-    expect(denied.response!.headers).toContainEqual(['cache-control', 'no-store'])
+    const deniedResp = route.assembleResponse(denied)
+    expect(deniedResp!.status).toBe(403)
+    expect(deniedResp!.headers.get('cache-control')).toBe('no-store')
   })
 
-  test('rate limit: second request from the same IP -> 429 with substituted values', () => {
+  test('rate limit: second request from the same IP -> 429 with substituted values', async () => {
     if (!nativeAvailable()) return
     const route = programRoute({ limit: 1, windowMs: 60_000, maxEntries: 1024 })
     const pre = { methodKind: METHOD_KIND.GET, ip: '198.51.100.9' }
     route.run('', '', null, pre, RID)
     const denied = route.run('', '', null, pre, RID)
     expect(denied.errorCode).toBe(429)
-    expect(denied.response!.status).toBe(429)
-    expect(denied.response!.headers).toContainEqual(['ratelimit-remaining', '0'])
-    const json = new TextDecoder().decode(denied.response!.body)
+    const resp = route.assembleResponse(denied)
+    expect(resp!.status).toBe(429)
+    expect(resp!.headers.get('ratelimit-remaining')).toBe('0')
+    const json = await resp!.text()
     expect(json).toStartWith('{"ok":false,"error":{"code":"rate_limited"')
     expect(json).not.toContain('{retryAfterMs}')
   })

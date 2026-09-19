@@ -1,8 +1,8 @@
 // test/unit/ingress/native-route.test.ts — Per-route native stack
 // (`castrum_route_*` / napi `Route`).
 //
-// The route stack compiles a descriptor (the `@ignex/native` route-wire v4
-// contract: magic "ROUT", version 4, limits, stage tags, draft-07 body schema)
+// The route stack compiles a descriptor (the `@ignex/native` route-wire v6
+// contract: magic "ROUT", version 6, limits, stage tags, draft-07 body schema)
 // ONCE and runs each request frame in ONE native call — lenient query/cookie
 // parse + requireJsonBody/validateBody verdicts. This suite pins the wire
 // round-trip and the lenient-parse parity vectors (mirroring ignex's
@@ -19,7 +19,7 @@ import { isBun } from '../../../src/shared/runtime'
 // ── Wire helpers (mirror @ignex/native route-wire.ts) ──────────────
 
 const ROUTE_DESC_MAGIC = 0x524f5554
-const ROUTE_DESC_VERSION = 5
+const ROUTE_DESC_VERSION = 6
 const STAGE = {
   parseQuery: 0,
   parseCookies: 1,
