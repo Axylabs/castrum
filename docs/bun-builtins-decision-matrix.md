@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | `rust.fnv1a64` | `Bun.hash` (wyhash) | 42 B | Bun (parity) | 1.06× |
 | `rust.crc32` | `Bun.hash.crc32` | 42 B | **Bun** | 2.8–8.4× |
-| `rust.xxh3` (new) | `Bun.hash.xxHash3` | 42 B | **Bun** | 4.15× |
+| `rust.xxh3` (new) | `Bun.hash.xxHash3` | 42 B–1 MB | **Bun** (≥1 KB) | 0.97× (≤64 B); ~2.0× (≥1 KB) |
 | `rust.hmacSha256` | `Bun.CryptoHasher("sha256", key)` | 32 B | Bun (mild) | 1.1–1.4× |
 | `rust.passwordHash` (argon2id) | `Bun.password.hashSync` (argon2id) | 12 B | **rust** | 0.55× (rust 1.83×) |
 | `rust.passwordVerify` | `Bun.password.verifySync` | 12 B | **rust** | 0.53× (rust 1.88×) |
@@ -62,6 +62,14 @@
 These rust ops lose to Bun's native implementation on the SAME workload — the
 FFI crossing cannot beat Bun's in-process C++:
 
+> Re-swept 2026-09-19 (64 B → 1 MB, interleaved medians + per-call input
+> rotation): the hex and url rows in this table no longer lose — rust hex
+> encode/decode is now 4.7–18.9× / 1.4–6.7× over Buffer, the url codec
+> ~2–3× over `encodeURIComponent`, and base64 decode wins 1.4–6.0×. Only the
+> rows still marked "Prefer Bun" below remain genuinely faster in Bun. See
+> the rows themselves and `src/runtime/builtins.ts` for what the adapter
+> currently delegates.
+
 This table mirrors `BUILTIN_OPS` in `src/runtime/builtins.ts` (the 11 ops that
 delegate to Bun built-ins under Bun; `src/selection.ts` derives from it). `fnv1a64` is parity/either but is NOT delegated
 (`Bun.hash` is wyhash — a different algorithm — and rust `fnv1a64` stays the
@@ -70,13 +78,13 @@ benchmarked impl).
 | Op | Recommendation |
 |---|---|
 | `crc32` | Prefer `Bun.hash.crc32`; keep rust as fallback (pure-TS path already exists). |
-| `xxh3` | Prefer `Bun.hash.xxHash3` (~4×); keep the rust export as the Node/non-Bun fast path. The runtime adapter delegates the public `rust.xxh3` to Bun under Bun. |
+| `xxh3` | Prefer `Bun.hash.xxHash3` (~2× at ≥1 KB via AVX2; parity ≤64 B). The rust core is FLAT ~30 GB/s at every size (re-swept 2026-09-19 — the gap is Bun's AVX2 width, not a size pathology); keep it as the Node/non-Bun fast path. The adapter delegates the public `rust.xxh3` to Bun under Bun. |
 | `gzipCompress` | Prefer `Bun.gzipSync` (~2×). **`gzipDecompress` is deliberately NOT delegated** — `Bun.gunzipSync` has no decompression-bomb cap; the rust surface keeps its native 64 MiB-capped path under Bun. |
 | `randomToken` | Prefer `Bun.randomUUIDv7()` (or `crypto.getRandomValues`) for token-sized output; keep rust for byte-precise control. |
 | `hmacSha256` | Prefer `Bun.CryptoHasher("sha256", key)` (1.17× — mild; keep rust batch path, which wins on larger inputs). |
-| `urlEncode` / `urlDecode` | Prefer `encodeURIComponent` / `decodeURIComponent` (JSC string builtins — ~11.5×, zero alloc). |
-| `base64Encode` / `base64UrlEncode` | Prefer `Buffer.toString('base64'|'base64url')`. |
-| `hexEncode` | Prefer `Buffer.toString('hex')`. |
+| `urlEncode` / `urlDecode` | Fan-out. Re-swept 2026-09-19 on escape-heavy input the rust LUT+run-copy codec is ~2.8–3.2× (encode) / ~2× (decode) FASTER than `encodeURIComponent` / `decodeURIComponent` — the earlier ~11.5× reading was input/profile-dependent. The current adapter still delegates via `BUILTIN_OPS`. |
+| `base64Encode` / `base64UrlEncode` | rust wins ≤1 KB (encode 1.8–2.3×); parity ≥16 KiB (0.88–1.07× — both AVX2 and memory-bound). Base64 **decode** is the strong rust play (1.4–6.0×). Fine to prefer rust for both; the adapter currently delegates encode to Buffer per `BUILTIN_OPS`. |
+| `hexEncode` / `hexDecode` | Prefer rust: encode 4.7–18.9×, decode 1.4–6.7× over Buffer (faster-hex SIMD + single-pass AVX2 decode kernel; re-swept 2026-09-19 — previously Buffer won). The adapter still delegates to Buffer per `BUILTIN_OPS`. |
 | `httpDate` | Prefer `Date.toUTCString()`. |
 
 **Delegation rule of thumb**: rust stays the default only where it beats its
@@ -96,7 +104,7 @@ genuinely wins or Bun has no equivalent.
 ### → Implemented primitives (gaps closed)
 | Primitive | Outcome |
 |---|---|
-| `rust.xxh3` (XXH3-64) | Exposed; measured `Bun.hash.xxHash3` 4.15× faster → the runtime adapter delegates the public `rust.xxh3` to Bun under Bun (Node keeps the addon). |
+| `rust.xxh3` (XXH3-64) | Exposed; re-swept 2026-09-19: parity ≤64 B, Bun ~2× at ≥1 KB (its AVX2 width; rust is flat 30 GB/s) → the adapter still delegates under Bun (Node keeps the addon path). |
 | `rust.passwordHashBcrypt` / `rust.passwordVerifyBcrypt` | bcrypt `$2b$` PHC; hash parity, verify rust 1.49×. |
 | `rust.pbkdf2Sha256` | PBKDF2-HMAC-SHA256; parity with `node:crypto`, the only sync option in Bun. |
 | UUIDv7 (`uuidv7()`) | `Bun.randomUUIDv7` already wins — delegated to Bun (`crypto.randomUUID` on Node), not built in Rust. |
@@ -108,7 +116,9 @@ random tokens, and gzip, Bun 1.4's built-ins are already faster than any
 FFI-crossing Rust op — the selection layer should prefer them. Rust retains a clear,
 defensible moat exactly where it matters: **argon2id password hashing
 (≈1.9× vs Bun)**, the **zero-DOM / zero-copy parsers and JSON paths** (no Bun
-sync equivalent), and **brotli** (no Bun sync API).
+sync equivalent), **brotli** (no Bun sync API), and — since the 2026-09-19
+re-sweep — the **hex and URL byte codecs and base64 decode** (1.4–18.9× over
+the corresponding Buffer / URI built-ins at every size).
 
 ## Re-run
 

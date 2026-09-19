@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- **Length-sweep SIMD hardening for the raw-byte cores.** Re-swept the hot
+  scalar cores at 64 B → 1 MB against their Bun/JS baselines (interleaved
+  medians + per-call input rotation to defeat JIT constant-folding) and fixed
+  every size-scaling pathology found:
+  - **hex encode** routes through the `faster-hex` SIMD engine (runtime
+    SSE→AVX2): 4.3–18.9× over `Buffer.toString("hex")` at every size (was
+    0.30× lose — the per-byte table loop collapsed past 1 KiB).
+  - **hex decode** gets a hand-written single-pass AVX2 kernel (validity mask
+    + value map in one vector pass, 64 chars/iteration; any invalid chunk
+    rejects the whole input, < 64-char tails hand off to the validated
+    `faster-hex` engine): 1.4–6.7× over `Buffer.from(hex, "hex")` at every
+    size (was 0.15× lose — `faster-hex` decode is two-pass, ~5 GB/s cap). The
+    allocating `hex_decode_bytes` path shares the kernel.
+  - **regex escape** replaces the O(n·14) per-byte `REGEX_META.contains` scan
+    with a 256-entry LUT + bulk `memcpy` of safe runs: 5.9–6.8× over
+    `String.replace` at every size, ~3.7× better absolute (160 MB/s →
+    590 MB/s on escape-heavy input).
+  - base64 encode stays parity-scale at ≥ 16 KiB (both engines AVX2 and
+    memory-bound: 0.88–1.07×); decode remains a 1.4–6.0× win.
+  - xxh3 re-verified FLAT ~30 GB/s at every size (no size pathology); the
+    ~2× Bun gap at ≥ 1 KiB is Bun's AVX2 width, not scaling. Consumers keep
+    delegating to `Bun.hash.xxHash3` under Bun (see
+    `docs/bun-builtins-decision-matrix.md`).
+- **Regression net** for the above: exhaustive hex pair matrix (65,536
+  byte-pairs), encode/decode length sweeps across the SSE/AVX2 chunk
+  boundaries, 2 MiB roundtrips, large-input invalid rejection, regex
+  reference-parity at every length plus 256 KiB all-meta / all-safe / dense
+  edge payloads, and xxh3 known-vector locks crossing the engine's 240-byte
+  threshold.
+
 ## [0.9.9] — 2026-09-18
 
 ## [0.9.8] — 2026-09-18

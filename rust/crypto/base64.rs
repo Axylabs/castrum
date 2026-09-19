@@ -14,7 +14,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::util::bytes::{hex_val, HEX_LOWER};
 use base64::Engine as _;
 
 /// Engine selection for a base64 call.
@@ -126,9 +125,22 @@ pub fn base64url_decode_bytes(data: &[u8]) -> Option<Vec<u8>> {
 }
 
 // ── hex ──────────────────────────────────────────────────────────
+//
+// Lowercase hex encode + case-insensitive decode. Encode goes through the
+// `faster-hex` SIMD engine (runtime-dispatched SSE→AVX2; measured 4.3-18.9x
+// faster than Buffer.toString("hex") at every size 64B→1MB, replacing the
+// per-byte table loop that lost 0.30x; the 1KB outlier ~19x is Bun-side). Decode has TWO tiers:
+//   - x86_64 + AVX2: our single-pass `hex_fast` kernel (validity mask + value
+//     map in one vector pass, 64 chars/iteration, scalar fallback on any
+//     invalid chunk). faster-hex decode does a separate validation scan +
+//     decode pass (~5GB/s cap vs Buffer.from(s,"hex") ~10.5GB/s); the
+//     single-pass kernel targets that class directly.
+//   - everywhere else: faster-hex decode (SSE/scalar, validated).
+// Both tiers are byte-identical to the HEX_VAL_LUT semantics — verified by
+// exhaustive tests (all 256 bytes × encode, all 65,536 byte-pairs × decode,
+// plus a length sweep across the 64-char chunk boundary).
 
-/// Encode bytes as lowercase hex (uses the shared `HEX_LOWER` table — direct
-/// byte writes, no per-nibble `char` push).
+/// Lowercase-hex encode (SIMD via `faster-hex`).
 ///
 /// # Safety
 ///
@@ -136,26 +148,31 @@ pub fn base64url_decode_bytes(data: &[u8]) -> Option<Vec<u8>> {
 /// the built `Vec<u8>` is valid UTF-8 by construction; `from_utf8_unchecked`
 /// skips a redundant validation pass on the allocating hot path.
 pub fn hex_encode_bytes(input: &[u8]) -> String {
-    let mut out = Vec::with_capacity(input.len() * 2);
-    for &b in input {
-        out.push(HEX_LOWER[(b >> 4) as usize]);
-        out.push(HEX_LOWER[(b & 0x0f) as usize]);
-    }
-    // SAFETY: every byte pushed is an ASCII hex digit from `HEX_LOWER`.
+    let mut out = vec![0u8; input.len() * 2];
+    // faster-hex encode cannot fail on an exactly-sized buffer.
+    faster_hex::hex_encode(input, &mut out).expect("hex encode: exact-size output buffer");
+    // SAFETY: every byte written is an ASCII hex digit from `HEX_LOWER`.
     unsafe { String::from_utf8_unchecked(out) }
 }
 
-/// Decode lowercase/uppercase hex to bytes.
+/// Decode lowercase/uppercase hex to bytes. On x86_64 + AVX2 this uses the
+/// single-pass `hex_fast` kernel; elsewhere the validated `faster-hex` engine
+/// — both reject `[^0-9a-fA-F]` exactly like `hex_val`.
 pub fn hex_decode_bytes(input: &[u8]) -> std::result::Result<Vec<u8>, &'static str> {
     if !input.len().is_multiple_of(2) {
         return Err("odd hex length");
     }
-    let mut out = Vec::with_capacity(input.len() / 2);
-    for i in (0..input.len()).step_by(2) {
-        let hi = hex_val(input[i]).ok_or("invalid hex digit")?;
-        let lo = hex_val(input[i + 1]).ok_or("invalid hex digit")?;
-        out.push((hi << 4) | lo);
+    let mut out = vec![0u8; input.len() / 2];
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 runtime-detected; `input` even, `out` exactly
+            // `input.len() / 2` (both established above).
+            unsafe { hex_fast::decode(input, &mut out) }?;
+            return Ok(out);
+        }
     }
+    faster_hex::hex_decode(input, &mut out).map_err(|_| "invalid hex digit")?;
     Ok(out)
 }
 
@@ -178,8 +195,8 @@ pub fn hex_decode(input: Uint8Array) -> Result<Buffer> {
 // a fresh Vec + napi Buffer per call. They error on a buffer that is too small;
 // input/output overlap is handled by `crate::util::run_packed_into`.
 
-/// Lowercase-hex encode directly into `out`. Returns bytes written
-/// (`input.len() * 2`). Errors if `out` is too small.
+/// Lowercase-hex encode directly into `out` (SIMD via `faster-hex`). Returns
+/// bytes written (`input.len() * 2`). Errors if `out` is too small.
 #[inline]
 pub fn hex_encode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
     let needed = input
@@ -189,13 +206,12 @@ pub fn hex_encode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
     if out.len() < needed {
         return Err(Error::from_reason("hex encode: output buffer too small"));
     }
-    let mut pos = 0usize;
-    for &b in input {
-        out[pos] = HEX_LOWER[(b >> 4) as usize];
-        out[pos + 1] = HEX_LOWER[(b & 0x0f) as usize];
-        pos += 2;
-    }
-    Ok(pos)
+    // Slice to the exact size so the pipeline never sees a ragged tail: the
+    // caller-sized-buffer contract is preserved (error above), and the engine
+    // fills `needed` bytes exactly.
+    let exact = &mut out[..needed];
+    faster_hex::hex_encode(input, exact).expect("hex encode: exact-size output buffer");
+    Ok(needed)
 }
 
 #[napi]
@@ -203,8 +219,12 @@ pub fn hex_encode_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32>
     crate::util::run_packed_into(&input, &mut output, hex_encode_into_slice)
 }
 
-/// Hex-decode directly into `out`. Returns bytes written (`input.len() / 2`).
-/// Errors on odd length, invalid digits, or an output buffer that is too small.
+/// Hex-decode directly into `out` — case-insensitive, rejects
+/// `[^0-9a-fA-F]` exactly like `hex_val`. Returns bytes written
+/// (`input.len() / 2`). Errors on odd length, invalid digits, or an output
+/// buffer that is too small. On x86_64 with AVX2 this dispatches to the
+/// single-pass `hex_fast` kernel; everywhere else it uses the validated
+/// `faster-hex` engine — both byte-identical to the scalar LUT semantics.
 #[inline]
 pub fn hex_decode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
     if !input.len().is_multiple_of(2) {
@@ -214,19 +234,139 @@ pub fn hex_decode_into_slice(input: &[u8], out: &mut [u8]) -> Result<usize> {
     if out.len() < needed {
         return Err(Error::from_reason("hex decode: output buffer too small"));
     }
-    let mut pos = 0usize;
-    for i in (0..input.len()).step_by(2) {
-        let hi = hex_val(input[i]).ok_or_else(|| Error::from_reason("invalid hex digit"))?;
-        let lo = hex_val(input[i + 1]).ok_or_else(|| Error::from_reason("invalid hex digit"))?;
-        out[pos] = (hi << 4) | lo;
-        pos += 1;
+    hex_decode_into_slice_impl(input, &mut out[..needed])
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn hex_decode_into_slice_impl(input: &[u8], out: &mut [u8]) -> Result<usize> {
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: AVX2 runtime-detected; `input` even and `out` exactly
+        // `input.len() / 2` (checked above).
+        unsafe { hex_fast::decode(input, out) }.map_err(Error::from_reason)
+    } else {
+        faster_hex::hex_decode(input, out).map_err(|_| Error::from_reason("invalid hex digit"))?;
+        Ok(out.len())
     }
-    Ok(pos)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+fn hex_decode_into_slice_impl(input: &[u8], out: &mut [u8]) -> Result<usize> {
+    faster_hex::hex_decode(input, out).map_err(|_| Error::from_reason("invalid hex digit"))?;
+    Ok(out.len())
 }
 
 #[napi]
 pub fn hex_decode_into(input: Uint8Array, mut output: Uint8Array) -> Result<u32> {
     crate::util::run_packed_into(&input, &mut output, hex_decode_into_slice)
+}
+
+/// Single-pass AVX2 hex decode — the accelerated decode tier on x86_64 (see
+/// the hex section header). Decodes 64 hex chars (32 output bytes) per
+/// iteration, computing the validity mask and the hex-digit values in ONE
+/// vector pass. Any chunk containing a non-hex byte rejects the whole input
+/// (byte-identical to the HEX_VAL_LUT scalar reject-everywhere semantics —
+/// no partial writes). The remainder (< 64 chars) is decoded by the validated
+/// `faster-hex` engine, so error behavior and output are identical everywhere.
+///
+/// faster-hex decode does a separate validation scan + decode pass (~5GB/s
+/// cap measured vs Buffer.from(hex) ~10.5GB/s); this kernel is single-pass
+/// and targets that gap.
+#[cfg(target_arch = "x86_64")]
+pub mod hex_fast {
+    use std::arch::x86_64::*;
+
+    /// Decode `chars[0..64]` → `out[0..32]`. Returns false when any of the 64
+    /// chars is not `[0-9a-fA-F]`; on false, `out` is left untouched so
+    /// callers can error without partial writes.
+    #[target_feature(enable = "avx2")]
+    unsafe fn decode_chunk(chars: *const u8, out: *mut u8) -> bool {
+        let lo = _mm256_loadu_si256(chars as *const __m256i); // chars 0..31
+        let hi = _mm256_loadu_si256(chars.add(32) as *const __m256i); // chars 32..63
+
+        // Lowercase for the letter test ('A'-'F' | 0x20 == 'a'-'f').
+        let loo = _mm256_or_si256(lo, _mm256_set1_epi8(0x20));
+        let hio = _mm256_or_si256(hi, _mm256_set1_epi8(0x20));
+
+        // Validity per byte (signed compares; all bounds are < 0x80 so signed
+        // and unsigned agree for the printable range, and bytes >= 0x80 fail
+        // both bounds): (b in '0'..='9') | (b|0x20 in 'a'..='f').
+        let lo_digit = _mm256_and_si256(
+            _mm256_cmpgt_epi8(loo, _mm256_set1_epi8((b'0' - 1) as i8)),
+            _mm256_cmpgt_epi8(_mm256_set1_epi8((b'9' + 1) as i8), loo),
+        );
+        let lo_letter = _mm256_and_si256(
+            _mm256_cmpgt_epi8(loo, _mm256_set1_epi8((b'a' - 1) as i8)),
+            _mm256_cmpgt_epi8(_mm256_set1_epi8((b'f' + 1) as i8), loo),
+        );
+        let hi_digit = _mm256_and_si256(
+            _mm256_cmpgt_epi8(hio, _mm256_set1_epi8((b'0' - 1) as i8)),
+            _mm256_cmpgt_epi8(_mm256_set1_epi8((b'9' + 1) as i8), hio),
+        );
+        let hi_letter = _mm256_and_si256(
+            _mm256_cmpgt_epi8(hio, _mm256_set1_epi8((b'a' - 1) as i8)),
+            _mm256_cmpgt_epi8(_mm256_set1_epi8((b'f' + 1) as i8), hio),
+        );
+        let lo_valid = _mm256_or_si256(lo_digit, lo_letter);
+        let hi_valid = _mm256_or_si256(hi_digit, hi_letter);
+        if _mm256_movemask_epi8(lo_valid) != -1 || _mm256_movemask_epi8(hi_valid) != -1 {
+            return false;
+        }
+
+        // Value: (b|0x20) - '0' gives 0-9 for digits and 49-54 for a-f;
+        // subtract 39 where it is a letter so a-f map to 10-15.
+        let lo_letter_sel = _mm256_cmpgt_epi8(loo, _mm256_set1_epi8((b'a' - 1) as i8));
+        let hi_letter_sel = _mm256_cmpgt_epi8(hio, _mm256_set1_epi8((b'a' - 1) as i8));
+        let v_lo = _mm256_sub_epi8(
+            _mm256_sub_epi8(loo, _mm256_set1_epi8(b'0' as i8)),
+            _mm256_and_si256(lo_letter_sel, _mm256_set1_epi8(39)),
+        );
+        let v_hi = _mm256_sub_epi8(
+            _mm256_sub_epi8(hio, _mm256_set1_epi8(b'0' as i8)),
+            _mm256_and_si256(hi_letter_sel, _mm256_set1_epi8(39)),
+        );
+
+        // Pack adjacent pairs (v0, v1) -> (v0 << 4) | v1 with pmaddubsw
+        // (unsigned v * signed pattern [16, 1] per pair, summed into u16).
+        let pat = _mm256_set1_epi16(0x0110); // little-endian bytes: 0x10=16, 0x01=1
+        let p_lo = _mm256_maddubs_epi16(v_lo, pat); // u16 lanes: out[0..8] (half0), out[8..16] (half1)
+        let p_hi = _mm256_maddubs_epi16(v_hi, pat); // u16 lanes: out[16..24] (half0), out[24..32] (half1)
+
+        // packus_epi16 lays halves side by side per 128-bit lane:
+        //   lane0 = out[0..8]  + out[16..24]   lane1 = out[8..16] + out[24..32]
+        // so a 64-bit lane permute [0, 2, 1, 3] restores the byte order.
+        let packed = _mm256_packus_epi16(p_lo, p_hi);
+        let ordered = _mm256_permute4x64_epi64(packed, 0b11_01_10_00);
+        _mm256_storeu_si256(out as *mut __m256i, ordered);
+        true
+    }
+
+    /// Single-pass decode of `input` into `out`. Preconditions (checked by the
+    /// callers): `input.len()` is even and `out.len() == input.len()/2`.
+    /// Returns `Ok(limit / 2)` or `Err("invalid hex digit")`.
+    ///
+    /// # Safety
+    /// The caller must have runtime-detected AVX2
+    /// (`is_x86_feature_detected!("avx2")`) and must uphold the length
+    /// preconditions above.
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn decode(input: &[u8], out: &mut [u8]) -> std::result::Result<usize, &'static str> {
+        let limit = input.len();
+        let mut i = 0usize;
+        while i + 64 <= limit {
+            if !decode_chunk(input.as_ptr().add(i), out.as_mut_ptr().add(i / 2)) {
+                return Err("invalid hex digit");
+            }
+            i += 64;
+        }
+        if i < limit {
+            // Tail (a multiple-of-2 remainder < 64 chars): validated engine.
+            faster_hex::hex_decode(&input[i..], &mut out[i / 2..limit / 2])
+                .map_err(|_| "invalid hex digit")?;
+        }
+        Ok(limit / 2)
+    }
 }
 
 /// Pure core: base64-encode `input` into `out` (zero-alloc `encode_slice`).
@@ -492,6 +632,171 @@ mod tests {
     fn hex_decode_into_small_buffer_errors() {
         let mut out = [0u8; 2];
         assert!(hex_decode_into_slice(b"0001020304", &mut out).is_err());
+    }
+
+    // ── hex SIMD engine (faster-hex: runtime-dispatched SSE→AVX2) ──
+    //
+    // faster-hex must be a drop-in for the previous HEX_VAL_LUT scalar loops:
+    // byte-identical encode output, identical accept/reject + values on
+    // decode, at lengths both below and above the SIMD chunk boundaries
+    // (pshufb processes 16 bytes/iteration, so 15/16/17, 31/32/33, … are the
+    // straddle cases that would expose a broken fast path).
+
+    /// Reference lowercase-hex encode (the previous per-byte LUT loop).
+    fn ref_hex_encode(input: &[u8]) -> Vec<u8> {
+        let hex = b"0123456789abcdef";
+        let mut out = Vec::with_capacity(input.len() * 2);
+        for &b in input {
+            out.push(hex[(b >> 4) as usize]);
+            out.push(hex[(b & 0x0f) as usize]);
+        }
+        out
+    }
+
+    /// Reference hex-digit value (the previous HEX_VAL_LUT semantics).
+    fn ref_hex_val(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn hex_simd_encode_parity_all_lengths_and_sizes() {
+        // Every length 0..=96 (covers every pshufb chunk boundary twice) plus
+        // larger payloads that exercise the wide kernels end-to-end.
+        let mut lens: Vec<usize> = (0..=96).collect();
+        lens.extend([128, 255, 256, 511, 512, 1024, 16 * 1024, 256 * 1024]);
+        for n in lens {
+            let data = deterministic(n);
+            let expect = ref_hex_encode(&data);
+            // allocating path
+            assert_eq!(hex_encode_bytes(&data).as_bytes(), &expect[..], "len {n}");
+            // into-slice path (exact-size buffer, like the C-ABI caller)
+            let mut out = vec![0u8; n * 2];
+            let w = hex_encode_into_slice(&data, &mut out).unwrap();
+            assert_eq!(w, n * 2);
+            assert_eq!(&out[..w], &expect[..], "len {n}");
+        }
+    }
+
+    #[test]
+    fn hex_simd_decode_exhaustive_pair_matrix() {
+        // All 65,536 two-char combos: accept/reject and decoded value must be
+        // identical to the reference LUT semantics (case-insensitive digits,
+        // everything else rejected). A SIMD engine with a divergent validity
+        // mask fails here.
+        for hi in 0u16..=255 {
+            for lo in 0u16..=255 {
+                let pair = [hi as u8, lo as u8];
+                let want = match (ref_hex_val(pair[0]), ref_hex_val(pair[1])) {
+                    (Some(h), Some(l)) => Some((h << 4) | l),
+                    _ => None,
+                };
+                let mut out = [0u8; 1];
+                let got = hex_decode_into_slice(&pair, &mut out);
+                match want {
+                    Some(v) => {
+                        assert!(got.is_ok(), "{pair:02x?}: expected OK");
+                        assert_eq!(out[0], v, "{pair:02x?}: value");
+                    }
+                    None => assert!(got.is_err(), "{pair:02x?}: expected reject"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hex_simd_large_roundtrip() {
+        // 2 MiB deterministic payload: SIMD encode → SIMD decode must be the
+        // identity, and the decoded bytes must match the source exactly.
+        let data = deterministic(2 * 1024 * 1024);
+        let mut enc = vec![0u8; data.len() * 2];
+        let w = hex_encode_into_slice(&data, &mut enc).unwrap();
+        assert_eq!(w, data.len() * 2);
+        let mut dec = vec![0u8; data.len()];
+        let m = hex_decode_into_slice(&enc, &mut dec).unwrap();
+        assert_eq!(m, data.len());
+        assert_eq!(&dec[..], &data[..]);
+        // uppercase decodes to the same bytes (case-insensitive)
+        for b in enc.iter_mut() {
+            if b.is_ascii_lowercase() {
+                *b = b.to_ascii_uppercase();
+            }
+        }
+        let mut dec2 = vec![0u8; data.len()];
+        let m2 = hex_decode_into_slice(&enc, &mut dec2).unwrap();
+        assert_eq!(&dec2[..m2], &data[..]);
+    }
+
+    #[test]
+    fn hex_simd_large_decode_rejects_invalid_tail() {
+        // An invalid char at the very END of a 256 KiB string: the SIMD tail
+        // handler must still reject (parity with the scalar loop's rejection
+        // at any position).
+        let mut hex = Vec::with_capacity(256 * 1024);
+        for _ in 0..(128 * 1024) {
+            hex.extend_from_slice(b"ab");
+        }
+        hex.push(b'g'); // 'g' is not a hex digit → odd+invalid
+        let mut out = vec![0u8; 128 * 1024];
+        assert!(hex_decode_into_slice(&hex, &mut out).is_err());
+
+        // Even-length with a bad char one past the SIMD chunk boundary.
+        let mut hex2 = hex[..hex.len() - 1].to_vec(); // even, all "ab..."
+        hex2[200_001] = b'z';
+        assert!(hex_decode_into_slice(&hex2, &mut out).is_err());
+    }
+
+    #[test]
+    fn hex_simd_decode_chunk_boundary_sweep() {
+        // Every length 0..=160 crosses the AVX2 kernel's 64-char chunk
+        // boundary several times: valid inputs must decode to the reference
+        // bytes, and an invalid char must be rejected no matter which bucket
+        // it lands in (chunk body, chunk boundary, or the < 64-char tail).
+        // This is the direct guard on the single-pass kernel's chunk loop +
+        // tail handoff (the exhaustive pair matrix above covers 2-char inputs,
+        // which only ever exercise the tail path).
+        let mut lens: Vec<usize> = (0..=160).collect();
+        lens.extend([192, 200, 512, 4096]);
+        for n in lens {
+            let even = n - n % 2; // even number of HEX CHARS in the input
+            let expect: Vec<u8> = (0..even / 2)
+                .map(|i| (i.wrapping_mul(13) + 7) as u8)
+                .collect();
+            let hex: String = expect.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(hex.len(), even);
+            let mut out = vec![0u8; even / 2];
+            let w = hex_decode_into_slice(hex.as_bytes(), &mut out).unwrap();
+            assert_eq!(&out[..w], &expect[..], "len {even}");
+            // Reject an invalid char at one position per bucket.
+            for &pos in &[
+                0usize,
+                1,
+                14,
+                30,
+                31,
+                32,
+                62,
+                63,
+                64,
+                65,
+                even.saturating_sub(2),
+                even.saturating_sub(1),
+            ] {
+                if pos < even {
+                    let mut bad = hex.clone().into_bytes();
+                    bad[pos] = b'g'; // 'g' is never a hex digit
+                    let mut o = vec![0u8; even / 2];
+                    assert!(
+                        hex_decode_into_slice(&bad, &mut o).is_err(),
+                        "len {even} pos {pos}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

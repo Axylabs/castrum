@@ -75,7 +75,18 @@ mimalloc = { version = "0.1", features = ["local_dynamic_tls"] }
 core_affinity = "0.8"
 
 parking_lot = "0.12"
+# xxhash-rust: seeded streaming Xxh3 (ingress ip_trust rate_key, tiny 1-17
+# byte IPs) AND the public one-shot xxh3_64. Measured: the scalar core
+# sustains a FLAT ~30GB/s from 64B to 1MB (no size pathology); the ~2x gap to
+# Bun.hash.xxHash3 at >= 1KB is Bun's AVX2 width, not a scaling issue, and
+# ignex already delegates the public hash to Bun under Bun — see
+# docs/bun-builtins-decision-matrix.md.
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# faster-hex: SIMD (runtime-dispatched SSE -> AVX2) lowercase hex encode/decode
+# with byte-exact semantics parity vs our HEX_VAL_LUT (case-insensitive decode,
+# reject [^0-9a-fA-F], odd-length error) — verified exhaustively (65,536 pairs).
+# Replaces the per-byte table loops that lost ~3-6x to Buffer.toString("hex").
+faster-hex = "0.9"
 ipnet = "2"
 # 0.18.2+ carries the RUSTSEC-2026-0253 fix (0.16.x is affected); keep this
 # requirement at or above the fixed release so `cargo deny` / OSV stay green.
