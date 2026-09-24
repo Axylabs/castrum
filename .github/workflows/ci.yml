@@ -346,7 +346,7 @@ jobs:
         if: ${{ contains(matrix.target, 'musl') }}
         with:
           version: 0.15.2
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         if: ${{ contains(matrix.target, 'musl') }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
