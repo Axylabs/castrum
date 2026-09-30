@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Dependency advisories cleared** across both lockfiles (the `Rust` job's
+  `cargo deny` step and the `Supply-chain scan (OSV)` job were both red):
+  - `faster-hex` is now `0.10.1`, the first release carrying the
+    **RUSTSEC-2026-0306** fix (the unbounded AVX2 read in
+    `hex_decode_unchecked`; `0.3.0..=0.10.0` are affected). The vulnerable
+    function was never called by this crate, but the advisory is flagged
+    against the dependency tree regardless — the `Cargo.toml` requirement is
+    pinned at the fixed floor so it cannot slide back.
+  - `fast-uri` (transitive, via the `ajv` devDependency) is pinned to
+    `^3.1.8` with an `overrides` entry, clearing **CVE-2026-86472**,
+    **CVE-2026-84292** and **CVE-2026-84394**.
+- Routine dependency bumps: `bcrypt` 0.16 → 0.19, `aws-lc-rs` 1.17.3 → 1.18.1,
+  `flate2` 1.1.9 → 1.1.10, `ipnet` 2.12.0 → 2.12.2, and the pinned
+  `dtolnay/rust-toolchain`, `taiki-e/install-action` and `anchore/sbom-action`
+  GitHub Actions.
+
 ## [0.9.10] — 2026-09-19
 
 ### Performance
