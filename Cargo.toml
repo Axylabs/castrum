@@ -86,7 +86,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # with byte-exact semantics parity vs our HEX_VAL_LUT (case-insensitive decode,
 # reject [^0-9a-fA-F], odd-length error) — verified exhaustively (65,536 pairs).
 # Replaces the per-byte table loops that lost ~3-6x to Buffer.toString("hex").
-faster-hex = "0.9"
+faster-hex = "0.10"
 ipnet = "2"
 # 0.18.2+ carries the RUSTSEC-2026-0253 fix (0.16.x is affected); keep this
 # requirement at or above the fixed release so `cargo deny` / OSV stay green.
