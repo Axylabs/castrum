@@ -123,7 +123,14 @@ sha2 = "0.10"
 # HTML templating (fast, safe, no eval).
 minijinja = "2"
 # gzip via the memory-safe zlib-rs backend (pure Rust, no C).
-flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# `runtime_detection` is REQUIRED: flate2 1.1.10 moved `zlib-rs/std` (zlib-rs's
+# runtime CPU-feature detection, i.e. its SIMD dispatch) behind this opt-in
+# feature, which only `default` enables. Building with `default-features =
+# false` and `zlib-rs` alone silently drops to zlib-rs's scalar path — measured
+# 5.5x slower gzipCompress (16 MiB: ~2.2 s vs ~0.4 s in a debug build). Do NOT
+# remove it, and do NOT lower the version: 1.1.9 did not have the feature (it
+# hard-enabled `zlib-rs/std`).
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 # brotli compression (pure Rust port).
 brotli = "8"
 

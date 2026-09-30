@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `flate2` 1.1.9 → 1.1.10, `ipnet` 2.12.0 → 2.12.2, and the pinned
   `dtolnay/rust-toolchain`, `taiki-e/install-action` and `anchore/sbom-action`
   GitHub Actions.
+- **`flate2` 1.1.10 requires its new `runtime_detection` feature here.** That
+  release moved `zlib-rs/std` — zlib-rs's runtime CPU-feature detection, i.e.
+  its SIMD dispatch — behind an opt-in feature that only flate2's `default`
+  turns on. Because this crate builds flate2 with `default-features = false`,
+  taking the bump silently dropped gzip onto zlib-rs's scalar path: **5.5×
+  slower `gzipCompress`** (16 MiB: ~2.2 s vs ~0.4 s in a debug build). That is
+  what pushed `task runtime > compresses a large buffer without copying it on
+  the JS thread` past its 5 s test timeout in CI. The feature is now enabled
+  explicitly and the requirement pinned to `1.1.10` (1.1.9 predates the
+  feature, so an accidental downgrade would fail rather than silently
+  re-regress).
 
 ## [0.9.10] — 2026-09-19
 
