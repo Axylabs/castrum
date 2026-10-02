@@ -4,6 +4,10 @@
 // fixed-width writer for hot loops. The date arithmetic uses Howard Hinnant's
 // days↔civil algorithms (epoch-correct). Extracted from `etag.rs` so the
 // HTTP cache semantics file owns only ETags + conditional requests.
+//
+// NOTE: we intentionally do NOT use the `httpdate` crate — it panics when
+// formatting pre-1970 timestamps and years >= 10000, both of which this module
+// supports (see `http_date_into_out_of_range_year_falls_back`).
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
