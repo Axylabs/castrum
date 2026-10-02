@@ -586,6 +586,38 @@ mod tests {
         );
     }
     #[test]
+    fn decode_form_undersized_buffer_reports_error() {
+        // A buffer smaller than the input can only ever yield BufferTooSmall —
+        // never a partial write the caller would mistake for success.
+        let mut out = [0u8; 4];
+        assert_eq!(
+            decode_form_component_into(b"plain-ascii", &mut out),
+            Err(FormDecodeError::BufferTooSmall)
+        );
+        // A decoded form that shrinks (3 input bytes -> 1) may still fit.
+        let mut out5 = [0u8; 5];
+        assert_eq!(
+            decode_form_component_into(b"%41%42%43%44%45", &mut out5),
+            Ok(5)
+        );
+        assert_eq!(&out5, b"ABCDE");
+    }
+
+    #[test]
+    fn decode_percent_at_boundaries() {
+        assert_eq!(decode_percent_at(b"%41", 0), Some((0x41, 3)));
+        // Truncated escapes (`%4`, `%`) and a non-hex digit all fail closed.
+        assert_eq!(decode_percent_at(b"%4", 0), None);
+        assert_eq!(decode_percent_at(b"%", 0), None);
+        assert_eq!(decode_percent_at(b"%4G", 0), None);
+        assert_eq!(decode_percent_at(b"%g0", 0), None);
+        // Lowercase hex is accepted; an out-of-range index must not panic.
+        assert_eq!(decode_percent_at(b"%2f", 0), Some((0x2f, 3)));
+        assert_eq!(decode_percent_at(b"abc", 10), None);
+        assert_eq!(decode_percent_at(b"", 0), None);
+    }
+
+    #[test]
     #[should_panic(expected = "hex_encode: output buffer too small")]
     fn hex_encode_panics_on_undersized() {
         let mut out = [0u8; 4];

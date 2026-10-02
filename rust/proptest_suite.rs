@@ -16,7 +16,9 @@ use crate::http::headers::HeaderRefs;
 use crate::http::media_type::parse_media_type_core;
 use crate::http::query_parser::query_parse_packed_vec;
 use crate::json::fast_schema::compile;
-use crate::util::bytes::decode_percent_at;
+use crate::util::bytes::{
+    decode_form_component_into, decode_form_component_len, decode_percent_at,
+};
 
 proptest! {
     /// HeaderRefs::parse must never panic on arbitrary (possibly truncated,
@@ -124,6 +126,134 @@ proptest! {
             }
         }
         prop_assert_eq!(decoded, input);
+    }
+
+    // ── Exact size contracts for the hand-rolled decoders/writers ──
+
+    /// The C-ABI "needed size" pass must never under-report the written length
+    /// (an under-report would make the caller's grow-and-retry loop spin
+    /// forever); an exact-size buffer must always succeed and agree.
+    #[test]
+    fn decode_form_component_size_contract(input in prop::collection::vec(any::<u8>(), 0..256)) {
+        let reported = decode_form_component_len(&input);
+        let mut out = vec![0u8; input.len() + 8];
+        let written = decode_form_component_into(&input, &mut out)
+            .expect("an input-sized buffer always suffices");
+        prop_assert!(written <= reported, "reported {} < written {}", reported, written);
+        let mut exact = vec![0u8; reported];
+        let w2 = decode_form_component_into(&input, &mut exact)
+            .expect("exact reported size must suffice");
+        prop_assert_eq!(w2, written);
+    }
+
+    /// `json_escaped_len` must be an EXACT accounting of `write_json_escaped`
+    /// for arbitrary bytes, and the escaped output must be valid UTF-8.
+    #[test]
+    fn json_escaped_len_exact_accounting(input in prop::collection::vec(any::<u8>(), 0..256)) {
+        let need = crate::json::json_ser::json_escaped_len(&input);
+        let mut out = vec![0u8; need];
+        let mut pos = 0usize;
+        let written = crate::json::json_ser::write_json_escaped(&mut out, &mut pos, &input);
+        prop_assert_eq!(written, need);
+        prop_assert_eq!(pos, need);
+        prop_assert!(std::str::from_utf8(&out).is_ok());
+    }
+
+    /// `PackedIter`'s three accessors (`next()`/`collect_vec`/
+    /// `count_and_total_bytes`) must agree on validity and totals for arbitrary
+    /// (forged-length) packed buffers.
+    #[test]
+    fn packed_iter_self_consistent(input in prop::collection::vec(any::<u8>(), 0..512)) {
+        match crate::util::packed::PackedIter::new(&input) {
+            Ok(it) => {
+                let collected = it.collect_vec();
+                let stats = it.count_and_total_bytes();
+                prop_assert_eq!(collected.is_ok(), stats.is_ok());
+                if let (Ok(items), Ok((count, total))) = (collected, stats) {
+                    prop_assert_eq!(items.len(), count);
+                    prop_assert_eq!(items.iter().map(|i| i.len()).sum::<usize>(), total);
+                    prop_assert_eq!(items.len(), it.len());
+                }
+                // The Iterator impl must never panic and never yield more items
+                // than the header claims.
+                prop_assert!(it.take(10_000).count() <= it.len());
+            }
+            Err(_) => {
+                prop_assert!(crate::util::packed::unpack(&input).is_err());
+            }
+        }
+    }
+
+    /// RFC 3986 encode → decode is the identity over arbitrary bytes, and the
+    /// encoder's own output is always accepted by the strict decoder.
+    #[test]
+    fn url_codec_roundtrip(input in prop::collection::vec(any::<u8>(), 0..256)) {
+        let mut enc = vec![0u8; input.len() * 3];
+        let n = crate::http::url_codec::url_encode_into_slice(&input, &mut enc)
+            .expect("3x buffer always suffices");
+        enc.truncate(n);
+        let mut dec = vec![0u8; enc.len()];
+        let m = crate::http::url_codec::url_decode_into_slice(&enc, &mut dec)
+            .expect("the encoder output is always well-formed");
+        prop_assert_eq!(&dec[..m], &input[..]);
+    }
+
+    /// SIMD hex encode → decode is the identity for arbitrary bytes and the
+    /// `_into` variants agree byte-for-byte with the allocating ones.
+    #[test]
+    fn hex_simd_roundtrip_arbitrary(input in prop::collection::vec(any::<u8>(), 0..256)) {
+        let enc = crate::crypto::base64::hex_encode_bytes(&input);
+        prop_assert_eq!(enc.len(), input.len() * 2);
+        let mut into_enc = vec![0u8; input.len() * 2];
+        let n = crate::crypto::base64::hex_encode_into_slice(&input, &mut into_enc).unwrap();
+        prop_assert_eq!(&into_enc[..n], enc.as_bytes());
+        let dec = crate::crypto::base64::hex_decode_bytes(enc.as_bytes())
+            .expect("own encoder output always decodes");
+        prop_assert_eq!(&dec[..], &input[..]);
+        let mut into_dec = vec![0u8; input.len()];
+        let m = crate::crypto::base64::hex_decode_into_slice(enc.as_bytes(), &mut into_dec).unwrap();
+        prop_assert_eq!(&into_dec[..m], &input[..]);
+    }
+
+    /// RFC 6455 encode → decode round-trips for any payload/opcode/flags, and
+    /// the zero-alloc writer matches the allocating one byte-for-byte.
+    #[test]
+    fn ws_frame_roundtrip(
+        payload in prop::collection::vec(any::<u8>(), 0..300),
+        opcode in 0u8..16,
+        mask in any::<bool>(),
+        fin in any::<bool>(),
+    ) {
+        let frame = crate::payload::ws_frames::encode_frame(opcode, &payload, mask, fin);
+        let decoded = crate::payload::ws_frames::decode_frame(&frame)
+            .expect("a self-produced frame always decodes");
+        prop_assert_eq!(decoded.opcode, opcode & 0x0f);
+        prop_assert_eq!(decoded.fin, fin);
+        prop_assert_eq!(&decoded.payload[..], &payload[..]);
+        let mut out = vec![0u8; frame.len()];
+        let n = crate::payload::ws_frames::encode_frame_into(opcode, &payload, mask, fin, &mut out)
+            .unwrap();
+        prop_assert_eq!(&out[..n], &frame[..]);
+    }
+
+    /// SSE `encode_event_size` must be exact and one byte short must error
+    /// (never panic / write out of bounds).
+    #[test]
+    fn sse_encode_size_contract(data in prop::collection::vec(any::<u8>(), 0..256)) {
+        let need = crate::payload::sse::encode_event_size(Some("evt"), &data, Some("id"), Some(42));
+        let mut out = vec![0u8; need];
+        let w = crate::payload::sse::encode_event_into_slice(
+            Some("evt"), &data, Some("id"), Some(42), &mut out,
+        )
+        .unwrap();
+        prop_assert_eq!(w, need);
+        if need > 0 {
+            let mut small = vec![0u8; need - 1];
+            prop_assert!(crate::payload::sse::encode_event_into_slice(
+                Some("evt"), &data, Some("id"), Some(42), &mut small,
+            )
+            .is_err());
+        }
     }
 }
 
