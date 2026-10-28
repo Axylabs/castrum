@@ -145,8 +145,12 @@ jobs:
           path: artifacts
           pattern: addon-*
           merge-multiple: true
+      # NOTE: pinned to v0.24.2 on purpose. The upstream v0.24.3 tag points at
+      # commit 66cbf4b…, which the anchore repo no longer serves ("not our ref"),
+      # so GitHub Actions cannot resolve that pin. Move back to v0.24.3 once its
+      # tag is repaired.
       - name: Generate SBOM (dependency inventory)
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65cb221b6bb0ad6c # v0.24.3
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: ./
           format: spdx-json
