@@ -351,10 +351,14 @@ callbacks — keep it that way.
 These are not optional — they are what make the C-ABI surface safe on Bun (no
 napi-style unwind guard exists for raw `extern "C"`).
 
-1. **`panic_guard` every fallible/allocating core** (`std::panic::catch_unwind`
-   in `rust/ffi/`, `AssertUnwindSafe` for captured `&mut [u8]`). An uncaught
-   panic unwinding through `extern "C"` kills the whole Bun process — this is
-   what happened under `11-concurrent-burst`.
+1. **Guard every export body with `c_abi!`** (`rust/ffi/util.rs`, which wraps
+   `panic_guard` / `std::panic::catch_unwind`; `AssertUnwindSafe` for captured
+   `&mut [u8]`). An uncaught panic unwinding through `extern "C"` is undefined
+   behaviour and kills the whole Bun process — this is what happened under
+   `11-concurrent-burst`. Use `panic_guard` directly only for a sub-expression
+   that should fall back while the rest of the body continues. The
+   `every_c_abi_export_is_panic_guarded` test fails the build if a new
+   `#[no_mangle]` export has neither.
 2. **Bind-time self-test for EVERY new symbol** (`src/native/ffi/selfTest`).
    `bun:ffi` is experimental upstream; the self-test + napi fallback is the
    safety net. No symbol ships without a self-test vector.

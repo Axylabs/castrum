@@ -187,8 +187,11 @@ For coverage floors, the typecheck/test configs, and the full test matrix, see
 ## Publishing
 
 The package ships **all platform addons in a single tarball**. Push a `v*` tag
-and CI builds + publishes every platform to npm; or use `bun run release:manual`
-for a quick single-platform release:
+and `.github/workflows/release.yml` verifies the tag against
+`package.json`/`Cargo.toml`, runs the quality gates, builds every platform
+through the reusable `build-addons.yml`, publishes to npm with provenance, and
+attaches the same `.node` files + `SHA256SUMS` to a GitHub release. Or use
+`bun run release:manual` for a quick single-platform release:
 
 ```bash
 bun run release minor          # bump + verify + commit + tag (CI publishes)

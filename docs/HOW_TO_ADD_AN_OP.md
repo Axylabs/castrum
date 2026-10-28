@@ -84,9 +84,13 @@ mod tests {
 ## 2. Expose it over the C ABI (bun:ffi primary)
 
 Add the `#[no_mangle] extern "C"` export in `rust/ffi/<domain>.rs`. Every
-fallible / allocating export **must** route its core through `panic_guard`
-(defined in `rust/ffi/util.rs`) so an uncaught panic can't unwind through
-`extern "C"` and kill the process.
+export body **must** be wrapped in the `c_abi!(fallback, { ... })` macro
+(`rust/ffi/util.rs`), which runs it under `panic_guard`/`catch_unwind` so an
+uncaught panic can't unwind through `extern "C"` and kill the process. Use
+`panic_guard` directly only for a sub-expression that should fall back while the
+rest of the body continues. `ffi/tests.rs`'s
+`every_c_abi_export_is_panic_guarded` fails the build if a new export is
+unprotected.
 
 Rules (see `docs/FFI_BUN_GUIDE.md` for the full contract):
 - Keep signatures **scalar + `(ptr,len)`** — no struct-by-value, no variadics.
@@ -117,10 +121,9 @@ Rules (see `docs/FFI_BUN_GUIDE.md` for the full contract):
 #[no_mangle]
 pub unsafe extern "C" fn castrum_fnv1a64(data: *const u8, len: usize) -> u64 {
     if data.is_null() { return 0; }
-    panic_guard(
-        || crate::crypto::hashing::fnv1a64_bytes(std::slice::from_raw_parts(data, len)),
-        0,
-    )
+    c_abi!(0, {
+        crate::crypto::hashing::fnv1a64_bytes(std::slice::from_raw_parts(data, len))
+    })
 }
 ```
 
@@ -204,8 +207,8 @@ bun run bench:startup                       # if you touched the transport/loade
 ## Checklist
 
 - [ ] Pure-Rust core in the right domain folder with `#[cfg(test)] mod tests`
-- [ ] `#[no_mangle] extern "C"` export with `panic_guard` + null checks +
-      correct `u64_fast`/cstring ABI
+- [ ] `#[no_mangle] extern "C"` export with `c_abi!` + null checks + correct
+      `u64_fast`/cstring ABI
 - [ ] Symbol in the `ffi.ts` dlopen map + `BunFFI` interface method
 - [ ] Per-domain `selfTest*` vector in the same `ffi/build/*.ts` file
 - [ ] Public `rust.*` wrapper with JSDoc (+ `*Into` pooled variant if hot)

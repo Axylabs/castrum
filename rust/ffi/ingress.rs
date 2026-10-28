@@ -8,8 +8,7 @@
 
 use std::slice;
 
-use super::util::panic_guard;
-
+use super::util::{c_abi, panic_guard};
 /// Run the ingress pipeline on a packed request frame. `inner` is the opaque
 /// pointer (as an integer) from `Ingress.ingressInnerPtr()` — valid ONLY while
 /// the `Ingress` instance is alive (see the method's safety note). This is the
@@ -290,14 +289,16 @@ impl IngressLayout {
 /// `out` must be valid for writes up to `out_cap`.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_ingress_layout(out: *mut u8, out_cap: usize) -> usize {
-    if out.is_null() {
-        return 0;
-    }
-    const LAYOUT: IngressLayout = IngressLayout::from_output();
-    let n = core::mem::size_of::<IngressLayout>();
-    if out_cap < n {
-        return 0;
-    }
-    core::ptr::copy_nonoverlapping(&LAYOUT as *const IngressLayout as *const u8, out, n);
-    n
+    c_abi!(0, {
+        if out.is_null() {
+            return 0;
+        }
+        const LAYOUT: IngressLayout = IngressLayout::from_output();
+        let n = core::mem::size_of::<IngressLayout>();
+        if out_cap < n {
+            return 0;
+        }
+        core::ptr::copy_nonoverlapping(&LAYOUT as *const IngressLayout as *const u8, out, n);
+        n
+    })
 }

@@ -9,8 +9,7 @@ use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use std::slice;
 
-use super::util::{aead_alg, cstring_return, panic_guard, with_hmac_key_cached};
-
+use super::util::{aead_alg, c_abi, cstring_return, panic_guard, with_hmac_key_cached};
 /// HMAC-SHA256 verify → 1/0 (constant-time, hex sig compared after
 /// whitespace-trim — mirrors the napi scalar path).
 ///
@@ -25,15 +24,17 @@ pub unsafe extern "C" fn castrum_hmac_sha256_verify(
     sig: *const u8,
     slen: usize,
 ) -> u8 {
-    if key.is_null() || data.is_null() || sig.is_null() {
-        return 0;
-    }
-    let sig_t = crate::util::bytes::trim_ascii_whitespace(slice::from_raw_parts(sig, slen));
-    let Some(sig_bytes) = crate::util::bytes::hex_decode_32(sig_t) else {
-        return 0;
-    };
-    with_hmac_key_cached(slice::from_raw_parts(key, klen), |k| {
-        u8::from(hmac::verify(k, slice::from_raw_parts(data, dlen), &sig_bytes).is_ok())
+    c_abi!(0, {
+        if key.is_null() || data.is_null() || sig.is_null() {
+            return 0;
+        }
+        let sig_t = crate::util::bytes::trim_ascii_whitespace(slice::from_raw_parts(sig, slen));
+        let Some(sig_bytes) = crate::util::bytes::hex_decode_32(sig_t) else {
+            return 0;
+        };
+        with_hmac_key_cached(slice::from_raw_parts(key, klen), |k| {
+            u8::from(hmac::verify(k, slice::from_raw_parts(data, dlen), &sig_bytes).is_ok())
+        })
     })
 }
 
@@ -48,14 +49,16 @@ pub unsafe extern "C" fn castrum_csrf_verify(
     secret: *const u8,
     slen: usize,
 ) -> u8 {
-    if token.is_null() || secret.is_null() {
-        return 0;
-    }
-    with_hmac_key_cached(slice::from_raw_parts(secret, slen), |k| {
-        u8::from(crate::crypto::csrf::csrf_verify_with_key(
-            slice::from_raw_parts(token, tlen),
-            k,
-        ))
+    c_abi!(0, {
+        if token.is_null() || secret.is_null() {
+            return 0;
+        }
+        with_hmac_key_cached(slice::from_raw_parts(secret, slen), |k| {
+            u8::from(crate::crypto::csrf::csrf_verify_with_key(
+                slice::from_raw_parts(token, tlen),
+                k,
+            ))
+        })
     })
 }
 
@@ -128,16 +131,18 @@ pub unsafe extern "C" fn castrum_hmac_sha256(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if key.is_null() || data.is_null() || out.is_null() || out_cap < 64 {
-        return 0;
-    }
-    let tag = with_hmac_key_cached(slice::from_raw_parts(key, klen), |k| {
-        hmac::sign(k, slice::from_raw_parts(data, dlen))
-    });
-    let mut hex = [0u8; 64];
-    crate::util::bytes::hex_encode_32(tag.as_ref(), &mut hex);
-    slice::from_raw_parts_mut(out, 64).copy_from_slice(&hex);
-    64
+    c_abi!(0, {
+        if key.is_null() || data.is_null() || out.is_null() || out_cap < 64 {
+            return 0;
+        }
+        let tag = with_hmac_key_cached(slice::from_raw_parts(key, klen), |k| {
+            hmac::sign(k, slice::from_raw_parts(data, dlen))
+        });
+        let mut hex = [0u8; 64];
+        crate::util::bytes::hex_encode_32(tag.as_ref(), &mut hex);
+        slice::from_raw_parts_mut(out, 64).copy_from_slice(&hex);
+        64
+    })
 }
 
 /// Sign a cookie `value` as `value.<64-hex sig>`, returned as a null-terminated
@@ -152,13 +157,15 @@ pub unsafe extern "C" fn castrum_sign_cookie(
     secret: *const u8,
     slen: usize,
 ) -> *const std::os::raw::c_char {
-    if value.is_null() || secret.is_null() {
-        return std::ptr::null();
-    }
-    let v = slice::from_raw_parts(value, vlen);
-    cstring_return(vlen + 65, |out| {
-        with_hmac_key_cached(slice::from_raw_parts(secret, slen), |key| {
-            crate::crypto::cookie_sign::sign_cookie_into(v, key, out)
+    c_abi!(std::ptr::null(), {
+        if value.is_null() || secret.is_null() {
+            return std::ptr::null();
+        }
+        let v = slice::from_raw_parts(value, vlen);
+        cstring_return(vlen + 65, |out| {
+            with_hmac_key_cached(slice::from_raw_parts(secret, slen), |key| {
+                crate::crypto::cookie_sign::sign_cookie_into(v, key, out)
+            })
         })
     })
 }
@@ -181,22 +188,24 @@ pub unsafe extern "C" fn castrum_sign_cookie_into(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if value.is_null() || secret.is_null() || out.is_null() {
-        return 0;
-    }
-    let needed = vlen + 65;
-    if out_cap < needed {
-        return needed;
-    }
-    let v = slice::from_raw_parts(value, vlen);
-    with_hmac_key_cached(slice::from_raw_parts(secret, slen), |key| {
-        crate::crypto::cookie_sign::sign_cookie_into(
-            v,
-            key,
-            slice::from_raw_parts_mut(out, out_cap),
-        )
+    c_abi!(0, {
+        if value.is_null() || secret.is_null() || out.is_null() {
+            return 0;
+        }
+        let needed = vlen + 65;
+        if out_cap < needed {
+            return needed;
+        }
+        let v = slice::from_raw_parts(value, vlen);
+        with_hmac_key_cached(slice::from_raw_parts(secret, slen), |key| {
+            crate::crypto::cookie_sign::sign_cookie_into(
+                v,
+                key,
+                slice::from_raw_parts_mut(out, out_cap),
+            )
+        })
+        .unwrap_or_default()
     })
-    .unwrap_or_default()
 }
 
 /// Verify a signed cookie → the value without its signature, returned as a
@@ -212,13 +221,15 @@ pub unsafe extern "C" fn castrum_verify_cookie(
     secret: *const u8,
     klen: usize,
 ) -> *const std::os::raw::c_char {
-    if signed.is_null() || secret.is_null() {
-        return std::ptr::null();
-    }
-    let s = slice::from_raw_parts(signed, slen);
-    cstring_return(slen, |out| {
-        with_hmac_key_cached(slice::from_raw_parts(secret, klen), |key| {
-            crate::crypto::cookie_sign::verify_cookie_into(s, key, out)
+    c_abi!(std::ptr::null(), {
+        if signed.is_null() || secret.is_null() {
+            return std::ptr::null();
+        }
+        let s = slice::from_raw_parts(signed, slen);
+        cstring_return(slen, |out| {
+            with_hmac_key_cached(slice::from_raw_parts(secret, klen), |key| {
+                crate::crypto::cookie_sign::verify_cookie_into(s, key, out)
+            })
         })
     })
 }
@@ -242,30 +253,32 @@ pub unsafe extern "C" fn castrum_verify_cookie_into(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if signed.is_null() || secret.is_null() || out.is_null() {
-        return 0;
-    }
-    let s = slice::from_raw_parts(signed, slen);
-    // The value is a prefix of `signed` (everything before the last `.`), so
-    // `slen` is always a sufficient bound — needed-size only differs when the
-    // caller passed less.
-    if out_cap < slen {
-        // Compute the actual needed length without writing (a full verify is
-        // wasted if we're just sizing; the caller retries at most once).
-        let dot = s.iter().rposition(|&b| b == b'.').unwrap_or(0);
-        if dot != 0 {
-            return dot;
+    c_abi!(0, {
+        if signed.is_null() || secret.is_null() || out.is_null() {
+            return 0;
         }
-        return slen;
-    }
-    with_hmac_key_cached(slice::from_raw_parts(secret, klen), |key| {
-        crate::crypto::cookie_sign::verify_cookie_into(
-            s,
-            key,
-            slice::from_raw_parts_mut(out, out_cap),
-        )
+        let s = slice::from_raw_parts(signed, slen);
+        // The value is a prefix of `signed` (everything before the last `.`), so
+        // `slen` is always a sufficient bound — needed-size only differs when the
+        // caller passed less.
+        if out_cap < slen {
+            // Compute the actual needed length without writing (a full verify is
+            // wasted if we're just sizing; the caller retries at most once).
+            let dot = s.iter().rposition(|&b| b == b'.').unwrap_or(0);
+            if dot != 0 {
+                return dot;
+            }
+            return slen;
+        }
+        with_hmac_key_cached(slice::from_raw_parts(secret, klen), |key| {
+            crate::crypto::cookie_sign::verify_cookie_into(
+                s,
+                key,
+                slice::from_raw_parts_mut(out, out_cap),
+            )
+        })
+        .unwrap_or_default()
     })
-    .unwrap_or_default()
 }
 
 /// CSRF token (`<64-hex(rnd)>.<64-hex(sig)>`, 129 bytes) returned as a
@@ -278,25 +291,27 @@ pub unsafe extern "C" fn castrum_csrf_token(
     secret: *const u8,
     slen: usize,
 ) -> *const std::os::raw::c_char {
-    if secret.is_null() {
-        return std::ptr::null();
-    }
-    let mut rnd = [0u8; 32];
-    if getrandom::fill(&mut rnd).is_err() {
-        return std::ptr::null();
-    }
-    let mut rnd_hex = [0u8; 64];
-    crate::util::bytes::hex_encode(&rnd, &mut rnd_hex);
-    let mut sig_hex = [0u8; 64];
-    let signed = with_hmac_key_cached(slice::from_raw_parts(secret, slen), |k| {
-        hmac::sign(k, &rnd_hex)
-    });
-    crate::util::bytes::hex_encode(signed.as_ref(), &mut sig_hex);
-    cstring_return(129, |out| {
-        out[..64].copy_from_slice(&rnd_hex);
-        out[64] = b'.';
-        out[65..129].copy_from_slice(&sig_hex);
-        Some(129)
+    c_abi!(std::ptr::null(), {
+        if secret.is_null() {
+            return std::ptr::null();
+        }
+        let mut rnd = [0u8; 32];
+        if getrandom::fill(&mut rnd).is_err() {
+            return std::ptr::null();
+        }
+        let mut rnd_hex = [0u8; 64];
+        crate::util::bytes::hex_encode(&rnd, &mut rnd_hex);
+        let mut sig_hex = [0u8; 64];
+        let signed = with_hmac_key_cached(slice::from_raw_parts(secret, slen), |k| {
+            hmac::sign(k, &rnd_hex)
+        });
+        crate::util::bytes::hex_encode(signed.as_ref(), &mut sig_hex);
+        cstring_return(129, |out| {
+            out[..64].copy_from_slice(&rnd_hex);
+            out[64] = b'.';
+            out[65..129].copy_from_slice(&sig_hex);
+            Some(129)
+        })
     })
 }
 
@@ -314,28 +329,30 @@ pub unsafe extern "C" fn castrum_csrf_token_into(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if secret.is_null() || out.is_null() {
-        return 0;
-    }
-    if out_cap < 129 {
-        return 129;
-    }
-    let mut rnd = [0u8; 32];
-    if getrandom::fill(&mut rnd).is_err() {
-        return 0;
-    }
-    let mut rnd_hex = [0u8; 64];
-    crate::util::bytes::hex_encode(&rnd, &mut rnd_hex);
-    let mut sig_hex = [0u8; 64];
-    let signed = with_hmac_key_cached(slice::from_raw_parts(secret, slen), |k| {
-        hmac::sign(k, &rnd_hex)
-    });
-    crate::util::bytes::hex_encode(signed.as_ref(), &mut sig_hex);
-    let o = slice::from_raw_parts_mut(out, 129);
-    o[..64].copy_from_slice(&rnd_hex);
-    o[64] = b'.';
-    o[65..129].copy_from_slice(&sig_hex);
-    129
+    c_abi!(0, {
+        if secret.is_null() || out.is_null() {
+            return 0;
+        }
+        if out_cap < 129 {
+            return 129;
+        }
+        let mut rnd = [0u8; 32];
+        if getrandom::fill(&mut rnd).is_err() {
+            return 0;
+        }
+        let mut rnd_hex = [0u8; 64];
+        crate::util::bytes::hex_encode(&rnd, &mut rnd_hex);
+        let mut sig_hex = [0u8; 64];
+        let signed = with_hmac_key_cached(slice::from_raw_parts(secret, slen), |k| {
+            hmac::sign(k, &rnd_hex)
+        });
+        crate::util::bytes::hex_encode(signed.as_ref(), &mut sig_hex);
+        let o = slice::from_raw_parts_mut(out, 129);
+        o[..64].copy_from_slice(&rnd_hex);
+        o[64] = b'.';
+        o[65..129].copy_from_slice(&sig_hex);
+        129
+    })
 }
 
 /// Argon2id password hash → PHC string bytes into `out` (m/t/p/out_len params).
@@ -434,23 +451,25 @@ pub unsafe extern "C" fn castrum_pbkdf2_sha256(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if password.is_null() || salt.is_null() || out.is_null() {
-        return 0;
-    }
-    let dk_len = dk_len.clamp(
-        crate::crypto::pbkdf2::PBKDF2_MIN_LEN,
-        crate::crypto::pbkdf2::PBKDF2_MAX_LEN,
-    ) as usize;
-    if out_cap < dk_len {
-        return 0;
-    }
-    pbkdf2_hmac::<Sha256>(
-        slice::from_raw_parts(password, plen),
-        slice::from_raw_parts(salt, slen),
-        rounds.max(1),
-        slice::from_raw_parts_mut(out, dk_len),
-    );
-    dk_len
+    c_abi!(0, {
+        if password.is_null() || salt.is_null() || out.is_null() {
+            return 0;
+        }
+        let dk_len = dk_len.clamp(
+            crate::crypto::pbkdf2::PBKDF2_MIN_LEN,
+            crate::crypto::pbkdf2::PBKDF2_MAX_LEN,
+        ) as usize;
+        if out_cap < dk_len {
+            return 0;
+        }
+        pbkdf2_hmac::<Sha256>(
+            slice::from_raw_parts(password, plen),
+            slice::from_raw_parts(salt, slen),
+            rounds.max(1),
+            slice::from_raw_parts_mut(out, dk_len),
+        );
+        dk_len
+    })
 }
 
 /// AEAD encrypt → ciphertext+tag into `out`; `alg` 0 = AES-256-GCM, 1 = ChaCha20.
@@ -552,19 +571,21 @@ pub unsafe extern "C" fn castrum_base64_encode(
     url_safe: u8,
     padding: u8,
 ) -> usize {
-    if data.is_null() || out.is_null() {
-        return 0;
-    }
-    // Zero-alloc core (`Engine::encode_slice`) — no intermediate Vec. A
-    // too-small buffer yields 0 (the JS wrappers size exactly, so a miss is a
-    // caller bug / real error).
-    crate::crypto::base64::base64_encode_into_slice(
-        slice::from_raw_parts(data, len),
-        slice::from_raw_parts_mut(out, out_cap),
-        url_safe != 0,
-        padding != 0,
-    )
-    .unwrap_or_default()
+    c_abi!(0, {
+        if data.is_null() || out.is_null() {
+            return 0;
+        }
+        // Zero-alloc core (`Engine::encode_slice`) — no intermediate Vec. A
+        // too-small buffer yields 0 (the JS wrappers size exactly, so a miss is a
+        // caller bug / real error).
+        crate::crypto::base64::base64_encode_into_slice(
+            slice::from_raw_parts(data, len),
+            slice::from_raw_parts_mut(out, out_cap),
+            url_safe != 0,
+            padding != 0,
+        )
+        .unwrap_or_default()
+    })
 }
 
 /// base64 decode into `out`; returns 0 on invalid input / too-small buffer.
@@ -580,18 +601,20 @@ pub unsafe extern "C" fn castrum_base64_decode(
     url_safe: u8,
     padding: u8,
 ) -> usize {
-    if data.is_null() || out.is_null() {
-        return 0;
-    }
-    // Zero-alloc core (`Engine::decode_slice`) — no intermediate Vec.
-    // Invalid input OR too-small buffer → 0 (napi parity).
-    crate::crypto::base64::base64_decode_into_slice(
-        slice::from_raw_parts(data, len),
-        slice::from_raw_parts_mut(out, out_cap),
-        url_safe != 0,
-        padding != 0,
-    )
-    .unwrap_or_default()
+    c_abi!(0, {
+        if data.is_null() || out.is_null() {
+            return 0;
+        }
+        // Zero-alloc core (`Engine::decode_slice`) — no intermediate Vec.
+        // Invalid input OR too-small buffer → 0 (napi parity).
+        crate::crypto::base64::base64_decode_into_slice(
+            slice::from_raw_parts(data, len),
+            slice::from_raw_parts_mut(out, out_cap),
+            url_safe != 0,
+            padding != 0,
+        )
+        .unwrap_or_default()
+    })
 }
 
 /// Random hex token: `byte_len` random bytes → `byte_len*2` hex chars, returned
@@ -601,21 +624,23 @@ pub unsafe extern "C" fn castrum_base64_decode(
 /// `byte_len` must be ≤ 16 MiB (else `null`).
 #[no_mangle]
 pub unsafe extern "C" fn castrum_random_token(byte_len: u32) -> *const std::os::raw::c_char {
-    const MAX: usize = 16 * 1024 * 1024;
-    let len = byte_len as usize;
-    let Some(out_len) = len.checked_mul(2) else {
-        return std::ptr::null();
-    };
-    if len > MAX {
-        return std::ptr::null();
-    }
-    let mut bytes = vec![0u8; len];
-    if getrandom::fill(&mut bytes).is_err() {
-        return std::ptr::null();
-    }
-    cstring_return(out_len, |out| {
-        crate::util::bytes::hex_encode(&bytes, out);
-        Some(out_len)
+    c_abi!(std::ptr::null(), {
+        const MAX: usize = 16 * 1024 * 1024;
+        let len = byte_len as usize;
+        let Some(out_len) = len.checked_mul(2) else {
+            return std::ptr::null();
+        };
+        if len > MAX {
+            return std::ptr::null();
+        }
+        let mut bytes = vec![0u8; len];
+        if getrandom::fill(&mut bytes).is_err() {
+            return std::ptr::null();
+        }
+        cstring_return(out_len, |out| {
+            crate::util::bytes::hex_encode(&bytes, out);
+            Some(out_len)
+        })
     })
 }
 
@@ -633,25 +658,27 @@ pub unsafe extern "C" fn castrum_random_token_into(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    const MAX: usize = 16 * 1024 * 1024;
-    let len = byte_len as usize;
-    let Some(out_len) = len.checked_mul(2) else {
-        return 0;
-    };
-    if len > MAX || out.is_null() {
-        return 0;
-    }
-    if out_cap < out_len {
-        // Needed-size convention: report the exact required size.
-        return out_len;
-    }
-    let mut bytes = vec![0u8; len];
-    if getrandom::fill(&mut bytes).is_err() {
-        return 0;
-    }
-    let o = slice::from_raw_parts_mut(out, out_len);
-    crate::util::bytes::hex_encode(&bytes, o);
-    out_len
+    c_abi!(0, {
+        const MAX: usize = 16 * 1024 * 1024;
+        let len = byte_len as usize;
+        let Some(out_len) = len.checked_mul(2) else {
+            return 0;
+        };
+        if len > MAX || out.is_null() {
+            return 0;
+        }
+        if out_cap < out_len {
+            // Needed-size convention: report the exact required size.
+            return out_len;
+        }
+        let mut bytes = vec![0u8; len];
+        if getrandom::fill(&mut bytes).is_err() {
+            return 0;
+        }
+        let o = slice::from_raw_parts_mut(out, out_len);
+        crate::util::bytes::hex_encode(&bytes, o);
+        out_len
+    })
 }
 
 // ── Session envelope (fused JSON + HMAC) ────────────────────────────

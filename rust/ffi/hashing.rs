@@ -7,19 +7,20 @@
 use std::ptr;
 use std::slice;
 
-use super::util::panic_guard;
-
+use super::util::{c_abi, panic_guard};
 /// CRC32 over `data[0..len]`. Returns the CRC-32 checksum.
 ///
 /// # Safety
 /// `data` must be valid for reads of `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_crc32(data: *const u8, len: usize) -> u32 {
-    if data.is_null() && len != 0 {
-        return 0;
-    }
-    let bytes = slice::from_raw_parts(data, len);
-    crate::crypto::hashing::crc32_bytes(bytes)
+    c_abi!(0, {
+        if data.is_null() && len != 0 {
+            return 0;
+        }
+        let bytes = slice::from_raw_parts(data, len);
+        crate::crypto::hashing::crc32_bytes(bytes)
+    })
 }
 
 /// FNV-1a 64 over `data[0..len]`.
@@ -28,11 +29,13 @@ pub unsafe extern "C" fn castrum_crc32(data: *const u8, len: usize) -> u32 {
 /// `data` must be valid for reads of `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_fnv1a64(data: *const u8, len: usize) -> u64 {
-    if data.is_null() && len != 0 {
-        return 0;
-    }
-    let bytes = slice::from_raw_parts(data, len);
-    crate::crypto::hashing::fnv1a64_bytes(bytes)
+    c_abi!(0, {
+        if data.is_null() && len != 0 {
+            return 0;
+        }
+        let bytes = slice::from_raw_parts(data, len);
+        crate::crypto::hashing::fnv1a64_bytes(bytes)
+    })
 }
 
 /// XXH3-64 over `data[0..len]`.
@@ -41,11 +44,13 @@ pub unsafe extern "C" fn castrum_fnv1a64(data: *const u8, len: usize) -> u64 {
 /// `data` must be valid for reads of `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_xxh3(data: *const u8, len: usize) -> u64 {
-    if data.is_null() && len != 0 {
-        return 0;
-    }
-    let bytes = slice::from_raw_parts(data, len);
-    crate::crypto::hashing::fast_hash_bytes(bytes)
+    c_abi!(0, {
+        if data.is_null() && len != 0 {
+            return 0;
+        }
+        let bytes = slice::from_raw_parts(data, len);
+        crate::crypto::hashing::fast_hash_bytes(bytes)
+    })
 }
 
 /// JSON-validity check over `data[0..len]`. Returns 1 if the bytes are
@@ -55,11 +60,13 @@ pub unsafe extern "C" fn castrum_xxh3(data: *const u8, len: usize) -> u64 {
 /// `data` must be valid for reads of `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_json_valid(data: *const u8, len: usize) -> u8 {
-    if data.is_null() {
-        return 0;
-    }
-    let bytes = slice::from_raw_parts(data, len);
-    u8::from(crate::json::json_ops::json_valid_bytes(bytes))
+    c_abi!(0, {
+        if data.is_null() {
+            return 0;
+        }
+        let bytes = slice::from_raw_parts(data, len);
+        u8::from(crate::json::json_ops::json_valid_bytes(bytes))
+    })
 }
 
 /// UTF-8 validity check over `data[0..len]`. Returns 1 if the bytes are valid
@@ -70,11 +77,13 @@ pub unsafe extern "C" fn castrum_json_valid(data: *const u8, len: usize) -> u8 {
 /// `data` must be valid for reads of `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_utf8_valid(data: *const u8, len: usize) -> u8 {
-    if data.is_null() {
-        return 0;
-    }
-    let bytes = slice::from_raw_parts(data, len);
-    u8::from(std::str::from_utf8(bytes).is_ok())
+    c_abi!(0, {
+        if data.is_null() {
+            return 0;
+        }
+        let bytes = slice::from_raw_parts(data, len);
+        u8::from(std::str::from_utf8(bytes).is_ok())
+    })
 }
 
 /// Lowercase-hex encode `data[0..len]` into `out[0..out_cap]`. Returns bytes
@@ -90,12 +99,14 @@ pub unsafe extern "C" fn castrum_hex_encode(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if data.is_null() || out.is_null() || len.checked_mul(2).is_none_or(|n| n > out_cap) {
-        return 0;
-    }
-    let input = slice::from_raw_parts(data, len);
-    let output = slice::from_raw_parts_mut(out, len * 2);
-    crate::crypto::base64::hex_encode_into_slice(input, output).unwrap_or(0)
+    c_abi!(0, {
+        if data.is_null() || out.is_null() || len.checked_mul(2).is_none_or(|n| n > out_cap) {
+            return 0;
+        }
+        let input = slice::from_raw_parts(data, len);
+        let output = slice::from_raw_parts_mut(out, len * 2);
+        crate::crypto::base64::hex_encode_into_slice(input, output).unwrap_or(0)
+    })
 }
 
 /// RFC 3986 percent-encode `data[0..len]` into `out[0..out_cap]`. Returns
@@ -112,12 +123,14 @@ pub unsafe extern "C" fn castrum_url_encode(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if data.is_null() || out.is_null() {
-        return 0;
-    }
-    let input = slice::from_raw_parts(data, len);
-    let output = slice::from_raw_parts_mut(out, out_cap);
-    crate::http::url_codec::url_encode_into_slice(input, output).unwrap_or_default()
+    c_abi!(0, {
+        if data.is_null() || out.is_null() {
+            return 0;
+        }
+        let input = slice::from_raw_parts(data, len);
+        let output = slice::from_raw_parts_mut(out, out_cap);
+        crate::http::url_codec::url_encode_into_slice(input, output).unwrap_or_default()
+    })
 }
 
 /// Hex-decode `data[0..len]` into `out[0..out_cap]`. Returns bytes written
@@ -133,12 +146,14 @@ pub unsafe extern "C" fn castrum_hex_decode(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if data.is_null() || out.is_null() {
-        return 0;
-    }
-    let input = slice::from_raw_parts(data, len);
-    let output = slice::from_raw_parts_mut(out, out_cap);
-    crate::crypto::base64::hex_decode_into_slice(input, output).unwrap_or_default()
+    c_abi!(0, {
+        if data.is_null() || out.is_null() {
+            return 0;
+        }
+        let input = slice::from_raw_parts(data, len);
+        let output = slice::from_raw_parts_mut(out, out_cap);
+        crate::crypto::base64::hex_decode_into_slice(input, output).unwrap_or_default()
+    })
 }
 
 /// Percent-decode `data[0..len]` into `out[0..out_cap]`. Returns bytes
@@ -154,12 +169,14 @@ pub unsafe extern "C" fn castrum_url_decode(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if data.is_null() || out.is_null() {
-        return 0;
-    }
-    let input = slice::from_raw_parts(data, len);
-    let output = slice::from_raw_parts_mut(out, out_cap);
-    crate::http::url_codec::url_decode_into_slice(input, output).unwrap_or_default()
+    c_abi!(0, {
+        if data.is_null() || out.is_null() {
+            return 0;
+        }
+        let input = slice::from_raw_parts(data, len);
+        let output = slice::from_raw_parts_mut(out, out_cap);
+        crate::http::url_codec::url_decode_into_slice(input, output).unwrap_or_default()
+    })
 }
 
 /// Sum of `id` fields across a JSON array (sonic-rs zero-DOM) → packed

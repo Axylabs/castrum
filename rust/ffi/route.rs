@@ -11,8 +11,7 @@
 
 use std::slice;
 
-use super::util::panic_guard;
-
+use super::util::{c_abi, panic_guard};
 /// Compile a route descriptor into an opaque handle (`0` = failure / null
 /// input / panic). The handle is an owned `Box<NativeRoute>`; release it with
 /// {@link castrum_route_destroy}.
@@ -79,7 +78,9 @@ pub unsafe extern "C" fn castrum_route_run(
 /// most once.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_route_destroy(handle: u64) {
-    if handle != 0 {
-        drop(Box::from_raw(handle as *mut crate::ingress::NativeRoute));
-    }
+    c_abi!((), {
+        if handle != 0 {
+            drop(Box::from_raw(handle as *mut crate::ingress::NativeRoute));
+        }
+    })
 }

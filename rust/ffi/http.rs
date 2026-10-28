@@ -6,8 +6,7 @@
 
 use std::slice;
 
-use super::util::{cstring_return, panic_guard};
-
+use super::util::{c_abi, cstring_return, panic_guard};
 /// crc32-based ETag (10 strong / 12 weak) into `out`; `weak` is a u8 flag.
 ///
 /// # Safety
@@ -22,13 +21,15 @@ pub unsafe extern "C" fn castrum_etag(
     len: usize,
     weak: u8,
 ) -> *const std::os::raw::c_char {
-    if data.is_null() {
-        return std::ptr::null();
-    }
-    let crc = crc32fast::hash(slice::from_raw_parts(data, len));
-    let needed = if weak != 0 { 12 } else { 10 };
-    cstring_return(needed, |out| {
-        crate::http::etag::etag_from_crc32_into(crc, weak != 0, out).ok()
+    c_abi!(std::ptr::null(), {
+        if data.is_null() {
+            return std::ptr::null();
+        }
+        let crc = crc32fast::hash(slice::from_raw_parts(data, len));
+        let needed = if weak != 0 { 12 } else { 10 };
+        cstring_return(needed, |out| {
+            crate::http::etag::etag_from_crc32_into(crc, weak != 0, out).ok()
+        })
     })
 }
 
@@ -47,16 +48,22 @@ pub unsafe extern "C" fn castrum_etag_into(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if data.is_null() || out.is_null() {
-        return 0;
-    }
-    let needed = if weak != 0 { 12 } else { 10 };
-    if out_cap < needed {
-        return needed;
-    }
-    let crc = crc32fast::hash(slice::from_raw_parts(data, len));
-    crate::http::etag::etag_from_crc32_into(crc, weak != 0, slice::from_raw_parts_mut(out, needed))
+    c_abi!(0, {
+        if data.is_null() || out.is_null() {
+            return 0;
+        }
+        let needed = if weak != 0 { 12 } else { 10 };
+        if out_cap < needed {
+            return needed;
+        }
+        let crc = crc32fast::hash(slice::from_raw_parts(data, len));
+        crate::http::etag::etag_from_crc32_into(
+            crc,
+            weak != 0,
+            slice::from_raw_parts_mut(out, needed),
+        )
         .unwrap_or_default()
+    })
 }
 
 /// Evaluate `ConditionalRequest::is_not_modified` against the precompiled state
@@ -227,11 +234,13 @@ pub unsafe extern "C" fn castrum_accept_negotiator_negotiate_server(
 /// `out` must be valid for writes of up to `out_cap` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_http_date_into(secs: f64, out: *mut u8, out_cap: usize) -> usize {
-    if out.is_null() {
-        return 0;
-    }
-    let output = slice::from_raw_parts_mut(out, out_cap);
-    crate::http::http_date::http_date_into_slice(secs as i64, output).unwrap_or(0)
+    c_abi!(0, {
+        if out.is_null() {
+            return 0;
+        }
+        let output = slice::from_raw_parts_mut(out, out_cap);
+        crate::http::http_date::http_date_into_slice(secs as i64, output).unwrap_or(0)
+    })
 }
 
 /// Parse an IMF-fixdate back to unix seconds → packed `[u8 ok][i64 secs LE]`
@@ -721,7 +730,7 @@ pub unsafe extern "C" fn castrum_form_parse_packed(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    castrum_query_parse_packed(data, len, out, out_cap)
+    c_abi!(0, { castrum_query_parse_packed(data, len, out, out_cap) })
 }
 
 /// Parse a `multipart/form-data` body into the packed parts layout (the same

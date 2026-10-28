@@ -11,13 +11,13 @@
 // we verify (and fail fast) that an artifact exists for every target declared
 // in package.json -> "napi.targets".
 //
-// The CI publish workflow (see .github/workflows/ci.yml) downloads the
-// per-platform addons built by the "build" job into ./artifacts and calls
-// `npm publish`; this script stages those files into the package root before
-// verifying. Locally, `npm publish` without all artifacts will fail with
-// instructions — unless CASTRUM_PUBLISH_ALLOW_PARTIAL=1 is set (bun run
-// release:manual), in which case it ships only the platforms that are present
-// and warns instead of failing.
+// The release workflow (see .github/workflows/release.yml) downloads the
+// per-platform addons built by the reusable build-addons.yml matrix into
+// ./artifacts and calls `npm publish`; this script stages those files into the
+// package root before verifying. Locally, `npm publish` without all artifacts
+// will fail with instructions — unless CASTRUM_PUBLISH_ALLOW_PARTIAL=1 is set
+// (bun run release:manual), in which case it ships only the platforms that are
+// present and warns instead of failing.
 
 import { copyFileSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -115,8 +115,8 @@ if (missing.length > 0) {
         missing.map((m) => `  - ${m}`).join('\n') +
         '\n\n' +
         'Every platform in package.json "napi.targets" must ship in the tarball.\n' +
-        'These are built per-platform by the CI "build" job and uploaded as\n' +
-        'workflow artifacts; the CI "publish" job downloads them into ./artifacts\n' +
+        'These are built per-platform by build-addons.yml and uploaded as\n' +
+        'workflow artifacts; the release "publish" job downloads them into ./artifacts\n' +
         'and this script stages + verifies them before publishing.\n' +
         '  - Build only the current platform locally:  bun run build\n' +
         '  - Simple single-platform local publish:   bun run release:manual\n' +

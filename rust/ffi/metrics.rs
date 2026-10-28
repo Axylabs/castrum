@@ -10,8 +10,7 @@
 
 use std::slice;
 
-use super::util::panic_guard;
-
+use super::util::{c_abi, panic_guard};
 /// `u32::MAX` — the declare-failure sentinel (fits f64 exactly; real series
 /// ids are dense from 0 and capped well below this).
 pub(crate) const METRICS_DECLARE_ERR: u32 = u32::MAX;
@@ -294,11 +293,13 @@ pub unsafe extern "C" fn castrum_metrics_render(
 /// `handle` must be either 0 or a live handle not yet destroyed.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_metrics_destroy(handle: usize) {
-    if handle != 0 {
-        drop(Box::from_raw(
-            handle as *mut crate::metrics::MetricsRegistry,
-        ));
-    }
+    c_abi!((), {
+        if handle != 0 {
+            drop(Box::from_raw(
+                handle as *mut crate::metrics::MetricsRegistry,
+            ));
+        }
+    })
 }
 
 /// Split a `\x1f`-separated key list into owned strings (empty input → []).

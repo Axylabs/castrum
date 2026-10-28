@@ -6,8 +6,7 @@
 
 use std::slice;
 
-use super::util::{cstring_return, panic_guard};
-
+use super::util::{c_abi, cstring_return, panic_guard};
 /// RFC 6455 Sec-WebSocket-Accept (28 bytes) returned as a null-terminated C
 /// string into the per-thread reused buffer (`cstring` return).
 ///
@@ -52,19 +51,21 @@ pub unsafe extern "C" fn castrum_ws_accept_key_into(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if key.is_null() || out.is_null() {
-        return 0;
-    }
-    if out_cap < 28 {
-        return 28;
-    }
-    match crate::payload::websocket::ws_accept_key_into(
-        slice::from_raw_parts(key, klen),
-        slice::from_raw_parts_mut(out, 28),
-    ) {
-        Ok(28) => 28,
-        _ => 0,
-    }
+    c_abi!(0, {
+        if key.is_null() || out.is_null() {
+            return 0;
+        }
+        if out_cap < 28 {
+            return 28;
+        }
+        match crate::payload::websocket::ws_accept_key_into(
+            slice::from_raw_parts(key, klen),
+            slice::from_raw_parts_mut(out, 28),
+        ) {
+            Ok(28) => 28,
+            _ => 0,
+        }
+    })
 }
 
 /// WebSocket frame encode into `out` (opcode 1/2/8/9/10, `mask`/`fin` flags).
@@ -216,14 +217,16 @@ compress_to_out!(
 /// `data` must be valid for reads of `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn castrum_gzip_isize(data: *const u8, len: usize) -> u32 {
-    if data.is_null() || len < 18 {
-        return 0;
-    }
-    let s = slice::from_raw_parts(data, len);
-    if s[0] != 0x1f || s[1] != 0x8b {
-        return 0;
-    }
-    u32::from_le_bytes([s[len - 4], s[len - 3], s[len - 2], s[len - 1]])
+    c_abi!(0, {
+        if data.is_null() || len < 18 {
+            return 0;
+        }
+        let s = slice::from_raw_parts(data, len);
+        if s[0] != 0x1f || s[1] != 0x8b {
+            return 0;
+        }
+        u32::from_le_bytes([s[len - 4], s[len - 3], s[len - 2], s[len - 1]])
+    })
 }
 
 /// Encode one SSE event into `out`. Optional fields use `flags` bits

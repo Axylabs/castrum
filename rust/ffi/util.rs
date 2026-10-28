@@ -122,6 +122,19 @@ pub(crate) fn panic_guard<T>(f: impl FnOnce() -> T, fallback: T) -> T {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
 }
 
+/// Wrap a `#[no_mangle] extern "C"` body so a panic returns `fallback`
+/// instead of unwinding into the host runtime. Every C-ABI export uses this
+/// (a source-level test in `ffi/tests.rs` enforces it).
+///
+/// `return` inside the block returns from the guarded closure, so the bodies
+/// stay readable.
+macro_rules! c_abi {
+    ($fallback:expr, $body:block) => {
+        $crate::ffi::util::panic_guard(|| $body, $fallback)
+    };
+}
+pub(crate) use c_abi;
+
 /// Write the packed `[u8 allowed][u32 remaining LE][i64 reset_ms LE]` verdict;
 /// returns bytes written or the exact required size (13) when `out_cap` is too
 /// small. Never returns 0 on a valid call.

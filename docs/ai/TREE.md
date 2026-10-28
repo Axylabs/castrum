@@ -1057,8 +1057,10 @@ docs/
 │  ├─ bug_report.md
 │  └─ feature_request.md
 ├─ workflows/
+│  ├─ build-addons.yml   # reusable multi-platform addon matrix (ci + release)
 │  ├─ ci.yml
-│  └─ codeql.yml
+│  ├─ codeql.yml
+│  └─ release.yml        # v* tag: verify → build → npm publish → GitHub release
 ├─ codeql-config.yml
 ├─ dependabot.yml
 └─ PULL_REQUEST_TEMPLATE.md

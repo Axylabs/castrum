@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.11] — 2026-10-28
+
+### Fixed
+
+- **No C-ABI export can panic across the FFI boundary any more.** A Rust panic
+  unwinding through `extern "C"` is undefined behaviour; in practice it aborted
+  the host process (the `11-concurrent-burst` load run died with a bare `panic`
+  from a worker). Every `#[no_mangle]` entry point now runs its body through
+  the `c_abi!` macro, which wraps it in `catch_unwind` and returns the symbol's
+  documented zero value (`0` / `false` / `()` / null) on panic. Bodies keep
+  early `return`s and readability; no signature changed.
+- Added `every_c_abi_export_is_panic_guarded`, a source-level contract test that
+  fails the build when a new `#[no_mangle] extern "C"` export is added without
+  the guard, and `packed_parsers_never_panic_on_hostile_c_abi_input`, which
+  fuzzes the packed parsers/route frames with truncated, oversized and
+  adversarial length prefixes.
+
+### CI
+
+- **`release.yml` is the single release path.** A `v*` tag (or a manual
+  dispatch against an existing tag) verifies the tag matches
+  `package.json`/`Cargo.toml`/`Cargo.lock`, runs fmt/clippy/tests + the JS
+  typecheck/lint/test gates, builds every napi target through the new reusable
+  `build-addons.yml`, publishes to npm with OIDC trusted publishing (token
+  fallback) and provenance, and attaches the same `.node` artifacts plus
+  `SHA256SUMS` to a GitHub release. CI no longer publishes or runs on tags, so
+  the two workflows cannot race or double-publish.
+
 ### Security
 
 - **Dependency advisories cleared** across both lockfiles (the `Rust` job's

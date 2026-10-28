@@ -15,15 +15,18 @@
 
 use std::slice;
 
+use super::util::c_abi;
 /// Bare C-ABI trampoline floor: does nothing, returns nothing.
 #[no_mangle]
-pub extern "C" fn ffi_probe_noop() {}
+pub extern "C" fn ffi_probe_noop() {
+    c_abi!((), {})
+}
 
 /// Scalar pass-through: returns `v` unchanged. Measures scalar-arg + return
 /// conversion only (bind with `usize` vs `u64_fast` to isolate BigInt boxing).
 #[no_mangle]
 pub extern "C" fn ffi_probe_echo_usize(v: usize) -> usize {
-    v
+    c_abi!(0, { v })
 }
 
 /// View pass-through: returns the byte length of the `(ptr, len)` pair.
@@ -34,11 +37,13 @@ pub extern "C" fn ffi_probe_echo_usize(v: usize) -> usize {
 /// form a slice whose length we return — never dereferenced).
 #[no_mangle]
 pub unsafe extern "C" fn ffi_probe_echo_view(data: *const u8, len: usize) -> usize {
-    if data.is_null() && len != 0 {
-        return 0;
-    }
-    let _ = slice::from_raw_parts(data, len);
-    len
+    c_abi!(0, {
+        if data.is_null() && len != 0 {
+            return 0;
+        }
+        let _ = slice::from_raw_parts(data, len);
+        len
+    })
 }
 
 /// `cstring`-ARG pass-through: returns the byte length of the NUL-terminated
@@ -53,8 +58,10 @@ pub unsafe extern "C" fn ffi_probe_echo_view(data: *const u8, len: usize) -> usi
 /// `data` must be a valid NUL-terminated C string for reads up to its terminator.
 #[no_mangle]
 pub unsafe extern "C" fn ffi_probe_echo_cstr(data: *const std::os::raw::c_char) -> usize {
-    if data.is_null() {
-        return 0;
-    }
-    std::ffi::CStr::from_ptr(data).to_bytes().len()
+    c_abi!(0, {
+        if data.is_null() {
+            return 0;
+        }
+        std::ffi::CStr::from_ptr(data).to_bytes().len()
+    })
 }

@@ -2528,3 +2528,98 @@ fn metrics_record_batch_c_abi() {
     assert!(text.contains("batch_total{k=\"v\"} 4"));
     unsafe { castrum_metrics_destroy(h) };
 }
+
+// ── Panic-containment contract ─────────────────────────────────
+
+/// Every `#[no_mangle]` export must route through `c_abi!`/`panic_guard`.
+///
+/// A panic unwinding through an `extern "C"` frame is undefined behaviour and
+/// aborts the host process (Bun), which is exactly the failure mode the
+/// `11-concurrent-burst` crash exposed. This source-level guard makes a new,
+/// unguarded export a test failure rather than a production SIGABRT.
+#[test]
+fn every_c_abi_export_is_panic_guarded() {
+    const SOURCES: &[(&str, &str)] = &[
+        ("crypto.rs", include_str!("crypto.rs")),
+        ("hashing.rs", include_str!("hashing.rs")),
+        ("http.rs", include_str!("http.rs")),
+        ("ingress.rs", include_str!("ingress.rs")),
+        ("json.rs", include_str!("json.rs")),
+        ("jwt.rs", include_str!("jwt.rs")),
+        ("metrics.rs", include_str!("metrics.rs")),
+        ("payload.rs", include_str!("payload.rs")),
+        ("probe.rs", include_str!("probe.rs")),
+        ("rate_limit.rs", include_str!("rate_limit.rs")),
+        ("route.rs", include_str!("route.rs")),
+        ("task.rs", include_str!("task.rs")),
+        ("validators.rs", include_str!("validators.rs")),
+    ];
+
+    let mut missing = Vec::new();
+    for (file, source) in SOURCES {
+        let mut rest = *source;
+        while let Some(idx) = rest.find("#[no_mangle]") {
+            let item = &rest[idx..];
+            let next = item[1..]
+                .find("#[no_mangle]")
+                .map(|i| i + 1)
+                .unwrap_or(item.len());
+            let guarded = item[..next].contains("c_abi!") || item[..next].contains("panic_guard");
+            if !guarded {
+                let name = item
+                    .split("fn ")
+                    .nth(1)
+                    .and_then(|s| s.split(['(', '<', ' ']).next())
+                    .unwrap_or("<unknown>");
+                missing.push(format!("{file}:{name}"));
+            }
+            rest = &item[next..];
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "C-ABI exports without a panic guard: {missing:?}"
+    );
+}
+
+/// Malformed-input fuzz over the packed C-ABI parsers + the per-route frame.
+///
+/// Calls the real `extern "C"` entry points (not just their cores) with
+/// arbitrary bytes and arbitrary output capacities: every call must return a
+/// value, never panic. This is the Rust-side half of the fuzz requirement
+/// (the JS-side harness lives in `scripts/`).
+#[test]
+fn packed_parsers_never_panic_on_hostile_c_abi_input() {
+    use crate::test_support::Rng;
+
+    let mut rng = Rng(0xabad_1dea);
+    let desc = route_desc_parse_both();
+    let handle = unsafe { castrum_route_compile(desc.as_ptr(), desc.len()) };
+
+    for _ in 0..2_000 {
+        let len = (rng.next() % 128) as usize;
+        let data = rng.bytes(len);
+        let mut out = vec![0u8; (rng.next() % 96) as usize];
+        let (ptr, plen) = (data.as_ptr(), data.len());
+        let (optr, ocap) = (out.as_mut_ptr(), out.len());
+
+        unsafe {
+            let _ = castrum_http_parse_request_packed(ptr, plen, optr, ocap);
+            let _ = castrum_query_parse_packed(ptr, plen, optr, ocap);
+            let _ = castrum_cookie_parse_packed(ptr, plen, optr, ocap);
+            let _ = castrum_form_parse_packed(ptr, plen, optr, ocap);
+            let _ = castrum_multipart_parse_packed(ptr, plen, ptr, plen, optr, ocap);
+            let _ = castrum_ws_frame_decode_packed(ptr, plen, optr, ocap);
+            let _ = castrum_base64_decode(ptr, plen, optr, ocap, (rng.next() & 1) as u8, 1);
+            let _ = castrum_hex_validate_batch(ptr, plen, (rng.next() % 40) as u32, optr, ocap);
+            if handle != 0 {
+                let _ = castrum_route_run(handle, ptr, plen, optr, ocap);
+            }
+        }
+    }
+
+    if handle != 0 {
+        unsafe { castrum_route_destroy(handle) };
+    }
+}

@@ -10,6 +10,7 @@
 //     in JS and an engine re-encode — measured ~100 ns/call of pure waste;
 //     guide rule "cstring args are a LOSS for BYTE inputs").
 
+use super::util::c_abi;
 /// Email / UUID / IPv4 / IPv6 validators → 1/0 (`cstring` ARG shape).
 macro_rules! validator_c_abi {
     ($name:ident, $core:path) => {
@@ -19,10 +20,12 @@ macro_rules! validator_c_abi {
         /// `data` must be a valid NUL-terminated C string.
         #[no_mangle]
         pub unsafe extern "C" fn $name(data: *const std::os::raw::c_char) -> u8 {
-            if data.is_null() {
-                return 0;
-            }
-            u8::from($core(std::ffi::CStr::from_ptr(data).to_bytes()))
+            c_abi!(0, {
+                if data.is_null() {
+                    return 0;
+                }
+                u8::from($core(std::ffi::CStr::from_ptr(data).to_bytes()))
+            })
         }
     };
 }
@@ -40,15 +43,17 @@ macro_rules! validator_bytes_c_abi {
         /// `data` must be valid for reads of `len` bytes.
         #[no_mangle]
         pub unsafe extern "C" fn $name(data: *const u8, len: usize) -> u8 {
-            if data.is_null() && len != 0 {
-                return 0;
-            }
-            let bytes = if len == 0 {
-                &[]
-            } else {
-                std::slice::from_raw_parts(data, len)
-            };
-            u8::from($core(bytes))
+            c_abi!(0, {
+                if data.is_null() && len != 0 {
+                    return 0;
+                }
+                let bytes = if len == 0 {
+                    &[]
+                } else {
+                    std::slice::from_raw_parts(data, len)
+                };
+                u8::from($core(bytes))
+            })
         }
     };
 }
@@ -103,21 +108,23 @@ pub unsafe extern "C" fn castrum_hex_validate_batch(
     out: *mut u8,
     out_cap: usize,
 ) -> usize {
-    if data.is_null() || out.is_null() {
-        return 0;
-    }
-    let input = std::slice::from_raw_parts(data, len);
-    let needed = crate::util::validation::hex_batch_count(input);
-    if needed > out_cap {
-        return needed;
-    }
-    // `needed` verdict bytes fit — one bounded scratch Vec, one copy out.
-    let mut buf = Vec::with_capacity(needed);
-    match crate::util::validation::hex_batch_valid_into(input, width as usize, &mut buf) {
-        Ok(()) if buf.len() <= out_cap => {
-            std::slice::from_raw_parts_mut(out, buf.len()).copy_from_slice(&buf);
-            buf.len()
+    c_abi!(0, {
+        if data.is_null() || out.is_null() {
+            return 0;
         }
-        _ => 0,
-    }
+        let input = std::slice::from_raw_parts(data, len);
+        let needed = crate::util::validation::hex_batch_count(input);
+        if needed > out_cap {
+            return needed;
+        }
+        // `needed` verdict bytes fit — one bounded scratch Vec, one copy out.
+        let mut buf = Vec::with_capacity(needed);
+        match crate::util::validation::hex_batch_valid_into(input, width as usize, &mut buf) {
+            Ok(()) if buf.len() <= out_cap => {
+                std::slice::from_raw_parts_mut(out, buf.len()).copy_from_slice(&buf);
+                buf.len()
+            }
+            _ => 0,
+        }
+    })
 }

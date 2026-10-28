@@ -291,12 +291,16 @@ consumed.
 
 - Package name `castrum` (unscoped, public). Native binary name `castrum`
   (declared in package.json `napi.binaryName` + Cargo.toml — keep in sync).
-- **Multi-platform (recommended)**: push a `v*` tag → `.github/workflows/ci.yml`
-  builds each platform addon, the `publish` job downloads them into
-  `./artifacts`, stages them, and runs `npm publish` (npm Trusted Publishing /
-  OIDC — preferred, no long-lived token; the job also targets the `NPM_TOKEN`
-  environment as a fallback secret. Needs the Trusted Publisher configured on
-  npmjs.com).
+- **Multi-platform (recommended)**: push a `v*` tag → `.github/workflows/release.yml`.
+  It verifies the tag matches `package.json`/`Cargo.toml`/`Cargo.lock`, runs
+  fmt/clippy/tests + the JS gates, then calls the reusable
+  `.github/workflows/build-addons.yml` (the same matrix CI uses) to build every
+  platform addon. The `publish` job downloads them into `./artifacts`, stages
+  them, and runs `npm publish` (npm Trusted Publishing / OIDC — preferred, no
+  long-lived token; the job also targets the `NPM_TOKEN` environment as a
+  fallback secret. Needs the Trusted Publisher configured on npmjs.com).
+  A final job creates the GitHub release with the `.node` files + `SHA256SUMS`.
+  CI itself no longer publishes (or runs on tags), so the two cannot race.
 - **Manual single-platform**: `bun run release:manual`
   (syncs package.json ↔ Cargo.toml ↔ CHANGELOG, tags, builds, publishes with
   `CASTRUM_PUBLISH_ALLOW_PARTIAL=1`). `--dry-run` plans only.

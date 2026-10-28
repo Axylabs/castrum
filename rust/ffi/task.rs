@@ -7,9 +7,8 @@
 
 use std::slice;
 
-use super::util::panic_guard;
+use super::util::{c_abi, panic_guard};
 use crate::task;
-
 /// Start the pool with `threads` workers (0 → runtime default).
 /// Returns `0` started, `1` already running, `2` internal error.
 #[no_mangle]
@@ -67,7 +66,7 @@ pub unsafe extern "C" fn castrum_task_drain(out: *mut u8, out_cap: usize) -> usi
 /// Completions waiting to be drained.
 #[no_mangle]
 pub extern "C" fn castrum_task_pending() -> u32 {
-    task::pending()
+    c_abi!(0, { task::pending() })
 }
 
 /// Submit an op that writes its result DIRECTLY into `out` (zero-copy output):
@@ -115,7 +114,7 @@ pub unsafe extern "C" fn castrum_task_submit_out(
 /// Mark `task_id` cancelled. Returns `1` when newly marked, `0` otherwise.
 #[no_mangle]
 pub extern "C" fn castrum_task_cancel(task_id: usize) -> u32 {
-    u32::from(task::mark_cancelled(task_id as u64))
+    c_abi!(0, { u32::from(task::mark_cancelled(task_id as u64)) })
 }
 
 /// Submit an op whose PAYLOAD is read IN PLACE from the caller's buffer
@@ -169,8 +168,10 @@ pub unsafe extern "C" fn castrum_task_submit_slice(
 /// thread (a `bun:ffi` `JSCallback({ threadsafe: true }).ptr`).
 #[no_mangle]
 pub extern "C" fn castrum_task_set_doorbell(cb: *const std::os::raw::c_void) -> u32 {
-    task::set_doorbell(cb as usize);
-    1
+    c_abi!(0, {
+        task::set_doorbell(cb as usize);
+        1
+    })
 }
 
 /// Stop the pool and drop pending completions. Returns `0`.
@@ -179,14 +180,16 @@ pub extern "C" fn castrum_task_set_doorbell(cb: *const std::os::raw::c_void) -> 
 /// point must not call a JS callback the owner is about to close.
 #[no_mangle]
 pub extern "C" fn castrum_task_shutdown() -> u32 {
-    task::completion::clear_doorbell();
-    task::shutdown();
-    task::completion::clear();
-    0
+    c_abi!(0, {
+        task::completion::clear_doorbell();
+        task::shutdown();
+        task::completion::clear();
+        0
+    })
 }
 
 /// Configured pool worker count (0 before the pool starts).
 #[no_mangle]
 pub extern "C" fn castrum_task_threads() -> u32 {
-    task::threads()
+    c_abi!(0, { task::threads() })
 }
