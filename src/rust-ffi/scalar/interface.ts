@@ -24,6 +24,7 @@ import type {
   PasswordHashOptions,
   RateLimiterInstance,
   SchemaValidatorInstance,
+  TemplateOptions,
   TemplateRendererInstance,
   UrlBuilderInstance,
   WsFrame,
@@ -191,7 +192,7 @@ export interface RustScalar {
   // ── Factories / runtime ──
   createSchemaValidator(schema: Uint8Array): SchemaValidatorInstance
   createHmacSigner(key: Uint8Array): HmacSignerInstance
-  createTemplateRenderer(source: string): TemplateRendererInstance
+  createTemplateRenderer(source: string, options?: TemplateOptions | null): TemplateRendererInstance
   createFormParser(capacity?: number): FormParserInstance
   createMediaTypeParser(): MediaTypeParserInstance
   /**

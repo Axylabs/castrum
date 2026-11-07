@@ -282,6 +282,12 @@ export interface TemplateRendererInstance {
   innerPtr?(): bigint
 }
 
+/** Options for `new TemplateRenderer(source, options?)`. */
+export interface TemplateOptions {
+  /** Disable HTML auto-escaping of `{{ }}` interpolation (default: on). */
+  autoescape?: boolean | null
+}
+
 /** The native `MediaTypeMatcher` class instance (expected precompiled once). */
 export interface MediaTypeMatcherInstance {
   /** Wildcard match against the precompiled expected type. */

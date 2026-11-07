@@ -25,12 +25,33 @@ function resolvePath(ctx: Record<string, unknown>, path: string): unknown {
   return cur
 }
 
+/**
+ * HTML auto-escape table — mirrors minijinja's `AutoEscape::Html` exactly
+ * (the Rust renderer auto-escapes by default since 0.9.12), so this baseline
+ * stays byte-identical to the Rust renderer.
+ */
+function htmlEscape(s: string): string {
+  let out = ''
+  for (let i = 0; i < s.length; i++) {
+    switch (s.charCodeAt(i)) {
+      case 60: out += '&lt;'; break
+      case 62: out += '&gt;'; break
+      case 38: out += '&amp;'; break
+      case 34: out += '&quot;'; break
+      case 39: out += '&#x27;'; break
+      case 47: out += '&#x2f;'; break
+      default: out += s[i]
+    }
+  }
+  return out
+}
+
 function renderValue(v: unknown): string {
   if (v === undefined || v === null) return ''
-  if (typeof v === 'string') return v
+  if (typeof v === 'string') return htmlEscape(v)
   if (typeof v === 'number') return String(v)
   if (typeof v === 'boolean') return v ? 'true' : 'false'
-  return String(v)
+  return htmlEscape(String(v))
 }
 
 function render(src: string, ctx: Record<string, unknown>): string {

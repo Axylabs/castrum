@@ -14,6 +14,18 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+/// Construction options for [`TemplateRenderer`].
+#[napi(object)]
+pub struct TemplateOptions {
+    /// Disable HTML auto-escaping of `{{ }}` interpolation (default: on).
+    ///
+    /// Auto-escape applies minijinja's HTML rules (`< > & " ' /`) to every
+    /// interpolation; the `safe` filter opts a value out. This is the
+    /// secure-by-default contract the ignex TS fallback mirrors byte for
+    /// byte — keep both escape tables in sync.
+    pub autoescape: Option<bool>,
+}
+
 /// A compiled template renderer. Construct once per template, render many times
 /// with different contexts.
 #[napi]
@@ -25,8 +37,16 @@ pub struct TemplateRenderer {
 #[napi]
 impl TemplateRenderer {
     #[napi(constructor)]
-    pub fn new(source: String) -> Result<Self> {
+    pub fn new(source: String, options: Option<TemplateOptions>) -> Result<Self> {
         let mut env = minijinja::Environment::new();
+        // HTML auto-escape by default (XSS-safe interpolation); `| safe` opts
+        // a value out. Only the ignex TS fallback may mirror this table.
+        if options
+            .and_then(|o| o.autoescape)
+            .unwrap_or(true)
+        {
+            env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
+        }
         env.add_template_owned("main", source)
             .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
         Ok(Self { env })
@@ -120,6 +140,8 @@ pub(crate) unsafe fn template_render_core(
 #[napi]
 pub fn template_render_batch_packed(data: Uint8Array, source: String) -> Result<Buffer> {
     let mut env = minijinja::Environment::new();
+    // Same auto-escape contract as `TemplateRenderer::new` (HTML default).
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
     env.add_template_owned("main", source)
         .map_err(|e| Error::from_reason(format!("template compile failed: {e}")))?;
 

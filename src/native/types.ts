@@ -31,6 +31,7 @@ import type {
   RateLimiterInstance,
   RouteInstance,
   SchemaValidatorInstance,
+  TemplateOptions,
   TemplateRendererInstance,
   UrlBuilderInstance,
   WsFrame,
@@ -238,7 +239,7 @@ export interface NativeAddon {
   ): Uint8Array
   jwtVerifyBatchPacked(data: Uint8Array, secret: Uint8Array, nowSeconds: number): Uint8Array
 
-  TemplateRenderer: new (source: string) => TemplateRendererInstance
+  TemplateRenderer: new (source: string, options?: TemplateOptions | null) => TemplateRendererInstance
   templateRenderBatchPacked(data: Uint8Array, source: string): Uint8Array
   JwtSigner: new (secret: Uint8Array, ttlSeconds?: number | null) => JwtSignerInstance
   AeadCipher: new (key: Uint8Array, algorithm?: string | null) => AeadCipherInstance

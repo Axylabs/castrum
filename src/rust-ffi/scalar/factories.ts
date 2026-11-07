@@ -20,6 +20,7 @@ import type {
   PasswordHashOptions,
   RateLimiterInstance,
   SchemaValidatorInstance,
+  TemplateOptions,
   TemplateRendererInstance,
   UrlBuilderInstance,
 } from '../../native'
@@ -438,13 +439,13 @@ export function buildFactories(ctx: RustClientContext) {
       if (ffi) return ffiHmacSigner(key, ffi)
       return new addon.HmacSigner(key)
     },
-    createTemplateRenderer(source: string): TemplateRendererInstance {
+    createTemplateRenderer(source: string, options?: TemplateOptions | null): TemplateRendererInstance {
       const ffi = transport.ffi
       if (ffi) {
-        const napi = new addon.TemplateRenderer(source)
+        const napi = new addon.TemplateRenderer(source, options ?? null)
         return ffiTemplateRenderer(napi, handlePtr(napi.innerPtr?.()), ffi)
       }
-      return new addon.TemplateRenderer(source)
+      return new addon.TemplateRenderer(source, options ?? null)
     },
     createFormParser(capacity?: number): FormParserInstance {
       const ffi = transport.ffi
