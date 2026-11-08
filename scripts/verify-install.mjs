@@ -65,7 +65,7 @@ try {
   writeFileSync(
     smokeFile,
     `
-import * as c from "castrum";
+import * as c from "@ignex/castrum";
 if (typeof c.rust.crc32 !== "function") throw new Error("crc32 missing");
 if (c.rust.crc32(new TextEncoder().encode("hi")) !== 3633523372) throw new Error("crc32 wrong");
 if (typeof c.createIngressFast !== "function") throw new Error("createIngressFast missing");
