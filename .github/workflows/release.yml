@@ -109,7 +109,7 @@ jobs:
     needs: [verify]
     uses: ./.github/workflows/build-addons.yml
 
-  # ── npm publish (Trusted Publishing / OIDC, token fallback) ─────
+  # ── npm publish (registry token primary; OIDC withheld) ─────────
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest
@@ -127,8 +127,18 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ env.RELEASE_REF }}
-      # No registry token is REQUIRED: npm prefers OIDC when configured and
-      # falls back to the token below otherwise, so a release works either way.
+      # Publishing authenticates with the NPM_TOKEN environment secret via
+      # setup-node's .npmrc (`NODE_AUTH_TOKEN`). That is the PRIMARY
+      # credential by maintainer decision: npm >= 12.2.2 prefers OIDC trusted
+      # publishing over the token whenever an id-token is reachable, and the
+      # registry rejects that exchange with E404 until the package's
+      # trusted-publisher binding is configured on npmjs.com — it never falls
+      # back to the token. Withholding the OIDC endpoint env for the publish
+      # step forces the token path. `--provenance` is dropped because signing
+      # rides on the same OIDC exchange; the addon binaries keep their own
+      # attestation below (attest-build-provenance). To restore provenance:
+      # re-link trusted publishing on npmjs.com, restore `--provenance`, and
+      # remove the two ACTIONS_ID_TOKEN_* overrides.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -161,9 +171,10 @@ jobs:
           path: ./
           format: spdx-json
           artifact-name: castrum-sbom.spdx.json
-      # Diagnostics for the OIDC path: if publishing fails, the log shows
-      # whether the runner exposed an id-token and whether an .npmrc auth entry
-      # (which makes npm prefer token auth) exists. The token is never printed.
+      # Diagnostics only: publishing below withholds the OIDC endpoint env
+      # (token-primary auth), so what this prints describes the path npm will
+      # NOT take. Kept for troubleshooting a future OIDC/trusted-publishing
+      # restore. The token is never printed.
       - name: Report the OIDC environment
         run: |
           echo "id-token request url   : ${ACTIONS_ID_TOKEN_REQUEST_URL:+present}"
@@ -183,10 +194,14 @@ jobs:
       # logs `+ castrum@<version>`, but nothing goes live until a maintainer
       # approves it with 2FA (`npm stage approve <stage-id>`). Verify releases
       # on the registry, never by this job's conclusion.
-      - name: Publish to npm (OIDC trusted publishing, token fallback)
-        run: npm publish --access public --provenance
+      - name: Publish to npm (registry token primary)
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Withheld (see above): their presence makes npm attempt the OIDC
+          # trusted-publishing exchange instead of using the token.
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
       # SLSA3 provenance: records the repo/commit that produced this release so
       # consumers can verify the artifact's supply chain.
       - name: Attest build provenance
