@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "castrum",
+      "name": "@ignex/castrum",
       "devDependencies": {
         "@elysia/cors": "^1.4.2",
         "@napi-rs/cli": "^3.8.6",

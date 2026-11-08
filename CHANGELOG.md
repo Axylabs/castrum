@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.12] — 2026-11-08
 
+### Changed
+
+- **The npm package is now `@ignex/castrum`** (was the unscoped `castrum`),
+  moving the addon into the ignex ecosystem's npm scope alongside
+  `@ignex/core` / `@ignex/native`. Consumers: update the dependency name;
+  `@ignex/native` ≥ the matching release resolves both during a transition
+  window. The addon binary names (`castrum.*.node`, `napi.binaryName`) and
+  every runtime surface are unchanged.
+
 ### Added
 
 - **HTML auto-escape by default in `TemplateRenderer`.** `{{ }}` interpolation
