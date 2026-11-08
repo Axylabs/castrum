@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.12] — 2026-11-08
+
+### Added
+
+- **HTML auto-escape by default in `TemplateRenderer`.** `{{ }}` interpolation
+  now escapes with the exact minijinja `AutoEscape::Html` entity table
+  (`< > & " ' /`), so hostile values can't reach the page unescaped; `| safe`
+  opts a value out, `| escape` escapes once without double-escaping, and
+  `{ autoescape: false }` disables the gate per render. Byte parity with the
+  ignex pure-TS fallback is pinned by `verify:native:template` on the ignex
+  side; ignex ships the same default in its fallback engine.
+
 ## [0.9.11] — 2026-10-28
 
 ### Fixed

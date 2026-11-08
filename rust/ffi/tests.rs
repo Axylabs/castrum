@@ -791,8 +791,8 @@ fn jwt_signer_sign_verify_c_abi() {
 
 #[test]
 fn template_render_c_abi() {
-    let t =
-        crate::payload::template::TemplateRenderer::new("Hello {{ name }}!".to_string()).unwrap();
+    let t = crate::payload::template::TemplateRenderer::new("Hello {{ name }}!".to_string(), None)
+        .unwrap();
     let inner = t.inner_ptr() as usize;
     let ctx = b"{\"name\":\"world\"}";
     let mut out = [0u8; 128];

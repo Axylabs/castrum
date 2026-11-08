@@ -41,10 +41,7 @@ impl TemplateRenderer {
         let mut env = minijinja::Environment::new();
         // HTML auto-escape by default (XSS-safe interpolation); `| safe` opts
         // a value out. Only the ignex TS fallback may mirror this table.
-        if options
-            .and_then(|o| o.autoescape)
-            .unwrap_or(true)
-        {
+        if options.and_then(|o| o.autoescape).unwrap_or(true) {
             env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
         }
         env.add_template_owned("main", source)
@@ -223,7 +220,7 @@ mod tests {
 
     #[test]
     fn renderer_instance_reuses_compiled_template() {
-        let r = TemplateRenderer::new("Hello {{ name }}!".to_string()).unwrap();
+        let r = TemplateRenderer::new("Hello {{ name }}!".to_string(), None).unwrap();
         let ctx = serde_json::json!({ "name": "World" });
         assert_eq!(&r.render(ctx).unwrap()[..], b"Hello World!");
 
@@ -251,7 +248,7 @@ mod tests {
 
     #[test]
     fn render_bytes_matches_render() {
-        let r = TemplateRenderer::new("Hello {{ name }}!".to_string()).unwrap();
+        let r = TemplateRenderer::new("Hello {{ name }}!".to_string(), None).unwrap();
         let via_value = r.render(serde_json::json!({ "name": "World" })).unwrap();
         let via_bytes = r
             .render_bytes(Uint8Array::new(br#"{"name":"World"}"#.to_vec()))
@@ -262,7 +259,7 @@ mod tests {
 
     #[test]
     fn render_bytes_rejects_invalid_json_context() {
-        let r = TemplateRenderer::new("x".to_string()).unwrap();
+        let r = TemplateRenderer::new("x".to_string(), None).unwrap();
         assert!(r
             .render_bytes(Uint8Array::new(b"not json".to_vec()))
             .is_err());
@@ -270,6 +267,6 @@ mod tests {
 
     #[test]
     fn renderer_rejects_bad_compile() {
-        assert!(TemplateRenderer::new("{% for x in %}".to_string()).is_err());
+        assert!(TemplateRenderer::new("{% for x in %}".to_string(), None).is_err());
     }
 }
