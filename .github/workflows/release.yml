@@ -149,8 +149,14 @@ jobs:
       # commit 66cbf4b…, which the anchore repo no longer serves ("not our ref"),
       # so GitHub Actions cannot resolve that pin. Move back to v0.24.3 once its
       # tag is repaired.
+      #
+      # Advisory, never blocking: the action downloads the syft binary from
+      # github releases at run time, and during the 2026-11-08 CDN incident
+      # that download 504'd on 25+ consecutive runner attempts — a metadata
+      # inventory must not gate publishing on a third-party asset fetch.
       - name: Generate SBOM (dependency inventory)
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        continue-on-error: true
         with:
           path: ./
           format: spdx-json
