@@ -3,13 +3,13 @@
 // Backend-framework feature: password storage hashing. argon2id is the OWASP
 // recommendation for new hashes; it is deliberately CPU/memory-heavy, which
 // makes it an ideal candidate to offload to Rust (and parallelize with rayon).
-// The `argon2` crate (RustCrypto) is pure Rust; `SaltString::encode_b64` lets us
-// feed a caller-supplied salt so outputs are deterministic (unit-testable).
+// The `argon2` crate (RustCrypto) is pure Rust; `hash_password_with_salt` lets
+// us feed a caller-supplied salt so outputs are deterministic (unit-testable).
 //
 // Pure-Rust core (no napi types) stays unit-testable; only the entry points
 // use napi types.
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc};
 use argon2::{Algorithm, Argon2, Params, Version};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -70,8 +70,7 @@ pub fn hash_password(
 ) -> std::result::Result<String, argon2::password_hash::Error> {
     let params = Params::new(m_cost, t_cost, p_cost, Some(out_len as usize))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let salt = SaltString::encode_b64(salt)?;
-    Ok(argon2.hash_password(password, &salt)?.to_string())
+    Ok(argon2.hash_password_with_salt(password, salt)?.to_string())
 }
 
 /// Verify a password against a PHC string (constant-time internally).
@@ -79,7 +78,7 @@ pub fn verify_password(password: &[u8], phc: &[u8]) -> bool {
     let Ok(phc_str) = std::str::from_utf8(phc) else {
         return false;
     };
-    let Ok(parsed) = PasswordHash::new(phc_str) else {
+    let Ok(parsed) = phc::PasswordHash::new(phc_str) else {
         return false;
     };
     Argon2::default().verify_password(password, &parsed).is_ok()
@@ -150,11 +149,9 @@ impl Argon2Hasher {
     /// Hash a password with the precompiled params → PHC string bytes.
     #[napi]
     pub fn hash(&self, password: Uint8Array, salt: Uint8Array) -> Result<Buffer> {
-        let salt = SaltString::encode_b64(salt.as_ref())
-            .map_err(|e| Error::from_reason(format!("invalid salt: {e}")))?;
         let phc = self
             .argon2
-            .hash_password(password.as_ref(), &salt)
+            .hash_password_with_salt(password.as_ref(), salt.as_ref())
             .map_err(|e| Error::from_reason(format!("argon2 hash failed: {e}")))?;
         Ok(Buffer::from(phc.to_string().into_bytes()))
     }
