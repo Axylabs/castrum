@@ -19,3 +19,7 @@ index.d.ts
 # CI publish staging dir (prepublish.mjs downloads platform addons here)
 artifacts
 castrum.linux-x64-v3-gnu.node
+# Release-time staged artifacts (prepublish.mjs stages *.node into the
+# package root; gh run download scratch dirs). Build outputs, never source.
+*.node
+artifacts-dl/
