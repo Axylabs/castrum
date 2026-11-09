@@ -23,3 +23,5 @@ castrum.linux-x64-v3-gnu.node
 # package root; gh run download scratch dirs). Build outputs, never source.
 *.node
 artifacts-dl/
+# Serena MCP agent project dir (local tooling state)
+.serena/

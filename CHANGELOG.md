@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`fast-uri` dev dependency bumped 3.1.8 → 3.1.9** (OSV
+  GHSA-333x-w4r6-6crp, GHSA-w74x-v6f9-j3xg, GHSA-wjr9-j795-jxcr,
+  GHSA-xhq7-xmqj-769h — 2 Medium, 2 Low). Dev-only (benchmark/test
+  dependency); nothing shipped in the runtime tarball is affected. This
+  also un-reds the CI osv-scan supply-chain gate.
+
+### Changed
+
+- **Rust dependency refresh** (all benchmark- and CI-verified, no API or
+  wire-format changes): `argon2` 0.5.3 → 0.6.0 (adapted to the
+  `password-hash` 0.6 API — `hash_password_with_salt` with raw salt
+  bytes, `phc::PasswordHash`; PHC output, deterministic caller-supplied
+  salts, and `Argon2Hasher` byte parity unchanged), `brotli` 8.0.4 →
+  9.0.0, `fancy-regex` 0.19.0 → 0.19.2, `fraction` 0.15.4 → 0.17.0,
+  `napi-derive` 3.6.5 → 3.6.12.
+- **CI Actions pins refreshed**: `actions/setup-node` 7.0.0 → 7.1.0,
+  `actions/upload-artifact` 7.0.1 → 7.0.2, and the SHA-pinned
+  `dtolnay/rust-toolchain` action moved to the current stable head.
+
 ## [0.9.12] — 2026-11-08
 
 ### Changed
