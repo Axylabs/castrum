@@ -9,7 +9,7 @@
 // Pure-Rust core (no napi types) stays unit-testable; only the entry points
 // use napi types.
 
-use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc};
+use argon2::password_hash::{phc, PasswordHasher, PasswordVerifier};
 use argon2::{Algorithm, Argon2, Params, Version};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
