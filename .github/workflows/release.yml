@@ -198,10 +198,26 @@ jobs:
       # approves it with 2FA (`npm stage approve <stage-id>`). Verify releases
       # on the registry, never by this job's conclusion.
       - name: Publish to npm (OIDC trusted publishing, token fallback)
-        run: npm publish --access public --provenance
+        run: |
+          set -uo pipefail
+          # Attempt 1 — OIDC trusted publishing. npm only exchanges the job's
+          # OIDC token when NO other credential is reachable: a NODE_AUTH_TOKEN
+          # in the env (which setup-node interpolates into .npmrc) makes npm
+          # use the token and never try OIDC — that inversion is what produced
+          # the EOTP failures. So the first publish runs against a clean
+          # userconfig with the token scrubbed out of the environment.
+          printf 'registry=https://registry.npmjs.org/\n' > "$RUNNER_TEMP/oidc.npmrc"
+          if env -u NODE_AUTH_TOKEN \
+               npm publish --access public --provenance \
+               --userconfig "$RUNNER_TEMP/oidc.npmrc"; then
+            exit 0
+          fi
+          echo "::warning::OIDC trusted publish failed — retrying with the NPM_TOKEN secret (needs an automation token to pass account 2FA; a publish token yields EOTP)"
+          # Attempt 2 — long-lived token fallback.
+          npm publish --access public --provenance
         env:
-          # Dormant fallback: npm prefers the OIDC exchange (binding-configured
-          # above) and only consults this token if OIDC is unavailable.
+          # Fallback credential for attempt 2. npm >= 12 prefers it over OIDC
+          # whenever it is reachable, which is why attempt 1 scrubs it.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       # SLSA3 provenance: records the repo/commit that produced this release so
       # consumers can verify the artifact's supply chain.
