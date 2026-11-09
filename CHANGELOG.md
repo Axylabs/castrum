@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.13] — 2026-11-09
+
 ### Security
 
 - **`fast-uri` dev dependency bumped 3.1.8 → 3.1.9** (OSV
