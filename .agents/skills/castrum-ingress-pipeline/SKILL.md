@@ -58,8 +58,9 @@ server.ts / server-node.ts   Bun.serve / node:http
 
 ## Native route stack (route-wire v3)
 
-`createNativeRoute(plan)` compiles a descriptor once, then `runFrame` = ONE
-native call returning flags + errorCode + query/cookie pairs. LENIENT parse
+`createNativeRoute(plan)` compiles a descriptor once, then `runFrame` (or direct
+`run` components under Bun) = ONE native call returning flags + errorCode +
+query/cookie pairs. LENIENT parse
 parity with ignex's JS `queryPairs`/`cookiePairs` (malformed `%ZZ` passes
 through raw; `+` → space; cookies trim + DQUOTE-unwrap values but not names).
 The stack does NOT do CORS/rate-limit/security-headers/IP-trust/metadata —

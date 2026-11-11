@@ -4,7 +4,7 @@
 // small coercion helpers (bigint/number/ext normalization) used across the FFI
 // namespaces.
 
-import { availableParallelism, cpus } from 'node:os'
+import { hardwareConcurrency } from '../runtime/system'
 import { decoder } from '../shared/bytes'
 import { resolveEnvVar } from '../shared/env'
 
@@ -25,21 +25,6 @@ export interface RustOptions {
   mimeCache?: boolean
   /** Reuse HMAC signers keyed by key-buffer identity. Default: true. */
   hmacCache?: boolean
-}
-
-const FALLBACK_CORES = 4
-
-/**
- * Resolve the CPU count without relying on `navigator.hardwareConcurrency`,
- * which throws a ReferenceError under Node.js < 21. `os.availableParallelism`
- * exists in Bun and Node >= 18.14; older Node falls back to `os.cpus().length`.
- */
-function hardwareConcurrency(): number {
-  if (typeof availableParallelism === 'function') {
-    return availableParallelism()
-  }
-  const count = cpus()?.length
-  return count && count > 0 ? count : FALLBACK_CORES
 }
 
 /** Resolve the effective rayon thread count from explicit/env/default. */

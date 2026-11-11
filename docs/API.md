@@ -49,6 +49,33 @@ runtimes, and binary ops (`gzip*`, `brotli*`, `aead*`, `pbkdf2Sha256`,
 
 ---
 
+## Framework native bridge
+
+Framework adapters should import the dependency-light `@ignex/castrum/native`
+entry instead of duplicating addon resolution or `bun:ffi` bindings:
+
+```ts
+import { createNativeBridge } from "@ignex/castrum/native";
+
+const bridge = createNativeBridge({ ffiMode: "auto" });
+const napi = bridge.addon;       // loaded once
+const ffi = bridge.getFfi();     // bound + self-tested on first use, or null
+```
+
+`addonPath` optionally selects an explicit `.node` binary. `ffiMode` accepts
+`auto`, `ffi`, or `napi`. The C-ABI binder is restricted to `bridge.addonPath`,
+so opaque route/ingress/schema/template handles cannot accidentally cross two
+different binaries. `ffiError` retains a forced-FFI failure for the framework's
+error policy. NAPI loading errors throw at bridge creation; callers with an
+optional native dependency should catch them and select their fallback.
+
+The bridge's `BunFFI` surface includes scalar operations, packed parsers,
+routes, ingress, metrics, tasks, and compiled instances. It has no ingress
+package-import side effect and does not use the process-global `getBunFFI()`
+cache.
+
+---
+
 ## The `rust` client
 
 `rust` is a single flat object exposing **every** native utility. Text-oriented

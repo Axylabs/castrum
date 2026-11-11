@@ -1,7 +1,7 @@
 // src/ingress/body.ts — Streaming request-body reading for the async ingress
 // API.
 
-import { isBun } from '../shared/runtime'
+import { peekPromise } from '../runtime/system'
 import { ABORT_CODE } from './abort'
 
 const EMPTY_BODY = new Uint8Array(0)
@@ -22,27 +22,13 @@ async function readBodyBytes(req: Request): Promise<Uint8Array> {
 }
 
 /**
- * Bun-only synchronous peek of an already-buffered body.
- *
- * Under Bun a body fully received during HTTP parsing resolves `req.bytes()`
- * IMMEDIATELY — `Bun.peek` hands back the `Uint8Array` without awaiting, so a
- * declared-Content-Length write route can read the body with no deadline race,
- * no watchdog entry and no microtask turn (the common small-body case).
- *
- * Returns:
- * - `{ bytes }` — already buffered; the caller reads it synchronously and
- *   must NOT pay the deadline race (the body is already here).
- * - `Promise<Uint8Array>` — the read is still pending (slow/trickling body);
- *   the caller MUST still enforce its deadline against this promise.
- * - `false` — no `req.bytes()` on this runtime (Node); the caller falls back
- *   to the async `readBodyBytes` + race as before.
+ * Read an already-buffered body synchronously when the runtime supports it.
+ * Pending reads and runtimes without `req.bytes()` retain the async path.
  */
 function peekBufferedBody(req: Request): { bytes: Uint8Array } | Promise<Uint8Array> | false {
   const bytes = (req as { bytes?: () => Promise<Uint8Array> }).bytes
   if (typeof bytes !== 'function') return false
-  const pending = bytes.call(req)
-  if (!isBun()) return pending
-  const peeked = Bun.peek(pending)
+  const peeked = peekPromise(bytes.call(req))
   return peeked instanceof Promise ? peeked : { bytes: peeked }
 }
 

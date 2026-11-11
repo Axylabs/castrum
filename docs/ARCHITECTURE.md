@@ -31,7 +31,7 @@ The bridge between TypeScript and Rust has **two transports**, both loading the 
 cdylib (built with napi-rs):
 
 - **`bun:ffi` (PRIMARY on Bun)** — `src/native/ffi.ts` `dlopen`s the addon's
-  `extern "C"` exports (`rust/ffi/`, 121 `castrum_*` symbols — 109 direct + 4
+  `extern "C"` exports (`rust/ffi/`, 122 `castrum_*` symbols — 110 direct + 4
   `validator_c_abi!` + 4 `validator_bytes_c_abi!` + 4 `compress_to_out!`,
   parity guarded by
   `test/unit/native/ffi-symbol-parity.test.ts`) and Bun JIT-calls them
@@ -196,6 +196,8 @@ src/
 │   └── packed.ts          ── packed-wire unpackers + packers
 │
 ├── native/                ── Native transport: bun:ffi (primary on Bun) + NAPI fallback
+│   ├── bridge.ts          ── createNativeBridge: configured NAPI + lazy C-ABI on ONE binary
+│   ├── read.ts            ── bun:ffi pointer/scalar/string reads + DataView/UTF-8 fallback
 │   ├── types.ts           ── NativeAddon interface + instance types
 │   ├── loader.ts          ── Path resolution (multi-root + env override) + getAddon/lazyAddon
 │   ├── ffi.ts             ── bun:ffi C-ABI bindings (Bun-only; bind-time self-test +
@@ -204,15 +206,15 @@ src/
 │
 ├── runtime/               ── RUNTIME ADAPTER seam (Bun/Node), selected once at load
 │   ├── detect.ts          ── cached runtime detection (the ONLY place `typeof Bun` is checked)
-│   ├── types.ts           ── RuntimeAdapter contract (codec/uuid/env/builtins/transport/server/websocket)
+│   ├── system.ts          ── OS parallelism, high-resolution clock, promise peek adapter
+│   ├── types.ts           ── NativeRuntimeAdapter contract (codec/uuid/env/builtins/transport)
 │   ├── codec.ts           ── runtime-native UTF-8 codec (Bun transfer vs TextEncoder/Decoder)
 │   ├── uuid.ts            ── uuidv7 (Bun.randomUUIDv7 vs crypto.randomUUID)
 │   ├── builtins.ts        ── BUN_WINS delegation registry (single source, `has(op)`)
 │   ├── transport.ts       ── bun:ffi-first `resolve(op)` + ffi/napi surfaces (lazy bind)
 │   ├── native.ts          ── FFI-facing seam (codec/uuid/env/builtins/transport) — imported by rust-ffi
 │   ├── server.ts          ── createIngressServer: Bun.serve on Bun, node:http on Node
-│   ├── websocket.ts       ── 101 upgrade on Bun; clear Bun-only error on Node
-│   └── index.ts           ── FULL adapter `runtime` (native + server + websocket) — for the public API
+│   └── index.ts           ── Re-exports the runtime-selected server factory
 │
 ├── rust-ffi/              ── Rust FFI bindings
 │   ├── options.ts         ── RustOptions + input-normalization helpers
@@ -277,10 +279,12 @@ src/
 `index.ts` (native TS execution, zero startup cost). For Node.js consumers, the
 package ships a compiled ESM bundle built by `bun run build:js`:
 
-- `package.json` `exports` → `{ types: ./dist/index.d.ts, bun: ./index.ts,
-  node: ./dist/index.js, default: ./dist/index.js }`.
-- `dist/index.js` is a single-file ESM bundle (all runtime deps inlined); Node
-  requires `>= 20.3` (N-API floor).
+- `package.json` `exports` maps the main entry to `{ types: ./dist/index.d.ts,
+  bun: ./index.ts, node: ./dist/index.js, default: ./dist/index.js }` and the
+  dependency-light framework bridge `@ignex/castrum/native` to `native.ts` /
+  `dist/native.js` + `dist/native.d.ts` under the same conditions.
+- `dist/index.js` and `dist/native.js` are single-file ESM bundles (all runtime
+  deps inlined); Node requires `>= 20.3` (N-API floor).
 - The addon loader (`src/native/loader.ts`) resolves `castrum.<platform>-<arch>.node`
   from multiple candidate roots so the same loader works from `src/native/…`
   (Bun, source layout) and `dist/…` (Node, bundled layout), plus the

@@ -101,6 +101,8 @@ export interface BunFFI {
    * preference tie-breaking (RFC 7231 server semantics, opaque `inner` handle);
    * `null` = identity. */
   acceptNegotiatorNegotiateServer(inner: number, header: Uint8Array): string | null
+  /** String-input server-preference negotiation without a JS encode/decode. */
+  acceptNegotiatorNegotiateServerText(inner: number, header: string): string | null
   /** Precompiled `JwtSigner` → compact token from pre-serialized claim JSON
    * (opaque `inner` handle); throws on invalid claims / null handle. */
   jwtSignerSign(inner: number, claimsJson: Uint8Array, nowSeconds: number): Uint8Array
@@ -127,6 +129,8 @@ export interface BunFFI {
   /** Compiled `TemplateRenderer` → UTF-8 bytes from a pre-serialized JSON
    * context (opaque `inner` handle); throws on invalid context / render error. */
   templateRender(inner: number, contextJson: Uint8Array): Uint8Array
+  /** Render into caller output; returns the needed-size convention byte count. */
+  templateRenderInto(inner: number, contextJson: Uint8Array, output: Uint8Array): number
   /** Compiled `SchemaValidator` → whether a document is valid (opaque `inner` handle). */
   schemaValidatorValidate(inner: number, doc: Uint8Array): boolean
   /** `RateLimiter` string-key check → { allowed, remaining, resetMs } (opaque
@@ -233,11 +237,15 @@ export interface BunFFI {
   /** brotli-decompress into `output`; returns bytes written (throws if too small). */
   brotliDecompressInto(data: Uint8Array, output: Uint8Array, maxDecompressed?: number): number
 
-  // ── Packed parsers (into caller buffers) ─────────────────────────
+  // ── Packed parsers ────────────────────────────────────────────────
   /** HTTP request parse → packed output into `output`; returns bytes written. */
   httpParseRequestPackedInto(input: Uint8Array, output: Uint8Array): number
+  /** Query string parse → freshly allocated packed pairs. */
+  queryParsePacked(input: Uint8Array): Uint8Array
   /** Query string parse → packed output into `output`; returns bytes written. */
   queryParsePackedInto(input: Uint8Array, output: Uint8Array): number
+  /** Cookie header parse → freshly allocated packed pairs. */
+  cookieParsePacked(input: Uint8Array): Uint8Array
   /** Cookie header parse → packed output into `output`; returns bytes written. */
   cookieParsePackedInto(input: Uint8Array, output: Uint8Array): number
 
@@ -263,6 +271,8 @@ export interface BunFFI {
   multipartParsePacked(body: Uint8Array, boundary: Uint8Array): Uint8Array
   /** Parse multipart/form-data into `output`; returns bytes written (throws if too small). */
   multipartParsePackedInto(body: Uint8Array, boundary: Uint8Array, output: Uint8Array): number
+  /** Parse x-www-form-urlencoded into freshly allocated packed pairs. */
+  formParsePacked(input: Uint8Array): Uint8Array
   /** Parse x-www-form-urlencoded into packed pairs into `output`. */
   formParsePackedInto(input: Uint8Array, output: Uint8Array): number
   /**
@@ -400,6 +410,18 @@ export interface BunFFI {
    * growExact convention).
    */
   routeRun(handle: number, frame: Uint8Array, output: Uint8Array): number
+  /**
+   * Run from query/cookie strings and body bytes without building a frame.
+   * Embedded NUL in either string is rejected; HTTP callers use the frame path
+   * for that non-wire representable input.
+   */
+  routeRunParts(
+    handle: number,
+    query: string,
+    cookie: string,
+    body: Uint8Array | null,
+    output: Uint8Array,
+  ): number
   /** Destroy a compiled route handle (frees the native `Box<NativeRoute>`). */
   routeDestroy(handle: number): void
 

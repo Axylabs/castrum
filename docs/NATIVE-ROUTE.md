@@ -36,18 +36,22 @@ first-failure-wins in stage order.
 
 ## Surfaces
 
-- `castrum_route_compile` / `castrum_route_run` / `castrum_route_destroy`
-  (C-ABI, needed-size convention, panic-guarded, immutable `&self` run).
+- `castrum_route_compile` / `castrum_route_run` / `castrum_route_run_parts` /
+  `castrum_route_destroy` (C-ABI, needed-size convention, panic-guarded,
+  immutable `&self` run). `run_parts` accepts NUL-terminated query/cookie
+  strings plus body bytes directly, eliminating the JS frame allocation/copy;
+  embedded-NUL inputs use the length-prefixed frame path instead.
 - napi `Route` class (Node / fallback path).
 - **Public castrum surface (`createNativeRoute`, `nativeRouteHandler`)**:
   the stack is now a first-class castrum API, not just the ignex wire.
   - `createNativeRoute(plan)` (`src/ingress/native-route.ts`) compiles a
-    route-wire v3 descriptor once and runs each frame in ONE native call —
+    route-wire v3 descriptor once and runs each request in ONE native call —
     `run(query, cookie, body)` / `runFrame(frame)` return the decoded verdict
     (flags + errorCode + query/cookie pairs); `destroy()` frees the handle.
-    The pure wire helpers (`encodeRouteDescriptor`, `packRouteFrame`,
-    `decodeRouteResult`, layout constants) live in
-    `src/ingress/packing/route-wire.ts`.
+    `run` prefers `routeRunParts` under Bun and falls back to `runFrame` on
+    NAPI or embedded-NUL input. The pure wire helpers
+    (`encodeRouteDescriptor`, `packRouteFrame`, `decodeRouteResult`, layout
+    constants) live in `src/ingress/packing/route-wire.ts`.
   - `nativeRouteHandler(plan, responder, opts)` (`src/ingress/routes/native.ts`)
     wraps a compiled route as a `RouteHandler`: extracts the query substring +
     Cookie header, runs the tiny frame, rejects 400/422 on verdict failure,

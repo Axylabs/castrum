@@ -100,6 +100,14 @@ export function selfTestInstances(b: BunFFI): boolean {
   if ((rFlags & 0b1) === 0 || (rFlags & 0b100) === 0) {
     return false // OK + QUERY_VALID bits must be set
   }
+  const routePartsOut = new Uint8Array(64)
+  const routePartsW = b.routeRunParts(routeHandle, 'a=1', '', null, routePartsOut)
+  if (
+    routePartsW !== routeW ||
+    !routePartsOut.subarray(0, routePartsW).every((v, i) => v === routeOut[i])
+  ) {
+    return false
+  }
   b.routeDestroy(routeHandle)
 
   // ConditionalRequest opaque-handle: a null (0) handle must return false (the

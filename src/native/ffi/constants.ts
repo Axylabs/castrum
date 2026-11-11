@@ -35,17 +35,6 @@ export const DECOMPRESS_GUESS_MULTIPLIER_BROTLI = 32
 export const DECOMPRESS_FALLBACK_CAP = 4 * 1024 * 1024
 /** decompress: minimum initial output size (bytes). */
 export const DECOMPRESS_MIN_INITIAL = 1024
-// JWT: token ≈ header(~36) + payload(≈4/3× claims) + sig(~43) + 2 dots. The
-// old `claims.length + 128` under-sized a typical token (measured 168 B for a
-// 30 B claim → grow-retry double-run, making ffi slower than napi). 2×+128
-// with a 256-byte floor covers typical claims in one pass.
-/** jwt sign: claims-length multiplier for the initial output-size guess. */
-export const JWT_INITIAL_MULTIPLIER = 2
-/** jwt sign: fixed byte slack added to the claims-length guess. */
-export const JWT_INITIAL_EXTRA = 128
-/** jwt sign: minimum initial output size (bytes). */
-export const JWT_INITIAL_FLOOR = 256
-
 // ── Known-good vectors for the bind-time self-test ───────────────
 // These mirror the Rust `#[cfg(test)]` vectors in rust/ffi.rs.
 /** Self-test vector: ASCII "hello" (hex-encodes to `68656c6c6f`). */

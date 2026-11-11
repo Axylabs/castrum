@@ -11,13 +11,6 @@ import type { BakedServer, CreateIngressServerOptions } from '../ingress/server'
 import { createIngressServer as createIngressServerBun } from '../ingress/server'
 import { createIngressServerNode } from '../ingress/server-node'
 import { detectedRuntime } from './detect'
-import type { ServerAdapter } from './types'
-
-/** The shared server adapter for the detected host runtime. */
-export const runtimeServer: ServerAdapter = {
-  runtime: detectedRuntime === 'bun' ? 'bun' : 'node',
-  createIngressServer,
-}
 
 /**
  * Create the runtime-appropriate ingress server: `Bun.serve` on Bun, the

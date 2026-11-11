@@ -64,7 +64,7 @@ export interface NativeRoute {
    * exact required size → retry once).
    */
   runFrame(frame: Uint8Array): RouteWireResult
-  /** Convenience: pack a `(query, cookie, body)` frame then {@link runFrame}. */
+  /** Run from request components, using the direct C-ABI when available. */
   run(query: string, cookie: string, body: Uint8Array | null): RouteWireResult
   /**
    * Free the native handle. Idempotent: a second call is a no-op. After it,
@@ -158,7 +158,28 @@ export function createNativeRoute(plan: NativeRoutePlan = {}): NativeRoute {
     parseQuery,
     parseCookies,
     runFrame,
-    run: (query, cookie, body) => runFrame(packRouteFrame(query, cookie, body)),
+    run: (query, cookie, body) => {
+      if (
+        ffiHandle === 0 ||
+        bunFFI === null ||
+        query.includes('\0') ||
+        cookie.includes('\0')
+      ) {
+        return runFrame(packRouteFrame(query, cookie, body))
+      }
+      let written = bunFFI.routeRunParts(ffiHandle, query, cookie, body, out)
+      if (written > out.byteLength) {
+        out = new Uint8Array(written)
+        written = bunFFI.routeRunParts(ffiHandle, query, cookie, body, out)
+        if (written > out.byteLength) {
+          throw new Error('native route: output still too small after grow')
+        }
+      }
+      return decodeRouteResult(out.subarray(0, written), {
+        query: parseQuery,
+        cookie: parseCookies,
+      })
+    },
     destroy: () => {
       if (ffiHandle !== 0 && bunFFI !== null) {
         bunFFI.routeDestroy(ffiHandle)

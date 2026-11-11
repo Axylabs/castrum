@@ -44,12 +44,6 @@ function clampBatchMin(v: number): number {
   return Math.max(MIN_BATCH_MIN, Math.min(MAX_BATCH_MIN, v))
 }
 
-/** High-resolution nanosecond clock (Bun/Node). */
-export const nowNs: () => number =
-  typeof process !== 'undefined' && typeof process.hrtime === 'function'
-    ? () => Number(process.hrtime.bigint())
-    : () => performance.now() * 1e6
-
 /** Options for `createCostModel` (adaptive batch-threshold learning). */
 export interface CostModelOptions {
   /** Allow the model to adjust `batchMin` from measurement. Default true. */

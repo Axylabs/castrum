@@ -36,6 +36,8 @@ describe('parseTraceParent', () => {
     expect(parseTraceParent('01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01')).toBeNull() // version != 00
     expect(parseTraceParent('00-1234-00f067aa0ba902b7-01')).toBeNull() // short trace id
     expect(parseTraceParent('00-zz92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01')).toBeNull() // non-hex
+    expect(parseTraceParent(`00-${'0'.repeat(32)}-00f067aa0ba902b7-01`)).toBeNull() // zero trace id
+    expect(parseTraceParent(`00-4bf92f3577b34da6a3ce929d0e0e4736-${'0'.repeat(16)}-01`)).toBeNull() // zero span id
     expect(parseTraceParent('00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7')).toBeNull() // missing flags
   })
 

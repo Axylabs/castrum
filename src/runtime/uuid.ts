@@ -9,31 +9,15 @@
 import { detectedRuntime } from './detect'
 import type { UuidAdapter } from './types'
 
-/** Last-resort synchronous UUIDv4 (only if `crypto.randomUUID` is unavailable). */
-function fallbackRandomUuid(): string {
-  const bytes = new Uint8Array(16)
-  const c = globalThis.crypto
-  if (c?.getRandomValues) {
-    c.getRandomValues(bytes)
-  } else {
-    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256)
-  }
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40 // version 4
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80 // variant 10xx
-  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
-
 function bunUuidv7(): string {
   return (
     (globalThis as { Bun?: { randomUUIDv7?: () => string } }).Bun?.randomUUIDv7?.() ??
-    globalThis.crypto?.randomUUID?.() ??
-    fallbackRandomUuid()
+    globalThis.crypto.randomUUID()
   )
 }
 
 function nodeUuidv7(): string {
-  return globalThis.crypto?.randomUUID?.() ?? fallbackRandomUuid()
+  return globalThis.crypto.randomUUID()
 }
 
 /** Build the uuid adapter for a runtime. */

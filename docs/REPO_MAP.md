@@ -37,8 +37,8 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 | Build Rust addon (LOCAL max perf) | `bun run build:perf` | x86-64-v3 + AVX2 — **never for publish** |
 | Build Rust addon (debug) | `bun run build:debug` | |
 | Build compiled JS entry (Node) | `bun run build:js` | bundle + types → `dist/` (gitignored) |
-| TS unit tests | `bun test test/unit test/property test/compat` | 838 tests (paths are explicit — a bare `bun test` pulls in the Node `.mjs` suites that need `dist/`) |
-| Rust unit tests | `bun run test:rust` | `cargo test`, 628 tests |
+| TS unit tests | `bun test test/unit test/property test/compat` | 929 tests (paths are explicit — a bare `bun test` pulls in the Node `.mjs` suites that need `dist/`) |
+| Rust unit tests | `bun run test:rust` | `cargo test`, 670 tests |
 | Node smoke tests | `bun run test:node` | explicit `.mjs` paths (Node 24 rejects dir arg) |
 | Installed-tarball e2e | `bun run verify:install` | pack → install → import from `node_modules` |
 | Typecheck | `bun run typecheck` | `bunx tsc --noEmit` (`index.ts`, `bench.ts`, `src/`, `bench/`) |
@@ -63,6 +63,7 @@ Bun is the primary runtime; Node.js ≥20.3 is supported via a compiled ESM entr
 
 ```
 index.ts                  Package entry (Bun). Re-exports src/rust-ffi, shared helpers, src/ingress.
+native.ts                 Dependency-light `@ignex/castrum/native` entry for framework adapters.
 bench.ts                  CPU benchmark entry point → src/bench/run.ts.
 
 examples/                 Runnable sample app (basic-server.ts + README) — see also README Quick Start.
@@ -70,9 +71,11 @@ examples/                 Runnable sample app (basic-server.ts + README) — see
 
 src/
   native/                 The native transport layer: bun:ffi (primary on Bun) + NAPI fallback.
+    bridge.ts             createNativeBridge: configured NAPI + lazy, self-tested C-ABI on ONE binary.
+    read.ts               bun:ffi pointer/scalar/string reads + DataView/UTF-8 fallback.
     types.ts              NativeAddon module-surface interface (mirrors index.d.ts).
     types/instances.ts    Per-class INSTANCE types (Ingress, SchemaValidator, JwtSigner, ...) + result types.
-    loader.ts             Addon path resolution (multi-root) + getAddon()/lazyAddon().
+    loader.ts             Addon path resolution (multi-root) + getAddon()/lazyAddon()/loadAddon().
     ffi.ts                bun:ffi C-ABI transport core (Bun-only): mode resolution, buffer/buffer_length
                           probe, bind() orchestration (self-test + CASTRUM_FFI_MODE gating + napi fallback).
     ffi/                  Decomposed bind surface: types.ts (BunFFI interface) + constants.ts +
@@ -83,15 +86,15 @@ src/
     index.ts              Barrel.
   runtime/                THE RUNTIME ADAPTER seam (Bun/Node) — selected once at load.
     detect.ts             Cached runtime detection — the ONLY place `typeof Bun` is checked.
-    types.ts              RuntimeAdapter contract (codec/uuid/env/builtins/transport/server/websocket).
+    system.ts             OS parallelism, high-resolution clock, and settled-promise peek adapter.
+    types.ts              NativeRuntimeAdapter contract (codec/uuid/env/builtins/transport).
     codec.ts              Runtime-native UTF-8 codec (Bun transfer vs TextEncoder/Decoder).
     uuid.ts               uuidv7 (Bun.randomUUIDv7 vs crypto.randomUUID).
     builtins.ts           BUN_WINS delegation registry (single source; `has(op)`).
     transport.ts          bun:ffi-first `resolve(op)` + ffi/napi surfaces (lazy bind).
     native.ts             FFI-facing seam (codec/uuid/env/builtins/transport) — imported by rust-ffi.
     server.ts             createIngressServer: Bun.serve on Bun, node:http on Node.
-    websocket.ts          101 upgrade on Bun; clear Bun-only error on Node.
-    index.ts              FULL adapter `runtime` (native + server + websocket) — for the public API.
+    index.ts              Re-exports the runtime-selected server factory.
   rust-ffi/               The flat `rust.*` FFI client (TS wrappers over the addon).
     client.ts             createRust() factory + the default `rust` instance + configure().
     scalar/ / text.ts / packed.ts   namespaces (buildScalar, buildText, ...).
@@ -178,7 +181,7 @@ rust/                     ONE cdylib crate (Cargo [lib] → lib.rs).
                           CASTRUM_TASK_THREADS, batch dequeue + spin-then-park + optional
                           CASTRUM_TASK_PIN_CORES), result ring + batched thread-safe doorbell,
                           op dispatch + cancel + catch_unwind containment + `_into` ops.
-  ffi/                    #[no_mangle] extern "C" exports (121 castrum_* symbols — 109 direct + 4
+  ffi/                    #[no_mangle] extern "C" exports (122 castrum_* symbols — 110 direct + 4
                           validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out!; parity guarded by
                           test/unit/native/ffi-symbol-parity.test.ts) for Bun's bun:ffi
                           primary transport, incl. castrum_ingress_layout (the layout blob).
@@ -239,22 +242,28 @@ this reason. **Shared between both paths**: `generateRequestId`
 - `src/native/loader.ts` resolves the `.node` from multiple roots so it works
   from both the source layout (`src/…`) and the bundled layout (`dist/…`).
   Honors `CASTRUM_NATIVE_LIBRARY_PATH` / `NAPI_RS_NATIVE_LIBRARY_PATH`.
+- `@ignex/castrum/native` (`native.ts` → `src/native/bridge.ts`) is the
+  dependency-light framework entry. Each bridge loads NAPI once and lazily
+  binds C-ABI against the SAME explicit binary, preventing opaque handles from
+  crossing baseline/SIMD or independently configured addons.
 - Runtime detection lives **only** in `src/runtime/detect.ts` (resolved once at
-  load; `src/shared/runtime.ts` is a thin facade). The public
-  `createIngressServer` (via the adapter's `server`) picks `Bun.serve` on Bun
-  and the `node:http` backend on Node; `createIngressServerNode` stays for
-  pinned Node users (same route handlers via `buildRouteHandlers`).
+  load; `src/shared/runtime.ts` is a thin facade). OS parallelism, the sampled
+  nanosecond clock, and settled-promise peeking live in `runtime/system.ts`.
+  The public `createIngressServer` (via the adapter's `server`) picks
+  `Bun.serve` on Bun and the `node:http` backend on Node;
+  `createIngressServerNode` stays for pinned Node users (same route handlers
+  via `buildRouteHandlers`).
 - ⚠️ `src/ingress/constants.ts` is the **one module that dlopens the addon at
   import time** (its constants are needed as soon as ingress is imported).
   Everything else is lazy.
 
 ### 4.4 The runtime adapter
 `src/runtime/` is the single seam for every Bun-vs-Node and transport decision
-(detection, codec, uuid, env, the BUN_WINS built-in delegation, the bun:ffi-vs-
-napi transport, the ingress server backend, websocket) — selected ONCE at
-module load. The FFI layer imports the seam (`src/runtime/native.ts`); the
-public API imports the full `runtime` (`src/runtime/index.ts`). No
-`isBun()` / `getBunFFI()` branches in builders.
+(detection, codec, uuid, env, OS/clock/promise operations, the BUN_WINS built-in
+delegation, the bun:ffi-vs-napi transport, and the ingress server backend) —
+selected ONCE at module load. The FFI layer imports `src/runtime/native.ts`;
+the public ingress barrel re-exports only `createIngressServer` through
+`src/runtime/index.ts`. No `isBun()` / `getBunFFI()` branches in builders.
 
 ### 4.5 Pooled output buffers (path 2)
 `createIngressHandler` owns a `BufferPool` (`src/shared/buffer-pool.ts`) sized

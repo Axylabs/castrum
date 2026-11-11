@@ -39,10 +39,17 @@
       "node": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "bun": "./native.ts",
+      "node": "./dist/native.js",
+      "default": "./dist/native.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "index.ts",
+    "native.ts",
     "dist",
     "src",
     "docs",
@@ -65,8 +72,8 @@
     "build:v3": "bash scripts/build-v3.sh",
     "build:all": "bun run build && bun run build:v3",
     "build:js": "bun run build:js:bundle && bun run build:js:types",
-    "build:js:bundle": "bun build ./index.ts --target=node --format=esm --outdir=dist",
-    "build:js:types": "node scripts/ensure-dts-typescript.mjs && dts-bundle-generator -o dist/index.d.ts index.ts",
+    "build:js:bundle": "bun build ./index.ts ./native.ts --target=node --format=esm --outdir=dist",
+    "build:js:types": "node scripts/ensure-dts-typescript.mjs && dts-bundle-generator -o dist/index.d.ts index.ts && dts-bundle-generator -o dist/native.d.ts native.ts",
     "bench": "bun run build && bun bench.ts",
     "check": "bun bench.ts",
     "test": "bun test test/unit test/property test/compat",

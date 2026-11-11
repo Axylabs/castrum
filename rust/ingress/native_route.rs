@@ -199,15 +199,10 @@ impl NativeRoute {
         })
     }
 
-    /// Run the pre-baked stack for one request frame, writing the packed
-    /// result into `out`. Returns `Ok(n)` where `n` is the number of bytes
-    /// written when `out` is large enough, OR the exact required size when it
-    /// is too small (the needed-size convention: `0` = real error, `> out.len`
-    /// = exact required). `Err` = malformed frame (→ 0 on the C ABI).
+    /// Run the pre-baked stack for one packed request frame.
     ///
     /// Pure: `&self`, no interior mutability — safe for concurrent use.
     pub(crate) fn run(&self, frame: &[u8], out: &mut [u8]) -> std::result::Result<usize, String> {
-        // ── Parse the request frame ─────────────────────────────────
         let mut pos = 0usize;
         let flags = read_u32_at(frame, &mut pos)?;
         let has_body = (flags as u32) & ROUTE_FRAME_FLAG_HAS_BODY != 0;
@@ -218,7 +213,19 @@ impl NativeRoute {
         } else {
             &[]
         };
+        self.run_parts(query, cookie, body, has_body, out)
+    }
 
+    /// Run directly from request components, avoiding the packed-frame copy.
+    /// Returns the exact required output size when `out` is too small.
+    pub(crate) fn run_parts(
+        &self,
+        query: &[u8],
+        cookie: &[u8],
+        body: &[u8],
+        has_body: bool,
+        out: &mut [u8],
+    ) -> std::result::Result<usize, String> {
         // ── Body verdicts (first-failure-wins, in stage order) ──────
         let mut error_code: u32 = 0;
         let mut body_valid_json = false;
@@ -690,6 +697,85 @@ mod tests {
             ]
         );
         assert_eq!(c, vec![(b"s".to_vec(), b"v".to_vec())]);
+
+        let mut direct = vec![0u8; 512];
+        let direct_w = r
+            .run_parts(b"a=1&b=2", b"s=v", &[], false, &mut direct)
+            .unwrap();
+        assert_eq!(&direct[..direct_w], &out[..w]);
+    }
+
+    #[test]
+    fn direct_parts_chain_all_stages_and_reuse_the_compiled_route() {
+        let schema = br#"{"type":"object","required":["x"],"properties":{"x":{"type":"number"}}}"#;
+        let route = NativeRoute::compile(&descriptor(
+            &[
+                STAGE_PARSE_QUERY,
+                STAGE_PARSE_COOKIES,
+                STAGE_REQUIRE_JSON_BODY,
+                STAGE_VALIDATE_BODY,
+            ],
+            &[(PART_BODY, schema)],
+        ))
+        .unwrap();
+        let query = b"page=2&q=hello%20world";
+        let cookie = b"sid=abc; theme=dark";
+        let body = br#"{"x":1}"#;
+
+        let mut framed_out = vec![0u8; 1024];
+        let framed_w = route
+            .run(&frame(query, cookie, Some(body)), &mut framed_out)
+            .unwrap();
+        let mut direct_out = vec![0u8; 1024];
+        let direct_w = route
+            .run_parts(query, cookie, body, true, &mut direct_out)
+            .unwrap();
+        assert_eq!(&direct_out[..direct_w], &framed_out[..framed_w]);
+
+        let flags = u32::from_le_bytes(direct_out[0..4].try_into().unwrap());
+        assert_ne!(flags & ROUTE_RESULT_FLAG_OK, 0);
+        assert_ne!(flags & ROUTE_RESULT_FLAG_BODY_VALID_JSON, 0);
+        assert_ne!(flags & ROUTE_RESULT_FLAG_BODY_VALID, 0);
+        let mut pos = 8;
+        assert_eq!(
+            decode_pairs(&direct_out[..direct_w], &mut pos),
+            vec![
+                (b"page".to_vec(), b"2".to_vec()),
+                (b"q".to_vec(), b"hello world".to_vec()),
+            ]
+        );
+        assert_eq!(
+            decode_pairs(&direct_out[..direct_w], &mut pos),
+            vec![
+                (b"sid".to_vec(), b"abc".to_vec()),
+                (b"theme".to_vec(), b"dark".to_vec()),
+            ]
+        );
+        assert_eq!(pos, direct_w);
+
+        for page in 3..35 {
+            let next_query = format!("page={page}");
+            let w = route
+                .run_parts(
+                    next_query.as_bytes(),
+                    b"sid=next",
+                    body,
+                    true,
+                    &mut direct_out,
+                )
+                .unwrap();
+            assert_eq!(u32::from_le_bytes(direct_out[4..8].try_into().unwrap()), 0);
+            let mut next_pos = 8;
+            assert_eq!(
+                decode_pairs(&direct_out[..w], &mut next_pos),
+                vec![(b"page".to_vec(), page.to_string().into_bytes())]
+            );
+            assert_eq!(
+                decode_pairs(&direct_out[..w], &mut next_pos),
+                vec![(b"sid".to_vec(), b"next".to_vec())]
+            );
+            assert_eq!(next_pos, w);
+        }
     }
 
     #[test]

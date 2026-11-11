@@ -49,6 +49,44 @@ describe('createNativeRoute (public route-wire v3 surface)', () => {
     route.destroy()
   })
 
+  test('one instance chains query, cookies, and body validation without cross-request state', () => {
+    const schema = enc.encode(
+      JSON.stringify({
+        type: 'object',
+        required: ['x'],
+        properties: { x: { type: 'number' } },
+      }),
+    )
+    const route = tryCompile({
+      parseQuery: true,
+      parseCookies: true,
+      requireJsonBody: true,
+      validateBody: true,
+      schema,
+    })
+    if (!route) return
+
+    const first = route.run('page=2&q=hello%20world', 'sid=abc', enc.encode('{"x":1}'))
+    expect(first.errorCode).toBe(0)
+    expect(first.query).toEqual([
+      ['page', '2'],
+      ['q', 'hello world'],
+    ])
+    expect(first.cookie).toEqual([['sid', 'abc']])
+    expect(first.flags & ROUTE_FLAG.BODY_VALID).toBe(ROUTE_FLAG.BODY_VALID)
+
+    const second = route.run('page=3', 'sid=next', enc.encode('{"x":2}'))
+    expect(second.query).toEqual([['page', '3']])
+    expect(second.cookie).toEqual([['sid', 'next']])
+    expect(second.flags & ROUTE_FLAG.BODY_VALID).toBe(ROUTE_FLAG.BODY_VALID)
+
+    const invalid = route.run('page=4', 'sid=bad', enc.encode('{"x":"no"}'))
+    expect(invalid.errorCode).toBe(422)
+    expect(invalid.query).toEqual([['page', '4']])
+    expect(invalid.cookie).toEqual([['sid', 'bad']])
+    route.destroy()
+  })
+
   test('lenient parse passes malformed %ZZ through raw (byte-parity)', () => {
     const route = tryCompile({ parseQuery: true })
     if (!route) return

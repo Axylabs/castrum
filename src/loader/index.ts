@@ -25,10 +25,11 @@
 // (LRU cache + tick coalescer). Public types are re-exported below.
 
 import { rust } from '../rust-ffi'
+import { nowNs } from '../runtime/system'
 import { encoder, viewForArrayBuffer } from '../shared/bytes'
 import type { SchemaValidator } from '../shared/packed'
 import { createLruCache, createTickCoalescer, type LoadRequest } from './batch'
-import { createCostModel, nowNs } from './cost'
+import { createCostModel } from './cost'
 import {
   fnvBatchKeysInto,
   LOADER_OPS,

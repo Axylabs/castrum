@@ -41,8 +41,8 @@ HTTP **ingress pipeline** for Bun servers.
 | Node smoke tests | `bun run test:node` (== `node --test test/integration/node-smoke.test.mjs test/integration/node-enterprise.test.mjs`; explicit file paths — Node 24 rejects a directory arg) |
 | Installed-tarball e2e | `bun run verify:install` (pack → install into a temp consumer → import from `node_modules`) |
 | Postinstall fallback build | `node scripts/postinstall.mjs` (runs as package.json `postinstall`; no-op when a prebuilt `.node` exists for the host, else `cargo build --release` from the shipped `rust/` source — see `docs/ENVIRONMENT.md`) |
-| Rust unit tests | `cargo test` (~440 tests; per-module `#[cfg(test)] mod tests` + `rust/panic_safety.rs` + `rust/proptest_suite.rs`) |
-| TS unit tests | `bun test test/unit test/property test/compat` (~804 tests; the `test` script passes those paths explicitly) |
+| Rust unit tests | `cargo test` (670 tests; per-module `#[cfg(test)] mod tests` + `rust/panic_safety.rs` + `rust/proptest_suite.rs`) |
+| TS unit tests | `bun test test/unit test/property test/compat` (929 tests; the `test` script passes those paths explicitly) |
 | CPU benchmark | `bun run check` (== `bun bench.ts`) — **not** a typecheck |
 | Bun built-ins diagnostic set | part of `bun run check` — `diag:` task names (bun-builtins.ts) feed docs/bun-builtins-decision-matrix.md (NOT a shipped-op measurement) |
 | Proven selection | baked registry `src/shared/proven.ts` (`PROVEN_SELECTION`: native/js/bun winners) + `proven` surface (`src/rust-ffi/proven.ts`); `test/unit/contract/proven.test.ts` verifies each winner is wired (opImpl/builtins/selection.json) — NO live bench gate |
@@ -58,7 +58,7 @@ HTTP **ingress pipeline** for Bun servers.
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
 | Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
 | JSDoc coverage guard | `bun run check:jsdoc` (== `bun scripts/check-jsdoc.ts`) — fails if < 95% of `src/`+`index.ts` exported symbols lack a JSDoc block; run after adding public exports |
-| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (no `typeof Bun` outside `src/runtime/detect.ts`), PURE-module purity boundary, FFI doc count = 121 (109 direct), no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
+| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (`typeof Bun` only in `runtime/detect.ts`; `Bun.peek`/`node:os`/`process.hrtime` only in `runtime/system.ts`), PURE-module purity boundary, FFI doc count = 122 (110 direct), no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
 | JS dependency audit | `bun run audit` |
 | Cargo deny audit | `bun run deny` (== `cargo deny check`) |
 | Coverage floors | `bun run test:coverage` (== `node scripts/check-coverage.mjs`) — 75% overall line floor + a 50% per-directory floor on the SHIPPED dirs (`src/ingress`, `src/shared`, `src/rust-ffi`, `src/native`, `src/loader`, `src/integration`) so one directory can't collapse while others compensate |
@@ -133,11 +133,13 @@ HTTP **ingress pipeline** for Bun servers.
 
 ```
 index.ts                  package entry (re-exports src/rust-ffi, src/loader, src/integration, src/ingress, ...)
+native.ts                 dependency-light `@ignex/castrum/native` framework bridge entry
 bench.ts                  CPU benchmark entry -> src/bench
-dist/                     COMPILED ESM entry for Node (gitignored): dist/index.js + dist/index.d.ts
-                          built by `bun run build:js`; wired via exports conditions (`bun` -> index.ts)
+dist/                     COMPILED ESM entries for Node (gitignored): index/native JS + declarations,
+                          built by `bun run build:js`; exports select raw TS on Bun
 src/runtime/              runtime adapter seam: detect.ts (the ONLY place `typeof Bun` is
-                          checked), builtins.ts (BUILTIN_OPS delegation), server.ts (adaptive
+                          checked), system.ts (OS parallelism + clock + promise peek),
+                          builtins.ts (BUILTIN_OPS delegation), server.ts (adaptive
                           createIngressServer); src/shared/runtime.ts is a thin facade over it
 src/shared/log.ts         createStructuredLogger (CASTRUM_LOG_LEVEL-gated JSON lines)
 src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
@@ -175,8 +177,11 @@ src/ingress/              HTTP ingress pipeline (TS layer), decomposed by task:
   ├── sync.ts             createIngressSync / createIngress convenience factories (path 1 wrapper)
   ├── path-matcher.ts     buildPathMatcher + PathMatch + safeDecode (shared by server-node + router)
   └── index.ts            pure public barrel (all re-exports)
-src/native/               native transport layer: types.ts (NativeAddon module surface) + types/instances.ts (per-class
-                          INSTANCE types, merged single AcceptNegotiatorInstance) + loader.ts (getAddonPath/getAddon/lazyAddon) +
+src/native/               native transport layer: bridge.ts (createNativeBridge — configured NAPI + lazy,
+                          self-tested C-ABI restricted to the SAME binary) + read.ts (runtime-native buffer reads) +
+                          types.ts (NativeAddon module surface) +
+                          types/instances.ts (per-class INSTANCE types, merged single AcceptNegotiatorInstance) +
+                          loader.ts (getAddonPath/getAddon/lazyAddon/loadAddon) +
                           ffi.ts (Bun PRIMARY bun:ffi C-ABI transport core over rust/ffi/; mode resolution + buffer/buffer_length
                           probe + bind() orchestration — self-test + CASTRUM_FFI_MODE gating + napi fallback; the bind-time self-test
                           is the safety net, castrum_ingress_layout blob + growExact needed-size retry for variable-size outputs)
@@ -230,10 +235,10 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi/                `#[no_mangle] extern "C"` exports (121 castrum_* — 109 direct + 4
+  ├── ffi/                `#[no_mangle] extern "C"` exports (122 castrum_* — 110 direct + 4
                           validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out! — incl. the
                           castrum_gzip_isize size probe and the per-route stack
-                          castrum_route_compile/run/destroy; parity guarded by
+                          castrum_route_compile/run/run_parts/destroy; parity guarded by
                           test/unit/native/ffi-symbol-parity.test.ts) for Bun's `bun:ffi`
                           C-ABI PRIMARY transport (scalar hot fns + ingress layout blob +
                           per-route native stack;
@@ -389,12 +394,16 @@ success and `error.code` / `error.message` on errors (path 2's format).
   `src/ingress/constants.ts`.
 - **Runtime seam**: runtime detection lives ONLY in `src/runtime/detect.ts` (the
   single `typeof Bun` check); `src/shared/runtime.ts` is a thin facade re-exporting
-  `isBun`/`isNode`. Do not sprinkle `typeof Bun` checks elsewhere. The public
+  `isBun`/`isNode`. OS parallelism, `process.hrtime`, and `Bun.peek` live ONLY in
+  `src/runtime/system.ts`; `check:clean` rejects direct uses elsewhere in shipped
+  use-case code. Do not sprinkle runtime checks elsewhere. The public
   `createIngressServer` is runtime-adaptive (`src/runtime/server.ts`: Bun.serve on
   Bun, `node:http` via `createIngressServerNode` on Node — same route handlers via
   `buildRouteHandlers`
   in `server.ts`). `BakedServer.port` is the ACTUAL bound port (Bun exposes it even with
-  `port: 0`; the Node adapter reports it via `ready`/getter).
+  `port: 0`; the Node adapter reports it via `ready`/getter). Framework adapters
+  use `@ignex/castrum/native` (`src/native/bridge.ts`) instead of maintaining a
+  second loader, symbol map, or self-test.
 - **String-return contract (Bun vs Node)**: text-returning `rust.*` ops return JS
   **strings** on the `bun:ffi` path (cstring → `CString`) and **bytes** under napi (Node /
   `CASTRUM_FFI_MODE=napi`). The TS surface types `Uint8Array | string`. Normalize with
@@ -480,7 +489,7 @@ success and `error.code` / `error.message` on errors (path 2's format).
   an unsupported feature → fail compile so the caller falls back to JS; (4) `route_run`
   uses the needed-size convention (0 = real error, `> out_cap` = exact required size);
   (5) `requireJsonBody` → 400 / `validateBody` schema fail → 422, first-failure-wins in
-  stage order. Owned `Box<NativeRoute>` handle (`castrum_route_compile/run/destroy`),
+  stage order. Owned `Box<NativeRoute>` handle (`castrum_route_compile/run/run_parts/destroy`),
   immutable `&self` run (safe across workers). `Route` (napi) is the Node/fallback path.
 - **Constants**: never hardcode binary-layout values. The single NUMERIC source is
   `rust/ingress/output.rs`; `rust/ingress/ingress_constants.rs` re-exports those

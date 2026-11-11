@@ -28,7 +28,7 @@
 import type { FFITypeOrString } from 'bun:ffi'
 import { buildFFISymbolMap } from './ffi/symbols'
 import { resolveEnvVar } from '../shared/env'
-import { isBun } from '../shared/runtime'
+import { canUseBunFFI } from '../runtime/detect'
 import { build } from './ffi/build'
 import { selfTest } from './ffi/selftest'
 import type { BunFFI, FfiMode } from './ffi/types'
@@ -148,10 +148,41 @@ function probeBufferLength(dlopen: typeof import('bun:ffi')['dlopen'], path: str
   }
 }
 
-function bind(forcedPath?: string, tried: string[] = []): BunFFI | null {
+/** Explicit inputs for an independent native bridge binding. */
+export interface BunFFIBindOptions {
+  /** Addon file to dlopen. Defaults to castrum's package resolution. */
+  addonPath?: string
+  /** Transport selection. Defaults to `CASTRUM_FFI_MODE`. */
+  mode?: FfiMode
+  /** Fallback artifacts to try after the preferred addon. */
+  candidates?: readonly string[]
+}
+
+/**
+ * Bind an independent, self-tested C-ABI surface with explicit configuration.
+ * Unlike {@link getBunFFI}, this does not memoize the surface; the caller owns
+ * its lifetime. Pass only the NAPI addon's path in `candidates` when opaque
+ * native handles will cross between the two transports.
+ */
+export function bindBunFFI(options: BunFFIBindOptions = {}): BunFFI | null {
+  const previousBufferMode = bufferAbiMode
+  const previousAddonPath = boundAddonPath
+  try {
+    return bind(options.addonPath, [], options)
+  } finally {
+    bufferAbiMode = previousBufferMode
+    boundAddonPath = previousAddonPath
+  }
+}
+
+function bind(
+  forcedPath?: string,
+  tried: string[] = [],
+  options: BunFFIBindOptions = {},
+): BunFFI | null {
   bufferAbiMode = null // reset — the mode below is only valid for a live bind
-  const mode = resolveFfiMode()
-  if (!isBun()) {
+  const mode = options.mode ?? resolveFfiMode()
+  if (!canUseBunFFI()) {
     if (mode === 'ffi') {
       throw new Error(
         'CASTRUM_FFI_MODE=ffi is invalid here: bun:ffi is a Bun-only transport ' +
@@ -164,24 +195,15 @@ function bind(forcedPath?: string, tried: string[] = []): BunFFI | null {
   if (mode === 'napi') {
     return null
   }
-  // Resolve the SAME addon file napi uses (./loader.ts — statically imported
-  // above; it only resolves the path, it never dlopens the addon). On a retry,
-  // `forcedPath` is the next candidate from `getAddonPathCandidates()`.
   const path = forcedPath ?? getAddonPath()
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { dlopen } = require('bun:ffi') as typeof import('bun:ffi')
 
-    // Probe `buffer`/`buffer_length` (the engine reads ptr + len off the SAME
-    // TypedArray at call time — an atomic snapshot) once; when supported we use
-    // it for the input-only hot fns (one JS arg instead of two), else `(ptr,len)`.
     const useBufferLength = probeBufferLength(dlopen, path)
     bufferAbiMode = useBufferLength ? 'buffer-pair' : 'ptr-len'
 
     const { symbols } = dlopen(path, buildFFISymbolMap(useBufferLength))
-
-    // (`as unknown as`: the zero-arg `castrum_metrics_create` infers
-    // `(...args: never[])`, which can't overlap `(...a: unknown[])` directly.)
     const bindings = build(
       symbols as unknown as Record<string, (...a: unknown[]) => unknown>,
       useBufferLength,
@@ -193,15 +215,9 @@ function bind(forcedPath?: string, tried: string[] = []): BunFFI | null {
     return bindings
   } catch (err) {
     bufferAbiMode = null
-    // The preferred artifact failed to dlopen/bind/self-test. The common cause
-    // is a STALE v3 SIMD binary (`castrum.linux-x64-v3-gnu.node`) that predates
-    // a newly added `castrum_*` symbol: dlopen fails, and without this walk the
-    // whole FFI transport would be disabled (every call silently downgraded to
-    // napi, and the task runtime silently made synchronous). Try the remaining
-    // existing candidates — the baseline binary — before giving up.
-    for (const next of getAddonPathCandidates()) {
+    for (const next of options.candidates ?? getAddonPathCandidates()) {
       if (next === path || tried.includes(next)) continue
-      const bound = bind(next, [...tried, path])
+      const bound = bind(next, [...tried, path], options)
       if (bound) return bound
     }
     if (mode === 'ffi') {

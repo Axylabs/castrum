@@ -206,7 +206,7 @@ function createNodeCodec(): Utf8Codec {
   }
 }
 
-/** Build the codec for a runtime (used by `createRuntimeAdapter` / tests). */
+/** Build the codec for a runtime (used by `runtimeCodec` and tests). */
 export function createCodec(name: RuntimeName): Utf8Codec {
   return name === 'bun' ? createBunCodec() : createNodeCodec()
 }

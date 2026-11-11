@@ -2,13 +2,15 @@
 //
 // The live external wire consumed by `@ignex/native` (`createNativeRoute` →
 // `route-wire.ts` v3): a route descriptor compiles ONCE into a pre-baked
-// `NativeRoute` (rust/ingress/native_route.rs), then each request packs a tiny
-// frame and gets a packed verdict in one call. The handle is an owned
+// `NativeRoute` (rust/ingress/native_route.rs), then each request gets a packed
+// verdict in one call, either from a frame or directly from components. The handle is an owned
 // `Box<NativeRoute>` (opaque u64); `route_run` follows the needed-size
 // convention (`0` = real error, `> out_cap` = exact required size) so the JS
 // wrapper allocates once and retries at most once. All three are `panic_guard`ed
 // — a panic must never unwind through the C ABI.
 
+use std::ffi::CStr;
+use std::os::raw::c_char;
 use std::slice;
 
 use super::util::{c_abi, panic_guard};
@@ -68,6 +70,63 @@ pub unsafe extern "C" fn castrum_route_run(
         frame_slice
     };
     panic_guard(|| route.run(frame_ref, out_slice).unwrap_or(0), 0)
+}
+
+/// Run directly from NUL-terminated query/cookie strings and optional body
+/// bytes. This skips the JS frame allocation, length-prefix writes, and copy.
+///
+/// # Safety
+/// `query` and `cookie` must be valid NUL-terminated strings; `body` must be
+/// valid for `body_len` reads; `out` must be valid for `out_cap` writes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_route_run_parts(
+    handle: u64,
+    query: *const c_char,
+    cookie: *const c_char,
+    body: *const u8,
+    body_len: usize,
+    has_body: u8,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if handle == 0
+        || query.is_null()
+        || cookie.is_null()
+        || out.is_null()
+        || (body.is_null() && body_len != 0)
+    {
+        return 0;
+    }
+    let route: &crate::ingress::NativeRoute = &*(handle as *const crate::ingress::NativeRoute);
+    let query_slice = CStr::from_ptr(query).to_bytes();
+    let cookie_slice = CStr::from_ptr(cookie).to_bytes();
+    let body_slice: &[u8] = if body_len == 0 {
+        &[]
+    } else {
+        slice::from_raw_parts(body, body_len)
+    };
+    let out_slice = slice::from_raw_parts_mut(out, out_cap);
+    let owned_body;
+    let body_ref: &[u8] = if crate::util::slices_overlap(body_slice, out_slice) {
+        owned_body = body_slice.to_vec();
+        &owned_body
+    } else {
+        body_slice
+    };
+    panic_guard(
+        || {
+            route
+                .run_parts(
+                    query_slice,
+                    cookie_slice,
+                    body_ref,
+                    has_body != 0,
+                    out_slice,
+                )
+                .unwrap_or(0)
+        },
+        0,
+    )
 }
 
 /// Destroy a compiled route handle (frees the `Box<NativeRoute>`). A null

@@ -18,7 +18,7 @@
 //      the addon must take the resolved fn as a parameter instead.
 //   4. FFI symbol count — docs must not carry stale `castrum_*` counts.
 //      Verified against `nm -D --defined-only <addon> | grep -c castrum_`:
-//      121 symbols = 109 direct extern fns + 4 validator_c_abi!
+//      122 symbols = 110 direct extern fns + 4 validator_c_abi!
 //      + 4 validator_bytes_c_abi! + 4 compress_to_out!. Older counts
 //      (75–108 total / 67–96 direct) are stale. This also scans the
 //      `.agents/skills/` runbooks and matches the `N C-ABI symbols` wording,
@@ -81,15 +81,28 @@ for (const f of srcFiles) checkHeader(join(ROOT, 'src', f), f)
 checkHeader(join(ROOT, 'index.ts'), 'index.ts')
 
 // ── 2. Runtime seam ────────────────────────────────────────────────────────
-console.log('check:clean — runtime seam (typeof Bun)')
+console.log('check:clean — runtime seam (runtime APIs)')
 const runtimeCheck = /typeof\s*(?:globalThis\s*\.\s*)?Bun\s*[=!]==?/
+const runtimeApiChecks = [
+  { pattern: /\bBun\.peek\s*\(/, label: 'Bun.peek' },
+  { pattern: /from\s+['"]node:os['"]/, label: 'node:os' },
+  { pattern: /\bprocess\.hrtime(?:\.bigint)?\s*\(/, label: 'process.hrtime' },
+] as const
 for (const f of shipped) {
-  if (f === 'runtime/detect.ts') continue
   const text = readFileSync(join(ROOT, 'src', f), 'utf8')
-  if (runtimeCheck.test(text)) {
+  if (f !== 'runtime/detect.ts' && runtimeCheck.test(text)) {
     problems.push(
       `runtime seam violation in ${f}: direct \`typeof Bun\` check — use src/runtime/detect.ts`,
     )
+  }
+  if (!f.startsWith('runtime/')) {
+    for (const check of runtimeApiChecks) {
+      if (check.pattern.test(text)) {
+        problems.push(
+          `runtime seam violation in ${f}: direct ${check.label} use — use src/runtime/system.ts`,
+        )
+      }
+    }
   }
 }
 
@@ -139,7 +152,7 @@ const staleCount =
 for (const d of countDocs) {
   const text = readFileSync(join(ROOT, d), 'utf8')
   if (staleCount.test(text)) {
-    problems.push(`stale FFI symbol count in ${d} (should read 121 / 109 direct)`)
+    problems.push(`stale FFI symbol count in ${d} (should read 122 / 110 direct)`)
   }
 }
 

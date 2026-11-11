@@ -4,9 +4,9 @@
 > Do not edit by hand — regenerate after structural changes. The
 > curated map lives in the repo docs (docs/REPO_MAP.md / STRUCTURE.md).
 
-- package: `castrum` v0.9.1
+- package: `@ignex/castrum` v0.9.13
 - engines: {"bun":">=1.1.0","node":">=20.3"}
-- scripts (59): `build`, `build:perf`, `build:v3`, `build:all`, `build:js`, `build:js:bundle`, `build:js:types`, `bench`, `check`, `test`, `test:all`, `test:coverage`, …
+- scripts (64): `postinstall`, `build`, `build:perf`, `build:v3`, `build:all`, `build:js`, `build:js:bundle`, `build:js:types`, `bench`, `check`, `test`, `test:all`, …
 
 ## src/
 
@@ -108,6 +108,7 @@ src/
 │  │  ├─ cors.ts
 │  │  ├─ fast-templates.ts
 │  │  ├─ hsts.ts
+│  │  ├─ memoized-headers.ts
 │  │  └─ security.ts
 │  ├─ packing/
 │  │  ├─ gather-raw-headers.ts
@@ -131,7 +132,9 @@ src/
 │  │  ├─ native.ts
 │  │  ├─ options.ts
 │  │  ├─ read.ts
-│  │  └─ responder.ts
+│  │  ├─ responder.ts
+│  │  └─ safe-record.ts
+│  ├─ abort.ts
 │  ├─ body.ts
 │  ├─ constants.ts
 │  ├─ context.ts
@@ -145,6 +148,7 @@ src/
 │  ├─ options.ts
 │  ├─ path-matcher.ts
 │  ├─ router.ts
+│  ├─ server-error.ts
 │  ├─ server-node.ts
 │  ├─ server.ts
 │  ├─ shared.ts
@@ -167,20 +171,29 @@ src/
 ├─ native/
 │  ├─ ffi/
 │  │  ├─ build/
+│  │  │  ├─ codecs-selftest.ts
 │  │  │  ├─ codecs.ts
 │  │  │  ├─ compress.ts
+│  │  │  ├─ instances-selftest.ts
 │  │  │  ├─ instances.ts
+│  │  │  ├─ metrics.ts
+│  │  │  ├─ parse-selftest.ts
 │  │  │  ├─ parse.ts
+│  │  │  ├─ task.ts
 │  │  │  └─ util.ts
 │  │  ├─ build.ts
 │  │  ├─ constants.ts
 │  │  ├─ selftest.ts
+│  │  ├─ symbols.ts
 │  │  └─ types.ts
 │  ├─ types/
 │  │  └─ instances.ts
+│  ├─ bridge.ts
 │  ├─ ffi.ts
 │  ├─ index.ts
+│  ├─ ingress-binding.ts
 │  ├─ loader.ts
+│  ├─ read.ts
 │  └─ types.ts
 ├─ runtime/
 │  ├─ builtins.ts
@@ -189,10 +202,10 @@ src/
 │  ├─ index.ts
 │  ├─ native.ts
 │  ├─ server.ts
+│  ├─ system.ts
 │  ├─ transport.ts
 │  ├─ types.ts
-│  ├─ uuid.ts
-│  └─ websocket.ts
+│  └─ uuid.ts
 ├─ rust-ffi/
 │  ├─ batch/
 │  │  ├─ build.ts
@@ -207,7 +220,8 @@ src/
 │  │  ├─ interface.ts
 │  │  ├─ json-packed.ts
 │  │  ├─ json.ts
-│  │  └─ payload.ts
+│  │  ├─ payload.ts
+│  │  └─ validation.ts
 │  ├─ addon.ts
 │  ├─ client.ts
 │  ├─ context.ts
@@ -229,6 +243,7 @@ src/
 │  ├─ codec.ts
 │  ├─ env.ts
 │  ├─ log.ts
+│  ├─ memory.ts
 │  ├─ metrics.ts
 │  ├─ proven.ts
 │  ├─ request-id.ts
@@ -236,6 +251,10 @@ src/
 │  ├─ runtime.ts
 │  ├─ trace.ts
 │  └─ uuid.ts
+├─ task/
+│  ├─ index.ts
+│  ├─ op.ts
+│  └─ runtime.ts
 ├─ selection.json
 └─ selection.ts
 ```
@@ -261,7 +280,8 @@ rust/
 │  ├─ hmac_sha256.rs
 │  ├─ mod.rs
 │  ├─ pbkdf2.rs
-│  └─ random_token.rs
+│  ├─ random_token.rs
+│  └─ session.rs
 ├─ ffi/
 │  ├─ crypto.rs
 │  ├─ hashing.rs
@@ -269,11 +289,13 @@ rust/
 │  ├─ ingress.rs
 │  ├─ json.rs
 │  ├─ jwt.rs
+│  ├─ metrics.rs
 │  ├─ mod.rs
 │  ├─ payload.rs
 │  ├─ probe.rs
 │  ├─ rate_limit.rs
 │  ├─ route.rs
+│  ├─ task.rs
 │  ├─ tests.rs
 │  ├─ util.rs
 │  └─ validators.rs
@@ -306,6 +328,7 @@ rust/
 │  ├─ pipeline.rs
 │  ├─ proxy.rs
 │  ├─ rate_limit.rs
+│  ├─ schema_cache.rs
 │  ├─ terminal.rs
 │  ├─ tests.rs
 │  └─ time.rs
@@ -332,6 +355,10 @@ rust/
 │  ├─ json_ser.rs
 │  ├─ mod.rs
 │  └─ napi_marshal.rs
+├─ metrics/
+│  ├─ api.rs
+│  ├─ mod.rs
+│  └─ registry.rs
 ├─ payload/
 │  ├─ compress.rs
 │  ├─ mod.rs
@@ -342,6 +369,12 @@ rust/
 ├─ src/
 │  └─ bin/
 │     └─ native-bench.rs
+├─ task/
+│  ├─ completion.rs
+│  ├─ mod.rs
+│  ├─ ops.rs
+│  ├─ runtime.rs
+│  └─ tests.rs
 ├─ util/
 │  ├─ batch/
 │  │  ├─ api.rs
@@ -352,6 +385,7 @@ rust/
 │  ├─ bytes.rs
 │  ├─ mod.rs
 │  ├─ packed.rs
+│  ├─ text.rs
 │  ├─ threadpool.rs
 │  └─ validation.rs
 ├─ lib.rs
@@ -377,7 +411,9 @@ bench/
 │  ├─ native-route-smoke.ts
 │  ├─ native-route-vs-router.ts
 │  ├─ router-cost.ts
-│  └─ router-minimal-breakdown.ts
+│  ├─ router-minimal-breakdown.ts
+│  ├─ rust-vs-js-new-ops.ts
+│  └─ task-offload.ts
 ├─ ffi/
 │  ├─ ffi-all.ts
 │  ├─ ffi-load.ts
@@ -399,426 +435,48 @@ bench/
 │  ├─ autocannon/
 │  │  ├─ bun/
 │  │  │  ├─ 03-stress.ac.json
-│  │  │  ├─ 03-stress.ac.md
-│  │  │  ├─ 03-stress.median.json
-│  │  │  ├─ 03-stress.median.md
-│  │  │  ├─ baseline-get.ac.json
-│  │  │  ├─ baseline-get.ac.md
-│  │  │  ├─ baseline-get.median.json
-│  │  │  ├─ baseline-get.median.md
-│  │  │  ├─ baseline-post.ac.json
-│  │  │  ├─ baseline-post.ac.md
-│  │  │  ├─ baseline-post.median.json
-│  │  │  ├─ baseline-post.median.md
-│  │  │  ├─ final-get.ac.json
-│  │  │  ├─ final-get.ac.md
-│  │  │  ├─ final-get.median.json
-│  │  │  ├─ final-get.median.md
-│  │  │  ├─ final-post.ac.json
-│  │  │  ├─ final-post.ac.md
-│  │  │  ├─ final-post.median.json
-│  │  │  ├─ final-post.median.md
-│  │  │  ├─ interleave-get.ac.json
-│  │  │  ├─ interleave-get.ac.md
-│  │  │  ├─ interleave-get.median.json
-│  │  │  ├─ interleave-get.median.md
-│  │  │  ├─ interleave-post.ac.json
-│  │  │  ├─ interleave-post.ac.md
-│  │  │  ├─ interleave-post.median.json
-│  │  │  └─ interleave-post.median.md
+│  │  │  └─ 03-stress.ac.md
 │  │  ├─ elysia/
 │  │  │  ├─ 03-stress.ac.json
-│  │  │  ├─ 03-stress.ac.md
-│  │  │  ├─ 03-stress.median.json
-│  │  │  ├─ 03-stress.median.md
-│  │  │  ├─ baseline-get.ac.json
-│  │  │  ├─ baseline-get.ac.md
-│  │  │  ├─ baseline-get.median.json
-│  │  │  ├─ baseline-get.median.md
-│  │  │  ├─ baseline-post.ac.json
-│  │  │  ├─ baseline-post.ac.md
-│  │  │  ├─ baseline-post.median.json
-│  │  │  ├─ baseline-post.median.md
-│  │  │  ├─ final-get.ac.json
-│  │  │  ├─ final-get.ac.md
-│  │  │  ├─ final-get.median.json
-│  │  │  ├─ final-get.median.md
-│  │  │  ├─ final-post.ac.json
-│  │  │  ├─ final-post.ac.md
-│  │  │  ├─ final-post.median.json
-│  │  │  ├─ final-post.median.md
-│  │  │  ├─ interleave-get.ac.json
-│  │  │  ├─ interleave-get.ac.md
-│  │  │  ├─ interleave-get.median.json
-│  │  │  ├─ interleave-get.median.md
-│  │  │  ├─ interleave-post.ac.json
-│  │  │  ├─ interleave-post.ac.md
-│  │  │  ├─ interleave-post.median.json
-│  │  │  └─ interleave-post.median.md
+│  │  │  └─ 03-stress.ac.md
 │  │  ├─ ingress/
 │  │  │  ├─ 03-stress.ac.json
-│  │  │  ├─ 03-stress.ac.md
-│  │  │  ├─ 03-stress.median.json
-│  │  │  ├─ 03-stress.median.md
-│  │  │  ├─ ab-post-zc-off.ac.json
-│  │  │  ├─ ab-post-zc-off.ac.md
-│  │  │  ├─ ab-post-zc-off.median.json
-│  │  │  ├─ ab-post-zc-off.median.md
-│  │  │  ├─ ab-post-zc-on.ac.json
-│  │  │  ├─ ab-post-zc-on.ac.md
-│  │  │  ├─ ab-post-zc-on.median.json
-│  │  │  ├─ ab-post-zc-on.median.md
-│  │  │  ├─ ab-zc-off.ac.json
-│  │  │  ├─ ab-zc-off.ac.md
-│  │  │  ├─ ab-zc-off.median.json
-│  │  │  ├─ ab-zc-off.median.md
-│  │  │  ├─ ab-zc-on.ac.json
-│  │  │  ├─ ab-zc-on.ac.md
-│  │  │  ├─ ab-zc-on.median.json
-│  │  │  ├─ ab-zc-on.median.md
-│  │  │  ├─ baseline-get.ac.json
-│  │  │  ├─ baseline-get.ac.md
-│  │  │  ├─ baseline-get.median.json
-│  │  │  ├─ baseline-get.median.md
-│  │  │  ├─ baseline-post.ac.json
-│  │  │  ├─ baseline-post.ac.md
-│  │  │  ├─ baseline-post.median.json
-│  │  │  ├─ baseline-post.median.md
-│  │  │  ├─ final-get.ac.json
-│  │  │  ├─ final-get.ac.md
-│  │  │  ├─ final-get.median.json
-│  │  │  ├─ final-get.median.md
-│  │  │  ├─ final-post.ac.json
-│  │  │  ├─ final-post.ac.md
-│  │  │  ├─ final-post.median.json
-│  │  │  ├─ final-post.median.md
-│  │  │  ├─ interleave-get.ac.json
-│  │  │  ├─ interleave-get.ac.md
-│  │  │  ├─ interleave-get.median.json
-│  │  │  ├─ interleave-get.median.md
-│  │  │  ├─ interleave-post.ac.json
-│  │  │  ├─ interleave-post.ac.md
-│  │  │  ├─ interleave-post.median.json
-│  │  │  ├─ interleave-post.median.md
-│  │  │  ├─ iso-post.ac.json
-│  │  │  ├─ iso-post.ac.md
-│  │  │  ├─ iso-post.median.json
-│  │  │  ├─ iso-post.median.md
-│  │  │  ├─ p1-post.ac.json
-│  │  │  ├─ p1-post.ac.md
-│  │  │  ├─ p1-post.median.json
-│  │  │  ├─ p1-post.median.md
-│  │  │  ├─ p2-post.ac.json
-│  │  │  ├─ p2-post.ac.md
-│  │  │  ├─ p2-post.median.json
-│  │  │  ├─ p2-post.median.md
-│  │  │  ├─ repro2.ac.json
-│  │  │  ├─ repro2.ac.md
-│  │  │  ├─ static.ac.json
-│  │  │  ├─ static.ac.md
-│  │  │  ├─ verify-fix.ac.json
-│  │  │  └─ verify-fix.ac.md
+│  │  │  └─ 03-stress.ac.md
 │  │  └─ router/
 │  │     ├─ 03-stress.ac.json
-│  │     ├─ 03-stress.ac.md
-│  │     ├─ 03-stress.median.json
-│  │     ├─ 03-stress.median.md
-│  │     ├─ baseline-get.ac.json
-│  │     ├─ baseline-get.ac.md
-│  │     ├─ baseline-get.median.json
-│  │     ├─ baseline-get.median.md
-│  │     ├─ baseline-post.ac.json
-│  │     ├─ baseline-post.ac.md
-│  │     ├─ baseline-post.median.json
-│  │     ├─ baseline-post.median.md
-│  │     ├─ final-get.ac.json
-│  │     ├─ final-get.ac.md
-│  │     ├─ final-get.median.json
-│  │     ├─ final-get.median.md
-│  │     ├─ final-post.ac.json
-│  │     ├─ final-post.ac.md
-│  │     ├─ final-post.median.json
-│  │     ├─ final-post.median.md
-│  │     ├─ interleave-get.ac.json
-│  │     ├─ interleave-get.ac.md
-│  │     ├─ interleave-get.median.json
-│  │     ├─ interleave-get.median.md
-│  │     ├─ interleave-post.ac.json
-│  │     ├─ interleave-post.ac.md
-│  │     ├─ interleave-post.median.json
-│  │     └─ interleave-post.median.md
+│  │     └─ 03-stress.ac.md
 │  ├─ bun/
 │  │  ├─ 01-smoke.bench.html
 │  │  ├─ 01-smoke.bench.json
 │  │  ├─ 01-smoke.bench.md
-│  │  ├─ 01-smoke.failures.ndjson
-│  │  ├─ 02-load.bench.html
-│  │  ├─ 02-load.bench.json
-│  │  ├─ 02-load.bench.md
-│  │  ├─ 02-load.failures.ndjson
-│  │  ├─ 03-stress.bench.html
-│  │  ├─ 03-stress.bench.json
-│  │  ├─ 03-stress.bench.md
-│  │  ├─ 03-stress.failures.ndjson
-│  │  ├─ 04-spike.bench.html
-│  │  ├─ 04-spike.bench.json
-│  │  ├─ 04-spike.bench.md
-│  │  ├─ 04-spike.failures.ndjson
-│  │  ├─ 05-soak.bench.html
-│  │  ├─ 05-soak.bench.json
-│  │  ├─ 05-soak.bench.md
-│  │  ├─ 05-soak.failures.ndjson
-│  │  ├─ 09-large-payload.bench.html
-│  │  ├─ 09-large-payload.bench.json
-│  │  ├─ 09-large-payload.bench.md
-│  │  ├─ 09-large-payload.failures.ndjson
-│  │  ├─ 10-mixed-realistic.bench.html
-│  │  ├─ 10-mixed-realistic.bench.json
-│  │  ├─ 10-mixed-realistic.bench.md
-│  │  ├─ 10-mixed-realistic.failures.ndjson
-│  │  ├─ 11-concurrent-burst.bench.html
-│  │  ├─ 11-concurrent-burst.bench.json
-│  │  ├─ 11-concurrent-burst.bench.md
-│  │  ├─ 11-concurrent-burst.failures.ndjson
-│  │  ├─ 12-slowloris.bench.html
-│  │  ├─ 12-slowloris.bench.json
-│  │  ├─ 12-slowloris.bench.md
-│  │  ├─ 12-slowloris.failures.ndjson
-│  │  ├─ 13-heavy-json-nested.bench.html
-│  │  ├─ 13-heavy-json-nested.bench.json
-│  │  ├─ 13-heavy-json-nested.bench.md
-│  │  ├─ 13-heavy-json-nested.failures.ndjson
-│  │  ├─ 14-heavy-json-arrays.bench.html
-│  │  ├─ 14-heavy-json-arrays.bench.json
-│  │  ├─ 14-heavy-json-arrays.bench.md
-│  │  ├─ 14-heavy-json-arrays.failures.ndjson
-│  │  ├─ 15-heavy-json-wide.bench.html
-│  │  ├─ 15-heavy-json-wide.bench.json
-│  │  ├─ 15-heavy-json-wide.bench.md
-│  │  ├─ 15-heavy-json-wide.failures.ndjson
-│  │  ├─ 16-crud-validation-mix.bench.html
-│  │  ├─ 16-crud-validation-mix.bench.json
-│  │  ├─ 16-crud-validation-mix.bench.md
-│  │  ├─ 16-crud-validation-mix.failures.ndjson
-│  │  ├─ 17-json-validation-spike.bench.html
-│  │  ├─ 17-json-validation-spike.bench.json
-│  │  ├─ 17-json-validation-spike.bench.md
-│  │  ├─ 17-json-validation-spike.failures.ndjson
-│  │  └─ 18-json-validation-soak.failures.ndjson
+│  │  └─ 01-smoke.failures.ndjson
 │  ├─ cpu/
-│  │  ├─ 2026-08-06T12-20-43-300Z.json
-│  │  ├─ 2026-08-06T12-30-08-371Z.json
-│  │  ├─ 2026-08-06T13-12-40-082Z.json
-│  │  ├─ 2026-08-06T13-18-05-490Z.json
-│  │  ├─ 2026-08-06T13-26-23-563Z.json
-│  │  ├─ 2026-08-06T13-42-47-645Z.json
-│  │  ├─ 2026-08-07T10-48-58-403Z.json
-│  │  ├─ 2026-08-07T11-09-23-336Z.json
-│  │  ├─ 2026-08-07T11-19-47-100Z.json
-│  │  ├─ 2026-08-07T11-52-15-473Z.json
-│  │  ├─ 2026-08-07T12-14-46-565Z.json
-│  │  ├─ 2026-08-07T12-39-09-208Z.json
-│  │  ├─ 2026-08-07T12-41-22-337Z.json
-│  │  ├─ 2026-08-07T13-10-42-683Z.json
-│  │  ├─ 2026-08-07T13-23-27-544Z.json
-│  │  ├─ 2026-08-07T14-32-27-182Z.json
-│  │  ├─ 2026-08-07T14-34-03-672Z.json
-│  │  ├─ 2026-08-07T14-47-57-068Z.json
-│  │  ├─ 2026-08-07T14-55-06-845Z.json
-│  │  ├─ 2026-08-07T15-05-29-812Z.json
-│  │  ├─ 2026-08-07T15-17-10-505Z.json
-│  │  ├─ 2026-08-07T15-18-47-295Z.json
-│  │  ├─ 2026-08-07T15-41-45-565Z.json
-│  │  ├─ 2026-08-07T15-51-24-240Z.json
-│  │  ├─ 2026-08-07T15-53-46-187Z.json
-│  │  ├─ 2026-08-07T16-33-06-503Z.json
-│  │  ├─ 2026-08-07T16-34-39-835Z.json
-│  │  ├─ 2026-08-07T16-57-04-520Z.json
-│  │  ├─ 2026-08-07T17-44-26-945Z.json
-│  │  ├─ 2026-08-07T17-47-02-264Z.json
-│  │  ├─ 2026-08-07T17-53-24-204Z.json
-│  │  ├─ 2026-08-10T09-35-41-617Z.json
-│  │  ├─ 2026-08-10T10-19-30-029Z.json
-│  │  ├─ 2026-08-10T10-20-46-038Z.json
-│  │  ├─ 2026-08-10T11-36-19-335Z.json
-│  │  ├─ 2026-08-10T11-50-46-815Z.json
-│  │  ├─ 2026-08-10T11-52-09-169Z.json
-│  │  ├─ 2026-08-10T12-03-13-997Z.json
-│  │  ├─ 2026-08-10T12-48-43-979Z.json
-│  │  ├─ 2026-08-10T13-04-28-993Z.json
-│  │  ├─ 2026-08-10T13-15-30-904Z.json
-│  │  ├─ 2026-08-10T13-17-44-994Z.json
-│  │  ├─ 2026-08-10T16-23-13-973Z.json
-│  │  ├─ 2026-08-10T19-08-25-801Z.json
-│  │  ├─ 2026-08-10T20-00-29-313Z.json
-│  │  ├─ 2026-08-10T20-29-17-313Z.json
-│  │  ├─ 2026-08-10T20-33-06-396Z.json
-│  │  ├─ 2026-08-10T20-35-08-593Z.json
-│  │  ├─ 2026-08-10T21-03-40-197Z.json
-│  │  ├─ 2026-08-10T21-24-14-095Z.json
-│  │  ├─ 2026-08-10T21-31-51-868Z.json
-│  │  ├─ 2026-08-10T21-35-45-985Z.json
-│  │  ├─ 2026-08-10T21-38-43-738Z.json
-│  │  ├─ 2026-08-10T21-40-09-837Z.json
-│  │  ├─ 2026-08-10T22-04-33-345Z.json
-│  │  ├─ 2026-08-10T22-25-33-846Z.json
-│  │  ├─ 2026-08-10T22-51-19-915Z.json
-│  │  ├─ 2026-08-10T23-08-01-383Z.json
-│  │  ├─ 2026-08-10T23-12-48-196Z.json
-│  │  ├─ 2026-08-10T23-13-25-656Z.json
-│  │  ├─ 2026-08-10T23-20-02-209Z.json
-│  │  ├─ 2026-08-10T23-26-15-161Z.json
-│  │  ├─ 2026-08-10T23-55-13-432Z.json
-│  │  ├─ 2026-08-11T00-21-04-230Z.json
-│  │  ├─ 2026-08-11T08-16-28-675Z.json
-│  │  ├─ 2026-08-11T10-15-22-087Z.json
-│  │  ├─ 2026-08-11T10-34-40-532Z.json
-│  │  ├─ 2026-08-11T11-09-28-581Z.json
-│  │  ├─ 2026-08-11T11-14-05-108Z.json
-│  │  ├─ 2026-08-11T11-24-12-838Z.json
-│  │  ├─ 2026-08-11T11-49-31-983Z.json
-│  │  ├─ 2026-08-11T11-54-19-260Z.json
-│  │  ├─ 2026-08-11T12-53-38-006Z.json
-│  │  ├─ 2026-08-11T13-54-18-841Z.json
-│  │  ├─ 2026-08-11T13-56-02-597Z.json
-│  │  ├─ 2026-08-11T14-56-06-440Z.json
-│  │  ├─ 2026-08-11T15-00-09-468Z.json
-│  │  ├─ 2026-08-11T15-06-30-029Z.json
-│  │  ├─ 2026-08-11T15-14-47-799Z.json
-│  │  ├─ 2026-08-11T15-45-48-961Z.json
-│  │  ├─ 2026-08-11T19-57-36-238Z.json
-│  │  ├─ 2026-08-11T19-59-21-089Z.json
-│  │  ├─ 2026-08-11T20-13-52-893Z.json
-│  │  ├─ 2026-08-11T20-15-26-381Z.json
-│  │  ├─ 2026-08-11T20-24-38-428Z.json
-│  │  ├─ 2026-08-11T20-26-11-512Z.json
-│  │  ├─ 2026-08-11T20-27-55-455Z.json
-│  │  ├─ 2026-08-11T20-29-29-216Z.json
-│  │  ├─ 2026-08-11T21-18-15-531Z.json
-│  │  ├─ 2026-08-11T21-41-03-077Z.json
-│  │  ├─ 2026-08-12T08-52-01-413Z.json
-│  │  ├─ 2026-08-12T09-53-52-376Z.json
-│  │  ├─ 2026-08-12T10-07-44-609Z.json
-│  │  ├─ 2026-08-12T10-15-19-923Z.json
-│  │  ├─ 2026-08-12T10-21-12-031Z.json
-│  │  ├─ 2026-08-12T10-23-10-885Z.json
-│  │  ├─ 2026-08-12T11-13-19-344Z.json
-│  │  ├─ 2026-08-12T11-14-46-497Z.json
-│  │  ├─ 2026-08-12T12-01-27-156Z.json
-│  │  ├─ 2026-08-12T12-52-28-493Z.json
-│  │  ├─ 2026-08-12T13-17-40-227Z.json
-│  │  ├─ 2026-08-12T13-50-38-783Z.json
-│  │  ├─ 2026-08-12T14-16-47-227Z.json
-│  │  ├─ 2026-08-12T14-18-42-504Z.json
-│  │  ├─ 2026-08-12T16-34-41-152Z.json
-│  │  ├─ 2026-08-12T16-38-48-689Z.json
-│  │  ├─ 2026-08-12T23-10-50-901Z.json
-│  │  ├─ 2026-08-12T23-12-27-583Z.json
-│  │  ├─ 2026-08-13T09-27-34-264Z.json
-│  │  ├─ 2026-08-13T10-09-15-845Z.json
-│  │  ├─ 2026-08-13T19-49-07-954Z.json
-│  │  ├─ 2026-08-13T19-49-37-967Z.json
-│  │  ├─ 2026-08-13T19-53-06-303Z.json
-│  │  ├─ 2026-08-13T19-54-37-938Z.json
-│  │  ├─ 2026-08-14T11-39-40-115Z.json
-│  │  ├─ 2026-08-14T13-44-36-747Z.json
-│  │  ├─ 2026-08-14T15-39-21-391Z.json
-│  │  ├─ 2026-08-14T15-44-48-409Z.json
-│  │  ├─ 2026-08-14T16-08-54-437Z.json
-│  │  ├─ 2026-08-14T16-30-22-896Z.json
-│  │  ├─ 2026-08-14T16-57-27-220Z.json
-│  │  ├─ 2026-08-14T17-32-57-813Z.json
-│  │  ├─ 2026-08-14T19-59-15-716Z.json
-│  │  ├─ 2026-08-14T20-19-53-814Z.json
-│  │  ├─ 2026-08-14T21-40-37-959Z.json
-│  │  ├─ 2026-08-15T08-26-15-848Z.json
-│  │  ├─ 2026-08-15T08-30-56-047Z.json
-│  │  ├─ 2026-08-15T09-29-03-119Z.json
-│  │  ├─ 2026-08-15T09-45-42-724Z.json
-│  │  ├─ 2026-08-15T09-47-25-121Z.json
-│  │  ├─ 2026-08-15T09-59-11-162Z.json
-│  │  ├─ 2026-08-15T19-39-18-697Z.json
-│  │  ├─ 2026-08-15T20-14-32-478Z.json
-│  │  ├─ 2026-08-15T20-32-51-252Z.json
-│  │  ├─ 2026-08-15T20-49-55-365Z.json
-│  │  ├─ 2026-08-16T08-58-02-530Z.json
-│  │  ├─ 2026-08-16T09-00-48-415Z.json
-│  │  ├─ 2026-08-16T09-07-17-212Z.json
-│  │  ├─ 2026-08-16T12-37-09-050Z.json
-│  │  ├─ 2026-08-20T22-52-44-912Z.json
-│  │  ├─ 2026-08-20T22-57-23-898Z.json
-│  │  ├─ 2026-08-22T10-22-26-610Z.json
-│  │  ├─ baseline-before-perf-pass.json
-│  │  ├─ baseline-pre-adapter.json
-│  │  ├─ baseline-pre-adapter.txt
+│  │  ├─ 2026-09-11T12-30-52-395Z.json
+│  │  ├─ 2026-09-15T15-32-01-820Z.json
+│  │  ├─ 2026-09-17T13-43-06-742Z.json
+│  │  ├─ 2026-09-17T14-07-12-362Z.json
+│  │  ├─ 2026-09-17T16-44-02-271Z.json
+│  │  ├─ 2026-09-17T20-22-35-595Z.json
+│  │  ├─ 2026-09-18T12-55-09-603Z.json
+│  │  ├─ 2026-09-18T13-41-17-262Z.json
+│  │  ├─ 2026-09-18T13-42-58-048Z.json
+│  │  ├─ 2026-09-18T13-44-16-758Z.json
+│  │  ├─ 2026-09-18T18-12-05-300Z.json
+│  │  ├─ 2026-09-21T20-03-55-422Z.json
+│  │  ├─ 2026-10-28T18-59-20-692Z.json
 │  │  └─ latest.json
 │  ├─ elysia/
 │  │  ├─ 01-smoke.bench.html
 │  │  ├─ 01-smoke.bench.json
 │  │  ├─ 01-smoke.bench.md
-│  │  ├─ 01-smoke.failures.ndjson
-│  │  ├─ 02-load.bench.html
-│  │  ├─ 02-load.bench.json
-│  │  ├─ 02-load.bench.md
-│  │  ├─ 02-load.failures.ndjson
-│  │  ├─ 03-stress.bench.html
-│  │  ├─ 03-stress.bench.json
-│  │  ├─ 03-stress.bench.md
-│  │  ├─ 03-stress.failures.ndjson
-│  │  ├─ 04-spike.bench.html
-│  │  ├─ 04-spike.bench.json
-│  │  ├─ 04-spike.bench.md
-│  │  ├─ 04-spike.failures.ndjson
-│  │  ├─ 05-soak.failures.ndjson
-│  │  ├─ 10-mixed-realistic.bench.html
-│  │  ├─ 10-mixed-realistic.bench.json
-│  │  ├─ 10-mixed-realistic.bench.md
-│  │  ├─ 10-mixed-realistic.failures.ndjson
-│  │  ├─ 11-concurrent-burst.bench.html
-│  │  ├─ 11-concurrent-burst.bench.json
-│  │  ├─ 11-concurrent-burst.bench.md
-│  │  ├─ 11-concurrent-burst.failures.ndjson
-│  │  ├─ 12-slowloris.bench.html
-│  │  ├─ 12-slowloris.bench.json
-│  │  ├─ 12-slowloris.bench.md
-│  │  ├─ 12-slowloris.failures.ndjson
-│  │  ├─ 13-heavy-json-nested.bench.html
-│  │  ├─ 13-heavy-json-nested.bench.json
-│  │  ├─ 13-heavy-json-nested.bench.md
-│  │  ├─ 13-heavy-json-nested.failures.ndjson
-│  │  ├─ 14-heavy-json-arrays.bench.html
-│  │  ├─ 14-heavy-json-arrays.bench.json
-│  │  ├─ 14-heavy-json-arrays.bench.md
-│  │  ├─ 14-heavy-json-arrays.failures.ndjson
-│  │  ├─ 15-heavy-json-wide.bench.html
-│  │  ├─ 15-heavy-json-wide.bench.json
-│  │  ├─ 15-heavy-json-wide.bench.md
-│  │  ├─ 15-heavy-json-wide.failures.ndjson
-│  │  ├─ 16-crud-validation-mix.bench.html
-│  │  ├─ 16-crud-validation-mix.bench.json
-│  │  ├─ 16-crud-validation-mix.bench.md
-│  │  ├─ 16-crud-validation-mix.failures.ndjson
-│  │  ├─ 17-json-validation-spike.bench.html
-│  │  ├─ 17-json-validation-spike.bench.json
-│  │  ├─ 17-json-validation-spike.bench.md
-│  │  └─ 17-json-validation-spike.failures.ndjson
+│  │  └─ 01-smoke.failures.ndjson
 │  ├─ ffi-margin/
-│  │  ├─ latest-1786716595501.json
-│  │  ├─ latest-1786717026860.json
-│  │  ├─ latest-1786717121781.json
-│  │  ├─ latest-1786718721009.json
-│  │  ├─ latest-1786718812040.json
-│  │  ├─ latest-1786718996867.json
-│  │  ├─ latest-1786720399660.json
-│  │  ├─ latest-1786721265343.json
-│  │  ├─ latest-1786721792960.json
-│  │  ├─ latest-1786726502633.json
-│  │  ├─ latest-1786835830543.json
-│  │  ├─ latest-1786870101889.json
-│  │  ├─ latest-1786870277856.json
-│  │  ├─ latest-1786872652074.json
-│  │  ├─ latest-1787262735100.json
-│  │  ├─ latest-1787263702772.json
+│  │  ├─ latest-1789127678003.json
+│  │  ├─ latest-1789663356859.json
+│  │  ├─ latest-1789671398289.json
+│  │  ├─ latest-1789671901445.json
+│  │  ├─ latest-1789675213918.json
+│  │  ├─ latest-1789676477851.json
 │  │  └─ latest.json
 │  ├─ ingress/
 │  │  ├─ 01-smoke.bench.html
@@ -837,55 +495,18 @@ bench/
 │  │  ├─ 04-spike.bench.json
 │  │  ├─ 04-spike.bench.md
 │  │  ├─ 04-spike.failures.ndjson
-│  │  ├─ 09-large-payload.bench.html
-│  │  ├─ 09-large-payload.bench.json
-│  │  ├─ 09-large-payload.bench.md
-│  │  ├─ 09-large-payload.failures.ndjson
-│  │  ├─ 10-mixed-realistic.bench.html
-│  │  ├─ 10-mixed-realistic.bench.json
-│  │  ├─ 10-mixed-realistic.bench.md
-│  │  ├─ 10-mixed-realistic.failures.ndjson
-│  │  ├─ 11-concurrent-burst.bench.html
-│  │  ├─ 11-concurrent-burst.bench.json
-│  │  ├─ 11-concurrent-burst.bench.md
-│  │  ├─ 11-concurrent-burst.failures.ndjson
-│  │  ├─ 12-slowloris.bench.html
-│  │  ├─ 12-slowloris.bench.json
-│  │  ├─ 12-slowloris.bench.md
-│  │  ├─ 12-slowloris.failures.ndjson
-│  │  ├─ 13-heavy-json-nested.bench.html
-│  │  ├─ 13-heavy-json-nested.bench.json
-│  │  ├─ 13-heavy-json-nested.bench.md
-│  │  ├─ 13-heavy-json-nested.failures.ndjson
-│  │  ├─ 14-heavy-json-arrays.bench.html
-│  │  ├─ 14-heavy-json-arrays.bench.json
-│  │  ├─ 14-heavy-json-arrays.bench.md
-│  │  ├─ 14-heavy-json-arrays.failures.ndjson
-│  │  ├─ 15-heavy-json-wide.bench.html
-│  │  ├─ 15-heavy-json-wide.bench.json
-│  │  ├─ 15-heavy-json-wide.bench.md
-│  │  ├─ 15-heavy-json-wide.failures.ndjson
+│  │  ├─ 05-soak.failures.ndjson
 │  │  ├─ 16-crud-validation-mix.bench.html
 │  │  ├─ 16-crud-validation-mix.bench.json
 │  │  ├─ 16-crud-validation-mix.bench.md
-│  │  ├─ 16-crud-validation-mix.failures.ndjson
-│  │  ├─ 17-json-validation-spike.bench.html
-│  │  ├─ 17-json-validation-spike.bench.json
-│  │  ├─ 17-json-validation-spike.bench.md
-│  │  └─ 17-json-validation-spike.failures.ndjson
+│  │  └─ 16-crud-validation-mix.failures.ndjson
 │  ├─ loader/
 │  │  └─ latest.json
 │  ├─ router/
 │  │  ├─ 01-smoke.bench.html
 │  │  ├─ 01-smoke.bench.json
 │  │  ├─ 01-smoke.bench.md
-│  │  ├─ 01-smoke.failures.ndjson
-│  │  ├─ 03-stress.bench.html
-│  │  ├─ 03-stress.bench.json
-│  │  ├─ 03-stress.bench.md
-│  │  └─ 03-stress.failures.ndjson
-│  ├─ startup/
-│  │  └─ latest.json
+│  │  └─ 01-smoke.failures.ndjson
 │  └─ selection.json
 ├─ autocannon-stress.mjs
 ├─ measure.ts
@@ -899,6 +520,11 @@ bench/
 test/
 ├─ compat/
 │  └─ flux-contract.test.ts
+├─ differential/
+│  ├─ corpus.ts
+│  ├─ differential.test.ts
+│  ├─ lanes.ts
+│  └─ transport-runner.ts
 ├─ integration/
 │  ├─ node-enterprise.test.mjs
 │  └─ node-smoke.test.mjs
@@ -916,6 +542,8 @@ test/
 │  │  ├─ proven.test.ts
 │  │  └─ wiring.test.ts
 │  ├─ ingress/
+│  │  ├─ abort.test.ts
+│  │  ├─ baked-response.test.ts
 │  │  ├─ body.test.ts
 │  │  ├─ context.test.ts
 │  │  ├─ decode-adversarial.test.ts
@@ -932,24 +560,34 @@ test/
 │  │  ├─ native-route.test.ts
 │  │  ├─ observability.test.ts
 │  │  ├─ options.test.ts
+│  │  ├─ prototype-pollution.test.ts
+│  │  ├─ regex-dos.test.ts
+│  │  ├─ response-headers-cache.test.ts
 │  │  ├─ router-responder.test.ts
 │  │  ├─ router.test.ts
 │  │  ├─ routes-exports.test.ts
+│  │  ├─ schema-cache.test.ts
 │  │  ├─ security-headers.test.ts
+│  │  ├─ server-error.test.ts
 │  │  ├─ server-node.test.ts
 │  │  ├─ server.test.ts
-│  │  └─ smuggling.test.ts
+│  │  ├─ smuggling.test.ts
+│  │  └─ static-route.test.ts
 │  ├─ integration/
 │  │  ├─ batch.test.ts
 │  │  ├─ pipeline.test.ts
 │  │  ├─ streaming.test.ts
 │  │  └─ websocket.test.ts
 │  ├─ native/
+│  │  ├─ bridge.test.ts
+│  │  ├─ cstring-nul.test.ts
 │  │  ├─ ffi-symbol-parity.test.ts
 │  │  ├─ ffi.test.ts
+│  │  ├─ ingress-binding.test.ts
 │  │  ├─ loader-hfc-coalesce.test.ts
 │  │  ├─ loader-hfc.test.ts
-│  │  └─ loader.test.ts
+│  │  ├─ loader.test.ts
+│  │  └─ postinstall.test.ts
 │  ├─ rust-ffi/
 │  │  ├─ accept.test.ts
 │  │  ├─ aead.test.ts
@@ -967,6 +605,7 @@ test/
 │  │  ├─ json.test.ts
 │  │  ├─ jwt.test.ts
 │  │  ├─ media-type.test.ts
+│  │  ├─ metrics.test.ts
 │  │  ├─ mime.test.ts
 │  │  ├─ multipart.test.ts
 │  │  ├─ mutation.test.ts
@@ -978,20 +617,25 @@ test/
 │  │  ├─ token.test.ts
 │  │  ├─ url-join.test.ts
 │  │  ├─ url.test.ts
+│  │  ├─ validation-extra.test.ts
 │  │  └─ validation.test.ts
-│  └─ shared/
-│     ├─ adaptive.test.ts
-│     ├─ buffer-pool.test.ts
-│     ├─ bytes.test.ts
-│     ├─ codec.test.ts
-│     ├─ log.test.ts
-│     ├─ metrics.test.ts
-│     ├─ packed-pairs.test.ts
-│     ├─ packed.test.ts
-│     ├─ response.test.ts
-│     ├─ runtime.test.ts
-│     ├─ trace.test.ts
-│     └─ uuid.test.ts
+│  ├─ shared/
+│  │  ├─ adaptive.test.ts
+│  │  ├─ buffer-pool.test.ts
+│  │  ├─ bytes.test.ts
+│  │  ├─ codec.test.ts
+│  │  ├─ log.test.ts
+│  │  ├─ memory.test.ts
+│  │  ├─ metrics.test.ts
+│  │  ├─ packed-pairs.test.ts
+│  │  ├─ packed-parsers-routing.test.ts
+│  │  ├─ packed.test.ts
+│  │  ├─ response.test.ts
+│  │  ├─ runtime.test.ts
+│  │  ├─ trace.test.ts
+│  │  └─ uuid.test.ts
+│  └─ task/
+│     └─ runtime.test.ts
 └─ README.md
 ```
 
@@ -1005,9 +649,11 @@ scripts/
 ├─ check-coverage.mjs
 ├─ check-jsdoc.ts
 ├─ check-version.mjs
+├─ ensure-dts-typescript.mjs
 ├─ gen-ai-map.ts
+├─ postinstall.mjs
 ├─ prepublish.mjs
-├─ publish-manual.mjs
+├─ release.ts
 ├─ select-native.ts
 ├─ verify-install.mjs
 └─ verify-native-batch.ts
@@ -1034,6 +680,10 @@ docs/
 ├─ ai/
 │  ├─ LOCAL_DEV.md
 │  └─ TREE.md
+├─ superpowers/
+│  └─ plans/
+│     ├─ 2026-09-18-castrum-hardening-cleanup.md
+│     └─ 2026-09-18-elysia-learnings-adoption.md
 ├─ API.md
 ├─ ARCHITECTURE.md
 ├─ BENCHMARKS.md
@@ -1046,7 +696,8 @@ docs/
 ├─ INGRESS-ROUTER.md
 ├─ INGRESS.md
 ├─ NATIVE-ROUTE.md
-└─ REPO_MAP.md
+├─ REPO_MAP.md
+└─ RND-CONCURRENCY.md
 ```
 
 ## .github/
@@ -1057,10 +708,10 @@ docs/
 │  ├─ bug_report.md
 │  └─ feature_request.md
 ├─ workflows/
-│  ├─ build-addons.yml   # reusable multi-platform addon matrix (ci + release)
+│  ├─ build-addons.yml
 │  ├─ ci.yml
 │  ├─ codeql.yml
-│  └─ release.yml        # v* tag: verify → build → npm publish → GitHub release
+│  └─ release.yml
 ├─ codeql-config.yml
 ├─ dependabot.yml
 └─ PULL_REQUEST_TEMPLATE.md

@@ -353,6 +353,10 @@ export function buildFFISymbolMap(useBufferLength: boolean): Record<string, FFIS
         args: abi(['usize', 'ptr', 'usize', 'ptr', 'usize']),
         returns: U64_FAST,
       },
+      castrum_route_run_parts: {
+        args: abi(['usize', 'cstring', 'cstring', 'ptr', 'usize', 'u8', 'ptr', 'usize']),
+        returns: U64_FAST,
+      },
       castrum_route_destroy: { args: ['usize'], returns: 'void' },
       // ── Batch fixed-width hex validation (ObjectId-shaped ids, etc.) ──
       // NEWLINE-separated lines in; one verdict byte (1/0) per line out.

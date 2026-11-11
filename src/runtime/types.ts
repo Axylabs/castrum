@@ -9,12 +9,9 @@
 // `typeof Bun`.
 //
 // `src/runtime/native.ts` exposes the FFI-facing seam ({ name, codec, uuid,
-// env, builtins, transport }); `src/runtime/index.ts` composes the FULL
-// adapter (adding server + websocket in src/runtime/server.ts). Pure modules
-// must not import this boundary — take the functions they need via DI.
+// env, builtins, transport }). Pure modules must not import this boundary —
+// take the functions they need via DI.
 
-import type { BakedServer, CreateIngressServerOptions } from '../ingress/server'
-import type { WebSocketUpgradeOptions, WebSocketUpgradeResult } from '../integration/websocket'
 import type { NativeAddon } from '../native'
 import type { BunFFI } from '../native/ffi'
 
@@ -129,40 +126,10 @@ export interface BuiltinsAdapter {
 }
 
 /**
- * Platform HTTP server adapter. `createIngressServer` builds a `Bun.serve`
- * server on Bun and the `node:http` adapter on Node — the SAME pre-baked
- * route handlers (shared `buildRouteHandlers`) either way. The explicit
- * `createIngressServerNode` stays exported for consumers who want the Node
- * backend pinned.
+ * The FFI-facing runtime adapter used by `rust-ffi`, selection, and shared
+ * helpers. This focused seam never pulls the ingress graph into native calls.
  */
-export interface ServerAdapter {
-  /** The backend this adapter targets. */
-  readonly runtime: 'bun' | 'node'
-  createIngressServer(options: CreateIngressServerOptions): BakedServer
-}
-
-/**
- * Platform WebSocket adapter. `createWebSocketUpgrade` returns the RFC 6455
- * 101 handshake on Bun (whose `Response` can carry status 101) and throws a
- * clear Bun-only error on Node (which must use the server-node `upgrade`
- * option instead).
- */
-export interface WebsocketAdapter {
-  createWebSocketUpgrade(
-    req: Request,
-    opts?: WebSocketUpgradeOptions,
-  ): WebSocketUpgradeResult | null
-}
-
-/**
- * The runtime adapter — the single seam centralizing every Bun-vs-Node and
- * native-transport decision. Selected ONCE at module load (`src/runtime`).
- * `src/runtime/native.ts` composes the FFI-facing subset
- * ({@link NativeRuntimeAdapter}); the FULL adapter additionally carries
- * `server` + `websocket` (composed in `src/runtime/index.ts` for the public
- * API).
- */
-export interface RuntimeAdapter {
+export interface NativeRuntimeAdapter {
   /** Host runtime (cached at load — never re-checked in hot paths). */
   readonly name: RuntimeName
   /** Whether the runtime speaks the web-standard Request/Response surface. */
@@ -177,15 +144,4 @@ export interface RuntimeAdapter {
   readonly builtins: BuiltinsAdapter
   /** Native transport (bun:ffi primary, napi fallback). */
   readonly transport: TransportAdapter
-  /** Platform HTTP server (Bun.serve on Bun, node:http on Node). */
-  readonly server: ServerAdapter
-  /** Platform WebSocket 101 handshake (Bun-only). */
-  readonly websocket: WebsocketAdapter
 }
-
-/**
- * The FFI-facing runtime subset (no server/websocket) — what the `rust-ffi`
- * layer / selection / shared helpers import, so the native seam never pulls
- * the ingress graph.
- */
-export type NativeRuntimeAdapter = Omit<RuntimeAdapter, 'server' | 'websocket'>

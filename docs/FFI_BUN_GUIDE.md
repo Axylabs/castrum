@@ -496,7 +496,7 @@ a type error, not a behavior change.
 **Verify after any FFI change**:
 
 ```bash
-nm -D --defined-only <addon> | grep -c castrum_   # = 121 (109 direct extern fns)
+nm -D --defined-only <addon> | grep -c castrum_   # = 122 (110 direct extern fns)
 bun run bench:http:smoke                           # after touching decoders/handlers
 bun test test/unit/native/ffi.test.ts            # FFI↔napi parity + self-test
 bun test test/unit/native/ffi-symbol-parity.test.ts

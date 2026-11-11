@@ -54,6 +54,7 @@ export function buildInstances(
   const ingressLayoutSym = sym.castrum_ingress_layout as Raw2
   const routeCompileSym = sym.castrum_route_compile as Raw2
   const routeRunSym = sym.castrum_route_run as Raw5
+  const routeRunPartsSym = sym.castrum_route_run_parts as Raw8
   const routeDestroySym = sym.castrum_route_destroy as (a: unknown) => void
 
   return {
@@ -80,15 +81,13 @@ export function buildInstances(
       return acceptNegotiatorNegotiateRaw(inner, header, lenOrView(header))
     },
     acceptNegotiatorNegotiateServer(inner, header) {
-      // Server-preference tie-breaking (RFC 7231 server semantics). The C ABI
-      // takes `header` as a `cstring` ARG, so decode the bytes to a JS string
-      // (the engine transcodes it to the call-scoped NUL-terminated buffer).
-      // A raw NUL is not a valid header byte and would TRUNCATE the arg, so the
-      // negotiator would evaluate a prefix — fail safe to identity instead.
-      // `null` = identity (napi Option parity).
       const text = decodeUtf8(header)
       if (hasNul(text)) return null
       return acceptNegotiatorNegotiateServerRaw(inner, text)
+    },
+    acceptNegotiatorNegotiateServerText(inner, header) {
+      if (hasNul(header)) return null
+      return acceptNegotiatorNegotiateServerRaw(inner, header)
     },
     jwtSignerSign(inner, claimsJson, nowSeconds) {
       // Precompiled key + ttl → compact token. 0 = invalid claims JSON (real
@@ -134,8 +133,6 @@ export function buildInstances(
       return out.subarray(0, w)
     },
     templateRender(inner, contextJson) {
-      // Compiled template + pre-serialized JSON context → UTF-8 bytes. 0 =
-      // invalid context / render error (real error → growExact throws).
       return growExact(
         (out) =>
           Number(
@@ -144,6 +141,11 @@ export function buildInstances(
         Math.min(contextJson.length + 128, 64 * 1024),
         1024 * 1024,
         'template render: invalid context JSON or render failed',
+      )
+    },
+    templateRenderInto(inner, contextJson, output) {
+      return Number(
+        templateRenderRaw(inner, contextJson, lenOrView(contextJson), output, lenOrView(output)),
       )
     },
     schemaValidatorValidate(inner, doc) {
@@ -428,6 +430,28 @@ export function buildInstances(
       const w = Number(routeRunSym(handle, frame, lenOrView(frame), output, lenOrView(output)))
       if (w === 0) {
         throw new Error('route run: malformed frame or pipeline error')
+      }
+      return w
+    },
+    routeRunParts(handle, query, cookie, body, output) {
+      if (hasNul(query) || hasNul(cookie)) {
+        throw new Error('route run parts: query/cookie contains NUL')
+      }
+      const bytes = body ?? EMPTY_VIEW
+      const w = Number(
+        routeRunPartsSym(
+          handle,
+          query,
+          cookie,
+          bytes,
+          lenOrView(bytes),
+          body !== null && body.length > 0 ? 1 : 0,
+          output,
+          lenOrView(output),
+        ),
+      )
+      if (w === 0) {
+        throw new Error('route run parts: pipeline error')
       }
       return w
     },

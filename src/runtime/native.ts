@@ -6,8 +6,6 @@
 // does NOT eagerly bind the ffi transport (lazy) and never pulls the ingress
 // graph, so `rust-ffi/*` can import it without a cycle.
 //
-// The FULL adapter (adding `server` + `websocket`) is composed in
-// `src/runtime/index.ts` / `src/runtime/server.ts` for the public API.
 
 import { resolveEnvVar } from '../shared/env'
 import { runtimeBuiltins } from './builtins'
@@ -19,10 +17,8 @@ import { runtimeUuid } from './uuid'
 
 /**
  * The shared runtime adapter (native seam) for the detected host runtime —
- * codec / uuid / env / builtins / transport. The FULL adapter (adding
- * `server` + `websocket`) is composed in `src/runtime/index.ts` for the
- * public API; the FFI layer imports THIS seam so it never pulls the ingress
- * graph.
+ * codec / uuid / env / builtins / transport. The FFI layer imports THIS seam
+ * so it never pulls the ingress graph.
  */
 export const runtimeNative: NativeRuntimeAdapter = {
   name: detectedRuntime,

@@ -28,6 +28,18 @@ export function isNodeRuntime(): boolean {
 }
 
 /**
+ * Whether `bun:ffi` can be required. Some Bun-hosted runners expose the runtime
+ * version without installing the global `Bun` object; FFI remains available
+ * there even though global-object built-ins must stay disabled.
+ */
+export function canUseBunFFI(): boolean {
+  return (
+    detectedRuntime === 'bun' ||
+    (typeof process !== 'undefined' && typeof process.versions?.bun === 'string')
+  )
+}
+
+/**
  * Request a synchronous full garbage collection when the host runtime exposes
  * one. On Bun this is `Bun.gc(true)`; on Node it is `globalThis.gc?.()`, which
  * is only defined when the process runs with `--expose-gc`. A no-op otherwise.

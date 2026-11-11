@@ -310,6 +310,13 @@ describe('native route stack', () => {
     const small = new Uint8Array(8)
     const needed = ffi.routeRun(handle, frame, small)
     expect(needed).toBe(w)
+
+    const directOut = new Uint8Array(256)
+    const directW = ffi.routeRunParts(handle, 'a=1&b=hello%20world', 's=v', null, directOut)
+    expect(directOut.subarray(0, directW)).toEqual(out.subarray(0, w))
+    const directSmall = new Uint8Array(8)
+    expect(ffi.routeRunParts(handle, 'a=1&b=hello%20world', 's=v', null, directSmall)).toBe(w)
+    expect(() => ffi.routeRunParts(handle, 'a=1\0truncated', '', null, directOut)).toThrow()
     ffi.routeDestroy(handle)
   })
 })

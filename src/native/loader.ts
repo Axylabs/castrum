@@ -238,36 +238,37 @@ export function getAddonPath(): string {
 
 let cachedAddon: NativeAddon | undefined
 
+/** Load a Node-API addon from an explicit binary path. */
+export function loadAddon(addonPath: string): NativeAddon {
+  let loaded: NativeAddon
+  try {
+    loaded = require(addonPath) as NativeAddon
+  } catch (err) {
+    const cause = err instanceof Error ? `\n  Underlying cause: ${err.message}` : ''
+    throw new Error(
+      `Failed to load castrum native addon from:\n  ${addonPath}\n` +
+        `The addon exists but could not be loaded (ABI mismatch, missing system ` +
+        `libraries, or a corrupt/partial artifact).\n` +
+        `Run: bun run build\n` +
+        `If the problem persists, verify the binary was built for this platform/CPU.` +
+        cause,
+    )
+  }
+
+  if (resolveEnvVar('CASTRUM_DEBUG') !== undefined) {
+    console.log('Native addon loaded from:', addonPath)
+    console.log('Exported keys:', Object.keys(loaded).sort())
+  }
+  return loaded
+}
+
 /**
  * Load the native addon exactly once, lazily.
  *
  * The first call triggers loading (see {@link getAddonPath} for resolution).
  */
 export function getAddon(): NativeAddon {
-  if (cachedAddon === undefined) {
-    const addonPath = getAddonPath()
-    let loaded: NativeAddon
-    try {
-      loaded = require(addonPath)
-    } catch (err) {
-      const cause = err instanceof Error ? `\n  Underlying cause: ${err.message}` : ''
-      throw new Error(
-        `Failed to load castrum native addon from:\n  ${addonPath}\n` +
-          `The addon exists but could not be loaded (ABI mismatch, missing system ` +
-          `libraries, or a corrupt/partial artifact).\n` +
-          `Run: bun run build\n` +
-          `If the problem persists, verify the binary was built for this platform/CPU.` +
-          cause,
-      )
-    }
-
-    if (resolveEnvVar('CASTRUM_DEBUG') !== undefined) {
-      console.log('Native addon loaded from:', addonPath)
-      console.log('Exported keys:', Object.keys(loaded).sort())
-    }
-
-    cachedAddon = loaded
-  }
+  cachedAddon ??= loadAddon(getAddonPath())
   return cachedAddon
 }
 

@@ -22,11 +22,13 @@ export interface TraceContext {
 }
 
 const HEX = /^[0-9a-fA-F]+$/
+const ZERO_TRACE_ID = '0'.repeat(32)
+const ZERO_SPAN_ID = '0'.repeat(16)
 
 /**
  * Parse a `traceparent` header value into a {@link TraceContext}, or `null`
- * when malformed (wrong version / length / non-hex). Invalid contexts are
- * ignored per the spec — callers should generate a fresh trace then.
+ * when malformed (wrong version / length / non-hex / all-zero id). Invalid
+ * contexts are ignored per the spec — callers should generate a fresh trace then.
  */
 export function parseTraceParent(header: string | null | undefined): TraceContext | null {
   if (!header) return null
@@ -37,6 +39,7 @@ export function parseTraceParent(header: string | null | undefined): TraceContex
   if (version !== '00') return null
   if (traceId === undefined || traceId.length !== 32 || !HEX.test(traceId)) return null
   if (spanId === undefined || spanId.length !== 16 || !HEX.test(spanId)) return null
+  if (traceId === ZERO_TRACE_ID || spanId === ZERO_SPAN_ID) return null
   if (flagsStr === undefined || flagsStr.length !== 2 || !HEX.test(flagsStr)) return null
   const flags = Number.parseInt(flagsStr, 16)
   return {
@@ -48,25 +51,26 @@ export function parseTraceParent(header: string | null | undefined): TraceContex
   }
 }
 
-/** Random 32-hex trace id (crypto-backed where available). */
+/** Random 32-hex trace id backed by Web Crypto. */
 export function createTraceId(): string {
   return randomHex(16)
 }
 
-/** Random 16-hex span id. */
+/** Random 16-hex span id backed by Web Crypto. */
 export function createSpanId(): string {
   return randomHex(8)
 }
 
-/** Generate `n` random bytes as lowercase hex. */
+/** Generate `n` cryptographically random, non-zero bytes as lowercase hex. */
 function randomHex(bytes: number): string {
-  const buf = new Uint8Array(bytes)
-  const c = globalThis.crypto
-  if (c?.getRandomValues) {
-    c.getRandomValues(buf)
-  } else {
-    for (let i = 0; i < bytes; i++) buf[i] = Math.floor(Math.random() * 256)
+  const crypto = globalThis.crypto
+  if (!crypto?.getRandomValues) {
+    throw new Error('Secure trace ID generation requires Web Crypto')
   }
+  const buf = new Uint8Array(bytes)
+  do {
+    crypto.getRandomValues(buf)
+  } while (buf.every((byte) => byte === 0))
   let out = ''
   for (let i = 0; i < bytes; i++) {
     out += (buf[i] ?? 0).toString(16).padStart(2, '0')

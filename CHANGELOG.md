@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Configured native runtime bridge.** `@ignex/castrum/native` exposes
+  `createNativeBridge`, giving framework adapters one lazy, self-tested C-ABI
+  surface and NAPI addon bound to the exact same binary. The bridge includes
+  allocating packed parsers, caller-output template rendering, and text-based
+  server-preference negotiation, so consumers no longer need independent
+  `bun:ffi` symbol maps or duplicate self-tests.
+- **Direct per-route execution.** `castrum_route_run_parts` runs compiled routes
+  from query/cookie strings and body bytes without a JS frame allocation or
+  copy. Both public route stacks use it under Bun, with packed-frame parity for
+  NAPI and embedded-NUL inputs; bind-time and route parity tests cover the ABI,
+  output, and needed-size retry.
+
+### Changed
+
+- **Runtime isolation tightened.** CPU detection, high-resolution timing, and
+  settled-promise peeking now live in `src/runtime/system.ts`; convention
+  checks reject new direct uses from use-case modules. Runtime detection also
+  supports Bun-hosted test runners that expose `bun:ffi` without a global
+  `Bun` object. The unused composite runtime adapter, its WebSocket-only module,
+  and obsolete JWT sizing constants are removed; the ingress now imports only
+  the runtime-selected server factory it actually uses.
+
+### Fixed
+
+- **Identifier hardening.** Trace parsing rejects the all-zero IDs forbidden by
+  W3C Trace Context. Trace and UUID generation use Web Crypto directly instead
+  of maintaining insecure `Math.random` or custom UUID fallbacks.
+
 ## [0.9.13] — 2026-11-09
 
 ### Security

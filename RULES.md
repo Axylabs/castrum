@@ -71,7 +71,12 @@ how-to guide; `.agents/skills/` holds task-specific runbooks;
 - Prefer **pure functions** (same input → same output, no hidden state) so
   they are directly unit-testable without mocks. Isolate side effects
   (dlopen, sockets, timers, env) in dedicated seams (`src/native/`,
-  `src/runtime/`, `src/shared/env.ts`).
+  `src/runtime/`, `src/shared/env.ts`). OS parallelism, high-resolution time,
+  and settled-promise peeking belong specifically in `src/runtime/system.ts`.
+- Framework adapters consume `@ignex/castrum/native` and its
+  `createNativeBridge()`; never copy the addon resolver, FFI symbol map, or
+  bind-time self-test into a framework. A bridge's NAPI addon and C-ABI surface
+  must come from the same binary when opaque handles cross between them.
 - **Small functions in small files**: one responsibility per file, small pure
   functions grouped into folders by concern (`src/rust-ffi/scalar/`,
   `src/ingress/headers/`, `src/shared/packed.ts`, …). Never build god-files.

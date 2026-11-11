@@ -69,6 +69,14 @@ export function buildParse(
       }
       return w
     },
+    queryParsePacked(input) {
+      return growExact(
+        (out) => Number(queryParsePacked(input, lenOrView(input), out, lenOrView(out))),
+        input.length * 4 + 16,
+        128 * 1024 * 1024,
+        'query: parse failed',
+      )
+    },
     queryParsePackedInto(input, output) {
       const w = Number(queryParsePacked(input, lenOrView(input), output, lenOrView(output)))
       // Needed-size convention: w > output.length = exact required size →
@@ -78,6 +86,14 @@ export function buildParse(
         throw new Error('query parse: output buffer too small')
       }
       return w
+    },
+    cookieParsePacked(input) {
+      return growExact(
+        (out) => Number(cookieParsePacked(input, lenOrView(input), out, lenOrView(out))),
+        input.length * 4 + 16,
+        128 * 1024 * 1024,
+        'cookie: parse failed',
+      )
     },
     cookieParsePackedInto(input, output) {
       const w = Number(cookieParsePacked(input, lenOrView(input), output, lenOrView(output)))
@@ -180,6 +196,14 @@ export function buildParse(
         throw new Error('multipart parse: output buffer too small or malformed body')
       }
       return w
+    },
+    formParsePacked(input) {
+      return growExact(
+        (out) => Number(formParsePacked(input, lenOrView(input), out, lenOrView(out))),
+        input.length * 4 + 16,
+        128 * 1024 * 1024,
+        'form: parse failed',
+      )
     },
     formParsePackedInto(input, output) {
       const w = Number(formParsePacked(input, lenOrView(input), output, lenOrView(output)))
