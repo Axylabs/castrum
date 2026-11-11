@@ -1,6 +1,6 @@
 {
   "name": "@ignex/castrum",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": false,
   "description": "Enterprise-grade Bun + Rust runtime: Rust-accelerated FFI primitives, a production-grade HTTP ingress pipeline, validation, hashing, and JSON processing with benchmark-grade performance.",
   "type": "module",
