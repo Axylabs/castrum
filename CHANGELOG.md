@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   W3C Trace Context. Trace and UUID generation use Web Crypto directly instead
   of maintaining insecure `Math.random` or custom UUID fallbacks.
 
+### Security
+
+- **`rustix` bumped 1.1.4 → 1.1.6** (RUSTSEC-2026-0486). Lockfile-only
+  transitive refresh; no API or wire-format changes, addon rebuilt and
+  test-suite verified. This un-reds the CI osv-scan supply-chain gate.
+
 ## [0.9.13] — 2026-11-09
 
 ### Security
