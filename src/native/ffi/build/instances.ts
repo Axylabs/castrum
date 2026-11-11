@@ -6,7 +6,6 @@
 // builder) or drives a compiled route / the full ingress pipeline. Receives the
 // raw dlopen'd symbols and the per-bind context from `build()`.
 
-import { decodeUtf8 } from '../../../shared/codec'
 import { EMPTY_VIEW } from '../constants'
 import type { BunFFI, Raw2, Raw3, Raw4, Raw5, Raw6, Raw7, Raw8, Raw12, RawCStr } from '../types'
 import type { BuildCtx } from './util'
@@ -28,6 +27,8 @@ export function buildInstances(
   const acceptNegotiatorNegotiateServerRaw = sym.castrum_accept_negotiator_negotiate_server as (
     ...a: unknown[]
   ) => string | null
+  const acceptNegotiatorNegotiateServerBytesRaw =
+    sym.castrum_accept_negotiator_negotiate_server_bytes as RawCStr
   const ed25519GenerateKeypairRaw = sym.castrum_ed25519_generate_keypair as Raw2
   const ed25519SignRaw = sym.castrum_ed25519_sign as Raw6
   const ed25519VerifyRaw = sym.castrum_ed25519_verify as Raw6
@@ -81,17 +82,19 @@ export function buildInstances(
       return acceptNegotiatorNegotiateRaw(inner, header, lenOrView(header))
     },
     acceptNegotiatorNegotiateServer(inner, header) {
-      const text = decodeUtf8(header)
-      if (hasNul(text)) return null
-      return acceptNegotiatorNegotiateServerRaw(inner, text)
+      return acceptNegotiatorNegotiateServerBytesRaw(inner, header, lenOrView(header))
+    },
+    acceptNegotiatorNegotiateServerBytes(inner, header) {
+      return acceptNegotiatorNegotiateServerBytesRaw(inner, header, lenOrView(header))
     },
     acceptNegotiatorNegotiateServerText(inner, header) {
       if (hasNul(header)) return null
       return acceptNegotiatorNegotiateServerRaw(inner, header)
     },
     jwtSignerSign(inner, claimsJson, nowSeconds) {
-      // Precompiled key + ttl → compact token. 0 = invalid claims JSON (real
-      // error → growExact throws); w > output.length = exact needed size.
+      // Precompiled key + ttl → compact token. Size for base64url expansion and
+      // injected iat/exp so the common path signs once. 0 = invalid claims JSON;
+      // w > output.length = exact needed size (growExact retries only on a miss).
       return growExact(
         (out) =>
           Number(
@@ -104,7 +107,7 @@ export function buildInstances(
               lenOrView(out),
             ),
           ),
-        Math.min(claimsJson.length + 128, 64 * 1024),
+        Math.min(Math.ceil(claimsJson.length * 4 / 3) + 160, 64 * 1024),
         1024 * 1024,
         'jwt signer: invalid claims JSON or output buffer too small',
       )

@@ -4,7 +4,7 @@
 > Do not edit by hand — regenerate after structural changes. The
 > curated map lives in the repo docs (docs/REPO_MAP.md / STRUCTURE.md).
 
-- package: `@ignex/castrum` v0.9.13
+- package: `@ignex/castrum` v0.10.0
 - engines: {"bun":">=1.1.0","node":">=20.3"}
 - scripts (64): `postinstall`, `build`, `build:perf`, `build:v3`, `build:all`, `build:js`, `build:js:bundle`, `build:js:types`, `bench`, `check`, `test`, `test:all`, …
 

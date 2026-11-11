@@ -71,5 +71,5 @@ needs a re-run of both.
 
 **Runtime pin**: canary installs auto-update and can swap the runtime
 MID-SESSION (observed 2026-08-23: 1.4.0 → 1.4.1 between two bench runs; the
-local toolchain is now 1.4.2). Record `bun --version` at the start AND end of
+local toolchain is now 1.4.4). Record `bun --version` at the start AND end of
 every measurement session; if it changed, discard cross-version comparisons.

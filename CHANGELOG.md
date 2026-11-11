@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bun FFI transcoding reduced on measured hot paths.** MIME lookup and
+  server-preference negotiation use exact-length buffer inputs instead of
+  decode/re-encode round trips. Compiled JWT output sizing now
+  covers base64url expansion and injected time claims, avoiding a second signing
+  pass on the common path.
+
 ## [0.10.0] — 2026-11-11
 
 ### Added

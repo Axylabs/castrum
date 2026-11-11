@@ -224,6 +224,40 @@ pub unsafe extern "C" fn castrum_accept_negotiator_negotiate_server(
     })
 }
 
+/// Byte-input sibling of `castrum_accept_negotiator_negotiate_server`: the
+/// exact-length `(ptr, len)` form avoids a JS decode followed by an engine
+/// re-encode when the caller already owns header bytes.
+///
+/// # Safety
+/// `inner` must be a valid `AcceptNegotiator` pointer from `inner_ptr()`, alive
+/// for the call; `header` must be valid for `header_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_accept_negotiator_negotiate_server_bytes(
+    inner: usize,
+    header: *const u8,
+    header_len: usize,
+) -> *const std::os::raw::c_char {
+    if inner == 0 || header.is_null() {
+        return std::ptr::null();
+    }
+    let h = slice::from_raw_parts(header, header_len);
+    let Some(bytes) = panic_guard(
+        || unsafe {
+            crate::http::accept::accept_negotiator_negotiate_server_core(
+                inner as *const crate::http::accept::AcceptNegotiator,
+                h,
+            )
+        },
+        None,
+    ) else {
+        return std::ptr::null();
+    };
+    cstring_return(bytes.len(), |out| {
+        out[..bytes.len()].copy_from_slice(&bytes);
+        Some(bytes.len())
+    })
+}
+
 /// Write an HTTP-date (`Sun, 06 Nov 1994 08:49:37 GMT`) into `out`. Returns
 /// bytes written (29), or 0 on a too-small buffer / out-of-range year (use the
 /// allocating `httpDate` napi path for that fallback). Fixed 32-byte stack
@@ -615,6 +649,30 @@ pub unsafe extern "C" fn castrum_mime_from_extension(
         return std::ptr::null();
     }
     let input = std::ffi::CStr::from_ptr(ext).to_bytes();
+    let mime = panic_guard(
+        || crate::http::mime_lookup::mime_from_extension_bytes(input),
+        b"application/octet-stream".to_vec(),
+    );
+    cstring_return(mime.len(), |out| {
+        out[..mime.len()].copy_from_slice(&mime);
+        Some(mime.len())
+    })
+}
+
+/// Byte-input sibling of `castrum_mime_from_extension`: exact-length bytes skip
+/// the JS decode + engine re-encode and preserve embedded-NUL/invalid-UTF-8 input.
+///
+/// # Safety
+/// `ext` must be valid for reads of `ext_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn castrum_mime_from_extension_bytes(
+    ext: *const u8,
+    ext_len: usize,
+) -> *const std::os::raw::c_char {
+    if ext.is_null() {
+        return std::ptr::null();
+    }
+    let input = slice::from_raw_parts(ext, ext_len);
     let mime = panic_guard(
         || crate::http::mime_lookup::mime_from_extension_bytes(input),
         b"application/octet-stream".to_vec(),

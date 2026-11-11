@@ -197,22 +197,11 @@ export function buildHttp(ctx: RustClientContext) {
 
   return {
     mimeFromExtension(ext: Uint8Array): Uint8Array | string {
-      // FFI-first. This op has no `*_bytes` sibling, so the bytes must be decoded
-      // for the `cstring` ARG — the decode is the price of the cstring form, not
-      // a speed trick (route new byte-shaped ops to a byte sibling instead; see
-      // docs/FFI_BUN_GUIDE.md §6.1). napi keeps the memoized-bytes path
-      // (cachedMime).
-      //
-      // A NUL would truncate the DECODED string native-side, so `.js\0evil`
-      // would resolve as `.js` — a Content-Type from a prefix. An extension
-      // containing a NUL is not an extension, so it takes the unknown sentinel
-      // (the guard is `indexOf` on an already-decoded string: ~4 ns).
+      // Exact-length bytes cross directly through buffer/buffer_length: no
+      // decode + cstring re-encode, and NUL/invalid UTF-8 reaches the native
+      // unknown-extension fallback instead of truncating to a valid prefix.
       const f = ffi()
-      if (f) {
-        const name = decoder.decode(ext)
-        if (hasNul(name)) return 'application/octet-stream'
-        return f.mimeFromExtension(name) ?? 'application/octet-stream'
-      }
+      if (f) return f.mimeFromExtensionBytes(ext) ?? 'application/octet-stream'
       return ctx.cachedMime(ext)
     },
     urlEncode(input: Uint8Array): Uint8Array | string {
@@ -278,16 +267,8 @@ export function buildHttp(ctx: RustClientContext) {
       return n('validateIpv6')(input) as boolean
     },
     wsAcceptKey(key: Uint8Array): Uint8Array | string {
-      // FFI-first: the `cstring` ARG + cstring return is the fast path (no JS
-      // encode, engine-cloned result) — end-to-end it measures ~367 ns, while
-      // routing every call through the byte sibling costs ~381 ns (the extra
-      // `subarray` + decode outweighs the transcode saved; measured over 300k
-      // calls on Bun 1.4.2 through THIS function, not the raw binding).
-      //
-      // Correctness rider: a NUL would truncate the `cstring` ARG, so the accept
-      // value would be computed for a PREFIX of the key — verified:
-      // `'dGhlIHNhbXBsZSBub25jZQ==\0junk'` returned exactly the value for the
-      // key WITHOUT the suffix. That case takes the byte sibling (exact length).
+      // The cstring form wins for the normal NUL-free key; embedded NUL takes
+      // the exact-length byte sibling so it can never hash only a prefix.
       const f = ffi()
       if (f) {
         const text = decoder.decode(key)
@@ -296,9 +277,6 @@ export function buildHttp(ctx: RustClientContext) {
         if (w > 0 && w <= WS_ACCEPT_SCRATCH.length) {
           return decoder.decode(WS_ACCEPT_SCRATCH.subarray(0, w))
         }
-        // Unreachable for a live view (the native side writes 28 for any key);
-        // the napi path is byte-exact, so it can never resurrect truncation.
-        return n('wsAcceptKey')(key) as Uint8Array | string
       }
       return n('wsAcceptKey')(key) as Uint8Array | string
     },

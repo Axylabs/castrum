@@ -534,6 +534,12 @@ export interface BunFFI {
    */
   regexEscapeStr(input: string): string | null
 
+  // ── Bun-native exact-length byte-input siblings ───────────────────
+  /** Server-preference negotiation directly from exact-length header bytes. */
+  acceptNegotiatorNegotiateServerBytes(inner: number, header: Uint8Array): string | null
+  /** MIME lookup directly from exact-length extension bytes. */
+  mimeFromExtensionBytes(ext: Uint8Array): string | null
+
   // ── Off-thread task runtime (castrum_task_*) ──────────────────────
   /** Start the shared native task pool; 0 = started, 1 = already running. */
   taskInit(threads: number): number

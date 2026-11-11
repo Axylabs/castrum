@@ -58,7 +58,7 @@ HTTP **ingress pipeline** for Bun servers.
 | JS lint / format (Biome) | `bun run lint` / `bun run lint:fix` / `bun run format` |
 | Version consistency | `bun run check:version` (package.json ↔ Cargo.toml ↔ CHANGELOG) |
 | JSDoc coverage guard | `bun run check:jsdoc` (== `bun scripts/check-jsdoc.ts`) — fails if < 95% of `src/`+`index.ts` exported symbols lack a JSDoc block; run after adding public exports |
-| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (`typeof Bun` only in `runtime/detect.ts`; `Bun.peek`/`node:os`/`process.hrtime` only in `runtime/system.ts`), PURE-module purity boundary, FFI doc count = 122 (110 direct), no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
+| Convention enforcement | `bun run check:clean` (== `bun scripts/check-clean.ts`) — module headers on every `src/**/*.ts`, runtime seam (`typeof Bun` only in `runtime/detect.ts`; `Bun.peek`/`node:os`/`process.hrtime` only in `runtime/system.ts`), PURE-module purity boundary, FFI doc count = 124 (112 direct), no dangling doc links (`--todos` also scans TODO/FIXME); run after structural edits |
 | JS dependency audit | `bun run audit` |
 | Cargo deny audit | `bun run deny` (== `cargo deny check`) |
 | Coverage floors | `bun run test:coverage` (== `node scripts/check-coverage.mjs`) — 75% overall line floor + a 50% per-directory floor on the SHIPPED dirs (`src/ingress`, `src/shared`, `src/rust-ffi`, `src/native`, `src/loader`, `src/integration`) so one directory can't collapse while others compensate |
@@ -235,7 +235,7 @@ test/integration/         Node tests (node-smoke.test.mjs + node-enterprise.test
 rust/                     one cdylib crate (Cargo [lib] → rust/lib.rs), decomposed into
                           DOMAIN FOLDERS (lib.rs declares the folders + a module map):
   ├── lib.rs              declaration hub + module map comment; unit-test scaffolding
-  ├── ffi/                `#[no_mangle] extern "C"` exports (122 castrum_* — 110 direct + 4
+  ├── ffi/                `#[no_mangle] extern "C"` exports (124 castrum_* — 112 direct + 4
                           validator_c_abi! + 4 validator_bytes_c_abi! + 4 compress_to_out! — incl. the
                           castrum_gzip_isize size probe and the per-route stack
                           castrum_route_compile/run/run_parts/destroy; parity guarded by
@@ -433,7 +433,7 @@ success and `error.code` / `error.message` on errors (path 2's format).
   never a hard publish requirement. When you touch the loader, run
   `bun run bench:startup` + the loader unit tests
   (`test/unit/native/loader.test.ts`).
-- **Bun FFI behavior (learned from Bun 1.3.14, re-verified on 1.4.2 — see `docs/FFI_BUN_GUIDE.md`)**:
+- **Bun FFI behavior (learned from Bun 1.3.14, re-verified on 1.4.4 — see `docs/FFI_BUN_GUIDE.md`)**:
   - Hot `bun:ffi` call sites JIT through DFG/FTL into direct native calls (~10–20ns);
     keep `extern "C"` signatures scalar + `(ptr,len)` — no struct-by-value (not
     supported by `bun:ffi`), no variadics, no callbacks in hot paths.

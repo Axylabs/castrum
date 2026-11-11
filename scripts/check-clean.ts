@@ -18,9 +18,9 @@
 //      the addon must take the resolved fn as a parameter instead.
 //   4. FFI symbol count — docs must not carry stale `castrum_*` counts.
 //      Verified against `nm -D --defined-only <addon> | grep -c castrum_`:
-//      122 symbols = 110 direct extern fns + 4 validator_c_abi!
+//      124 symbols = 112 direct extern fns + 4 validator_c_abi!
 //      + 4 validator_bytes_c_abi! + 4 compress_to_out!. Older counts
-//      (75–108 total / 67–96 direct) are stale. This also scans the
+//      (75–127 total / 67–115 direct) are stale. This also scans the
 //      `.agents/skills/` runbooks and matches the `N C-ABI symbols` wording,
 //      which the older `N castrum`-only regex missed.
 //   5. No dangling doc links — markdown links to `docs/*.md` / root `*.md`
@@ -148,11 +148,11 @@ const countDocs = [
   '.agents/skills/castrum-codebase-map/SKILL.md',
 ]
 const staleCount =
-  /(?:7[5-9]|8[0-9]|9[0-9]|10[0-8])\s*(?:`)?(?:castrum|C-ABI)|(?:6[7-9]|7[0-9]|8[0-9]|9[0-6])\s*direct/
+  /(?:7[5-9]|8[0-9]|9[0-9]|10[0-8]|122|125|126|127)\s*(?:`)?(?:castrum|C-ABI)|(?:6[7-9]|7[0-9]|8[0-9]|9[0-6]|110|113|114|115)\s*direct/
 for (const d of countDocs) {
   const text = readFileSync(join(ROOT, d), 'utf8')
   if (staleCount.test(text)) {
-    problems.push(`stale FFI symbol count in ${d} (should read 122 / 110 direct)`)
+    problems.push(`stale FFI symbol count in ${d} (should read 124 / 112 direct)`)
   }
 }
 

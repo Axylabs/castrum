@@ -224,6 +224,10 @@ export function selfTestParse(b: BunFFI): boolean {
   if (b.mimeFromExtension('nope') !== 'application/octet-stream') {
     return false
   }
+  if (b.mimeFromExtensionBytes(enc.encode('.js')) !== 'text/javascript') return false
+  if (b.mimeFromExtensionBytes(enc.encode('.js\0evil')) !== 'application/octet-stream') {
+    return false
+  }
   // httpDate string form (RFC 7231 vector).
   if (b.httpDate(784111777) !== 'Sun, 06 Nov 1994 08:49:37 GMT') {
     return false

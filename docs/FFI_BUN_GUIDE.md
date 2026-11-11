@@ -9,7 +9,7 @@
 >
 > **Version anchor**: behavior claims were distilled from the **Rust-based Bun
 > 1.3.14** source (`/home/adeel/poc/bun`) and RE-VERIFIED against the installed
-> **Bun 1.4.2** runtime (the local dev toolchain, matching the CI matrix). Where
+> **Bun 1.4.4** runtime (the local dev toolchain, matching the CI matrix). Where
 > a claim is runtime-specific the number is stated inline. `bun:ffi` is
 > experimental upstream; the bind-time self-test + napi fallback are what make
 > it safe to use, and they are mandatory — not optional.
@@ -228,17 +228,16 @@ pair with no transcode. Measured through the PUBLIC API (`rust.validateEmail`,
 Correctness and speed pointed the same way; the old comment claiming the decode
 route was faster predated the byte siblings.
 
-Two further byte-input sites were closed the same way, with one caveat worth
-recording. `mimeFromExtension` no longer resolves a NUL-suffixed extension as its
-prefix (`'.js\0evil'` resolved as `.js` — a Content-Type chosen from truncated
-input; it now takes the unknown sentinel). `wsAcceptKey` no longer computes the
-accept value for a prefix of the key. Both KEEP the `cstring` fast path and divert
-only the NUL case, because measuring the real call path reversed the raw-binding
-result: `rust.wsAcceptKey` is 367 ns via `cstring` versus 381 ns via the byte
-sibling (the extra `subarray` + decode outweighs the transcode saved), whereas
-measuring the bare binding suggested the opposite. **Measure through the function
-users call, not the binding** — the guard itself costs ~4 ns, so guarding is
-cheap and routing everything through bytes is not always a win.
+Two further byte-input sites were closed the same way. On Bun 1.4.2, both kept
+the `cstring` fast path and diverted only the NUL case: `rust.wsAcceptKey` then
+measured 367 ns via `cstring` versus 381 ns via the byte sibling. Bun 1.4.4 A/B
+runs favor exact-length inputs by about 1.6–1.8× for MIME lookup and
+server-preference negotiation, so those byte APIs now use their byte siblings.
+WebSocket accept remains on `cstring` for normal keys because its direct-byte
+variant measured about 6% slower; embedded NUL still diverts to the byte sibling.
+Thus `mimeFromExtension` cannot resolve `'.js\0evil'` as `.js`, and `wsAcceptKey`
+cannot hash only a prefix. **Measure through the function users call, not the
+binding**, and re-check the decision when the runtime changes.
 
 **A second measured instance: the session seal/open siblings (0.9.7).** They
 land in the same place, and the hinge is the caller's own encode. Through the
@@ -437,10 +436,13 @@ appears once in `src/` (a comment explaining why it is avoided), the only
 hot-path use (our pointer reads happen once at bind), and `rust.text.*` was
 already FFI-first with `cstring` (zero encode).
 
-**Follow-ups, deliberately not done:** `mimeFromExtension` still decodes for the
-`cstring` ARG because no byte sibling exists (a symbol that would earn ~40 ns on
-a non-hot path); `@types/bun` remains 1.3.14 (see §13 — the cache has no newer
-version, so the casts stay).
+**Closed on Bun 1.4.4:** `mimeFromExtension` and server-preference negotiation
+now have exact-length byte siblings, so byte callers no longer decode merely to
+feed a `cstring` ARG. Compiled JWT signing now sizes output for base64url
+expansion and injected time claims, avoiding a second native signing pass on the
+common path. A template-rendering `cstring` sibling was rejected: on a long
+Unicode context it measured about 42% slower than exact-length UTF-8 bytes, so
+that path remains byte-input.
 
 ---
 
@@ -467,17 +469,16 @@ that transfer directly to castrum's cdylib:
 
 The behavioral claims above were distilled from the Rust-based Bun source
 checkout at `/home/adeel/poc/bun` (LATEST file: 1.3.14; `package.json` tracks
-the 1.4 development line) and are **re-verified against the installed Bun 1.4.2
+the 1.4 development line) and are **re-verified against the installed Bun 1.4.4
 runtime** that the code actually runs on (and that the CI matrix pins). The
 decision matrix and ADR-0003 measured on the installed **Bun 1.4.0** runtime —
 all anchors describe the same Rust-based runtime family. Castrum's own
 measurements live in `bench/`.
 
-**Known gap (2026-09-11): the type package lags the runtime.** `package.json`
-pins `@types/bun@^1.3.14` / `bun-types@1.3.14` while the runtime is 1.4.2, and the
-local package cache holds only 1.3.14 (so bumping it needs network access). The
-visible consequence is that 1.4-era `bun:ffi` declarations are absent from the
-types — `buffer_length` is not a valid `FFITypeOrString` literal there, so
+**Known gap: the type package lags the runtime.** `package.json` declares
+`@types/bun@^1.3.14`, currently resolved as 1.4.2, while the runtime is 1.4.4.
+The visible consequence is that 1.4-era `bun:ffi` declarations are absent from
+the types — `buffer_length` is not a valid `FFITypeOrString` literal there, so
 `src/native/ffi.ts` casts it (`as unknown as readonly FFITypeOrString[]`). Any
 new `bun:ffi` surface added in 1.4.x will need the same treatment until the
 types are upgraded. The casts are load-bearing, not sloppiness: dropping them is
@@ -496,7 +497,7 @@ a type error, not a behavior change.
 **Verify after any FFI change**:
 
 ```bash
-nm -D --defined-only <addon> | grep -c castrum_   # = 122 (110 direct extern fns)
+nm -D --defined-only <addon> | grep -c castrum_   # = 124 (112 direct extern fns)
 bun run bench:http:smoke                           # after touching decoders/handlers
 bun test test/unit/native/ffi.test.ts            # FFI↔napi parity + self-test
 bun test test/unit/native/ffi-symbol-parity.test.ts

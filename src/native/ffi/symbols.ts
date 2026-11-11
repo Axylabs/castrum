@@ -438,6 +438,15 @@ export function buildFFISymbolMap(useBufferLength: boolean): Record<string, FFIS
         args: abi(['ptr', 'usize', 'ptr', 'usize', 'ptr', 'usize']),
         returns: U64_FAST,
       },
+      // Exact-length byte-input siblings avoid decode + cstring re-encode.
+      castrum_accept_negotiator_negotiate_server_bytes: {
+        args: abi(['usize', 'ptr', 'usize']),
+        returns: 'cstring',
+      },
+      castrum_mime_from_extension_bytes: {
+        args: inputAbi,
+        returns: 'cstring',
+      },
       // Off-thread task runtime: `submit` takes a packed `(ptr,len)` arg blob
       // plus a JS-assigned id; `drain` writes the packed completion batch into
       // a caller buffer (needed-size convention). `set_doorbell` takes the raw

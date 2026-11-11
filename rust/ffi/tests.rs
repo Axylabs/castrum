@@ -718,6 +718,23 @@ fn accept_negotiator_negotiate_server_c_abi() {
     assert_eq!(f(c"gzip;q=0"), None); // q=0 excluded, no wildcard
     assert_eq!(f(c""), None); // empty → identity (server-pref differs from client-order)
     assert!(unsafe { castrum_accept_negotiator_negotiate_server(0, c"gzip".as_ptr()) }.is_null());
+
+    let fb = |h: &[u8]| -> Option<Vec<u8>> {
+        unsafe {
+            cstr_bytes(castrum_accept_negotiator_negotiate_server_bytes(
+                inner,
+                h.as_ptr(),
+                h.len(),
+            ))
+        }
+    };
+    assert_eq!(fb(b"gzip, br"), Some(b"br".to_vec()));
+    assert_eq!(fb(b"br;q=0.8, gzip;q=0.9"), Some(b"gzip".to_vec()));
+    assert_eq!(fb(b"gzip\0evil"), None);
+    assert!(
+        unsafe { castrum_accept_negotiator_negotiate_server_bytes(0, b"gzip".as_ptr(), 4) }
+            .is_null()
+    );
 }
 
 #[test]
@@ -870,6 +887,15 @@ fn mime_from_extension_c_abi() {
     // Unknown extension → application/octet-stream (never null).
     let s = unsafe { castrum_mime_from_extension(c"nope".as_ptr()) };
     assert!(!s.is_null());
+    assert_eq!(
+        unsafe { cstr_bytes(s) }.unwrap(),
+        b"application/octet-stream"
+    );
+
+    let s = unsafe { castrum_mime_from_extension_bytes(b".js".as_ptr(), 3) };
+    assert_eq!(unsafe { cstr_bytes(s) }.unwrap(), b"text/javascript");
+    let nul = b".js\0evil";
+    let s = unsafe { castrum_mime_from_extension_bytes(nul.as_ptr(), nul.len()) };
     assert_eq!(
         unsafe { cstr_bytes(s) }.unwrap(),
         b"application/octet-stream"

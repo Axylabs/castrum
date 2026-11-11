@@ -8,7 +8,7 @@
 
 import { decodeUtf8, encodeUtf8 } from '../../../shared/codec'
 import { EMPTY_VIEW } from '../constants'
-import type { BunFFI, Raw3, Raw4, Raw6, Raw7, Raw10 } from '../types'
+import type { BunFFI, Raw3, Raw4, Raw6, Raw7, Raw10, RawCStr } from '../types'
 import type { BuildCtx } from './util'
 import { allocOut, flag, growExact } from './util'
 
@@ -60,6 +60,7 @@ export function buildParse(
   const urlEncodeQuerySym = sym.castrum_url_encode_query as (...a: unknown[]) => string | null
   const urlResolveSym = sym.castrum_url_resolve as (...a: unknown[]) => string | null
   const mimeFromExtensionSym = sym.castrum_mime_from_extension as (...a: unknown[]) => string | null
+  const mimeFromExtensionBytesSym = sym.castrum_mime_from_extension_bytes as RawCStr
 
   return {
     httpParseRequestPackedInto(input, output) {
@@ -290,6 +291,9 @@ export function buildParse(
       // Extension → MIME → cstring (cstring ARG: the engine transcodes the JS
       // extension in-engine); unknown → `application/octet-stream` (never null).
       return mimeFromExtensionSym(ext)
+    },
+    mimeFromExtensionBytes(ext) {
+      return mimeFromExtensionBytesSym(ext, lenOrView(ext))
     },
     httpDateInto(secs, output) {
       // 29-byte HTTP-date into the caller buffer. 0 = too-small buffer or

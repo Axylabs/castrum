@@ -123,6 +123,7 @@ export function selfTestInstances(b: BunFFI): boolean {
   if (b.mediaTypeMatcherMatches(0, enc.encode('x')) !== false) return false
   if (b.acceptNegotiatorNegotiate(0, enc.encode('gzip')) !== null) return false
   if (b.acceptNegotiatorNegotiateServer(0, enc.encode('gzip')) !== null) return false
+  if (b.acceptNegotiatorNegotiateServerBytes(0, enc.encode('gzip')) !== null) return false
   if (b.schemaValidatorValidate(0, enc.encode('{}')) !== false) return false
   if (b.jwtSignerVerify(0, enc.encode('a.b.c'), 0) !== null) return false
   let phase6Threw = false

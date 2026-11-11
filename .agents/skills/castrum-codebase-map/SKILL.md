@@ -35,7 +35,7 @@ src/
 rust/
   lib.rs          crate root: mimalloc, module map, cfg(test) suites
   crypto/ http/ json/ payload/ ingress/ util/   domain cores (pure, unit-tested)
-  ffi/            122 #[no_mangle] extern "C" castrum_* symbols — 110 direct (the bun:ffi surface)
+  ffi/            124 #[no_mangle] extern "C" castrum_* symbols — 112 direct (the bun:ffi surface)
   selection.rs    embeds src/selection.json via include_str!
   panic_safety.rs / proptest_suite.rs / test_support.rs   cross-module test suites
 bench/            HTTP (http/), FFI (ffi/), cost (cost/), startup/autocannon (root)
