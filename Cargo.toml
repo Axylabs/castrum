@@ -121,7 +121,7 @@ pbkdf2 = "0.12"
 # together with a pbkdf2 release that depends on digest 0.11.
 sha2 = "0.10"
 # HTML templating (fast, safe, no eval).
-minijinja = "2"
+minijinja = "3"
 # gzip via the memory-safe zlib-rs backend (pure Rust, no C).
 # `runtime_detection` is REQUIRED: flate2 1.1.10 moved `zlib-rs/std` (zlib-rs's
 # runtime CPU-feature detection, i.e. its SIMD dispatch) behind this opt-in
